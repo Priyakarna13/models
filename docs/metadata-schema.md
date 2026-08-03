@@ -1,0 +1,21 @@
+# `model.yaml` schema v1
+
+`schemas/model.schema.json` is the authoritative contract. YAML is parsed with
+the safe loader and validated with JSON Schema Draft 2020-12.
+
+The contract requires identity and ownership, license policy, immutable source
+provenance, ONNX inputs and outputs, preprocessing and postprocessing,
+calibration status, surgery behavior, compile variants, tests, and release
+maturity. Remote sources require SHA-256 and byte size.
+
+Calibration is explicit even before a dataset is approved. `status: pending`
+keeps an experimental entry honest and blocks a future release gate; `status:
+ready` requires a checksummed source declaration.
+
+Each compile variant declares a semantic ID, exact compiler version and Vulcan
+artifact label, target, model-local Python recipe, and canonical parameter map.
+The recipe path is validated to exist inside the model directory. Variant IDs
+must be unique within a model.
+
+Validation errors use paths such as `source.sha256` and include the model
+directory, making both local and CI failures actionable.

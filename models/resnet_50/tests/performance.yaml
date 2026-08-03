@@ -1,0 +1,7 @@
+schema_version: 1
+status: pending
+reason: A real-DevKit baseline will be recorded after the first pinned compiler build.
+metrics:
+  - latency_p50_ms
+  - latency_p95_ms
+  - throughput_fps

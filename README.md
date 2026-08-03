@@ -1,1 +1,80 @@
-# models
+# SiMa Neat Model Registry
+
+This repository is the source of truth for declarative model definitions,
+reproducible preparation and compilation, device validation, and publication to
+the Vulcan artifact registry.
+
+Large model binaries, calibration datasets, compiled model packs, and benchmark
+artifacts do not belong in Git. Model directories contain immutable provenance
+and checksums; shared lifecycle implementation lives in `tools/model_registry`.
+
+Model directories do own model-specific surgery and compile recipes. Those
+recipes consume verified sources and must emit exactly one directly consumable
+`*_mpk.tar.gz`; common discovery, downloading, runner selection, MPK validation,
+checksumming, and publication remain shared.
+
+## Local setup
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+model-registry validate models/resnet_50
+model-registry fetch models/resnet_50
+python -m pytest
+```
+
+## Vulcan compilation
+
+[`Vulcan-Model-Compile.yml`](.github/workflows/Vulcan-Model-Compile.yml) validates
+pull requests without granting them a self-hosted runner. Trusted pushes build
+only changed models on staging. A maintainer can run the workflow manually,
+choose `staging` or protected `production`, and optionally provide a
+comma-separated model list; an empty list builds the full catalog.
+
+Each build requests the environment label, `model-compiler`, and the one exact
+compiler artifact label declared by its variant. Successful matrix outputs are
+assembled and published with the standard Vulcan branch layout:
+
+```text
+models/
+  <url-encoded-branch>/
+    latest.tag                         # 12-character catalog commit
+    latest.json                        # per-model latest build index
+    <12-character-commit>/
+      metadata.json                    # selectable model catalog
+      catalog.json                     # machine-readable catalog
+      latest.json                      # immutable copy of the index
+      manifest.json                    # Vulcan checksums and S3 keys
+      <changed-model-id>/
+        metadata.json                  # directly installable model package
+        <variant-id>/
+          *_mpk.tar.gz
+          SHA256SUMS
+          compile-result.json
+  branches.json
+```
+
+The shared Vulcan publisher uploads the immutable commit folder first. The
+branch's `latest.tag` is advanced only after the commit manifest exists. For
+example:
+
+```bash
+# Select one or more models interactively from the branch catalog.
+sima-cli neat install --stg models@develop:latest --install-dir ./compiled-models
+
+# Install every compiled variant for one model directly.
+sima-cli neat install --stg models/resnet_50@develop:latest --install-dir ./compiled-models
+```
+
+Only affected models are recompiled. `latest.tag` remains a plain-text pointer
+to the newest complete catalog for existing Vulcan consumers. The versioned
+[`latest.json`](schemas/latest-index-v1.schema.json) maps each model to its own
+build tag, build time, source/compiler provenance, and artifact branch. Root
+catalog metadata uses immutable URLs from that index, while a direct
+`models/<model-id>@<branch>:latest` install resolves the model's build tag.
+Unchanged MPKs are not copied into every catalog commit. A new branch inherits
+unchanged pointers from `main` until those models are rebuilt on the branch.
+
+See [the architecture](docs/architecture.md) and
+[adding a model](docs/adding-a-model.md) for repository conventions.
