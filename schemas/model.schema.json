@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.neat.sima.ai/model-registry/model-v1.schema.json",
+  "title": "SiMa Neat Model Registry model.yaml v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "display_name",
+    "description",
+    "owners",
+    "license",
+    "source",
+    "upstream",
+    "interface",
+    "preprocessing",
+    "postprocessing",
+    "calibration",
+    "surgery",
+    "compile_variants",
+    "tests",
+    "maturity"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+    "display_name": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "owners": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^@[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$"}
+    },
+    "license": {"$ref": "#/$defs/license"},
+    "source": {"$ref": "#/$defs/immutableSource"},
+    "upstream": {"$ref": "#/$defs/upstream"},
+    "interface": {"$ref": "#/$defs/interface"},
+    "preprocessing": {"$ref": "#/$defs/pipeline"},
+    "postprocessing": {"$ref": "#/$defs/pipeline"},
+    "calibration": {"$ref": "#/$defs/calibration"},
+    "surgery": {"$ref": "#/$defs/surgery"},
+    "compile_variants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/compileVariant"}
+    },
+    "tests": {"$ref": "#/$defs/tests"},
+    "maturity": {"enum": ["experimental", "staging", "approved", "deprecated"]}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "immutableSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "sha256", "size_bytes"],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?:hf://(?:models|datasets|spaces)/[^@/]+/[^@/]+@[a-f0-9]{40}/.+|https://.+)$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "media_type": {"type": "string", "minLength": 1}
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spdx", "redistribution", "attribution"],
+      "properties": {
+        "spdx": {"type": "string", "minLength": 1},
+        "redistribution": {"enum": ["allowed", "restricted", "prohibited", "unknown"]},
+        "attribution": {"type": "string", "minLength": 1}
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision"],
+      "properties": {
+        "repository": {"type": "string", "format": "uri"},
+        "revision": {"type": "string", "minLength": 1},
+        "model_card": {"type": "string", "format": "uri"},
+        "derived_from": {"type": "string", "format": "uri"}
+      }
+    },
+    "dimension": {
+      "oneOf": [
+        {"type": "integer", "minimum": 1},
+        {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}
+      ]
+    },
+    "tensor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "dtype", "shape"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "dtype": {"enum": ["float16", "float32", "float64", "int8", "uint8", "int32", "int64", "bool"]},
+        "shape": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/dimension"}
+        },
+        "layout": {"type": "string", "minLength": 1},
+        "description": {"type": "string"}
+      }
+    },
+    "interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "inputs", "outputs"],
+      "properties": {
+        "format": {"const": "onnx"},
+        "opset": {"type": "integer", "minimum": 1},
+        "inputs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/tensor"}},
+        "outputs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/tensor"}}
+      }
+    },
+    "pipelineStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "parameters"],
+      "properties": {
+        "op": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "parameters": {"type": "object"}
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline"],
+      "properties": {
+        "pipeline": {"type": "array", "items": {"$ref": "#/$defs/pipelineStage"}}
+      }
+    },
+    "calibration": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {"const": "pending"},
+            "reason": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "source"],
+          "properties": {
+            "status": {"const": "ready"},
+            "source": {"$ref": "#/$defs/immutableSource"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {"const": "not_required"},
+            "reason": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "surgery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {"type": {"const": "none"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "entrypoint", "parameters"],
+          "properties": {
+            "type": {"const": "python"},
+            "entrypoint": {"type": "string", "pattern": "^[A-Za-z0-9_./-]+\\.py:[A-Za-z_][A-Za-z0-9_]*$"},
+            "parameters": {"type": "object"}
+          }
+        }
+      ]
+    },
+    "compileVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "compiler", "target", "recipe", "parameters"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+        "compiler": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "artifact_label"],
+          "properties": {
+            "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+            "artifact_label": {"type": "string", "pattern": "^model-compiler-[a-z0-9.-]+$"}
+          }
+        },
+        "target": {"type": "string", "minLength": 1},
+        "recipe": {"type": "string", "pattern": "^[A-Za-z0-9_./-]+\\.py$"},
+        "parameters": {"type": "object"}
+      }
+    },
+    "testCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "config"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"},
+        "config": {"type": "string", "pattern": "^[A-Za-z0-9_./-]+\\.ya?ml$"}
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correctness", "performance"],
+      "properties": {
+        "correctness": {"type": "array", "items": {"$ref": "#/$defs/testCase"}},
+        "performance": {"type": "array", "items": {"$ref": "#/$defs/testCase"}}
+      }
+    }
+  }
+}

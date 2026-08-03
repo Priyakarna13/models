@@ -1,0 +1,379 @@
+name: Vulcan Model Compile
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/Vulcan-Model-Compile.yml"
+      - "models/**"
+      - "schemas/**"
+      - "tools/model_registry/**"
+      - "tools/runtime/**"
+      - "pyproject.toml"
+  push:
+    branches: [main, develop]
+    paths:
+      - ".github/workflows/Vulcan-Model-Compile.yml"
+      - "models/**"
+      - "schemas/**"
+      - "tools/model_registry/**"
+      - "tools/runtime/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Vulcan environment whose Model Compiler runner and artifact bucket are used
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      models:
+        description: Comma-separated model IDs; leave empty to build the entire catalog
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: model-compile-${{ github.workflow }}-${{ github.ref }}-${{ inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+jobs:
+  select:
+    name: Select model variants
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.matrix.outputs.count }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      vulcan_environment: ${{ steps.environment.outputs.vulcan_environment }}
+      runner_environment: ${{ steps.environment.outputs.runner_environment }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install registry tooling
+        run: python -m pip install .
+
+      - name: Resolve Vulcan environment
+        id: environment
+        env:
+          REQUESTED_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          environment="${REQUESTED_ENVIRONMENT:-staging}"
+          case "$environment" in
+            staging) runner_environment="vulcan-stg" ;;
+            production) runner_environment="vulcan-production" ;;
+            *) echo "Unsupported environment: $environment" >&2; exit 2 ;;
+          esac
+          echo "vulcan_environment=$environment" >> "$GITHUB_OUTPUT"
+          echo "runner_environment=$runner_environment" >> "$GITHUB_OUTPUT"
+
+      - name: Build deterministic matrix
+        id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_MODELS: ${{ inputs.models }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ -n "${REQUESTED_MODELS:-}" ]]; then
+              matrix="$(model-registry matrix --repository . --models "$REQUESTED_MODELS")"
+            else
+              matrix="$(model-registry matrix --repository . --all)"
+            fi
+          elif [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            matrix="$(model-registry matrix --repository . --all)"
+          else
+            matrix="$(model-registry matrix --repository . --base "$BASE_SHA" --head "$HEAD_SHA")"
+          fi
+          count="$(python -c 'import json,sys; print(len(json.load(sys.stdin)["include"]))' <<< "$matrix")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Selected $count model variant(s)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain pull-request safety boundary
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "Pull requests perform model discovery and metadata validation only." >> "$GITHUB_STEP_SUMMARY"
+          echo "Untrusted pull-request code is never scheduled on a Vulcan self-hosted runner." >> "$GITHUB_STEP_SUMMARY"
+
+  compile:
+    name: Compile ${{ matrix.model_id }} (${{ matrix.variant_id }})
+    needs: select
+    if: github.event_name != 'pull_request' && needs.select.outputs.count != '0'
+    environment: ${{ needs.select.outputs.vulcan_environment }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on:
+      - self-hosted
+      - linux
+      - arm64
+      - ${{ needs.select.outputs.runner_environment }}
+      - model-compiler
+      - ${{ matrix.compiler_label }}
+      - default
+    timeout-minutes: 90
+    env:
+      MODEL_COMPILER_PYTHON: /mnt/model-compiler/bin/python
+      MODEL_ID: ${{ matrix.model_id }}
+      MODEL_DIR: ${{ matrix.model_dir }}
+      VARIANT_ID: ${{ matrix.variant_id }}
+      RECIPE: ${{ matrix.recipe }}
+      EXPECTED_COMPILER_VERSION: ${{ matrix.compiler_version }}
+    steps:
+      - name: Check out the trusted revision
+        uses: actions/checkout@v6
+
+      - name: Prepare isolated output location
+        run: |
+          echo "ARTIFACT_ROOT=$RUNNER_TEMP/model-registry-output" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$RUNNER_TEMP/model-registry-output/$MODEL_ID/$VARIANT_ID" >> "$GITHUB_ENV"
+
+      - name: Verify the pinned Model Compiler environment
+        run: |
+          set -euo pipefail
+          test -x "$MODEL_COMPILER_PYTHON"
+          "$MODEL_COMPILER_PYTHON" - "$EXPECTED_COMPILER_VERSION" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          metadata = json.loads(pathlib.Path("/etc/vulcan/model-compiler-artifact.json").read_text())
+          expected = sys.argv[1]
+          actual = metadata.get("version")
+          if actual != expected:
+              raise SystemExit(f"Model Compiler version mismatch: expected {expected}, found {actual}")
+          print(json.dumps(metadata, sort_keys=True))
+          PY
+
+      - name: Install shared registry tooling outside the read-only compiler image
+        run: |
+          set -euo pipefail
+          tooling="$RUNNER_TEMP/model-registry-tools"
+          "$MODEL_COMPILER_PYTHON" -m pip install --disable-pip-version-check --target "$tooling" .
+          echo "PYTHONPATH=$tooling" >> "$GITHUB_ENV"
+
+      - name: Fetch and verify the immutable model source
+        id: source
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/source.json"
+          "$MODEL_COMPILER_PYTHON" -m model_registry fetch "$MODEL_DIR" --json > "$result"
+          source_path="$("$MODEL_COMPILER_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$result")"
+          source_sha256="$("$MODEL_COMPILER_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$result")"
+          echo "path=$source_path" >> "$GITHUB_OUTPUT"
+          echo "sha256=$source_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Run model-specific surgery and compilation recipe
+        env:
+          SOURCE_PATH: ${{ steps.source.outputs.path }}
+        run: |
+          set -euo pipefail
+          recipe_path="$MODEL_DIR/$RECIPE"
+          test -f "$recipe_path"
+          "$MODEL_COMPILER_PYTHON" "$recipe_path" \
+            --model "$SOURCE_PATH" \
+            --output-dir "$OUTPUT_DIR" \
+            --variant "$VARIANT_ID"
+
+      - name: Validate and checksum the MPK
+        id: mpk
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/mpk-result.json"
+          "$MODEL_COMPILER_PYTHON" -m model_registry verify-mpk "$OUTPUT_DIR" \
+            --write-manifest --json \
+            --model-id "$MODEL_ID" \
+            --variant-id "$VARIANT_ID" \
+            --target "${{ matrix.target }}" \
+            --compiler-version "$EXPECTED_COMPILER_VERSION" \
+            --compiler-label "${{ matrix.compiler_label }}" \
+            --source-sha256 "${{ steps.source.outputs.sha256 }}" \
+            --git-sha "$GITHUB_SHA" \
+            --environment "${{ needs.select.outputs.vulcan_environment }}" \
+            > "$result"
+          archive="$("$MODEL_COMPILER_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["archive"])' "$result")"
+          digest="$("$MODEL_COMPILER_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$result")"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the validated model output for packaging
+        uses: actions/upload-artifact@v7
+        with:
+          name: compiled-model-${{ matrix.model_id }}-${{ matrix.variant_id }}
+          path: ${{ env.ARTIFACT_ROOT }}
+          if-no-files-found: error
+          retention-days: 14
+
+  resolve-vulcan-config:
+    name: Resolve Vulcan publication config
+    needs: select
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
+    uses: sima-neat/.github/.github/workflows/vulcan-resolve-config.yml@main
+    with:
+      vulcan_env: ${{ needs.select.outputs.vulcan_environment }}
+    secrets: inherit
+
+  package:
+    name: Build sima-cli model catalog
+    needs: [select, compile]
+    if: github.event_name != 'pull_request' && needs.compile.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the trusted revision
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install registry tooling
+        run: python -m pip install .
+
+      - name: Download compiled model outputs
+        uses: actions/download-artifact@v7
+        with:
+          pattern: compiled-model-*
+          path: _compiled
+          merge-multiple: true
+
+      - name: Generate root and per-model package metadata
+        env:
+          VULCAN_ENVIRONMENT: ${{ needs.select.outputs.vulcan_environment }}
+        run: |
+          set -euo pipefail
+          model-registry fetch-previous \
+            --environment "$VULCAN_ENVIRONMENT" \
+            --branch "$GITHUB_REF_NAME" \
+            --fallback-branch main \
+            --output-file previous-latest.json \
+            --json > previous-result.json
+          package_args=(
+            --repository . \
+            --compiled-dir _compiled \
+            --output-dir dist \
+            --git-sha "$GITHUB_SHA" \
+            --environment "$VULCAN_ENVIRONMENT" \
+            --branch "$GITHUB_REF_NAME" \
+            --json
+          )
+          if [[ -f previous-latest.json ]]; then
+            package_args+=(--previous-index previous-latest.json)
+          fi
+          model-registry package "${package_args[@]}" > package-result.json
+          python -m json.tool dist/metadata.json >/dev/null
+          find dist -mindepth 2 -name metadata.json -print -exec python -m json.tool {} \; >/dev/null
+          find dist -type f -print | sort >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload installable model catalog
+        uses: actions/upload-artifact@v7
+        with:
+          name: models-dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish branch model artifacts
+    needs: [select, package, resolve-vulcan-config]
+    if: needs.package.result == 'success'
+    permissions:
+      contents: read
+      actions: write
+      id-token: write
+    uses: sima-neat/.github/.github/workflows/vulcan-publish-artifacts.yml@main
+    with:
+      aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      environment_name: ${{ needs.select.outputs.vulcan_environment }}
+      bucket: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
+      role_to_assume: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+      sse_kms_key_id: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
+      artifact_folder: "."
+      artifact_pattern: models-dist
+      artifact_glob: "**/*"
+      min_artifact_count: 6
+      publish_manifest: true
+
+  publish-latest-index:
+    name: Publish model-aware latest.json
+    needs: [select, package, publish, resolve-vulcan-config]
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.select.outputs.vulcan_environment }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - name: Download packaged model catalog
+        uses: actions/download-artifact@v7
+        with:
+          name: models-dist
+          path: dist
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+          role-to-assume: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+          role-session-name: models-latest-index-${{ github.run_id }}
+
+      - name: Validate and upload latest.json
+        env:
+          ARTIFACT_BUCKET: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
+          KMS_KEY_ID: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
+        run: |
+          set -euo pipefail
+          branch_key="$(python -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["GITHUB_REF_NAME"], safe=""))')"
+          jq -e \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg tag "${GITHUB_SHA:0:12}" \
+            '.schema_version == 1 and .repository == "sima-neat/models" and .branch == $branch and .catalog_tag == $tag' \
+            dist/latest.json >/dev/null
+          encryption=(--sse aws:kms)
+          if [[ -n "$KMS_KEY_ID" ]]; then
+            encryption+=(--sse-kms-key-id "$KMS_KEY_ID")
+          fi
+          aws s3 cp dist/latest.json "s3://$ARTIFACT_BUCKET/models/$branch_key/latest.json" \
+            --content-type application/json \
+            --cache-control no-store \
+            "${encryption[@]}"
+
+  promote-latest:
+    name: Promote branch latest.tag
+    needs: [select, publish-latest-index, resolve-vulcan-config]
+    if: needs.publish-latest-index.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: sima-neat/.github/.github/workflows/vulcan-update-latest-artifacts.yml@main
+    with:
+      aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      environment_name: ${{ needs.select.outputs.vulcan_environment }}
+      bucket: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
+      role_to_assume: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+      sse_kms_key_id: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
+      artifact_folder: "."
+      validate_manifest: true
