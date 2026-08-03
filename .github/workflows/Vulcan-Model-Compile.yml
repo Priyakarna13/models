@@ -4,15 +4,16 @@ on:
   pull_request:
     paths:
       - ".github/workflows/Vulcan-Model-Compile.yml"
+      - "deps/**"
       - "models/**"
       - "schemas/**"
       - "tools/model_registry/**"
       - "tools/runtime/**"
       - "pyproject.toml"
   push:
-    branches: [main, develop]
     paths:
       - ".github/workflows/Vulcan-Model-Compile.yml"
+      - "deps/**"
       - "models/**"
       - "schemas/**"
       - "tools/model_registry/**"
@@ -50,6 +51,8 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       vulcan_environment: ${{ steps.environment.outputs.vulcan_environment }}
       runner_environment: ${{ steps.environment.outputs.runner_environment }}
+      model_compiler_version: ${{ steps.compiler.outputs.version }}
+      model_compiler_label: ${{ steps.compiler.outputs.label }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v6
@@ -79,6 +82,17 @@ jobs:
           esac
           echo "vulcan_environment=$environment" >> "$GITHUB_OUTPUT"
           echo "runner_environment=$runner_environment" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Model Compiler dependency
+        id: compiler
+        run: |
+          set -euo pipefail
+          resolution="$(model-registry resolve-compiler --repository .)"
+          version="$(jq -er '.version' <<< "$resolution")"
+          label="$(jq -er '.label' <<< "$resolution")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "Model Compiler dependency: \`$version\` (\`$label\`)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build deterministic matrix
         id: matrix
@@ -127,7 +141,7 @@ jobs:
       - arm64
       - ${{ needs.select.outputs.runner_environment }}
       - model-compiler
-      - ${{ matrix.compiler_label }}
+      - ${{ needs.select.outputs.model_compiler_label }}
       - default
     timeout-minutes: 90
     env:
@@ -136,7 +150,8 @@ jobs:
       MODEL_DIR: ${{ matrix.model_dir }}
       VARIANT_ID: ${{ matrix.variant_id }}
       RECIPE: ${{ matrix.recipe }}
-      EXPECTED_COMPILER_VERSION: ${{ matrix.compiler_version }}
+      EXPECTED_COMPILER_VERSION: ${{ needs.select.outputs.model_compiler_version }}
+      MODEL_COMPILER_LABEL: ${{ needs.select.outputs.model_compiler_label }}
     steps:
       - name: Check out the trusted revision
         uses: actions/checkout@v6
@@ -167,7 +182,8 @@ jobs:
         run: |
           set -euo pipefail
           tooling="$RUNNER_TEMP/model-registry-tools"
-          "$MODEL_COMPILER_PYTHON" -m pip install --disable-pip-version-check --target "$tooling" .
+          "$MODEL_COMPILER_PYTHON" -m pip install --disable-pip-version-check --no-deps --target "$tooling" .
+          "$MODEL_COMPILER_PYTHON" -c 'import certifi, jsonschema, yaml'
           echo "PYTHONPATH=$tooling" >> "$GITHUB_ENV"
 
       - name: Fetch and verify the immutable model source
@@ -186,12 +202,26 @@ jobs:
           SOURCE_PATH: ${{ steps.source.outputs.path }}
         run: |
           set -euo pipefail
-          recipe_path="$MODEL_DIR/$RECIPE"
-          test -f "$recipe_path"
-          "$MODEL_COMPILER_PYTHON" "$recipe_path" \
+          test -f "$MODEL_DIR/$RECIPE"
+          bash --noprofile --norc <<'BASH'
+          set -euo pipefail
+          source /etc/profile.d/vulcan-model-compiler.sh
+          type activate-model-compiler
+          activate-model-compiler
+          command -v mla-masm
+          python "$MODEL_DIR/$RECIPE" \
             --model "$SOURCE_PATH" \
             --output-dir "$OUTPUT_DIR" \
             --variant "$VARIANT_ID"
+
+          shopt -s nullglob
+          archives=("$OUTPUT_DIR"/*_mpk.tar.gz)
+          if (( ${#archives[@]} != 1 )); then
+            echo "Expected exactly one MPK archive, found ${#archives[@]} in $OUTPUT_DIR" >&2
+            find "$OUTPUT_DIR" -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+          BASH
 
       - name: Validate and checksum the MPK
         id: mpk
@@ -204,7 +234,7 @@ jobs:
             --variant-id "$VARIANT_ID" \
             --target "${{ matrix.target }}" \
             --compiler-version "$EXPECTED_COMPILER_VERSION" \
-            --compiler-label "${{ matrix.compiler_label }}" \
+            --compiler-label "$MODEL_COMPILER_LABEL" \
             --source-sha256 "${{ steps.source.outputs.sha256 }}" \
             --git-sha "$GITHUB_SHA" \
             --environment "${{ needs.select.outputs.vulcan_environment }}" \
@@ -315,6 +345,7 @@ jobs:
       artifact_glob: "**/*"
       min_artifact_count: 6
       publish_manifest: true
+      cleanup_github_artifacts: false
 
   publish-latest-index:
     name: Publish model-aware latest.json
@@ -377,3 +408,28 @@ jobs:
       sse_kms_key_id: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
       artifact_folder: "."
       validate_manifest: true
+
+  cleanup-github-artifacts:
+    name: Clean up packaged GitHub artifacts
+    needs: [publish, publish-latest-index, promote-latest]
+    if: always() && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Delete the package artifact after all consumers finish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t artifact_ids < <(
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.name == "models-dist") | .id'
+          )
+          if (( ${#artifact_ids[@]} != 1 )); then
+            echo "Expected exactly one models-dist artifact, found ${#artifact_ids[@]}" >&2
+            exit 1
+          fi
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/${artifact_ids[0]}"

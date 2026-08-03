@@ -15,7 +15,31 @@ def test_workflow_never_schedules_pull_requests_on_vulcan() -> None:
     compile_job = workflow["jobs"]["compile"]
     assert "github.event_name != 'pull_request'" in compile_job["if"]
     assert "model-compiler" in compile_job["runs-on"]
-    assert "${{ matrix.compiler_label }}" in compile_job["runs-on"]
+    assert "${{ needs.select.outputs.model_compiler_label }}" in compile_job["runs-on"]
+
+
+def test_changed_models_compile_on_pushes_to_every_branch() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    push_trigger = workflow["on"]["push"]
+    assert "branches" not in push_trigger
+    assert "branches-ignore" not in push_trigger
+    assert "models/**" in push_trigger["paths"]
+    assert "deps/**" in push_trigger["paths"]
+
+
+def test_model_compiler_is_resolved_before_requesting_a_runner() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    select = workflow["jobs"]["select"]
+    compile_job = workflow["jobs"]["compile"]
+    compiler_step = next(step for step in select["steps"] if step.get("id") == "compiler")
+
+    assert "model-registry resolve-compiler --repository ." in compiler_step["run"]
+    assert select["outputs"]["model_compiler_version"] == "${{ steps.compiler.outputs.version }}"
+    assert select["outputs"]["model_compiler_label"] == "${{ steps.compiler.outputs.label }}"
+    assert compile_job["env"]["EXPECTED_COMPILER_VERSION"] == (
+        "${{ needs.select.outputs.model_compiler_version }}"
+    )
+    assert compile_job["env"]["MODEL_COMPILER_LABEL"] == "${{ needs.select.outputs.model_compiler_label }}"
 
 
 def test_production_is_an_explicit_dispatch_choice() -> None:
@@ -32,6 +56,7 @@ def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> Non
     )
     assert workflow["jobs"]["publish"]["with"]["artifact_folder"] == "."
     assert workflow["jobs"]["publish"]["with"]["publish_manifest"] == "true"
+    assert workflow["jobs"]["publish"]["with"]["cleanup_github_artifacts"] == "false"
     assert (
         workflow["jobs"]["promote-latest"]["uses"]
         == "sima-neat/.github/.github/workflows/vulcan-update-latest-artifacts.yml@main"
@@ -44,6 +69,11 @@ def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> Non
     assert workflow["jobs"]["promote-latest"]["needs"] == [
         "select", "publish-latest-index", "resolve-vulcan-config"
     ]
+    cleanup = workflow["jobs"]["cleanup-github-artifacts"]
+    assert cleanup["needs"] == ["publish", "publish-latest-index", "promote-latest"]
+    assert cleanup["if"] == "always() && needs.publish.result == 'success'"
+    assert "actions: write" in WORKFLOW.read_text(encoding="utf-8")
+    assert "actions/artifacts/${artifact_ids[0]}" in cleanup["steps"][0]["run"]
     upload_script = workflow["jobs"]["publish-latest-index"]["steps"][2]["run"]
     assert "dist/latest.json" in upload_script
     assert "--cache-control no-store" in upload_script
@@ -60,3 +90,29 @@ def test_resnet_recipe_is_python_and_uses_the_standard_cli_contract() -> None:
         if isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.startswith("--")
     }
     assert {"--model", "--output-dir", "--variant"} <= option_strings
+
+
+def test_compile_recipe_runs_in_activated_model_compiler_shell() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["compile"]["steps"]
+    compile_script = next(
+        step["run"] for step in steps
+        if step.get("name") == "Run model-specific surgery and compilation recipe"
+    )
+    assert "bash --noprofile --norc" in compile_script
+    assert "source /etc/profile.d/vulcan-model-compiler.sh" in compile_script
+    assert "type activate-model-compiler" in compile_script
+    assert "activate-model-compiler" in compile_script
+    assert "command -v mla-masm" in compile_script
+    assert 'archives=("$OUTPUT_DIR"/*_mpk.tar.gz)' in compile_script
+
+
+def test_registry_tool_install_does_not_replace_compiler_dependencies() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["compile"]["steps"]
+    install_script = next(
+        step["run"] for step in steps
+        if step.get("name") == "Install shared registry tooling outside the read-only compiler image"
+    )
+    assert "--no-deps" in install_script
+    assert "import certifi, jsonschema, yaml" in install_script
