@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_repository_model_compiler_dependency_is_pinned() -> None:
     assert resolve_model_compiler(ROOT) == {
-        "label": "model-compiler-latest",
+        "label": "model-compiler-2.1.3",
         "source_commit": "0beeab8d4f4df457b9dabf3af32073399d116453",
         "version": "2.1.3",
     }
