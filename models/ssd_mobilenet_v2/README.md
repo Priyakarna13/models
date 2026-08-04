@@ -29,10 +29,10 @@ never accepted as evidence of precision.
 Every compiler run also executes the floating and quantized raw-head models on
 all 32 held-out, category-balanced COCO samples. The audit records per-head
 cosine similarity, normalized RMSE, mean absolute error, and maximum absolute
-error; calibration and validation image IDs are disjoint. Malformed,
-wrong-shaped, non-finite, or zero-signal results fail immediately. The first
-Vulcan run is intentionally measurement-only: V2-specific acceptance thresholds
-must be derived from qualified evidence, not copied from V1 or guessed.
+error; calibration and validation image IDs are disjoint. Vulcan measurements
+qualify INT8 at minimum cosine `0.98` and maximum normalized RMSE `0.20`, and
+BF16 at `0.999` and `0.05`. Malformed, wrong-shaped, non-finite, zero-signal,
+or regressed results fail immediately.
 
 ## Source and zero-cost surgery
 

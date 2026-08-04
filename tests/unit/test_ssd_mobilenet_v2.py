@@ -260,6 +260,31 @@ def test_quantization_quality_report_rejects_non_finite_output() -> None:
         compile_module.quantization_quality_report([reference], [candidate])
 
 
+@pytest.mark.parametrize(
+    ("precision", "cosine", "nrmse"),
+    [("int8", 0.9848, 0.1742), ("bf16", 0.9994, 0.0346)],
+)
+def test_quantization_quality_gate_accepts_qualified_measurements(
+    precision: str, cosine: float, nrmse: float
+) -> None:
+    compile_module = load_module("compile")
+    report = {
+        "minimum_cosine_similarity": cosine,
+        "maximum_normalized_root_mean_square_error": nrmse,
+    }
+    assert compile_module.enforce_quantization_quality(report, precision)["gate"]["passed"] is True
+
+
+def test_quantization_quality_gate_rejects_regression() -> None:
+    compile_module = load_module("compile")
+    report = {
+        "minimum_cosine_similarity": 0.97,
+        "maximum_normalized_root_mean_square_error": 0.21,
+    }
+    with pytest.raises(RuntimeError, match="INT8 quantization quality failed"):
+        compile_module.enforce_quantization_quality(report, "int8")
+
+
 def test_quantization_quality_report_normalizes_afe_output_layouts() -> None:
     compile_module = load_module("compile")
     reference = [np.ones(shape, dtype=np.float32) for _, shape in compile_module.OUTPUTS]
@@ -299,12 +324,20 @@ def test_quantization_validation_executes_all_32_held_out_samples(monkeypatch: p
     assert quantized.calls == 32
 
 
-def test_first_qualification_records_metrics_without_invented_v2_thresholds() -> None:
+def test_first_qualification_thresholds_are_committed_from_vulcan_evidence() -> None:
     specification = yaml.safe_load((MODEL_DIR / "tests" / "correctness.yaml").read_text(encoding="utf-8"))
     source = (MODEL_DIR / "compile.py").read_text(encoding="utf-8")
-    assert "compiler_raw_head_thresholds" not in specification
-    assert "enforce_quantization_quality" not in source
-    assert 'validation_report["qualification"]' in source
+    assert specification["compiler_raw_head_thresholds"] == {
+        "int8": {
+            "minimum_cosine_similarity": 0.98,
+            "maximum_normalized_root_mean_square_error": 0.20,
+        },
+        "bf16": {
+            "minimum_cosine_similarity": 0.999,
+            "maximum_normalized_root_mean_square_error": 0.05,
+        },
+    }
+    assert "enforce_quantization_quality" in source
 
 
 def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
