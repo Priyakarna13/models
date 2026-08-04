@@ -319,7 +319,7 @@ jobs:
           model-registry fetch-previous \
             --environment "$VULCAN_ENVIRONMENT" \
             --branch "$GITHUB_REF_NAME" \
-            --fallback-branch main \
+            --fallback-branch develop \
             --output-file previous-latest.json \
             --json > previous-result.json
           package_args=(
