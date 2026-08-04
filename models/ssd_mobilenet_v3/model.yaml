@@ -141,6 +141,8 @@ compile_variants:
   - id: modalix_int8_tess_mla
     target: modalix
     recipe: compile.py
+    status: unsupported
+    reason: Model Compiler 2.1.3 zeroes 35 convolution weight sets after 128-image min/max calibration.
     parameters:
       precision: int8
       activation_quantization: asymmetric_per_tensor_8bit
@@ -152,6 +154,8 @@ compile_variants:
   - id: modalix_int8_tess_off_mla
     target: modalix
     recipe: compile.py
+    status: unsupported
+    reason: Model Compiler 2.1.3 zeroes 35 convolution weight sets after 128-image min/max calibration.
     parameters:
       precision: int8
       activation_quantization: asymmetric_per_tensor_8bit

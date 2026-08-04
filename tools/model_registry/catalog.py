@@ -95,6 +95,8 @@ def build_matrix(
         for variant in sorted(model["compile_variants"], key=lambda item: item["id"]):
             if requested_variants and variant["id"] not in requested_variants:
                 continue
+            if variant.get("status", "supported") == "unsupported":
+                continue
             include.append(
                 {
                     "model_dir": f"models/{model_id}",

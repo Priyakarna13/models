@@ -333,3 +333,15 @@ def test_model_declares_exact_four_variant_cross_product() -> None:
         (variant["parameters"]["precision"], variant["parameters"]["calibration_method"])
         for variant in metadata["compile_variants"]
     } == {("int8", "min_max"), ("bf16", "mse")}
+    status = {
+        (variant["parameters"]["precision"], variant["parameters"]["tessellation_mla"]): variant.get(
+            "status", "supported"
+        )
+        for variant in metadata["compile_variants"]
+    }
+    assert status == {
+        ("int8", False): "unsupported",
+        ("int8", True): "unsupported",
+        ("bf16", False): "supported",
+        ("bf16", True): "supported",
+    }

@@ -19,6 +19,8 @@ GIT_SHA = "a" * 40
 def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
     for model_id, model in discover_catalog(ROOT).items():
         for variant in model["compile_variants"]:
+            if variant.get("status", "supported") == "unsupported":
+                continue
             variant_id = variant["id"]
             output = root / model_id / variant_id
             output.mkdir(parents=True)

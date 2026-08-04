@@ -7,23 +7,24 @@ source model's postprocessing.
 
 ## Four-variant matrix
 
-| Variant | Internal precision | Tessellation placement | Public ABI |
-| --- | --- | --- | --- |
-| `modalix_int8_tess_mla` | W8A8 INT8 | MLA | FP32 input and 12 FP32 heads |
-| `modalix_int8_tess_off_mla` | W8A8 INT8 | outside MLA | FP32 input and 12 FP32 heads |
-| `modalix_bf16_tess_mla` | BF16 weights/activations | MLA | FP32 input and 12 FP32 heads |
-| `modalix_bf16_tess_off_mla` | BF16 weights/activations | outside MLA | FP32 input and 12 FP32 heads |
+| Variant | Internal precision | Tessellation placement | Qualification | Public ABI |
+| --- | --- | --- | --- | --- |
+| `modalix_int8_tess_mla` | W8A8 INT8 | MLA | Unsupported on compiler 2.1.3 | FP32 input and 12 FP32 heads |
+| `modalix_int8_tess_off_mla` | W8A8 INT8 | outside MLA | Unsupported on compiler 2.1.3 | FP32 input and 12 FP32 heads |
+| `modalix_bf16_tess_mla` | BF16 weights/activations | MLA | Supported | FP32 input and 12 FP32 heads |
+| `modalix_bf16_tess_off_mla` | BF16 weights/activations | outside MLA | Supported | FP32 input and 12 FP32 heads |
 
 The public boundary is intentionally left at the Model Compiler 2.1.3 default.
 The recipe does not use `quantization_mla`, `public_input_types`, or
 `public_output_types`, because those APIs are not available in the qualified
 compiler. Only internal precision and tessellation placement vary.
 
-INT8 uses min/max calibration over all 128 representative images. That broader
-observed range is deliberate for this graph: Model Compiler 2.1.3's MSE ranges
-cause integer accumulator saturation and zeroed convolution weights. BF16 uses
-the compiler's MSE calibration over the same 128-image set. Both precision
-recipes use SiMa requantization.
+INT8 was tested with min/max calibration over all 128 representative images.
+Model Compiler 2.1.3 zeroed 35 convolution weight sets to avoid accumulator
+saturation; MSE also zeroed 33. Both INT8 placements are therefore retained as
+explicit unsupported contracts but excluded from compilation and publication.
+BF16 uses the compiler's MSE calibration over the same 128-image set and SiMa
+requantization.
 
 The audit proves the resulting behavior from two independent compiler outputs.
 The serialized quantized topology checks all 98 MLA convolutions and verifies

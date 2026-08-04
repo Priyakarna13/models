@@ -106,6 +106,15 @@ def test_matrix_can_select_requested_variants(catalog_repository: Path) -> None:
     assert [entry["variant_id"] for entry in matrix["include"]] == ["second"]
 
 
+def test_matrix_excludes_explicitly_unsupported_variants(catalog_repository: Path) -> None:
+    catalog = discover_catalog(catalog_repository)
+    unsupported = copy.deepcopy(catalog["alpha"]["compile_variants"][0])
+    unsupported.update({"id": "unsupported", "status": "unsupported", "reason": "compiler limitation"})
+    catalog["alpha"]["compile_variants"].append(unsupported)
+    matrix = build_matrix(catalog, ["alpha"])
+    assert [entry["variant_id"] for entry in matrix["include"]] == ["fixture"]
+
+
 def test_unknown_requested_variant_fails(catalog_repository: Path) -> None:
     with pytest.raises(ValidationError, match="unknown variant id"):
         build_matrix(discover_catalog(catalog_repository), ["alpha"], ["missing"])
