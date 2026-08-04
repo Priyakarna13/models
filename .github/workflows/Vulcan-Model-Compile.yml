@@ -188,6 +188,8 @@ jobs:
 
       - name: Fetch and verify the immutable model source
         id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           result="$RUNNER_TEMP/source.json"
@@ -199,6 +201,7 @@ jobs:
 
       - name: Run model-specific surgery and compilation recipe
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           SOURCE_PATH: ${{ steps.source.outputs.path }}
         run: |
           set -euo pipefail

@@ -1,0 +1,13 @@
+schema_version: 1
+status: qualified_reference
+reference: onnx_fp32_a65
+samples: 128
+dataset: tum_rgbd_freiburg1_desk
+postprocessing_profile: A65V1
+thresholds:
+  repeatability_at_3px_mean_min: 0.79
+  descriptor_nn_precision_at_3px_mean_min: 0.79
+  mutual_nn_precision_at_3px_mean_min: 0.97
+  matching_score_at_3px_mean_min: 0.85
+  common_descriptor_cosine_mean_min: 0.995
+note: Re-run these gates after the Model Compiler 2.1.3 Vulcan outputs are exercised on a Modalix DevKit.

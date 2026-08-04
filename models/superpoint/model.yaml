@@ -1,0 +1,122 @@
+schema_version: 1
+id: superpoint
+display_name: SuperPoint 480x640
+description: SuperPoint grayscale keypoint scores and dense descriptors for A65 BoxDecode postprocessing.
+owners:
+  - "@sima-neat/models"
+license:
+  spdx: LicenseRef-SiMa-Internal
+  redistribution: restricted
+  attribution: Internal engineering model; preserve the original SuperPoint attribution and do not redistribute the source asset.
+source:
+  uri: https://api.github.com/repos/sima-neat/models/releases/assets/500672818
+  sha256: 81e38c7886f13b7448c6b844acf7a60bda8178e4a66df13d582fd729bbcd6b8d
+  size_bytes: 5208070
+  media_type: application/onnx
+upstream:
+  repository: https://github.com/sima-neat/models/issues/24
+  revision: 81e38c7886f13b7448c6b844acf7a60bda8178e4a66df13d582fd729bbcd6b8d
+  model_card: https://github.com/sima-neat/models/issues/24
+interface:
+  format: onnx
+  opset: 16
+  inputs:
+    - name: image
+      dtype: float32
+      shape: [1, 1, 480, 640]
+      layout: NCHW
+      description: Grayscale image normalized to [0, 1].
+  outputs:
+    - name: /convPb/Conv_output_0
+      dtype: float32
+      shape: [1, 65, 60, 80]
+      layout: NCHW
+      description: Raw 8x8 cell logits plus the dustbin channel.
+    - name: /convDb/Conv_output_0
+      dtype: float32
+      shape: [1, 256, 60, 80]
+      layout: NCHW
+      description: Raw dense descriptor head before L2 normalization and sampling.
+preprocessing:
+  pipeline:
+    - op: decode_video
+      parameters:
+        color_space: BGR
+    - op: grayscale
+      parameters:
+        coefficients: bt601_fixed_point
+    - op: rescale
+      parameters:
+        factor: 0.00392156862745098
+    - op: transpose
+      parameters:
+        from: HWC
+        to: CHW
+postprocessing:
+  pipeline:
+    - op: superpoint
+      parameters:
+        target: A65
+        profile: A65V1
+        confidence_threshold: 0.015
+        nms_radius: 4
+        max_keypoints: 600
+        remove_borders: 4
+calibration:
+  status: ready
+  source:
+    uri: https://api.github.com/repos/sima-neat/models/releases/assets/500672819
+    sha256: c55acf48a9f85f093eaf21f695bf9176c8c3d5555e85f09ce9171e7de0480142
+    size_bytes: 29466634
+    media_type: application/x-npz
+surgery:
+  type: python
+  entrypoint: surgery.py:prepare_model
+  parameters:
+    input_name: image
+    input_shape: [1, 1, 480, 640]
+    output_names:
+      - /convPb/Conv_output_0
+      - /convDb/Conv_output_0
+compile_variants:
+  - id: modalix_int8_packed
+    target: modalix
+    recipe: compile.py
+    parameters:
+      profile: w8a8-vision
+      public_input_dtype: float32
+      public_output_dtype: int8
+      quantization_mla: false
+      tesselation_mla: false
+      input_tesselation_mla: false
+      output_tesselation_mla: false
+  - id: modalix_bf16_packed
+    target: modalix
+    recipe: compile.py
+    parameters:
+      profile: w8a8-vision
+      public_input_dtype: bfloat16
+      public_output_dtype: bfloat16
+      quantization_mla: true
+      tesselation_mla: false
+      input_tesselation_mla: true
+      output_tesselation_mla: false
+  - id: modalix_fp32_dense
+    target: modalix
+    recipe: compile.py
+    parameters:
+      profile: w8a8-vision
+      public_input_dtype: bfloat16
+      public_output_dtype: float32
+      quantization_mla: true
+      tesselation_mla: false
+      input_tesselation_mla: true
+      output_tesselation_mla: true
+tests:
+  correctness:
+    - id: tum_freiburg1_desk_accuracy
+      config: tests/correctness.yaml
+  performance:
+    - id: modalix_boxdecode_latency
+      config: tests/performance.yaml
+maturity: experimental

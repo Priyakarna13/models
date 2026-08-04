@@ -1,0 +1,15 @@
+schema_version: 1
+status: qualified_reference
+target: modalix
+postprocessing_target: A65
+postprocessing_profile: A65V1
+configuration:
+  warmup_frames: 20
+  measured_frames: 100
+  max_keypoints: 600
+metrics:
+  - name: boxdecode_latency_p50_ms
+    maximum: 1.1
+  - name: boxdecode_latency_p99_ms
+    maximum: 1.1
+note: The threshold applies to the INT8 A65 path; MLA inference latency is recorded separately.

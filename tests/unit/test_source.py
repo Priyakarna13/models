@@ -18,6 +18,20 @@ def test_hugging_face_uri_resolves_full_commit() -> None:
     assert source.filename == "model.onnx"
 
 
+def test_github_release_asset_is_allowed() -> None:
+    uri = "https://github.com/sima-neat/models/releases/download/superpoint-source-v1/model.onnx"
+    source = SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10)
+    assert source.resolve_url() == uri
+    assert source.filename == "model.onnx"
+
+
+def test_github_release_asset_api_is_allowed() -> None:
+    uri = "https://api.github.com/repos/sima-neat/models/releases/assets/123456"
+    source = SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10)
+    assert source.resolve_url() == uri
+    assert source.filename == "123456"
+
+
 @pytest.mark.parametrize("repo_type", ["datasets", "spaces"])
 def test_hugging_face_non_model_repo_types(repo_type: str) -> None:
     source = SourceSpec(
@@ -38,6 +52,8 @@ def test_hugging_face_non_model_repo_types(repo_type: str) -> None:
         f"https://huggingface.co/owner/repository/resolve/{REVISION}/model.onnx?token=secret",
         f"https://huggingface.co:444/owner/repository/resolve/{REVISION}/model.onnx",
         "https://unapproved.example/model.onnx",
+        "https://github.com/sima-neat/models/raw/main/model.onnx",
+        "https://api.github.com/repos/sima-neat/models/contents/model.onnx",
         f"hf://models/owner/repository@{REVISION}/../model.onnx",
     ],
 )

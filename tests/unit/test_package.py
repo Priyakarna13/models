@@ -16,30 +16,35 @@ GIT_SHA = "a" * 40
 
 
 def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
-    for variant_id in ("modalix_bf16", "modalix_int8"):
-        output = root / "resnet_50" / variant_id
-        output.mkdir(parents=True)
-        archive = output / f"resnet_50_{variant_id}_mpk.tar.gz"
-        with tarfile.open(archive, "w:gz") as stream:
-            for name in ("resnet/model.elf", "resnet/resnet_mpk.json"):
-                content = b"fixture"
-                info = tarfile.TarInfo(name)
-                info.size = len(content)
-                stream.addfile(info, io.BytesIO(content))
-        verify_mpk(
-            output,
-            write_manifest=True,
-            provenance={
-                "model_id": "resnet_50",
-                "variant_id": variant_id,
-                "git_sha": git_sha,
-                "target": "modalix",
-                "environment": "staging",
-                "compiler_version": "2.1.3",
-                "compiler_label": "model-compiler-2.1.3",
-                "source_sha256": "c" * 64,
-            },
-        )
+    variants = {
+        "resnet_50": ("modalix_bf16", "modalix_int8"),
+        "superpoint": ("modalix_bf16_packed", "modalix_fp32_dense", "modalix_int8_packed"),
+    }
+    for model_id, variant_ids in variants.items():
+        for variant_id in variant_ids:
+            output = root / model_id / variant_id
+            output.mkdir(parents=True)
+            archive = output / f"{model_id}_{variant_id}_mpk.tar.gz"
+            with tarfile.open(archive, "w:gz") as stream:
+                for name in (f"{model_id}/model.elf", f"{model_id}/{model_id}_mpk.json"):
+                    content = b"fixture"
+                    info = tarfile.TarInfo(name)
+                    info.size = len(content)
+                    stream.addfile(info, io.BytesIO(content))
+            verify_mpk(
+                output,
+                write_manifest=True,
+                provenance={
+                    "model_id": model_id,
+                    "variant_id": variant_id,
+                    "git_sha": git_sha,
+                    "target": "modalix",
+                    "environment": "staging",
+                    "compiler_version": "2.1.3",
+                    "compiler_label": "model-compiler-2.1.3",
+                    "source_sha256": "c" * 64,
+                },
+            )
     return root / "resnet_50"
 
 

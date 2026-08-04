@@ -107,6 +107,17 @@ def test_compile_recipe_runs_in_activated_model_compiler_shell() -> None:
     assert 'archives=("$OUTPUT_DIR"/*_mpk.tar.gz)' in compile_script
 
 
+def test_private_release_token_is_available_only_to_model_source_consumers() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["compile"]["steps"]
+    fetch = next(step for step in steps if step.get("name") == "Fetch and verify the immutable model source")
+    compile_step = next(
+        step for step in steps if step.get("name") == "Run model-specific surgery and compilation recipe"
+    )
+    assert fetch["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert compile_step["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+
+
 def test_registry_tool_install_does_not_replace_compiler_dependencies() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     steps = workflow["jobs"]["compile"]["steps"]
