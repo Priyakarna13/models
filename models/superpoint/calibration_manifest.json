@@ -1,0 +1,1366 @@
+{
+  "archives": {
+    "coco_val2017_sha256": "4f7e2ccb2866ec5041993c9cf2a952bbed69647b115d0f74da7ce8f4bef82f05",
+    "hpatches_sequences_sha256": "99cf7e1ca167896eb4ca2fe3d903beff6566243a3c0c8e07a13a2596648ad670"
+  },
+  "candidate_npz_sha256": "7361a0089fa8391436f2cfc4f1febb69c248ca332e8d8a63957e25b4bb6e65f2",
+  "candidate_sha256": "260d9b7b7af937d7ae2d2edb6774f4e4f60af9438dc01781444fb901f0670f58",
+  "preprocessing": {
+    "center_crop_aspect": "4:3",
+    "grayscale": "BT.601 fixed point coefficients 4899/9617/1868",
+    "normalization": "float32 / 255",
+    "opencv": "4.7.0",
+    "resize": "640x480"
+  },
+  "records": [
+    {
+      "decoded_bgr_sha256": "f816bfcdf6a9ae03bde647f80b81c627fc9c8ee77ab1be213c13ee3383e533cc",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_walking_xyz/frame-000315",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "529c9d3c138556de1d5782777a1efa20c65aea1839e782bfe00bf7fa4c9e5282",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_walking_xyz-rgb.avi"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_bird/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_bird",
+      "source": "hpatches",
+      "source_sha256": "10edace45ed2ee106caa638ada2a9dcb5710a4ba2fba316eb2f2980cb4737732"
+    },
+    {
+      "decoded_bgr_sha256": "393eea30a7e0e8960d84323ed50d0e74c236cbed993b113d9ef12bc0166399cc",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_floor/frame-000124",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "ccf274cc63aecac71cb0c62fc8424fcb451fc3af641ffa01ee94392f035fb744",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_floor-rgb.avi"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_soldiers/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_soldiers",
+      "source": "hpatches",
+      "source_sha256": "3a6d3d59b1b82ad21b26baac2b98dd4b33bbd408648bf12af74c955a227ab51c"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/i_londonbridge/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "i_londonbridge",
+      "source": "hpatches",
+      "source_sha256": "3446ea3f8df5e9a77d9631c26a6fc2c4214fc572e3871177d6b806170be49fed"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000422706.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a5731f891fc02d36c1bfbbc369b3a99f0622458be29f762ee87684c990266bcc",
+      "source_url": "http://images.cocodataset.org/val2017/000000422706.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/i_objects/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "i_objects",
+      "source": "hpatches",
+      "source_sha256": "d108d1748a89aff1a63fd2a1037d5792550447ec5166178b2e3d6ee71886c354"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_wormhole/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_wormhole",
+      "source": "hpatches",
+      "source_sha256": "6233d7bd0cbc3787753cbf00a57fc6ff619087e60c65bd4cf639e330c4e5c1cc"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000058111.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "2c476318934bf7b8e6ddbb0bcb119b8ce5ed9409e3444a6b8f8b4622e59fa1fe",
+      "source_url": "http://images.cocodataset.org/val2017/000000058111.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000169356.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "acd7784c7a33da47014e5c55118789be664617e8028a8d89ada6b59b9212db25",
+      "source_url": "http://images.cocodataset.org/val2017/000000169356.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000163155.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "0fd43885c0ecc7f058a4e8232e60abf0baf224496ed8df353c341ce7ce7b5564",
+      "source_url": "http://images.cocodataset.org/val2017/000000163155.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000560371.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "17cd49dc9cde113485375a9cc0da039c752d9ad767c93634de31cb00a97bbb45",
+      "source_url": "http://images.cocodataset.org/val2017/000000560371.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000343218.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "ff45d2490e8dfa3d775ddf5ea378d835cdec56eed9c33190c9a00cfd584e7871",
+      "source_url": "http://images.cocodataset.org/val2017/000000343218.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000524108.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "34cefc4522682be5b9b481e2f4b76b46219f48885438db8019ec126cecfaf6c5",
+      "source_url": "http://images.cocodataset.org/val2017/000000524108.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000085157.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "027adfd5c8d13be607a05da2098af34e7350b5f70a5bfd16f266e8c802a3a59b",
+      "source_url": "http://images.cocodataset.org/val2017/000000085157.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/i_tools/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "i_tools",
+      "source": "hpatches",
+      "source_sha256": "686f596c849d347635f33c85391d5bc4a5461cf28de1bc6b7c0159d6e93458d5"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000113051.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "08e92ec10d2b3b5e1308e6853d50846fb11f718b57d1c4e32e302f8be7aac6a6",
+      "source_url": "http://images.cocodataset.org/val2017/000000113051.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000013659.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "b357d19dee467587a8788ac4e5b45677f4fde1b62726c690795e188ae75d822b",
+      "source_url": "http://images.cocodataset.org/val2017/000000013659.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000398652.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "b21401825547b765234f45a3a0fabbac15866ae403f48a2ccf67457dad92b0d0",
+      "source_url": "http://images.cocodataset.org/val2017/000000398652.jpg"
+    },
+    {
+      "decoded_bgr_sha256": "1b31ccec0f42d5e73c64f186676a578a981b3c376384e6874ecd62b9db1d3d87",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_structure_texture_far/frame-000094",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "3f59cc6ccae0b4859118bd3bb4b2bc9bccee6fd315e244ce514089656a0b0c2c",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_structure_texture_far-rgb.avi"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000090956.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "4cd3cdfd87e339afae764353aaa4006724135b9e933cd2d6177b94fd1d835d1a",
+      "source_url": "http://images.cocodataset.org/val2017/000000090956.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_feast/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_feast",
+      "source": "hpatches",
+      "source_sha256": "2f045bf7baa6597fa61858a2ee335f1644c9a949d2417b2265a0151a33aaec6d"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000571264.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a310373f200737f37ab6e24eaca6f9cf54045e801eb112194506472901c97fe2",
+      "source_url": "http://images.cocodataset.org/val2017/000000571264.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000526728.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "2df4f4dd6ddae2b41cbe4847ca020f23024d1f6d221fe1556402ea356623f9f2",
+      "source_url": "http://images.cocodataset.org/val2017/000000526728.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000533206.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "0f7b42299e6074f89934510299a6d68490a3ac304089f84701424539cbc58c0a",
+      "source_url": "http://images.cocodataset.org/val2017/000000533206.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000147729.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "782dad235c2987b86e846f5578ba997f4388b37d57ebd35e85a1e5e87424c1b4",
+      "source_url": "http://images.cocodataset.org/val2017/000000147729.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000457884.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "b88b479e718e62d179773be99c3d0708e62d1c86d2f0adc118b733d0659dff48",
+      "source_url": "http://images.cocodataset.org/val2017/000000457884.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000190007.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "fc62af958876dfb4d4f8e7bdb210b7a88463e22a41981d975f1c1dae93585d74",
+      "source_url": "http://images.cocodataset.org/val2017/000000190007.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000247917.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "3d19e31ae4de033abffb9586dffd9663e646f040d1ac5293bc4c7c467150c1c1",
+      "source_url": "http://images.cocodataset.org/val2017/000000247917.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_birdwoman/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_birdwoman",
+      "source": "hpatches",
+      "source_sha256": "291685e64b972a7f1287b726e5b2f207b37ec61271f05618a233332a8ecad60d"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_sunseason/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_sunseason",
+      "source": "hpatches",
+      "source_sha256": "6279cf3000d42902c318ca15ee1eead1ac51f7b3ca45c172f460d53b51ee5cbf"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000005001.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "99600c56dc25c72dc1cc1d1f2b09aa33b97142560b54d034fa83a38fcf3c5b0f",
+      "source_url": "http://images.cocodataset.org/val2017/000000005001.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000378116.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "1a3b7ce5613ce6c417d12d141b7d8c5a98cccf4b592c279bb783318e29847a11",
+      "source_url": "http://images.cocodataset.org/val2017/000000378116.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_churchill/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_churchill",
+      "source": "hpatches",
+      "source_sha256": "a049861339464cb85d264a41fa8abd0a019e0b848df0fcc62e545c312005c957"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000239857.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "320ed8332ef28f2b53f85d01e509ec684da2765d6b79685a774509f3ca088f48",
+      "source_url": "http://images.cocodataset.org/val2017/000000239857.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_wounded/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_wounded",
+      "source": "hpatches",
+      "source_sha256": "76496ff1c5c7d19b7adb07bec17e5023adb5ee1c44a7c9269c73adfa9d2ecc76"
+    },
+    {
+      "decoded_bgr_sha256": "9cf5c919c1302a4637b98902146c0f78c40d7d5c797131c9a8a57096d0d100ff",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_walking_xyz/frame-000773",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "529c9d3c138556de1d5782777a1efa20c65aea1839e782bfe00bf7fa4c9e5282",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_walking_xyz-rgb.avi"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000441442.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "2d1d5253fc1c62b68d70407e15a4c0375ab3c972a5b71f2242b23219ae32e1a5",
+      "source_url": "http://images.cocodataset.org/val2017/000000441442.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000462371.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "027938e6e266da5bab7d7c7f7da109aa15c251bf1a85b8bd845467435a8be3c9",
+      "source_url": "http://images.cocodataset.org/val2017/000000462371.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_circus/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_circus",
+      "source": "hpatches",
+      "source_sha256": "7604b4d3bdaae12b382d2370368a952a1ded094631f2294cf8ba1adf8fc66c97"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000447313.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "70ceb83c93f8bf32cb84289c10bed0da9e44e863cea773ed91048e192050f11f",
+      "source_url": "http://images.cocodataset.org/val2017/000000447313.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000136915.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "52e676f1c7ad54796f249b175caf31b93c22348914b6f94d279d298dc2e6d4d7",
+      "source_url": "http://images.cocodataset.org/val2017/000000136915.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_war/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_war",
+      "source": "hpatches",
+      "source_sha256": "a510ab5b54dbb0ade84e6517d7288c3380350dc5621ff1524d1a54f58078b834"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000309452.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "1d859c4fc86ee75a33bb8c95ea3776d6cbbe5714e2b670947e1753512e31cc7c",
+      "source_url": "http://images.cocodataset.org/val2017/000000309452.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_talent/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_talent",
+      "source": "hpatches",
+      "source_sha256": "2813f051b546b51fdf7733fbb44ff910e360349ff6fa44ce5c4e92ca6e61d7cc"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000278705.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "d01c906a85c3f77702bdbf9dc7cedf11310e9aa47c6730927f51d9651dece310",
+      "source_url": "http://images.cocodataset.org/val2017/000000278705.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000462614.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a62b0455cf18a765b1966e6128614136c86bf8a470f38d91d1c4a0e9510eee74",
+      "source_url": "http://images.cocodataset.org/val2017/000000462614.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000542625.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "96bcf0e82d56c029bbb5f440727dbd0daf156a14327a5a83d6fd68ba67f62712",
+      "source_url": "http://images.cocodataset.org/val2017/000000542625.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000292225.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "0f1b0b32e7259b5c34b3236301d8792e6ac5e0afc67bf4dfc30df77fb5841ba1",
+      "source_url": "http://images.cocodataset.org/val2017/000000292225.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000283520.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "631a6472e729f091315113046e821686b1cace4b7d63f6d4d097b481af546665",
+      "source_url": "http://images.cocodataset.org/val2017/000000283520.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000081988.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "d0504a1ed78d6d875de3b0af307cc3349cafb4ff51f0bc9f4237f0a7a2cf36ac",
+      "source_url": "http://images.cocodataset.org/val2017/000000081988.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_wall/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_wall",
+      "source": "hpatches",
+      "source_sha256": "1b54a8cf10f9d73fd7e899cb46497eec844f5b2490411037176f38cbf4a09164"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000276707.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a0fbb94936bfae18df49e94a413aea803e666caa401bdd7ce96275714b20d191",
+      "source_url": "http://images.cocodataset.org/val2017/000000276707.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_tempera/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_tempera",
+      "source": "hpatches",
+      "source_sha256": "c52ffedfe4efd1de21dbbde9db6a7292e2084db5c570e225f610ab0688459344"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000150224.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "fba9c21e16adb27446e532e7ec8f6cc9b0065fc45c8e688a66fed7a3808d3b8f",
+      "source_url": "http://images.cocodataset.org/val2017/000000150224.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000114907.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "1ef6feb0a8d8886de8dc4db6e6c379cdd8fad15111a8edc570eeda66bcc17dba",
+      "source_url": "http://images.cocodataset.org/val2017/000000114907.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000118367.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "621f0f63b933fb42f12fde004b25efb0f83b097c970d46aba99570564adf2cb1",
+      "source_url": "http://images.cocodataset.org/val2017/000000118367.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000175364.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "badb2570222f6900a65bfc9d39615216c683ce3c5d03afb85c692a3cf08f323c",
+      "source_url": "http://images.cocodataset.org/val2017/000000175364.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000502347.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "ddab64360a241da922a5ad6e1ae09299ac50a18418368e3935b2565b94ded8ab",
+      "source_url": "http://images.cocodataset.org/val2017/000000502347.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_eastsouth/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_eastsouth",
+      "source": "hpatches",
+      "source_sha256": "e27f10fade2dbfdf9a7a8656da83b962ede0e199074ed26c984f7f72c99e22f4"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_astronautis/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_astronautis",
+      "source": "hpatches",
+      "source_sha256": "bd50437973ef1f1057a9ac8b02b397ee53c565e3634e8a7ce7d855445a463121"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_woman/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_woman",
+      "source": "hpatches",
+      "source_sha256": "d810daf69635b7011984f0015c9234227f40b09e725fcb42c30c2b6484d2633f"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_azzola/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_azzola",
+      "source": "hpatches",
+      "source_sha256": "9b697f283dca5240f5a4f1a5d9cd6af28e44a34234df20fefb91103a5f0e875e"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000377368.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "37858dad24b3e4ffc50abe1d8bfca6037b6a371ef7511963e6cb63526ac8f21d",
+      "source_url": "http://images.cocodataset.org/val2017/000000377368.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000342367.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "97537c2e8b3fb21beae758ee7644b8bd79a0d9066796b7099696406e458912ca",
+      "source_url": "http://images.cocodataset.org/val2017/000000342367.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000310622.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "11a377fad2f0a910479bc41340ca2ccddd8f2aedc8958aa04c577c3dbd64987f",
+      "source_url": "http://images.cocodataset.org/val2017/000000310622.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000274460.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "e8328d1efa9ab49d921fb9eb37723f20e93140cc1391119e4121325de347d2d0",
+      "source_url": "http://images.cocodataset.org/val2017/000000274460.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000021903.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "3fa9ccedfc3ac829c07e14b0e7ef4211b5963f7700dc6e30dde3054f704efa09",
+      "source_url": "http://images.cocodataset.org/val2017/000000021903.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000402519.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "67a26f7ec2001238cb1819aff95422ba7b57c6973cef05f60faab97d7c308e2e",
+      "source_url": "http://images.cocodataset.org/val2017/000000402519.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000002473.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "2f1bfa7634a64f7999ba5488ec904ad1f85bbc63d0fe4b9fe35f52abbf8c5f4f",
+      "source_url": "http://images.cocodataset.org/val2017/000000002473.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000019402.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "b08173e02dc865e7f13fecbcbed574b70271c07fef6023236d0dea8d6bf77619",
+      "source_url": "http://images.cocodataset.org/val2017/000000019402.jpg"
+    },
+    {
+      "decoded_bgr_sha256": "125ead5547fa994db40f85f7337614405a97b60a2a3de3217d9fa5fc24e03839",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_structure_texture_far/frame-000594",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "3f59cc6ccae0b4859118bd3bb4b2bc9bccee6fd315e244ce514089656a0b0c2c",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_structure_texture_far-rgb.avi"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_busstop/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_busstop",
+      "source": "hpatches",
+      "source_sha256": "cbdfc3eaf6923e85210b7cb4bfa1ab3c83d48367cd8fc7660dcc6b1a359d61d8"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000249129.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "ee3e96944723de59d8741e68c65e0395fec5841a03286563bf005f43a131a786",
+      "source_url": "http://images.cocodataset.org/val2017/000000249129.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000174123.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "c1538f7d64831b48c106b8729113ce6dd356abd8fccc09adafa1f756f9384ee7",
+      "source_url": "http://images.cocodataset.org/val2017/000000174123.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000553094.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a1fdc0f9ea2dc6fd09349c94d59c0023c4bef43161aaae76eea3a86ec672496d",
+      "source_url": "http://images.cocodataset.org/val2017/000000553094.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000547144.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "3c06cc2d2c83a6ec598b8c89e04d58bb31fe3f9dcc85fdef9ceacb4c2b9bdba4",
+      "source_url": "http://images.cocodataset.org/val2017/000000547144.jpg"
+    },
+    {
+      "decoded_bgr_sha256": "c1599caccef4f3a2fc34730c7ba22c09a5fd73b483e48a9dd4767340959bd148",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_floor/frame-000787",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "ccf274cc63aecac71cb0c62fc8424fcb451fc3af641ffa01ee94392f035fb744",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_floor-rgb.avi"
+    },
+    {
+      "decoded_bgr_sha256": "d1ef7061a5fbf456d8c40e4b68c8efc121c4df46c7d804f75d335841e0ce684e",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_360/frame-000277",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "cd06b3d717f22d3df0543a9da7cb1cddbffb5fdc69856ebdc46447ee50f0671f",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_360-rgb.avi"
+    },
+    {
+      "decoded_bgr_sha256": "e9048e0643689c1127c9bcc8d471c3173ee2394f6f44a0ded4de727c490f8912",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_walking_xyz/frame-000544",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "529c9d3c138556de1d5782777a1efa20c65aea1839e782bfe00bf7fa4c9e5282",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_walking_xyz-rgb.avi"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000326627.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "1f0f26e8cae3167d096d454942cdcad12e40ce796d9d8850833313feeae0149f",
+      "source_url": "http://images.cocodataset.org/val2017/000000326627.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000089556.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "b78eb0eb1250b86210658687ff5063428e0cbff2858d4e07d8dee107ae1964f8",
+      "source_url": "http://images.cocodataset.org/val2017/000000089556.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000566758.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "c2548168a658da18c7f19980f8ca53d2564b6378e33d010f3697b808b09e96e3",
+      "source_url": "http://images.cocodataset.org/val2017/000000566758.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_pomegranate/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_pomegranate",
+      "source": "hpatches",
+      "source_sha256": "4343c9d7aaf1a2db1af9066411f769fb32a427cbddadad99a60a9f04ba39e912"
+    },
+    {
+      "decoded_bgr_sha256": "26502dfa706e8c1745a4b80d42ebcf6d841b81efaffe3e2eb3998d5e0c875988",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_structure_texture_far/frame-000844",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "3f59cc6ccae0b4859118bd3bb4b2bc9bccee6fd315e244ce514089656a0b0c2c",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_structure_texture_far-rgb.avi"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_fest/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_fest",
+      "source": "hpatches",
+      "source_sha256": "7ba419b240247baee985da3cf7ae16d236c24fd9b778847e254d4b3eb17b0265"
+    },
+    {
+      "decoded_bgr_sha256": "64398b62bc2227b9d6529afe5ba92cff134ee1ae5a101df8028312d56a9cbf39",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_360/frame-000479",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "cd06b3d717f22d3df0543a9da7cb1cddbffb5fdc69856ebdc46447ee50f0671f",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_360-rgb.avi"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_charing/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_charing",
+      "source": "hpatches",
+      "source_sha256": "9338e3ef7d07609bdbefbef05729d11a4ac7ea5f2c2584fb7983e3845ccd2247"
+    },
+    {
+      "decoded_bgr_sha256": "8be218eb4a5db8c5ae26046f3e0998c09b34817c993ecea487c534a2c4966782",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_structure_texture_far/frame-000344",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "3f59cc6ccae0b4859118bd3bb4b2bc9bccee6fd315e244ce514089656a0b0c2c",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_structure_texture_far-rgb.avi"
+    },
+    {
+      "decoded_bgr_sha256": "a7a75bd79c718be843dc11b124398e2f2b6f6691a1354cad20687f6eade80858",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg3_walking_xyz/frame-000086",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "529c9d3c138556de1d5782777a1efa20c65aea1839e782bfe00bf7fa4c9e5282",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg3/rgbd_dataset_freiburg3_walking_xyz-rgb.avi"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/i_table/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "i_table",
+      "source": "hpatches",
+      "source_sha256": "0c7c6087759b49f02785faf85fd8f09808322ce7786a2748108cf46b16c17716"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000160666.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a7bfafb7a35760c7ab6fc4c8afef40f8d79f4ecb6d3659f67bb00f17e2335d88",
+      "source_url": "http://images.cocodataset.org/val2017/000000160666.jpg"
+    },
+    {
+      "decoded_bgr_sha256": "a678e7d757bb626296ddf016f31cddaf8a8c43583854e5f86b63d497e1e56f71",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_360/frame-000076",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "cd06b3d717f22d3df0543a9da7cb1cddbffb5fdc69856ebdc46447ee50f0671f",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_360-rgb.avi"
+    },
+    {
+      "decoded_bgr_sha256": "ac2b53cd3006055d766cda58ba70b6febff8c9a2d263a273a6688703c631eafb",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_floor/frame-000455",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "ccf274cc63aecac71cb0c62fc8424fcb451fc3af641ffa01ee94392f035fb744",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_floor-rgb.avi"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_machines/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_machines",
+      "source": "hpatches",
+      "source_sha256": "869caa076ce31c0e17abcd3b943ca7e35b60e7a116ad2660d703c9484f8773d2"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000565776.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "1a680f892e0e10c0504f8cbec5f6e8fe116b80124cba694eda5f12b37b91b8b2",
+      "source_url": "http://images.cocodataset.org/val2017/000000565776.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000017182.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "0ec7cbf35b5ff0352f9da0653eda2aaf5b578e7f2b5c8480c5b6c19fd2435141",
+      "source_url": "http://images.cocodataset.org/val2017/000000017182.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000134722.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "bd2e7cbc6a32b8e28bfb18b00d2d3bbd439ba5f5ad676b4af068380047c69f69",
+      "source_url": "http://images.cocodataset.org/val2017/000000134722.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000526256.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "4999689e8c0bb59b69c83b0d0cd802f37526be54a0b2a8978a21c514240a498f",
+      "source_url": "http://images.cocodataset.org/val2017/000000526256.jpg"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/i_pencils/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "i_pencils",
+      "source": "hpatches",
+      "source_sha256": "b9e3f885f5cabbb3f8dc745e4fefa0d898472ae2020a7c5ad734b80b061543ff"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000183246.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "25d6c62b5ee245a99b98de1f078ab5d827c6737dfe11c60815955146604b6e7b",
+      "source_url": "http://images.cocodataset.org/val2017/000000183246.jpg"
+    },
+    {
+      "decoded_bgr_sha256": "39cf3fbfbe81deba418c6bd8e7761a30dbe69f74723ca94d0dab352543933ee5",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_360/frame-000680",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "cd06b3d717f22d3df0543a9da7cb1cddbffb5fdc69856ebdc46447ee50f0671f",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_360-rgb.avi"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_strand/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_strand",
+      "source": "hpatches",
+      "source_sha256": "ec66ccc3311f2a929fddf4aa9d0c37efbeab81c4f29362add0448e7aab4c6016"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000100510.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a2e2766e27122461d4770e240c9f9fd3e443fb369fd892703df1d8b2171dabe4",
+      "source_url": "http://images.cocodataset.org/val2017/000000100510.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000146489.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "6b458ff1cc4ae8c4006f460ea0b10b0e60f1e8c5775370717fd1aa5d082c4f80",
+      "source_url": "http://images.cocodataset.org/val2017/000000146489.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/i_steps/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "i_steps",
+      "source": "hpatches",
+      "source_sha256": "e28b8183c33c2e8e763b1b66fbf45571c61f03918b72fd1e523c7f6c94d9b467"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000194724.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "ef3c018f96fdab2b7bfb28ffd8b952535c8c1084d2a39eb5133c14e585c137c4",
+      "source_url": "http://images.cocodataset.org/val2017/000000194724.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000206487.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "3df6eaf2b80be894a9909549b5177958ab932776d4e8a5843c51464710284b5f",
+      "source_url": "http://images.cocodataset.org/val2017/000000206487.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000541634.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "238f614674164a4c3d3d2e57980a2aa32788f03fc269daf80123ca9e2a1ed6d4",
+      "source_url": "http://images.cocodataset.org/val2017/000000541634.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000148739.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "70adfe4defc746c3309c9ea076c65207924fc295b8cf4772b445d2ec96486a85",
+      "source_url": "http://images.cocodataset.org/val2017/000000148739.jpg"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_calder/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_calder",
+      "source": "hpatches",
+      "source_sha256": "587c4e27161910791a0a032f21391fb86353a41e94dfea32c2e8da96dcb5f306"
+    },
+    {
+      "frame": 1,
+      "member": "hpatches-sequences-release/v_dirtywall/1.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_dirtywall",
+      "source": "hpatches",
+      "source_sha256": "2aedd347607ab3d840ce4425b6bcbeae0982a455118573499ed89d057eaec6d8"
+    },
+    {
+      "frame": 6,
+      "member": "hpatches-sequences-release/v_wapping/6.ppm",
+      "reference_origin": "introduced_in_hpatches",
+      "sequence": "v_wapping",
+      "source": "hpatches",
+      "source_sha256": "6fc1ac3102be16a66b3c5a163d3e7008ca487f7185d6c943ccccd25ae1b490ad"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000546964.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "f67709ec60ebf7210d79210321bc3f3a9684a5db05115b68bf1558e8874e9a03",
+      "source_url": "http://images.cocodataset.org/val2017/000000546964.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000311303.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "bce26964fc249081299c7ecfbfa59fedf79f5430a4f274472312d71b86a249c0",
+      "source_url": "http://images.cocodataset.org/val2017/000000311303.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000509824.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "314d60af974f7abb4935d80a6386f47a03dffcf755853ce38f293ce2449bf985",
+      "source_url": "http://images.cocodataset.org/val2017/000000509824.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000365766.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "d5e83ee05eee360deae2125ac74000e691b6669c8a400ae6e98fb75fa49cd4ee",
+      "source_url": "http://images.cocodataset.org/val2017/000000365766.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000356505.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "2551b5ea629e74fe93644bbc16f80dc0d908e71485e4a0f1cf9e4d4df872c492",
+      "source_url": "http://images.cocodataset.org/val2017/000000356505.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000445846.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "18304101680b0be5936c4714fa3a0d87d2f674573ffa903793a3efa8341d6430",
+      "source_url": "http://images.cocodataset.org/val2017/000000445846.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000500257.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "c39d6a908175616d1d1071632146a2862958779730739a943c9540ca5d4c9e69",
+      "source_url": "http://images.cocodataset.org/val2017/000000500257.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000140203.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "5c3a04dada4c36aba47e5c65a25da677451e66c4a7344ebb602bb4fe4cda55d1",
+      "source_url": "http://images.cocodataset.org/val2017/000000140203.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000206218.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "74426999cd1b58aac06353d2afac10c9e6a8c3bbfeb05abfd3386801c47c035d",
+      "source_url": "http://images.cocodataset.org/val2017/000000206218.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000297343.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "4a175dded2929c5a585b37c83a3d7f926f37df2d2a15bb54de019946ab477b04",
+      "source_url": "http://images.cocodataset.org/val2017/000000297343.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000490515.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a6654419cd09f606a15c6120ba95f9976d364841d8499048b98675c27149b6d4",
+      "source_url": "http://images.cocodataset.org/val2017/000000490515.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000350405.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "ea113f2a601d32d5032df428be396854d97bc3f0b35520280ba860a9d29d9c05",
+      "source_url": "http://images.cocodataset.org/val2017/000000350405.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000225946.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "f35e9b39cf2db8ca36915b4cce2ef17dc3feeff36277f58f95e17076feaf9e92",
+      "source_url": "http://images.cocodataset.org/val2017/000000225946.jpg"
+    },
+    {
+      "license": {
+        "id": 4,
+        "name": "Attribution License",
+        "url": "http://creativecommons.org/licenses/by/2.0/"
+      },
+      "member": "val2017/000000479126.jpg",
+      "source": "coco-val2017",
+      "source_sha256": "a64293cb5d4bfa0b1e6e1c0603f7a4f9892afd90f353c9ed0b250449818d5d36",
+      "source_url": "http://images.cocodataset.org/val2017/000000479126.jpg"
+    },
+    {
+      "decoded_bgr_sha256": "78febffd641ccf2b0ab07763782f90bcc10a82d9f19a4afba2846a81eaec7ba5",
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "member": "freiburg1_floor/frame-001118",
+      "source": "tum-rgbd",
+      "source_archive_sha256": "ccf274cc63aecac71cb0c62fc8424fcb451fc3af641ffa01ee94392f035fb744",
+      "source_url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_floor-rgb.avi"
+    }
+  ],
+  "sources": {
+    "coco": 80,
+    "hpatches": 32,
+    "tum": 16
+  },
+  "stats": {
+    "candidate_hybrid_128": {
+      "count": 128,
+      "edge_energy_mean": 0.027510836869623745,
+      "entropy_mean": 7.3006162051241255,
+      "image_mean_range": [
+        0.12947794795036316,
+        0.7943523526191711
+      ],
+      "image_std_range": [
+        0.10144173353910446,
+        0.41287916898727417
+      ],
+      "nearest_content_correlation_median": 0.48303357632780725,
+      "nearest_content_correlation_p90": 0.6756088407275425
+    },
+    "current_tum_128": {
+      "count": 128,
+      "edge_energy_mean": 0.015268566166923847,
+      "entropy_mean": 7.424507599407626,
+      "image_mean_range": [
+        0.33941176533699036,
+        0.6598426699638367
+      ],
+      "image_std_range": [
+        0.23749923706054688,
+        0.38883551955223083
+      ],
+      "nearest_content_correlation_median": 0.829288070571564,
+      "nearest_content_correlation_p90": 0.9353871655524434
+    }
+  }
+}

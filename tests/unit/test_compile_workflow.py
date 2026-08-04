@@ -118,11 +118,24 @@ def test_private_release_token_is_available_only_to_model_source_consumers() -> 
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     steps = workflow["jobs"]["compile"]["steps"]
     fetch = next(step for step in steps if step.get("name") == "Fetch and verify the immutable model source")
+    calibration = next(
+        step for step in steps if step.get("name") == "Fetch and verify the immutable calibration snapshot"
+    )
     compile_step = next(
         step for step in steps if step.get("name") == "Run model-specific surgery and compilation recipe"
     )
     assert fetch["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert calibration["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert "model_registry fetch-calibration" in calibration["run"]
     assert compile_step["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert compile_step["env"]["CALIBRATION_PATH"] == "${{ steps.calibration.outputs.path }}"
+
+
+def test_compile_result_binds_the_calibration_snapshot() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["compile"]["steps"]
+    verify = next(step for step in steps if step.get("name") == "Validate and checksum the MPK")
+    assert "--calibration-sha256" in verify["run"]
 
 
 def test_registry_tool_install_does_not_replace_compiler_dependencies() -> None:

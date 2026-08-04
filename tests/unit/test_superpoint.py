@@ -184,14 +184,11 @@ def test_explicit_float_boundary_is_valid_onnx(
     assert sum(node.op_type == "Cast" for node in model.graph.node) == cast_count
 
 
-def test_calibration_split_is_deterministic_and_disjoint() -> None:
+def test_calibration_manifest_matches_the_pinned_snapshot() -> None:
     calibration = load_module("calibration")
-    selected, held_out = calibration.split_indices()
-    assert len(selected) == 128
-    assert len(held_out) == 64
-    assert selected[0] == 0 and selected[-1] == 612
-    assert held_out[0] == 3 and held_out[-1] == 609
-    assert set(selected).isdisjoint(held_out)
+    manifest = calibration.validate_manifest(MODEL_DIR / "calibration_manifest.json")
+    assert manifest["sources"] == {"coco": 80, "hpatches": 32, "tum": 16}
+    assert len(manifest["records"]) == 128
 
 
 def test_grayscale_conversion_uses_pinned_fixed_point_formula() -> None:
@@ -224,7 +221,7 @@ def plugin(
         "processor": processor,
         "config_params": {"kernel": kernel, "params": params},
         "input_nodes": [{"dtype": input_dtype}] if input_dtype else [],
-        "output_nodes": [{"layout": layout}] if layout else [],
+        "output_nodes": [{"layout": layout}, {"layout": layout}] if layout else [],
     }
 
 
@@ -302,6 +299,16 @@ def test_mpk_audit_rejects_shared_objects(tmp_path: Path) -> None:
     archive = write_mpk(tmp_path / "bad_mpk.tar.gz", plugins, shared_object=True)
     with pytest.raises(RuntimeError, match="invalid SuperPoint MPK packaging"):
         compile_module.audit_mpk(archive, "modalix_fp32_dense")
+
+
+def test_mpk_audit_rejects_mixed_mla_output_layouts(tmp_path: Path) -> None:
+    compile_module = load_module("compile")
+    mla = plugin("MLA_0", "MLA", input_dtype="float32", layout="normal")
+    mla["output_nodes"][1]["layout"] = "tessellated"
+    plugins = [mla, plugin("publish", "EV74", kernel="pass_through")]
+    archive = write_mpk(tmp_path / "mixed-layout_mpk.tar.gz", plugins)
+    with pytest.raises(RuntimeError, match="MLA layouts=.*normal.*tessellated"):
+        compile_module.audit_mpk(archive, "modalix_int8_tessellation_mla")
 
 
 def test_compile_matrix_contains_all_superpoint_boundaries() -> None:

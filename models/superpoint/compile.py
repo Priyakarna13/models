@@ -197,7 +197,11 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     first_inputs = plugins[0].get("input_nodes", []) if plugins else []
     input_dtype = str(first_inputs[0].get("dtype", "")).lower() if len(first_inputs) == 1 else ""
     mla_outputs = mla_plugins[0].get("output_nodes", [])
-    mla_layout = str(mla_outputs[0].get("layout", "")).lower() if len(mla_outputs) == 1 else ""
+    mla_layouts = {
+        str(output.get("layout", "")).lower()
+        for output in mla_outputs
+        if str(output.get("layout", "")).strip()
+    }
     kernels = [str(plugin.get("config_params", {}).get("kernel", "")) for plugin in plugins]
     frame_types = [
         str(plugin.get("config_params", {}).get("params", {}).get("frame_type", "")).lower() for plugin in plugins
@@ -209,7 +213,7 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     ]
 
     if variant_id == "modalix_fp32_dense":
-        if input_dtype != "bfloat16" or mla_layout != "normal" or unpack_types.count("float32") != 2:
+        if input_dtype != "bfloat16" or mla_layouts != {"normal"} or unpack_types.count("float32") != 2:
             raise RuntimeError("FP32 dense SuperPoint boundary does not match the qualified ABI")
         expected_boundary = "BF16 input; dense FP32 heads"
     else:
@@ -220,9 +224,11 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         expected_layout = "normal" if owner == "mla" else "tessellated"
         if precision not in {"int8", "bfloat16"} or owner not in {"mla", "ev74"}:
             raise ValueError(f"unsupported SuperPoint variant: {variant_id}")
-        if input_dtype != expected_input or mla_layout != expected_layout:
+        if input_dtype != expected_input or mla_layouts != {expected_layout}:
             raise RuntimeError(
-                f"{precision.upper()} SuperPoint boundary does not match {owner.upper()} tessellation ownership"
+                f"{precision.upper()} SuperPoint boundary does not match {owner.upper()} tessellation ownership: "
+                f"input={input_dtype!r}, MLA layouts={sorted(mla_layouts)!r}, expected="
+                f"{expected_input!r}/{expected_layout!r}"
             )
         if owner == "ev74" and frame_types.count(precision) != 2:
             raise RuntimeError(f"{precision.upper()} SuperPoint boundary is missing two EV74 transforms")
@@ -242,6 +248,8 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         "elf": elfs[0],
         "plugin_count": len(plugins),
         "mla_plugin_count": len(mla_plugins),
+        "mla_output_count": len(mla_outputs),
+        "mla_output_layouts": sorted(mla_layouts),
         "shared_object_count": len(shared_objects),
     }
 
@@ -269,7 +277,13 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     from afe.ir.tensor_type import ScalarType
     from afe.load.importers.general_importer import ImporterParams, ModelFormat
 
-    calibration_path, _ = Fetcher().fetch(calibration_source())
+    calibration_override = os.environ.get("CALIBRATION_PATH")
+    if calibration_override:
+        calibration_path = Path(calibration_override).expanduser().resolve()
+        if not calibration_path.is_file():
+            raise FileNotFoundError(f"Vulcan calibration snapshot does not exist: {calibration_path}")
+    else:
+        calibration_path, _ = Fetcher().fetch(calibration_source())
     output_dir.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="superpoint-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         derived = prepare_model(source, Path(temporary) / "superpoint_dense_core_480x640.onnx")

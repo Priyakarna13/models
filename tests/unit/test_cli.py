@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,17 @@ def test_invalid_model_has_nonzero_exit(capsys) -> None:
     result = main(["validate", str(ROOT / "tests" / "fixtures" / "invalid_model")])
     assert result == 2
     assert "source.sha256" in capsys.readouterr().err
+
+
+def test_fetch_calibration_is_a_noop_when_not_required(capsys) -> None:
+    result = main(
+        ["fetch-calibration", str(ROOT / "tests" / "fixtures" / "fixture_model"), "--json"]
+    )
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "model_id": "fixture_model",
+        "status": "not_required",
+    }
 
 
 def test_matrix_emits_workflow_json(capsys) -> None:

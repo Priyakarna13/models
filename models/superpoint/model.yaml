@@ -65,9 +65,9 @@ postprocessing:
 calibration:
   status: ready
   source:
-    uri: https://api.github.com/repos/sima-neat/models/releases/assets/500672819
-    sha256: c55acf48a9f85f093eaf21f695bf9176c8c3d5555e85f09ce9171e7de0480142
-    size_bytes: 29466634
+    uri: https://api.github.com/repos/sima-neat/models/releases/assets/500762074
+    sha256: 7361a0089fa8391436f2cfc4f1febb69c248ca332e8d8a63957e25b4bb6e65f2
+    size_bytes: 37818221
     media_type: application/x-npz
 surgery:
   type: python

@@ -20,17 +20,28 @@ initializer tensors as the engineering dense-core reference.
 
 ## Calibration
 
-INT8 quantization uses 128 frames from the TUM RGB-D `freiburg1_desk` RGB
-movie. The immutable NPZ is fetched by the registry. `calibration.py` documents
-the complete regeneration path and fails closed on these values:
+INT8 quantization uses a deterministic 128-image snapshot selected for natural
+scene coverage and local-feature content:
 
-- source AVI SHA-256: `3faa0fa667fa95d28ecf0d231c3383ddef8695f391f07d48f484af39de43a854`
-- decoded BGR stream SHA-256: `8398d4611395efdbea5c9e7086aa86e5012abe58e17627a56b8d664c2f1e0437`
-- calibration array SHA-256: `3f9968092295f95e98d2429611f5b87216e7fbbf0fc29678272462228ca4ec40`
-- held-out array SHA-256: `64c4ed7a99c1f47a8e09fe4a94674999a170b59b7aa5ce60e2413a01127eab41`
+- 80 landscape or square COCO val2017 images with an Attribution license
+- 32 images from distinct HPatches illumination and viewpoint sequences
+- 16 frames from four TUM RGB-D indoor motion and texture sequences
 
-The TUM sequence is attributed to the TUM RGB-D benchmark and is licensed
-under CC BY 4.0. Only the derived calibration array is used by CI.
+Every image is center-cropped to 4:3, resized to 640x480, converted with the
+deployment BT.601 fixed-point grayscale formula, and normalized to FP32 `[0, 1]`.
+The immutable NPZ is fetched by the registry. `calibration.py` fails closed on
+the archive, tensor, dtype, shape, and range. `calibration_manifest.json` binds
+the ordered samples, source hashes, licenses, preprocessing, and diversity
+statistics.
+
+- calibration NPZ SHA-256: `7361a0089fa8391436f2cfc4f1febb69c248ca332e8d8a63957e25b4bb6e65f2`
+- calibration array SHA-256: `260d9b7b7af937d7ae2d2edb6774f4e4f60af9438dc01781444fb901f0670f58`
+- manifest SHA-256: `9c865cca0fcbeb7a82efd979aabfb4b8f8eeb852a1cc2822b57cd272d27372d8`
+
+The snapshot broadens the observed brightness, contrast, edges, and scene
+content relative to the previous single-sequence TUM calibration. It is still a
+calibration set, not accuracy evidence; promotion requires evaluation on a
+separate validation set.
 
 ## Variants
 
