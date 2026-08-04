@@ -220,7 +220,11 @@ def plugin(
         "sequence": 1,
         "processor": processor,
         "config_params": {"kernel": kernel, "params": params},
-        "input_nodes": [{"dtype": input_dtype}] if input_dtype else [],
+        "input_nodes": [
+            {"dtype": input_dtype, "size": 1 * 480 * 640 * {"float32": 4, "bfloat16": 2}[input_dtype]}
+        ]
+        if input_dtype
+        else [],
         "output_nodes": [{"layout": layout}, {"layout": layout}] if layout else [],
     }
 
@@ -320,6 +324,21 @@ def test_mpk_audit_accepts_ev74_transforms_when_mla_layout_is_not_published(tmp_
     archive = write_mpk(tmp_path / "no-layout_mpk.tar.gz", plugins)
     report = compile_module.audit_mpk(archive, "modalix_int8_tessellation_ev74")
     assert report["mla_output_layouts"] == []
+
+
+def test_mpk_audit_infers_the_public_input_abi_when_dtype_is_not_published(tmp_path: Path) -> None:
+    compile_module = load_module("compile")
+    quantize = plugin("quantize", "EV74", input_dtype="float32")
+    quantize["input_nodes"][0].pop("dtype")
+    plugins = [
+        quantize,
+        plugin("MLA_0", "MLA"),
+        plugin("unpack", "EV74", kernel="unpack_transform"),
+        plugin("publish", "EV74", kernel="pass_through"),
+    ]
+    archive = write_mpk(tmp_path / "size-only-input_mpk.tar.gz", plugins)
+    report = compile_module.audit_mpk(archive, "modalix_int8_tessellation_mla")
+    assert report["public_input_bytes"] == 1 * 480 * 640 * 4
 
 
 def test_mpk_audit_rejects_mixed_mla_output_layouts(tmp_path: Path) -> None:

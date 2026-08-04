@@ -198,6 +198,7 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     if not public_inputs and plugins:
         public_inputs = plugins[0].get("input_nodes", [])
     input_dtype = str(public_inputs[0].get("dtype", "")).lower() if len(public_inputs) == 1 else ""
+    input_size = int(public_inputs[0].get("size", 0)) if len(public_inputs) == 1 else 0
     mla_outputs = mla_plugins[0].get("output_nodes", [])
     mla_layouts = {
         str(output.get("layout", "")).lower()
@@ -229,14 +230,19 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         precision = str(parameters["public_output_dtype"])
         owner = str(parameters["tessellation_owner"])
         expected_input = str(parameters["public_input_dtype"])
+        expected_input_size = int(np.prod(INPUT_SHAPE)) * {"float32": 4, "bfloat16": 2}[expected_input]
         expected_layout = "normal" if owner == "mla" else "tessellated"
         if precision not in {"int8", "bfloat16"} or owner not in {"mla", "ev74"}:
             raise ValueError(f"unsupported SuperPoint variant: {variant_id}")
-        if input_dtype != expected_input or (mla_layouts and mla_layouts != {expected_layout}):
+        if (
+            (input_dtype and input_dtype != expected_input)
+            or input_size != expected_input_size
+            or (mla_layouts and mla_layouts != {expected_layout})
+        ):
             raise RuntimeError(
                 f"{precision.upper()} SuperPoint boundary does not match {owner.upper()} tessellation ownership: "
-                f"input={input_dtype!r}, MLA layouts={sorted(mla_layouts)!r}, expected="
-                f"{expected_input!r}/{expected_layout!r}"
+                f"input={input_dtype!r}/{input_size}, MLA layouts={sorted(mla_layouts)!r}, expected="
+                f"{expected_input!r}/{expected_input_size}/{expected_layout!r}"
             )
         if owner == "ev74":
             transform_types = [
@@ -255,9 +261,11 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
                     f"unpack={len(unpack_plugins)}, detess={len(detessellation_plugins)}, "
                     f"types={transform_types!r}"
                 )
-        elif tessellation_plugins or detessellation_plugins or unpack_plugins:
+        elif tessellation_plugins or detessellation_plugins or len(unpack_plugins) > 1:
             raise RuntimeError(
-                f"{precision.upper()} SuperPoint MLA-owned boundary contains EV74 layout transforms"
+                f"{precision.upper()} SuperPoint MLA-owned boundary has an invalid EV74 layout topology: "
+                f"tess={len(tessellation_plugins)}, unpack={len(unpack_plugins)}, "
+                f"detess={len(detessellation_plugins)}"
             )
         expected_boundary = (
             f"{expected_input.upper()} input; {precision.upper()} heads; "
@@ -277,6 +285,7 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         "mla_plugin_count": len(mla_plugins),
         "mla_output_count": len(mla_outputs),
         "mla_output_layouts": sorted(mla_layouts),
+        "public_input_bytes": input_size,
         "tessellation_plugin_count": len(tessellation_plugins),
         "detessellation_plugin_count": len(detessellation_plugins),
         "unpack_plugin_count": len(unpack_plugins),
