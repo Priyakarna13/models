@@ -263,6 +263,16 @@ def test_quantization_quality_report_rejects_non_finite_output() -> None:
         compile_module.quantization_quality_report([reference], [candidate])
 
 
+def test_validation_output_normalization_handles_compiler_layouts() -> None:
+    compile_module = load_module("compile")
+    expected_shape = (1, 2, 3, 4)
+    nchw = np.arange(np.prod(expected_shape), dtype=np.float32).reshape(expected_shape)
+    nhwc = nchw.transpose(0, 2, 3, 1)
+    nwch = nchw.transpose(0, 3, 1, 2)
+    assert np.array_equal(compile_module._normalize_validation_output(nhwc, "head", expected_shape), nchw)
+    assert np.array_equal(compile_module._normalize_validation_output(nwch, "head", expected_shape), nchw)
+
+
 def test_quantization_warning_audit_rejects_zeroed_weights() -> None:
     compile_module = load_module("compile")
     audit = compile_module.QuantizationWarningAudit()
@@ -284,6 +294,15 @@ def test_quantization_warning_audit_rejects_zeroed_weights() -> None:
 def test_quantization_validation_selects_fast_executor_explicitly() -> None:
     compile_module = load_module("compile")
 
+    class Reference:
+        def __init__(self) -> None:
+            self.shapes: list[tuple[int, ...]] = []
+
+        def run(self, outputs: None, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
+            assert outputs is None
+            self.shapes.append(inputs[compile_module.INPUT_NAME].shape)
+            return [np.ones(shape, dtype=np.float32) for _, shape in compile_module.OUTPUTS]
+
     class Executor:
         def __init__(self) -> None:
             self.fast_mode: list[bool | None] = []
@@ -293,7 +312,7 @@ def test_quantization_validation_selects_fast_executor_explicitly() -> None:
             self.fast_mode.append(fast_mode)
             return [np.ones(shape, dtype=np.float32) for _, shape in compile_module.OUTPUTS]
 
-    floating = Executor()
+    floating = Reference()
     quantized = Executor()
     validation = np.zeros((2, 320, 320, 3), dtype=np.float32)
     report = compile_module.validate_quantization(
@@ -302,8 +321,8 @@ def test_quantization_validation_selects_fast_executor_explicitly() -> None:
         validation,
         lambda name: name,
     )
-    assert report["executor"] == "tensorflow_fast"
-    assert floating.fast_mode == [True, True]
+    assert report["executor"] == "onnx_reference_and_tensorflow_fast_quantized"
+    assert floating.shapes == [(1, 3, 320, 320), (1, 3, 320, 320)]
     assert quantized.fast_mode == [True, True]
 
 

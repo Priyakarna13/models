@@ -190,6 +190,19 @@ def audit_quantized_model(path: Path, precision: str) -> dict[str, Any]:
     }
 
 
+def _normalize_validation_output(value: np.ndarray, name: str, expected_shape: tuple[int, ...]) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float64)
+    batch, channels, height, width = expected_shape
+    if array.shape == expected_shape:
+        return array
+    if array.shape == (batch, height, width, channels):
+        return array.transpose(0, 3, 1, 2)
+    if array.shape == (batch, width, channels, height):
+        # Model.execute exposes these raw heads as NWCH on this compiler.
+        return array.transpose(0, 2, 3, 1)
+    raise RuntimeError(f"validation output {name} has unsupported shape {array.shape}; expected {expected_shape}")
+
+
 def quantization_quality_report(
     reference_samples: list[list[np.ndarray]], candidate_samples: list[list[np.ndarray]]
 ) -> dict[str, Any]:
@@ -214,13 +227,8 @@ def quantization_quality_report(
         for output_index, ((name, expected_shape), reference, candidate) in enumerate(
             zip(OUTPUTS, reference_outputs, candidate_outputs, strict=True)
         ):
-            reference_array = np.asarray(reference, dtype=np.float64)
-            candidate_array = np.asarray(candidate, dtype=np.float64)
-            if reference_array.shape != candidate_array.shape or reference_array.size != int(np.prod(expected_shape)):
-                raise RuntimeError(
-                    f"validation output {name} shape mismatch: floating={reference_array.shape}, "
-                    f"quantized={candidate_array.shape}, expected_elements={int(np.prod(expected_shape))}"
-                )
+            reference_array = _normalize_validation_output(reference, name, expected_shape)
+            candidate_array = _normalize_validation_output(candidate, name, expected_shape)
             if not np.isfinite(reference_array).all() or not np.isfinite(candidate_array).all():
                 raise RuntimeError(f"validation output {name} contains non-finite values")
             difference = candidate_array - reference_array
@@ -260,7 +268,7 @@ def quantization_quality_report(
 
 
 def validate_quantization(
-    loaded: Any,
+    reference: Any,
     quantized: Any,
     validation: np.ndarray,
     InputName: Any,
@@ -268,10 +276,11 @@ def validate_quantization(
     reference_samples: list[list[np.ndarray]] = []
     candidate_samples: list[list[np.ndarray]] = []
     for index in range(validation.shape[0]):
-        inputs = {InputName(INPUT_NAME): validation[index : index + 1]}
+        sample = validation[index : index + 1]
+        inputs = {InputName(INPUT_NAME): sample}
         LOG.info("Validation sample %d/%d: executing FP32 reference", index + 1, validation.shape[0])
         reference_samples.append(
-            [np.asarray(output) for output in loaded.execute(inputs=inputs, fast_mode=True)]
+            [np.asarray(output) for output in reference.run(None, {INPUT_NAME: sample.transpose(0, 3, 1, 2)})]
         )
         LOG.info("Validation sample %d/%d: executing quantized fast graph", index + 1, validation.shape[0])
         candidate_samples.append(
@@ -279,7 +288,7 @@ def validate_quantization(
         )
         LOG.info("Validation sample %d/%d: complete", index + 1, validation.shape[0])
     report = quantization_quality_report(reference_samples, candidate_samples)
-    report["executor"] = "tensorflow_fast"
+    report["executor"] = "onnx_reference_and_tensorflow_fast_quantized"
     if report["sample_count"] != validation.shape[0]:
         raise RuntimeError("quantization validation did not evaluate every held-out sample")
     return report
@@ -466,11 +475,9 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
 def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     """Reload compiler outputs in a fresh process and run held-out validation."""
 
-    from afe.apis.defines import InputName, gen2_target
-    from afe.apis.loaded_net import load_model
+    from afe.apis.defines import InputName
     from afe.apis.model import Model
-    from afe.ir.tensor_type import ScalarType
-    from afe.load.importers.general_importer import ImporterParams, ModelFormat
+    from onnx.reference import ReferenceEvaluator
 
     LOG.info("Fresh validation process: fetching calibration asset")
     calibration_path, _ = Fetcher().fetch(calibration_source())
@@ -482,27 +489,16 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
     ) as temporary:
         LOG.info("Fresh validation process: preparing FP32 source")
         prepared = prepare_model(source, Path(temporary) / "ssd_mobilenet_v3_heads.onnx")
-        LOG.info("Fresh validation process: importing FP32 source")
-        loaded = load_model(
-            ImporterParams(
-                format=ModelFormat.onnx,
-                file_paths=[str(prepared)],
-                input_names=[INPUT_NAME],
-                input_shapes=[INPUT_SHAPE],
-                input_types=[ScalarType.float32],
-                layout="NCHW",
-                output_names=[name for name, _ in OUTPUTS],
-            ),
-            target=gen2_target,
-        )
+        LOG.info("Fresh validation process: creating independent ONNX FP32 reference")
+        reference = ReferenceEvaluator(str(prepared))
         LOG.info("Fresh validation process: loading serialized quantized graph")
         quantized = Model.load(model_name, str(output_dir))
         LOG.info("Fresh validation process: executing %d held-out samples", validation.shape[0])
-        # Model Compiler 2.1.3's standard executor segfaults for this V3 graph.
-        # Zero-weight integer quantization has already been rejected before the
-        # model is saved, so JAX cannot mask that structural compiler defect.
+        # Model Compiler 2.1.3's TVM floating executor segfaults for this V3
+        # graph. Use the prepared ONNX as the independent floating reference;
+        # fast mode is confined to the serialized quantized graph.
         validation_report = validate_quantization(
-            loaded,
+            reference,
             quantized,
             validation,
             InputName,
