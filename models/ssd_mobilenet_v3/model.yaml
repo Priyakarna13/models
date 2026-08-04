@@ -145,7 +145,7 @@ compile_variants:
       precision: int8
       activation_quantization: asymmetric_per_tensor_8bit
       weight_quantization: symmetric_per_channel_8bit
-      calibration_method: mse
+      calibration_method: min_max
       calibration_samples: 128
       requantization: sima
       tessellation_mla: true
@@ -156,7 +156,7 @@ compile_variants:
       precision: int8
       activation_quantization: asymmetric_per_tensor_8bit
       weight_quantization: symmetric_per_channel_8bit
-      calibration_method: mse
+      calibration_method: min_max
       calibration_samples: 128
       requantization: sima
       tessellation_mla: false

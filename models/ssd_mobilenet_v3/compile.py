@@ -53,8 +53,12 @@ def variant_config(variant_id: str) -> dict[str, Any]:
     declared_quantization = (parameters.get("activation_quantization"), parameters.get("weight_quantization"))
     if declared_quantization != expected_quantization:
         raise ValueError(f"SSD quantization declaration mismatch: {declared_quantization}")
-    if parameters.get("calibration_method") != "mse" or parameters.get("requantization") != "sima":
-        raise ValueError("SSD variants require MSE calibration and SiMa requantization")
+    expected_calibration = "min_max" if parameters["precision"] == "int8" else "mse"
+    if parameters.get("calibration_method") != expected_calibration or parameters.get("requantization") != "sima":
+        raise ValueError(
+            f"SSD {parameters['precision'].upper()} variants require {expected_calibration} calibration "
+            "and SiMa requantization"
+        )
     if parameters.get("calibration_samples") != len(CALIBRATION_IMAGE_IDS):
         raise ValueError(f"SSD variants require exactly {len(CALIBRATION_IMAGE_IDS)} calibration samples")
     return variant
@@ -334,6 +338,7 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     variant = variant_config(variant_id)
     precision = str(variant["parameters"]["precision"])
     tessellation_mla = bool(variant["parameters"]["tessellation_mla"])
+    calibration_method = str(variant["parameters"]["calibration_method"])
 
     # These imports intentionally stay inside the Vulcan-only path. Registry,
     # surgery, provenance, and MPK-audit tests do not require an SDK install.
@@ -380,7 +385,7 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             default_quantization.with_activation_quantization(activation_scheme)
             .with_weight_quantization(weight_scheme)
             .with_requantization_mode(RequantizationMode.sima)
-            .with_calibration(CalibrationMethod.from_str("mse"))
+            .with_calibration(CalibrationMethod.from_str(calibration_method))
         )
         model_name = f"ssd_mobilenet_v3_{variant_id}"
         quantized = loaded.quantize(

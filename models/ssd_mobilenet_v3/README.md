@@ -19,6 +19,12 @@ The recipe does not use `quantization_mla`, `public_input_types`, or
 `public_output_types`, because those APIs are not available in the qualified
 compiler. Only internal precision and tessellation placement vary.
 
+INT8 uses min/max calibration over all 128 representative images. That broader
+observed range is deliberate for this graph: Model Compiler 2.1.3's MSE ranges
+cause integer accumulator saturation and zeroed convolution weights. BF16 uses
+the compiler's MSE calibration over the same 128-image set. Both precision
+recipes use SiMa requantization.
+
 The audit proves the resulting behavior from two independent compiler outputs.
 The serialized quantized topology checks all 98 MLA convolutions and verifies
 per-channel integer weights for INT8 or BF16 compute tensors/weights for BF16.

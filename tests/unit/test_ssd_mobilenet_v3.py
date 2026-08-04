@@ -310,3 +310,7 @@ def test_model_declares_exact_four_variant_cross_product() -> None:
     }
     assert matrix == {("int8", False), ("int8", True), ("bf16", False), ("bf16", True)}
     assert all(variant["parameters"]["calibration_samples"] == 128 for variant in metadata["compile_variants"])
+    assert {
+        (variant["parameters"]["precision"], variant["parameters"]["calibration_method"])
+        for variant in metadata["compile_variants"]
+    } == {("int8", "min_max"), ("bf16", "mse")}
