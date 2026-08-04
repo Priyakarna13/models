@@ -18,7 +18,13 @@ GIT_SHA = "a" * 40
 def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
     variants = {
         "resnet_50": ("modalix_bf16", "modalix_int8"),
-        "superpoint": ("modalix_bf16_packed", "modalix_fp32_dense", "modalix_int8_packed"),
+        "superpoint": (
+            "modalix_bf16_tessellation_ev74",
+            "modalix_bf16_tessellation_mla",
+            "modalix_fp32_dense",
+            "modalix_int8_tessellation_ev74",
+            "modalix_int8_tessellation_mla",
+        ),
     }
     for model_id, variant_ids in variants.items():
         for variant_id in variant_ids:

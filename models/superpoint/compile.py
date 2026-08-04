@@ -133,22 +133,33 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         for dtype in plugin.get("config_params", {}).get("params", {}).get("tensor_types", [])
     ]
 
-    if variant_id == "modalix_int8_packed":
-        if input_dtype != "float32" or mla_layout != "tessellated" or frame_types.count("int8") != 2:
-            raise RuntimeError("INT8 packed SuperPoint boundary does not match the qualified ABI")
-        expected_boundary = "FP32 input; INT8 packed MLA heads; EV74 detessellation/dequantization"
-    elif variant_id == "modalix_bf16_packed":
-        if input_dtype != "bfloat16" or mla_layout != "tessellated" or frame_types.count("bfloat16") != 2:
-            raise RuntimeError("BF16 packed SuperPoint boundary does not match the qualified ABI")
-        expected_boundary = "BF16 input and detessellated heads from packed MLA output"
-    elif variant_id == "modalix_fp32_dense":
+    if variant_id == "modalix_fp32_dense":
         if input_dtype != "bfloat16" or mla_layout != "normal" or unpack_types.count("float32") != 2:
             raise RuntimeError("FP32 dense SuperPoint boundary does not match the qualified ABI")
         expected_boundary = "BF16 input; dense FP32 heads"
     else:
-        raise ValueError(f"unsupported SuperPoint variant: {variant_id}")
+        parameters = variant_config(variant_id)["parameters"]
+        precision = str(parameters["public_output_dtype"])
+        owner = str(parameters["tessellation_owner"])
+        expected_input = str(parameters["public_input_dtype"])
+        expected_layout = "normal" if owner == "mla" else "tessellated"
+        if precision not in {"int8", "bfloat16"} or owner not in {"mla", "ev74"}:
+            raise ValueError(f"unsupported SuperPoint variant: {variant_id}")
+        if input_dtype != expected_input or mla_layout != expected_layout:
+            raise RuntimeError(
+                f"{precision.upper()} SuperPoint boundary does not match {owner.upper()} tessellation ownership"
+            )
+        if owner == "ev74" and frame_types.count(precision) != 2:
+            raise RuntimeError(f"{precision.upper()} SuperPoint boundary is missing two EV74 transforms")
+        expected_boundary = (
+            f"{expected_input.upper()} input; {precision.upper()} heads; "
+            f"tessellation and detessellation owned by {owner.upper()}"
+        )
 
-    if "pass_through" not in kernels and variant_id != "modalix_bf16_packed":
+    if "pass_through" not in kernels and variant_id not in {
+        "modalix_bf16_tessellation_ev74",
+        "modalix_bf16_tessellation_mla",
+    }:
         raise RuntimeError("SuperPoint multi-output publication is missing the terminal pass-through stage")
     return {
         "archive": archive.name,

@@ -39,8 +39,10 @@ Model Compiler pin.
 
 | Variant | Input | MLA/output boundary |
 | --- | --- | --- |
-| `modalix_int8_packed` | FP32 | INT8 packed MLA heads followed by audited EV74 detessellation/dequantization |
-| `modalix_bf16_packed` | BF16 | Packed MLA output detessellated to BF16 heads |
+| `modalix_int8_tessellation_ev74` | FP32 | INT8; EV74 owns tessellation and detessellation |
+| `modalix_int8_tessellation_mla` | FP32 | INT8; MLA owns tessellation and detessellation |
+| `modalix_bf16_tessellation_ev74` | BF16 | BF16; EV74 owns tessellation and detessellation |
+| `modalix_bf16_tessellation_mla` | BF16 | BF16; MLA owns tessellation and detessellation |
 | `modalix_fp32_dense` | BF16 | Dense FP32 heads |
 
 The MPK audit requires exactly one MLA plugin, exactly one ELF, and no `.so`
@@ -60,8 +62,8 @@ model-registry fetch models/superpoint
 
 python models/superpoint/compile.py \
   --model ~/.cache/model-registry/sha256/81/81e38c7886f13b7448c6b844acf7a60bda8178e4a66df13d582fd729bbcd6b8d/500672818 \
-  --output-dir build/superpoint/modalix_int8_packed \
-  --variant modalix_int8_packed
+  --output-dir build/superpoint/modalix_int8_tessellation_mla \
+  --variant modalix_int8_tessellation_mla
 ```
 
 Vulcan activates the pinned Model Compiler environment and builds each variant

@@ -46,13 +46,13 @@ def test_matrix_filters_manual_variants(capsys) -> None:
             "--models",
             "superpoint",
             "--variants",
-            "modalix_int8_packed,modalix_bf16_packed",
+            "modalix_int8_tessellation_mla,modalix_bf16_tessellation_mla",
         ]
     )
     assert result == 0
     output = capsys.readouterr().out
-    assert '"variant_id":"modalix_int8_packed"' in output
-    assert '"variant_id":"modalix_bf16_packed"' in output
+    assert '"variant_id":"modalix_int8_tessellation_mla"' in output
+    assert '"variant_id":"modalix_bf16_tessellation_mla"' in output
     assert '"variant_id":"modalix_fp32_dense"' not in output
 
 

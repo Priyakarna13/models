@@ -215,7 +215,7 @@ def write_mpk(path: Path, plugins: list[dict[str, Any]], *, shared_object: bool 
     ("variant", "plugins"),
     [
         (
-            "modalix_int8_packed",
+            "modalix_int8_tessellation_ev74",
             [
                 plugin("quantize", "EV74", input_dtype="float32"),
                 plugin("MLA_0", "MLA", layout="tessellated"),
@@ -225,12 +225,24 @@ def write_mpk(path: Path, plugins: list[dict[str, Any]], *, shared_object: bool 
             ],
         ),
         (
-            "modalix_bf16_packed",
+            "modalix_int8_tessellation_mla",
+            [
+                plugin("quantize", "EV74", input_dtype="float32"),
+                plugin("MLA_0", "MLA", layout="normal"),
+                plugin("publish", "EV74", kernel="pass_through"),
+            ],
+        ),
+        (
+            "modalix_bf16_tessellation_ev74",
             [
                 plugin("MLA_0", "MLA", input_dtype="bfloat16", layout="tessellated"),
                 plugin("score_detess", "EV74", frame_type="bfloat16"),
                 plugin("desc_detess", "EV74", frame_type="bfloat16"),
             ],
+        ),
+        (
+            "modalix_bf16_tessellation_mla",
+            [plugin("MLA_0", "MLA", input_dtype="bfloat16", layout="normal")],
         ),
         (
             "modalix_fp32_dense",
@@ -264,15 +276,18 @@ def test_mpk_audit_rejects_shared_objects(tmp_path: Path) -> None:
 def test_compile_matrix_contains_all_superpoint_boundaries() -> None:
     compile_module = load_module("compile")
     expected = {
-        "modalix_int8_packed": ("float32", "int8", False, False),
-        "modalix_bf16_packed": ("bfloat16", "bfloat16", True, False),
-        "modalix_fp32_dense": ("bfloat16", "float32", True, True),
+        "modalix_int8_tessellation_ev74": ("float32", "int8", "ev74", False, False),
+        "modalix_int8_tessellation_mla": ("float32", "int8", "mla", True, True),
+        "modalix_bf16_tessellation_ev74": ("bfloat16", "bfloat16", "ev74", False, False),
+        "modalix_bf16_tessellation_mla": ("bfloat16", "bfloat16", "mla", True, True),
+        "modalix_fp32_dense": ("bfloat16", "float32", "mla", True, True),
     }
     for variant, contract in expected.items():
         parameters = compile_module.variant_config(variant)["parameters"]
         assert (
             parameters["public_input_dtype"],
             parameters["public_output_dtype"],
+            parameters["tessellation_owner"],
             parameters["input_tesselation_mla"],
             parameters["output_tesselation_mla"],
         ) == contract
