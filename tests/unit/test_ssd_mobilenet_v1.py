@@ -212,6 +212,29 @@ def test_quantized_topology_audit_proves_compute_and_weight_precision(
     assert report["compute_convolution_count"] == 47
 
 
+def test_quantization_quality_report_measures_every_raw_head() -> None:
+    compile_module = load_module("compile")
+    reference = [
+        np.linspace(-1.0, 1.0, int(np.prod(shape)), dtype=np.float32).reshape(shape)
+        for _, shape in compile_module.OUTPUTS
+    ]
+    candidate = [value * np.float32(0.99) + np.float32(0.001) for value in reference]
+    report = compile_module.quantization_quality_report([reference, reference], [candidate, candidate])
+    assert report["sample_count"] == 2
+    assert len(report["outputs"]) == 12
+    assert report["minimum_cosine_similarity"] > 0.999
+    assert report["maximum_normalized_root_mean_square_error"] < 0.02
+
+
+def test_quantization_quality_report_rejects_non_finite_output() -> None:
+    compile_module = load_module("compile")
+    reference = [np.ones(shape, dtype=np.float32) for _, shape in compile_module.OUTPUTS]
+    candidate = [value.copy() for value in reference]
+    candidate[0].flat[0] = np.nan
+    with pytest.raises(RuntimeError, match="non-finite"):
+        compile_module.quantization_quality_report([reference], [candidate])
+
+
 def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     source = (MODEL_DIR / "compile.py").read_text(encoding="utf-8")
     assert "with_activation_quantization" in source

@@ -158,6 +158,88 @@ def audit_quantized_model(path: Path, precision: str) -> dict[str, Any]:
     }
 
 
+def quantization_quality_report(
+    reference_samples: list[list[np.ndarray]], candidate_samples: list[list[np.ndarray]]
+) -> dict[str, Any]:
+    if len(reference_samples) != len(candidate_samples) or not reference_samples:
+        raise RuntimeError(
+            "quantization validation requires the same non-zero number of floating and quantized samples"
+        )
+    accumulators = [
+        {"dot": 0.0, "reference_energy": 0.0, "candidate_energy": 0.0, "error_energy": 0.0, "mae": 0.0}
+        for _ in OUTPUTS
+    ]
+    element_counts = [0] * len(OUTPUTS)
+    maximum_errors = [0.0] * len(OUTPUTS)
+    for sample_index, (reference_outputs, candidate_outputs) in enumerate(
+        zip(reference_samples, candidate_samples, strict=True)
+    ):
+        if len(reference_outputs) != len(OUTPUTS) or len(candidate_outputs) != len(OUTPUTS):
+            raise RuntimeError(
+                f"validation sample {sample_index} returned {len(reference_outputs)} floating and "
+                f"{len(candidate_outputs)} quantized outputs; expected {len(OUTPUTS)}"
+            )
+        for output_index, ((name, expected_shape), reference, candidate) in enumerate(
+            zip(OUTPUTS, reference_outputs, candidate_outputs, strict=True)
+        ):
+            reference_array = np.asarray(reference, dtype=np.float64)
+            candidate_array = np.asarray(candidate, dtype=np.float64)
+            if reference_array.shape != candidate_array.shape or reference_array.size != int(np.prod(expected_shape)):
+                raise RuntimeError(
+                    f"validation output {name} shape mismatch: floating={reference_array.shape}, "
+                    f"quantized={candidate_array.shape}, expected_elements={int(np.prod(expected_shape))}"
+                )
+            if not np.isfinite(reference_array).all() or not np.isfinite(candidate_array).all():
+                raise RuntimeError(f"validation output {name} contains non-finite values")
+            difference = candidate_array - reference_array
+            state = accumulators[output_index]
+            state["dot"] += float(np.vdot(reference_array, candidate_array))
+            state["reference_energy"] += float(np.vdot(reference_array, reference_array))
+            state["candidate_energy"] += float(np.vdot(candidate_array, candidate_array))
+            state["error_energy"] += float(np.vdot(difference, difference))
+            state["mae"] += float(np.abs(difference).sum())
+            element_counts[output_index] += reference_array.size
+            maximum_errors[output_index] = max(maximum_errors[output_index], float(np.abs(difference).max()))
+
+    outputs = []
+    for output_index, ((name, _), state) in enumerate(zip(OUTPUTS, accumulators, strict=True)):
+        reference_energy = state["reference_energy"]
+        candidate_energy = state["candidate_energy"]
+        if reference_energy <= 0.0 or candidate_energy <= 0.0:
+            raise RuntimeError(f"validation output {name} has zero signal energy")
+        outputs.append(
+            {
+                "cosine_similarity": state["dot"] / np.sqrt(reference_energy * candidate_energy),
+                "maximum_absolute_error": maximum_errors[output_index],
+                "mean_absolute_error": state["mae"] / element_counts[output_index],
+                "name": name,
+                "normalized_root_mean_square_error": np.sqrt(state["error_energy"] / reference_energy),
+            }
+        )
+    return {
+        "maximum_normalized_root_mean_square_error": max(
+            output["normalized_root_mean_square_error"] for output in outputs
+        ),
+        "minimum_cosine_similarity": min(output["cosine_similarity"] for output in outputs),
+        "outputs": outputs,
+        "reference": "onnx_fp32_raw_heads",
+        "sample_count": len(reference_samples),
+    }
+
+
+def validate_quantization(loaded: Any, quantized: Any, validation: np.ndarray, InputName: Any) -> dict[str, Any]:
+    reference_samples: list[list[np.ndarray]] = []
+    candidate_samples: list[list[np.ndarray]] = []
+    for index in range(validation.shape[0]):
+        inputs = {InputName(INPUT_NAME): validation[index : index + 1]}
+        reference_samples.append([np.asarray(output) for output in loaded.execute(inputs=inputs)])
+        candidate_samples.append([np.asarray(output) for output in quantized.execute(inputs=inputs, use_jax=True)])
+    report = quantization_quality_report(reference_samples, candidate_samples)
+    if report["sample_count"] != validation.shape[0]:
+        raise RuntimeError("quantization validation did not evaluate every held-out sample")
+    return report
+
+
 def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     variant = variant_config(variant_id)
     precision = str(variant["parameters"]["precision"])
@@ -263,7 +345,7 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     from sima_utils.data.data_generator import DataGenerator
 
     calibration_path, _ = Fetcher().fetch(calibration_source())
-    calibration, _validation = validate_dataset(calibration_path)
+    calibration, validation = validate_dataset(calibration_path)
     output_dir.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="ssd-mobilenet-v1-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         prepared = prepare_model(source, Path(temporary) / "ssd_mobilenet_v1_heads.onnx")
@@ -300,6 +382,9 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
         )
         quantized.save(model_name=model_name, output_directory=str(output_dir))
         quantized_report = audit_quantized_model(output_dir / f"{model_name}.sima.json", precision)
+        quantized_report["quantization_validation"] = validate_quantization(
+            loaded, quantized, validation, InputName
+        )
         tessellation = None
         if tessellation_mla:
             tessellation = _tessellation_parameters(

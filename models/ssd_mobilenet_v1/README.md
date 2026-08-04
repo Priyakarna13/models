@@ -23,8 +23,13 @@ The serialized quantized topology checks all 47 MLA convolutions and verifies
 per-channel integer weights for INT8 or BF16 compute tensors/weights for BF16.
 The MPK checks one MLA ELF, no shared objects or A65 stages, all 12 output
 transport tensor types, FP32 public buffer sizes, and whether the external EV74
-`tessellate` or fused INT8 `quanttess` stage is present. A variant name alone is never accepted as
-evidence of precision.
+`tessellate` or fused INT8 `quanttess` stage is present. A variant name alone is
+never accepted as evidence of precision.
+
+Every compiler run also executes the floating and quantized raw-head models on
+all 32 held-out, category-balanced COCO samples. The audit records per-head
+cosine similarity, normalized RMSE, mean absolute error, and maximum absolute
+error; calibration and validation image IDs are disjoint.
 
 ## Source and zero-cost surgery
 
