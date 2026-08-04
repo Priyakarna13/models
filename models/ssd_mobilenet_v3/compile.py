@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import logging
 import os
@@ -532,6 +533,7 @@ def main() -> int:
     parser.add_argument("--validation-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    faulthandler.enable(all_threads=True)
 
     source = args.model.expanduser().resolve()
     if not source.is_file():
