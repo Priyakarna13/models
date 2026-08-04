@@ -194,8 +194,10 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
             f"invalid SuperPoint MPK packaging: MLA={len(mla_plugins)} ELF={len(elfs)} SO={shared_objects}"
         )
 
-    first_inputs = plugins[0].get("input_nodes", []) if plugins else []
-    input_dtype = str(first_inputs[0].get("dtype", "")).lower() if len(first_inputs) == 1 else ""
+    public_inputs = manifest.get("input_nodes", [])
+    if not public_inputs and plugins:
+        public_inputs = plugins[0].get("input_nodes", [])
+    input_dtype = str(public_inputs[0].get("dtype", "")).lower() if len(public_inputs) == 1 else ""
     mla_outputs = mla_plugins[0].get("output_nodes", [])
     mla_layouts = {
         str(output.get("layout", "")).lower()
@@ -203,8 +205,14 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         if str(output.get("layout", "")).strip()
     }
     kernels = [str(plugin.get("config_params", {}).get("kernel", "")) for plugin in plugins]
-    frame_types = [
-        str(plugin.get("config_params", {}).get("params", {}).get("frame_type", "")).lower() for plugin in plugins
+    tessellation_plugins = [
+        plugin for plugin in plugins if plugin.get("config_params", {}).get("kernel") == "tessellation_transform"
+    ]
+    detessellation_plugins = [
+        plugin for plugin in plugins if plugin.get("config_params", {}).get("kernel") == "detessellation_transform"
+    ]
+    unpack_plugins = [
+        plugin for plugin in plugins if plugin.get("config_params", {}).get("kernel") == "unpack_transform"
     ]
     unpack_types = [
         str(dtype).lower()
@@ -224,14 +232,33 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         expected_layout = "normal" if owner == "mla" else "tessellated"
         if precision not in {"int8", "bfloat16"} or owner not in {"mla", "ev74"}:
             raise ValueError(f"unsupported SuperPoint variant: {variant_id}")
-        if input_dtype != expected_input or mla_layouts != {expected_layout}:
+        if input_dtype != expected_input or (mla_layouts and mla_layouts != {expected_layout}):
             raise RuntimeError(
                 f"{precision.upper()} SuperPoint boundary does not match {owner.upper()} tessellation ownership: "
                 f"input={input_dtype!r}, MLA layouts={sorted(mla_layouts)!r}, expected="
                 f"{expected_input!r}/{expected_layout!r}"
             )
-        if owner == "ev74" and frame_types.count(precision) != 2:
-            raise RuntimeError(f"{precision.upper()} SuperPoint boundary is missing two EV74 transforms")
+        if owner == "ev74":
+            transform_types = [
+                str(plugin.get("config_params", {}).get("params", {}).get("frame_type", "")).lower()
+                for plugin in tessellation_plugins + detessellation_plugins
+            ]
+            if (
+                len(tessellation_plugins) != 1
+                or len(detessellation_plugins) != 2
+                or len(unpack_plugins) != 1
+                or transform_types != [precision, precision, precision]
+            ):
+                raise RuntimeError(
+                    f"{precision.upper()} SuperPoint boundary requires one EV74 tessellation, one unpack, "
+                    f"and two detessellations; found tess={len(tessellation_plugins)}, "
+                    f"unpack={len(unpack_plugins)}, detess={len(detessellation_plugins)}, "
+                    f"types={transform_types!r}"
+                )
+        elif tessellation_plugins or detessellation_plugins or unpack_plugins:
+            raise RuntimeError(
+                f"{precision.upper()} SuperPoint MLA-owned boundary contains EV74 layout transforms"
+            )
         expected_boundary = (
             f"{expected_input.upper()} input; {precision.upper()} heads; "
             f"tessellation and detessellation owned by {owner.upper()}"
@@ -250,6 +277,9 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         "mla_plugin_count": len(mla_plugins),
         "mla_output_count": len(mla_outputs),
         "mla_output_layouts": sorted(mla_layouts),
+        "tessellation_plugin_count": len(tessellation_plugins),
+        "detessellation_plugin_count": len(detessellation_plugins),
+        "unpack_plugin_count": len(unpack_plugins),
         "shared_object_count": len(shared_objects),
     }
 

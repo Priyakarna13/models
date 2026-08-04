@@ -226,7 +226,8 @@ def plugin(
 
 
 def write_mpk(path: Path, plugins: list[dict[str, Any]], *, shared_object: bool = False) -> Path:
-    manifest = json.dumps({"plugins": plugins}).encode()
+    public_inputs = plugins[0].get("input_nodes", []) if plugins else []
+    manifest = json.dumps({"input_nodes": public_inputs, "plugins": plugins}).encode()
     with tarfile.open(path, "w:gz") as stream:
         for name, payload in (("model_mpk.json", manifest), ("model.elf", b"ELF")):
             info = tarfile.TarInfo(name)
@@ -246,9 +247,11 @@ def write_mpk(path: Path, plugins: list[dict[str, Any]], *, shared_object: bool 
             "modalix_int8_tessellation_ev74",
             [
                 plugin("quantize", "EV74", input_dtype="float32"),
+                plugin("score_tess", "EV74", frame_type="int8", kernel="tessellation_transform"),
                 plugin("MLA_0", "MLA", layout="tessellated"),
-                plugin("score_detess", "EV74", frame_type="int8"),
-                plugin("desc_detess", "EV74", frame_type="int8"),
+                plugin("unpack", "EV74", kernel="unpack_transform"),
+                plugin("score_detess", "EV74", frame_type="int8", kernel="detessellation_transform"),
+                plugin("desc_detess", "EV74", frame_type="int8", kernel="detessellation_transform"),
                 plugin("publish", "EV74", kernel="pass_through"),
             ],
         ),
@@ -264,8 +267,10 @@ def write_mpk(path: Path, plugins: list[dict[str, Any]], *, shared_object: bool 
             "modalix_bf16_tessellation_ev74",
             [
                 plugin("MLA_0", "MLA", input_dtype="bfloat16", layout="tessellated"),
-                plugin("score_detess", "EV74", frame_type="bfloat16"),
-                plugin("desc_detess", "EV74", frame_type="bfloat16"),
+                plugin("score_tess", "EV74", frame_type="bfloat16", kernel="tessellation_transform"),
+                plugin("unpack", "EV74", kernel="unpack_transform"),
+                plugin("score_detess", "EV74", frame_type="bfloat16", kernel="detessellation_transform"),
+                plugin("desc_detess", "EV74", frame_type="bfloat16", kernel="detessellation_transform"),
             ],
         ),
         (
@@ -299,6 +304,22 @@ def test_mpk_audit_rejects_shared_objects(tmp_path: Path) -> None:
     archive = write_mpk(tmp_path / "bad_mpk.tar.gz", plugins, shared_object=True)
     with pytest.raises(RuntimeError, match="invalid SuperPoint MPK packaging"):
         compile_module.audit_mpk(archive, "modalix_fp32_dense")
+
+
+def test_mpk_audit_accepts_ev74_transforms_when_mla_layout_is_not_published(tmp_path: Path) -> None:
+    compile_module = load_module("compile")
+    plugins = [
+        plugin("quantize", "EV74", input_dtype="float32"),
+        plugin("tess", "EV74", frame_type="int8", kernel="tessellation_transform"),
+        plugin("MLA_0", "MLA"),
+        plugin("unpack", "EV74", kernel="unpack_transform"),
+        plugin("score_detess", "EV74", frame_type="int8", kernel="detessellation_transform"),
+        plugin("desc_detess", "EV74", frame_type="int8", kernel="detessellation_transform"),
+        plugin("publish", "EV74", kernel="pass_through"),
+    ]
+    archive = write_mpk(tmp_path / "no-layout_mpk.tar.gz", plugins)
+    report = compile_module.audit_mpk(archive, "modalix_int8_tessellation_ev74")
+    assert report["mla_output_layouts"] == []
 
 
 def test_mpk_audit_rejects_mixed_mla_output_layouts(tmp_path: Path) -> None:
