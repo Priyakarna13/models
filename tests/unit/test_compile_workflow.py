@@ -36,10 +36,16 @@ def test_model_compiler_is_resolved_before_requesting_a_runner() -> None:
     assert "model-registry resolve-compiler --repository ." in compiler_step["run"]
     assert select["outputs"]["model_compiler_version"] == "${{ steps.compiler.outputs.version }}"
     assert select["outputs"]["model_compiler_label"] == "${{ steps.compiler.outputs.label }}"
+    assert select["outputs"]["model_compiler_source_commit"] == (
+        "${{ steps.compiler.outputs.source_commit }}"
+    )
     assert compile_job["env"]["EXPECTED_COMPILER_VERSION"] == (
         "${{ needs.select.outputs.model_compiler_version }}"
     )
     assert compile_job["env"]["MODEL_COMPILER_LABEL"] == "${{ needs.select.outputs.model_compiler_label }}"
+    assert compile_job["env"]["EXPECTED_COMPILER_SOURCE_COMMIT"] == (
+        "${{ needs.select.outputs.model_compiler_source_commit }}"
+    )
 
 
 def test_production_is_an_explicit_dispatch_choice() -> None:

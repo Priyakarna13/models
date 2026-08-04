@@ -53,6 +53,7 @@ jobs:
       runner_environment: ${{ steps.environment.outputs.runner_environment }}
       model_compiler_version: ${{ steps.compiler.outputs.version }}
       model_compiler_label: ${{ steps.compiler.outputs.label }}
+      model_compiler_source_commit: ${{ steps.compiler.outputs.source_commit }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v6
@@ -90,9 +91,11 @@ jobs:
           resolution="$(model-registry resolve-compiler --repository .)"
           version="$(jq -er '.version' <<< "$resolution")"
           label="$(jq -er '.label' <<< "$resolution")"
+          source_commit="$(jq -er '.source_commit' <<< "$resolution")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "label=$label" >> "$GITHUB_OUTPUT"
-          echo "Model Compiler dependency: \`$version\` (\`$label\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "Model Compiler dependency: \`$version\` (\`$label\`, \`$source_commit\`)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build deterministic matrix
         id: matrix
@@ -151,6 +154,7 @@ jobs:
       VARIANT_ID: ${{ matrix.variant_id }}
       RECIPE: ${{ matrix.recipe }}
       EXPECTED_COMPILER_VERSION: ${{ needs.select.outputs.model_compiler_version }}
+      EXPECTED_COMPILER_SOURCE_COMMIT: ${{ needs.select.outputs.model_compiler_source_commit }}
       MODEL_COMPILER_LABEL: ${{ needs.select.outputs.model_compiler_label }}
     steps:
       - name: Check out the trusted revision
@@ -165,16 +169,22 @@ jobs:
         run: |
           set -euo pipefail
           test -x "$MODEL_COMPILER_PYTHON"
-          "$MODEL_COMPILER_PYTHON" - "$EXPECTED_COMPILER_VERSION" <<'PY'
+          "$MODEL_COMPILER_PYTHON" - "$EXPECTED_COMPILER_VERSION" "$EXPECTED_COMPILER_SOURCE_COMMIT" <<'PY'
           import json
           import pathlib
           import sys
 
           metadata = json.loads(pathlib.Path("/etc/vulcan/model-compiler-artifact.json").read_text())
           expected = sys.argv[1]
+          expected_commit = sys.argv[2]
           actual = metadata.get("version")
           if actual != expected:
               raise SystemExit(f"Model Compiler version mismatch: expected {expected}, found {actual}")
+          actual_commit = metadata.get("source_commit")
+          if actual_commit != expected_commit:
+              raise SystemExit(
+                  f"Model Compiler source mismatch: expected {expected_commit}, found {actual_commit}"
+              )
           print(json.dumps(metadata, sort_keys=True))
           PY
 

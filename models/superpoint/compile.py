@@ -137,7 +137,7 @@ def _tessellation_parameters(
 ) -> dict[str, Any]:
     parameters: dict[str, Any] = {}
     for name, node in model._net.nodes.items():
-        if not str(name).startswith("MLA") or not hasattr(node, "ir"):
+        if not str(name).startswith("MLA") or not hasattr(node, "ir") or not hasattr(node.ir, "nodes"):
             continue
         for input_name in node.input_names:
             rank = len(tuple(node.ir.nodes[input_name].get_type().output.value.shape))
