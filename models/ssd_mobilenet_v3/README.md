@@ -44,9 +44,10 @@ Vulcan matrix provides model-specific evidence, the recipe rejects malformed,
 non-finite, and zero-energy results but records numeric measurements without
 inventing an acceptance threshold. The recipe replaces its quantize/compile
 process and reloads the saved model in a clean process before executing held-out
-samples. BF16 validation uses Model Compiler 2.1.3's JAX executor because its
-standard executor segfaults on the saved V3 graph. INT8 remains on the standard
-executor so an invalid quantization cannot be masked by changing simulators.
+samples. Validation uses Model Compiler 2.1.3's JAX executor because its
+standard executor segfaults on the saved V3 graph for both precision types.
+The independent zero-weight warning audit runs before model serialization, so
+changing executors cannot mask a structurally invalid INT8 quantization.
 
 ## Source and zero-cost surgery
 

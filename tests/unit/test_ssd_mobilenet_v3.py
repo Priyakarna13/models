@@ -315,7 +315,7 @@ def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     assert "quantization_mla" not in source
     assert "public_input_types" not in source
     assert "public_output_types" not in source
-    assert 'use_jax=precision == "bf16"' in source
+    assert "use_jax=True" in source
     assert "os.execv" in source
     assert "Model.load" in source
     assert "--validation-only" in source

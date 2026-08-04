@@ -470,7 +470,6 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
 
     calibration_path, _ = Fetcher().fetch(calibration_source())
     _calibration, validation = validate_dataset(calibration_path)
-    precision = str(variant_config(variant_id)["parameters"]["precision"])
     model_name = f"ssd_mobilenet_v3_{variant_id}"
     with tempfile.TemporaryDirectory(
         prefix="ssd-mobilenet-v3-validation-",
@@ -491,15 +490,14 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
         )
         quantized = Model.load(model_name, str(output_dir))
         # Model Compiler 2.1.3's standard executor segfaults for this V3 graph.
-        # Its JAX executor is stable for the qualified BF16 topology. INT8 is
-        # still exercised through AFE so a compiler defect cannot be hidden by
-        # selecting a different simulator.
+        # Zero-weight integer quantization has already been rejected before the
+        # model is saved, so JAX cannot mask that structural compiler defect.
         validation_report = validate_quantization(
             loaded,
             quantized,
             validation,
             InputName,
-            use_jax=precision == "bf16",
+            use_jax=True,
         )
 
     validation_report["qualification_status"] = "measurement_only_pending_vulcan_thresholds"
