@@ -263,8 +263,6 @@ def validate_quantization(
     quantized: Any,
     validation: np.ndarray,
     InputName: Any,
-    *,
-    use_jax: bool,
 ) -> dict[str, Any]:
     reference_samples: list[list[np.ndarray]] = []
     candidate_samples: list[list[np.ndarray]] = []
@@ -272,13 +270,13 @@ def validate_quantization(
         inputs = {InputName(INPUT_NAME): validation[index : index + 1]}
         LOG.info("Validation sample %d/%d: executing FP32 reference", index + 1, validation.shape[0])
         reference_samples.append([np.asarray(output) for output in loaded.execute(inputs=inputs)])
-        LOG.info("Validation sample %d/%d: executing quantized JAX graph", index + 1, validation.shape[0])
+        LOG.info("Validation sample %d/%d: executing quantized fast graph", index + 1, validation.shape[0])
         candidate_samples.append(
-            [np.asarray(output) for output in quantized.execute(inputs=inputs, use_jax=use_jax)]
+            [np.asarray(output) for output in quantized.execute(inputs=inputs, fast_mode=True)]
         )
         LOG.info("Validation sample %d/%d: complete", index + 1, validation.shape[0])
     report = quantization_quality_report(reference_samples, candidate_samples)
-    report["executor"] = "jax" if use_jax else "afe"
+    report["executor"] = "tensorflow_fast"
     if report["sample_count"] != validation.shape[0]:
         raise RuntimeError("quantization validation did not evaluate every held-out sample")
     return report
@@ -505,7 +503,6 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
             quantized,
             validation,
             InputName,
-            use_jax=True,
         )
         LOG.info(
             "Fresh validation process: metrics cosine=%.10f normalized_rmse=%.10f",
