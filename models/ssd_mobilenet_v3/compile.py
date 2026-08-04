@@ -87,6 +87,8 @@ def variant_config(variant_id: str) -> dict[str, Any]:
         )
     if parameters.get("calibration_samples") != len(CALIBRATION_IMAGE_IDS):
         raise ValueError(f"SSD variants require exactly {len(CALIBRATION_IMAGE_IDS)} calibration samples")
+    if parameters["precision"] == "int8" and parameters.get("channel_equalization") is not True:
+        raise ValueError("SSD-MobileNet V3 INT8 variants require channel equalization")
     return variant
 
 
@@ -413,6 +415,8 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             .with_requantization_mode(RequantizationMode.sima)
             .with_calibration(CalibrationMethod.from_str(calibration_method))
         )
+        if precision == "int8":
+            quantization = quantization.with_channel_equalization()
         model_name = f"ssd_mobilenet_v3_{variant_id}"
         warning_audit = QuantizationWarningAudit()
         compiler_logger = logging.getLogger("afe.ir.defines")
