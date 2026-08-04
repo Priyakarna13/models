@@ -270,7 +270,9 @@ def validate_quantization(
     for index in range(validation.shape[0]):
         inputs = {InputName(INPUT_NAME): validation[index : index + 1]}
         LOG.info("Validation sample %d/%d: executing FP32 reference", index + 1, validation.shape[0])
-        reference_samples.append([np.asarray(output) for output in loaded.execute(inputs=inputs)])
+        reference_samples.append(
+            [np.asarray(output) for output in loaded.execute(inputs=inputs, fast_mode=True)]
+        )
         LOG.info("Validation sample %d/%d: executing quantized fast graph", index + 1, validation.shape[0])
         candidate_samples.append(
             [np.asarray(output) for output in quantized.execute(inputs=inputs, fast_mode=True)]

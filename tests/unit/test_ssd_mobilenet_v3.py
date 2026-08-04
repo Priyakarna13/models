@@ -303,7 +303,7 @@ def test_quantization_validation_selects_fast_executor_explicitly() -> None:
         lambda name: name,
     )
     assert report["executor"] == "tensorflow_fast"
-    assert floating.fast_mode == [None, None]
+    assert floating.fast_mode == [True, True]
     assert quantized.fast_mode == [True, True]
 
 
