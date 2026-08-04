@@ -9,4 +9,11 @@ metrics:
   - raw_head_cosine_similarity
   - decoded_detection_recall_at_0_5_iou
   - decoded_detection_mean_matched_iou
-note: Record thresholds independently for INT8 and BF16 after all four compiler outputs run on Modalix.
+compiler_raw_head_thresholds:
+  int8:
+    minimum_cosine_similarity: 0.98
+    maximum_normalized_root_mean_square_error: 0.20
+  bf16:
+    minimum_cosine_similarity: 0.999
+    maximum_normalized_root_mean_square_error: 0.05
+note: Raw-head quality is compiler-gated; decoded accuracy and performance remain pending Modalix hardware qualification.

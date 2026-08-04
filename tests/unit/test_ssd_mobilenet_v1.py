@@ -235,6 +235,31 @@ def test_quantization_quality_report_rejects_non_finite_output() -> None:
         compile_module.quantization_quality_report([reference], [candidate])
 
 
+@pytest.mark.parametrize(
+    ("precision", "cosine", "nrmse"),
+    [("int8", 0.988, 0.156), ("bf16", 0.9996, 0.028)],
+)
+def test_quantization_quality_gate_accepts_qualified_measurements(
+    precision: str, cosine: float, nrmse: float
+) -> None:
+    compile_module = load_module("compile")
+    report = {
+        "minimum_cosine_similarity": cosine,
+        "maximum_normalized_root_mean_square_error": nrmse,
+    }
+    assert compile_module.enforce_quantization_quality(report, precision)["gate"]["passed"] is True
+
+
+def test_quantization_quality_gate_rejects_regression() -> None:
+    compile_module = load_module("compile")
+    report = {
+        "minimum_cosine_similarity": 0.97,
+        "maximum_normalized_root_mean_square_error": 0.21,
+    }
+    with pytest.raises(RuntimeError, match="INT8 quantization quality failed"):
+        compile_module.enforce_quantization_quality(report, "int8")
+
+
 def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     source = (MODEL_DIR / "compile.py").read_text(encoding="utf-8")
     assert "with_activation_quantization" in source

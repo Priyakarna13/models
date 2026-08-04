@@ -240,6 +240,30 @@ def validate_quantization(loaded: Any, quantized: Any, validation: np.ndarray, I
     return report
 
 
+def enforce_quantization_quality(report: dict[str, Any], precision: str) -> dict[str, Any]:
+    specification = yaml.safe_load((MODEL_DIR / "tests" / "correctness.yaml").read_text(encoding="utf-8"))
+    try:
+        thresholds = specification["compiler_raw_head_thresholds"][precision]
+        minimum_cosine = float(thresholds["minimum_cosine_similarity"])
+        maximum_nrmse = float(thresholds["maximum_normalized_root_mean_square_error"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"missing quantization quality thresholds for {precision}") from exc
+    observed_cosine = float(report["minimum_cosine_similarity"])
+    observed_nrmse = float(report["maximum_normalized_root_mean_square_error"])
+    if observed_cosine < minimum_cosine or observed_nrmse > maximum_nrmse:
+        raise RuntimeError(
+            f"{precision.upper()} quantization quality failed: cosine={observed_cosine:.8f} "
+            f"(minimum {minimum_cosine:.8f}), normalized RMSE={observed_nrmse:.8f} "
+            f"(maximum {maximum_nrmse:.8f})"
+        )
+    report["gate"] = {
+        "maximum_normalized_root_mean_square_error": maximum_nrmse,
+        "minimum_cosine_similarity": minimum_cosine,
+        "passed": True,
+    }
+    return report
+
+
 def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     variant = variant_config(variant_id)
     precision = str(variant["parameters"]["precision"])
@@ -382,8 +406,8 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
         )
         quantized.save(model_name=model_name, output_directory=str(output_dir))
         quantized_report = audit_quantized_model(output_dir / f"{model_name}.sima.json", precision)
-        quantized_report["quantization_validation"] = validate_quantization(
-            loaded, quantized, validation, InputName
+        quantized_report["quantization_validation"] = enforce_quantization_quality(
+            validate_quantization(loaded, quantized, validation, InputName), precision
         )
         tessellation = None
         if tessellation_mla:

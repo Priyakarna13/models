@@ -29,7 +29,9 @@ never accepted as evidence of precision.
 Every compiler run also executes the floating and quantized raw-head models on
 all 32 held-out, category-balanced COCO samples. The audit records per-head
 cosine similarity, normalized RMSE, mean absolute error, and maximum absolute
-error; calibration and validation image IDs are disjoint.
+error; calibration and validation image IDs are disjoint. Precision-specific
+acceptance thresholds live in `tests/correctness.yaml` and fail compilation on
+a quality regression.
 
 ## Source and zero-cost surgery
 
