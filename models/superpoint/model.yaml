@@ -84,11 +84,10 @@ compile_variants:
     recipe: compile.py
     parameters:
       profile: w8a8-vision
+      quantization_dtype: int8
       public_input_dtype: float32
-      public_output_dtype: int8
+      public_output_dtype: float32
       tessellation_owner: ev74
-      quantization_mla: false
-      tesselation_mla: false
       input_tesselation_mla: false
       output_tesselation_mla: false
   - id: modalix_int8_tessellation_mla
@@ -96,47 +95,32 @@ compile_variants:
     recipe: compile.py
     parameters:
       profile: w8a8-vision
+      quantization_dtype: int8
       public_input_dtype: float32
-      public_output_dtype: int8
+      public_output_dtype: float32
       tessellation_owner: mla
-      quantization_mla: false
-      tesselation_mla: true
       input_tesselation_mla: true
       output_tesselation_mla: true
   - id: modalix_bf16_tessellation_ev74
     target: modalix
     recipe: compile.py
     parameters:
-      profile: w8a8-vision
-      public_input_dtype: bfloat16
-      public_output_dtype: bfloat16
+      profile: bf16-vision
+      quantization_dtype: bfloat16
+      public_input_dtype: float32
+      public_output_dtype: float32
       tessellation_owner: ev74
-      quantization_mla: true
-      tesselation_mla: false
       input_tesselation_mla: false
       output_tesselation_mla: false
   - id: modalix_bf16_tessellation_mla
     target: modalix
     recipe: compile.py
     parameters:
-      profile: w8a8-vision
-      public_input_dtype: bfloat16
-      public_output_dtype: bfloat16
-      tessellation_owner: mla
-      quantization_mla: true
-      tesselation_mla: true
-      input_tesselation_mla: true
-      output_tesselation_mla: true
-  - id: modalix_fp32_dense
-    target: modalix
-    recipe: compile.py
-    parameters:
-      profile: w8a8-vision
-      public_input_dtype: bfloat16
+      profile: bf16-vision
+      quantization_dtype: bfloat16
+      public_input_dtype: float32
       public_output_dtype: float32
       tessellation_owner: mla
-      quantization_mla: true
-      tesselation_mla: false
       input_tesselation_mla: true
       output_tesselation_mla: true
 tests:

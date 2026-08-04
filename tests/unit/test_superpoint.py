@@ -153,37 +153,6 @@ def test_surgery_produces_static_dense_heads(tmp_path: Path) -> None:
     assert len(model.graph.node) == 25
 
 
-@pytest.mark.parametrize(
-    ("input_dtype", "output_dtype", "input_elem_type", "output_elem_type", "cast_count"),
-    [
-        ("bfloat16", "bfloat16", TensorProto.BFLOAT16, TensorProto.BFLOAT16, 3),
-        ("bfloat16", "float32", TensorProto.BFLOAT16, TensorProto.FLOAT, 1),
-    ],
-)
-def test_explicit_float_boundary_is_valid_onnx(
-    tmp_path: Path,
-    input_dtype: str,
-    output_dtype: str,
-    input_elem_type: int,
-    output_elem_type: int,
-    cast_count: int,
-) -> None:
-    surgery = load_module("surgery")
-    compile_module = load_module("compile")
-    dense = surgery.prepare_model(superpoint_source(tmp_path / "source.onnx"), tmp_path / "dense.onnx")
-    output = compile_module._explicit_float_boundary(
-        dense,
-        tmp_path / "boundary.onnx",
-        input_dtype=input_dtype,
-        output_dtype=output_dtype,
-    )
-    model = onnx.load(output, load_external_data=False)
-    onnx.checker.check_model(model)
-    assert model.graph.input[0].type.tensor_type.elem_type == input_elem_type
-    assert {value.type.tensor_type.elem_type for value in model.graph.output} == {output_elem_type}
-    assert sum(node.op_type == "Cast" for node in model.graph.node) == cast_count
-
-
 def test_calibration_manifest_matches_the_pinned_snapshot() -> None:
     calibration = load_module("calibration")
     manifest = calibration.validate_manifest(MODEL_DIR / "calibration_manifest.json")
@@ -270,7 +239,7 @@ def write_mpk(path: Path, plugins: list[dict[str, Any]], *, shared_object: bool 
         (
             "modalix_bf16_tessellation_ev74",
             [
-                plugin("MLA_0", "MLA", input_dtype="bfloat16", layout="tessellated"),
+                plugin("MLA_0", "MLA", input_dtype="float32", layout="tessellated"),
                 plugin("score_tess", "EV74", frame_type="bfloat16", kernel="tessellation_transform"),
                 plugin("unpack", "EV74", kernel="unpack_transform"),
                 plugin("score_detess", "EV74", frame_type="bfloat16", kernel="detessellation_transform"),
@@ -279,15 +248,7 @@ def write_mpk(path: Path, plugins: list[dict[str, Any]], *, shared_object: bool 
         ),
         (
             "modalix_bf16_tessellation_mla",
-            [plugin("MLA_0", "MLA", input_dtype="bfloat16", layout="normal")],
-        ),
-        (
-            "modalix_fp32_dense",
-            [
-                plugin("MLA_0", "MLA", input_dtype="bfloat16", layout="normal"),
-                plugin("unpack", "EV74", tensor_types=["float32", "float32"]),
-                plugin("publish", "EV74", kernel="pass_through"),
-            ],
+            [plugin("MLA_0", "MLA", input_dtype="float32", layout="normal")],
         ),
     ],
 )
@@ -300,14 +261,10 @@ def test_mpk_audit_accepts_each_qualified_boundary(tmp_path: Path, variant: str,
 
 def test_mpk_audit_rejects_shared_objects(tmp_path: Path) -> None:
     compile_module = load_module("compile")
-    plugins = [
-        plugin("MLA_0", "MLA", input_dtype="bfloat16", layout="normal"),
-        plugin("unpack", "EV74", tensor_types=["float32", "float32"]),
-        plugin("publish", "EV74", kernel="pass_through"),
-    ]
+    plugins = [plugin("MLA_0", "MLA", input_dtype="float32", layout="normal")]
     archive = write_mpk(tmp_path / "bad_mpk.tar.gz", plugins, shared_object=True)
     with pytest.raises(RuntimeError, match="invalid SuperPoint MPK packaging"):
-        compile_module.audit_mpk(archive, "modalix_fp32_dense")
+        compile_module.audit_mpk(archive, "modalix_bf16_tessellation_mla")
 
 
 def test_mpk_audit_accepts_ev74_transforms_when_mla_layout_is_not_published(tmp_path: Path) -> None:
@@ -354,15 +311,15 @@ def test_mpk_audit_rejects_mixed_mla_output_layouts(tmp_path: Path) -> None:
 def test_compile_matrix_contains_all_superpoint_boundaries() -> None:
     compile_module = load_module("compile")
     expected = {
-        "modalix_int8_tessellation_ev74": ("float32", "int8", "ev74", False, False),
-        "modalix_int8_tessellation_mla": ("float32", "int8", "mla", True, True),
-        "modalix_bf16_tessellation_ev74": ("bfloat16", "bfloat16", "ev74", False, False),
-        "modalix_bf16_tessellation_mla": ("bfloat16", "bfloat16", "mla", True, True),
-        "modalix_fp32_dense": ("bfloat16", "float32", "mla", True, True),
+        "modalix_int8_tessellation_ev74": ("int8", "float32", "float32", "ev74", False, False),
+        "modalix_int8_tessellation_mla": ("int8", "float32", "float32", "mla", True, True),
+        "modalix_bf16_tessellation_ev74": ("bfloat16", "float32", "float32", "ev74", False, False),
+        "modalix_bf16_tessellation_mla": ("bfloat16", "float32", "float32", "mla", True, True),
     }
     for variant, contract in expected.items():
         parameters = compile_module.variant_config(variant)["parameters"]
         assert (
+            parameters["quantization_dtype"],
             parameters["public_input_dtype"],
             parameters["public_output_dtype"],
             parameters["tessellation_owner"],

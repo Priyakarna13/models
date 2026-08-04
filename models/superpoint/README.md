@@ -45,21 +45,21 @@ separate validation set.
 
 ## Variants
 
-All variants use strict W8A8 MLA compute and are compiled with the repository
-Model Compiler pin.
+INT8 variants use calibrated W8A8 compute. BF16 variants select AFE's BF16
+activation and weight quantization schemes. Both preserve the source model's
+normal FP32 public input and output contract.
 
 | Variant | Input | MLA/output boundary |
 | --- | --- | --- |
-| `modalix_int8_tessellation_ev74` | FP32 | INT8; EV74 owns tessellation and detessellation |
-| `modalix_int8_tessellation_mla` | FP32 | INT8; MLA owns tessellation and detessellation |
-| `modalix_bf16_tessellation_ev74` | BF16 | BF16; EV74 owns tessellation and detessellation |
-| `modalix_bf16_tessellation_mla` | BF16 | BF16; MLA owns tessellation and detessellation |
-| `modalix_fp32_dense` | BF16 | Dense FP32 heads |
+| `modalix_int8_tessellation_ev74` | FP32 | INT8 compute; EV74 owns tessellation and detessellation |
+| `modalix_int8_tessellation_mla` | FP32 | INT8 compute; MLA owns tessellation and detessellation |
+| `modalix_bf16_tessellation_ev74` | FP32 | BF16 compute; EV74 owns tessellation and detessellation |
+| `modalix_bf16_tessellation_mla` | FP32 | BF16 compute; MLA owns tessellation and detessellation |
 
 The MPK audit requires exactly one MLA plugin, exactly one ELF, and no `.so`
-files. EV74 boundary transforms are allowed. The INT8 package intentionally
-retains the qualified compiler topology: the MLA heads are INT8, while the
-terminal multi-output publication is FP32 after EV74 dequantization.
+files. EV74 boundary transforms are allowed. INT8 outputs retain the normal
+compiler topology: the MLA heads are INT8 and terminal publication is FP32.
+BF16 is a compute quantization scheme, not a BF16 public ABI.
 
 ## Validate and compile
 

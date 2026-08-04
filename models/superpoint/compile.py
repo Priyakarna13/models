@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import logging
 import os
@@ -14,12 +13,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
-import onnx
 import yaml
 from calibration import validate_calibration
 from model_registry.fetch import Fetcher
 from model_registry.source import SourceSpec
-from onnx import TensorProto, helper
 from surgery import HEADS, INPUT_NAME, INPUT_SHAPE, prepare_model
 
 LOG = logging.getLogger("superpoint.compile")
@@ -45,78 +42,6 @@ def calibration_source() -> SourceSpec:
 def _calibration_data(path: Path, input_name: Any) -> list[dict[Any, np.ndarray]]:
     calibration = validate_calibration(path)
     return [{input_name: np.transpose(calibration[index], (0, 2, 3, 1))} for index in range(calibration.shape[0])]
-
-
-def _explicit_float_boundary(
-    source: Path,
-    destination: Path,
-    *,
-    input_dtype: str,
-    output_dtype: str,
-) -> Path:
-    """Lower BF16 public boundaries to ordinary ONNX Cast nodes.
-
-    The Vulcan 2.1.3 compiler does not expose the newer ``public_*_types``
-    importer fields. Keeping the conversion in the graph makes the public ABI
-    explicit without modifying the compiler installation.
-    """
-
-    float_types = {"float32": TensorProto.FLOAT, "bfloat16": TensorProto.BFLOAT16}
-    if input_dtype not in float_types or output_dtype not in float_types:
-        raise ValueError(f"unsupported explicit float boundary: input={input_dtype}, output={output_dtype}")
-
-    model = onnx.load(source, load_external_data=False)
-    graph = model.graph
-    if len(graph.input) != 1 or graph.input[0].name != INPUT_NAME:
-        raise RuntimeError(f"unexpected SuperPoint inputs: {[value.name for value in graph.input]}")
-
-    graph.input[0].type.tensor_type.elem_type = float_types[input_dtype]
-    if input_dtype == "bfloat16":
-        internal_input = f"{INPUT_NAME}__fp32"
-        for node in graph.node:
-            for index, name in enumerate(node.input):
-                if name == INPUT_NAME:
-                    node.input[index] = internal_input
-        graph.node.insert(
-            0,
-            helper.make_node(
-                "Cast",
-                [INPUT_NAME],
-                [internal_input],
-                name="/boundary/input_bfloat16_to_float32",
-                to=TensorProto.FLOAT,
-            ),
-        )
-
-    output_values = {value.name: value for value in graph.output}
-    expected_outputs = [name for name, _ in HEADS.values()]
-    if sorted(output_values) != sorted(expected_outputs):
-        raise RuntimeError(f"unexpected SuperPoint outputs: {sorted(output_values)}")
-    for output_name in expected_outputs:
-        output_values[output_name].type.tensor_type.elem_type = float_types[output_dtype]
-        if output_dtype == "bfloat16":
-            internal_output = f"{output_name}__fp32"
-            producers = 0
-            for node in graph.node:
-                for index, name in enumerate(node.output):
-                    if name == output_name:
-                        node.output[index] = internal_output
-                        producers += 1
-            if producers != 1:
-                raise RuntimeError(f"expected one producer for {output_name}, found {producers}")
-            graph.node.append(
-                helper.make_node(
-                    "Cast",
-                    [internal_output],
-                    [output_name],
-                    name=f"/boundary/{output_name.strip('/').replace('/', '_')}_float32_to_bfloat16",
-                    to=TensorProto.BFLOAT16,
-                )
-            )
-
-    onnx.checker.check_model(model)
-    onnx.save(model, destination)
-    return destination
 
 
 def _channel_extent(shape: tuple[int, ...]) -> int | None:
@@ -215,67 +140,53 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     unpack_plugins = [
         plugin for plugin in plugins if plugin.get("config_params", {}).get("kernel") == "unpack_transform"
     ]
-    unpack_types = [
-        str(dtype).lower()
-        for plugin in plugins
-        for dtype in plugin.get("config_params", {}).get("params", {}).get("tensor_types", [])
-    ]
-
-    if variant_id == "modalix_fp32_dense":
-        if input_dtype != "bfloat16" or mla_layouts != {"normal"} or unpack_types.count("float32") != 2:
-            raise RuntimeError("FP32 dense SuperPoint boundary does not match the qualified ABI")
-        expected_boundary = "BF16 input; dense FP32 heads"
-    else:
-        parameters = variant_config(variant_id)["parameters"]
-        precision = str(parameters["public_output_dtype"])
-        owner = str(parameters["tessellation_owner"])
-        expected_input = str(parameters["public_input_dtype"])
-        expected_input_size = int(np.prod(INPUT_SHAPE)) * {"float32": 4, "bfloat16": 2}[expected_input]
-        expected_layout = "normal" if owner == "mla" else "tessellated"
-        if precision not in {"int8", "bfloat16"} or owner not in {"mla", "ev74"}:
-            raise ValueError(f"unsupported SuperPoint variant: {variant_id}")
+    parameters = variant_config(variant_id)["parameters"]
+    precision = str(parameters["quantization_dtype"])
+    owner = str(parameters["tessellation_owner"])
+    expected_input = str(parameters["public_input_dtype"])
+    expected_input_size = int(np.prod(INPUT_SHAPE)) * {"float32": 4}[expected_input]
+    expected_layout = "normal" if owner == "mla" else "tessellated"
+    if precision not in {"int8", "bfloat16"} or owner not in {"mla", "ev74"}:
+        raise ValueError(f"unsupported SuperPoint variant: {variant_id}")
+    if (
+        (input_dtype and input_dtype != expected_input)
+        or input_size != expected_input_size
+        or (mla_layouts and mla_layouts != {expected_layout})
+    ):
+        raise RuntimeError(
+            f"{precision.upper()} SuperPoint boundary does not match {owner.upper()} tessellation ownership: "
+            f"input={input_dtype!r}/{input_size}, MLA layouts={sorted(mla_layouts)!r}, expected="
+            f"{expected_input!r}/{expected_input_size}/{expected_layout!r}"
+        )
+    if owner == "ev74":
+        transform_types = [
+            str(plugin.get("config_params", {}).get("params", {}).get("frame_type", "")).lower()
+            for plugin in tessellation_plugins + detessellation_plugins
+        ]
         if (
-            (input_dtype and input_dtype != expected_input)
-            or input_size != expected_input_size
-            or (mla_layouts and mla_layouts != {expected_layout})
+            len(tessellation_plugins) != 1
+            or len(detessellation_plugins) != 2
+            or len(unpack_plugins) != 1
+            or transform_types != [precision, precision, precision]
         ):
             raise RuntimeError(
-                f"{precision.upper()} SuperPoint boundary does not match {owner.upper()} tessellation ownership: "
-                f"input={input_dtype!r}/{input_size}, MLA layouts={sorted(mla_layouts)!r}, expected="
-                f"{expected_input!r}/{expected_input_size}/{expected_layout!r}"
+                f"{precision.upper()} SuperPoint boundary requires one EV74 tessellation, one unpack, "
+                f"and two detessellations; found tess={len(tessellation_plugins)}, "
+                f"unpack={len(unpack_plugins)}, detess={len(detessellation_plugins)}, "
+                f"types={transform_types!r}"
             )
-        if owner == "ev74":
-            transform_types = [
-                str(plugin.get("config_params", {}).get("params", {}).get("frame_type", "")).lower()
-                for plugin in tessellation_plugins + detessellation_plugins
-            ]
-            if (
-                len(tessellation_plugins) != 1
-                or len(detessellation_plugins) != 2
-                or len(unpack_plugins) != 1
-                or transform_types != [precision, precision, precision]
-            ):
-                raise RuntimeError(
-                    f"{precision.upper()} SuperPoint boundary requires one EV74 tessellation, one unpack, "
-                    f"and two detessellations; found tess={len(tessellation_plugins)}, "
-                    f"unpack={len(unpack_plugins)}, detess={len(detessellation_plugins)}, "
-                    f"types={transform_types!r}"
-                )
-        elif tessellation_plugins or detessellation_plugins or len(unpack_plugins) > 1:
-            raise RuntimeError(
-                f"{precision.upper()} SuperPoint MLA-owned boundary has an invalid EV74 layout topology: "
-                f"tess={len(tessellation_plugins)}, unpack={len(unpack_plugins)}, "
-                f"detess={len(detessellation_plugins)}"
-            )
-        expected_boundary = (
-            f"{expected_input.upper()} input; {precision.upper()} heads; "
-            f"tessellation and detessellation owned by {owner.upper()}"
+    elif tessellation_plugins or detessellation_plugins or len(unpack_plugins) > 1:
+        raise RuntimeError(
+            f"{precision.upper()} SuperPoint MLA-owned boundary has an invalid EV74 layout topology: "
+            f"tess={len(tessellation_plugins)}, unpack={len(unpack_plugins)}, "
+            f"detess={len(detessellation_plugins)}"
         )
+    expected_boundary = (
+        f"{expected_input.upper()} input; {precision.upper()} quantization; "
+        f"tessellation and detessellation owned by {owner.upper()}"
+    )
 
-    if "pass_through" not in kernels and variant_id not in {
-        "modalix_bf16_tessellation_ev74",
-        "modalix_bf16_tessellation_mla",
-    }:
+    if "pass_through" not in kernels and precision == "int8":
         raise RuntimeError("SuperPoint multi-output publication is missing the terminal pass-through stage")
     return {
         "archive": archive.name,
@@ -296,8 +207,10 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
 def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     variant = variant_config(variant_id)
     parameters = variant["parameters"]
-    if variant["target"] != "modalix" or parameters.get("profile") != "w8a8-vision":
-        raise ValueError("SuperPoint variants require Modalix W8A8 compilation")
+    precision = str(parameters["quantization_dtype"])
+    expected_profile = {"int8": "w8a8-vision", "bfloat16": "bf16-vision"}.get(precision)
+    if variant["target"] != "modalix" or parameters.get("profile") != expected_profile:
+        raise ValueError("SuperPoint variants require a supported Modalix quantization profile")
 
     from afe.apis.defines import (
         BiasCorrectionType,
@@ -306,12 +219,12 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
         RequantizationMode,
         TensorDRAMLayout,
         TensorTessellateParameters,
+        bfloat16_scheme,
         default_quantization,
         gen2_target,
         quantization_scheme,
     )
     from afe.apis.loaded_net import load_model
-    from afe.ir.defines import NodeName
     from afe.ir.node import node_is_tuple
     from afe.ir.tensor_type import ScalarType
     from afe.load.importers.general_importer import ImporterParams, ModelFormat
@@ -328,12 +241,6 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
         derived = prepare_model(source, Path(temporary) / "superpoint_dense_core_480x640.onnx")
         output_names = [name for name, _ in HEADS.values()]
 
-        public_input_mode = str(parameters["public_input_dtype"])
-        public_output_mode = str(parameters["public_output_dtype"])
-        float_types = {"float32": ScalarType.float32, "bfloat16": ScalarType.bfloat16}
-        quantization_mla = bool(parameters["quantization_mla"])
-        importer_fields = inspect.signature(ImporterParams).parameters
-        supports_public_types = {"public_input_types", "public_output_types"}.issubset(importer_fields)
         importer_arguments: dict[str, Any] = dict(
             format=ModelFormat.onnx,
             file_paths=[str(derived)],
@@ -343,47 +250,27 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             layout="NCHW",
             output_names=output_names,
         )
-        if quantization_mla and supports_public_types:
-            importer_arguments["public_input_types"] = {
-                InputName(INPUT_NAME): float_types[public_input_mode]
-            }
-            importer_arguments["public_output_types"] = {
-                NodeName(name): float_types[public_output_mode] for name in output_names
-            }
-        elif quantization_mla:
-            derived = _explicit_float_boundary(
-                derived,
-                Path(temporary) / "superpoint_dense_core_public_abi.onnx",
-                input_dtype=public_input_mode,
-                output_dtype=public_output_mode,
-            )
-            importer_arguments["file_paths"] = [str(derived)]
-            importer_arguments["input_types"] = [float_types[public_input_mode]]
-
-        LOG.info(
-            "Model Compiler public ABI mode: %s",
-            "ImporterParams" if supports_public_types else "explicit ONNX Cast boundary",
-        )
         importer = ImporterParams(**importer_arguments)
         loaded = load_model(importer, target=gen2_target)
         calibration = _calibration_data(calibration_path, InputName(INPUT_NAME))
-        quantization = (
-            default_quantization.with_activation_quantization(
-                quantization_scheme(asymmetric=True, per_channel=False, bits=8)
+        if precision == "int8":
+            quantization = (
+                default_quantization.with_activation_quantization(
+                    quantization_scheme(asymmetric=True, per_channel=False, bits=8)
+                )
+                .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
+                .with_requantization_mode(RequantizationMode.sima)
+                .with_calibration(CalibrationMethod.from_str("mse"))
+                .with_bias_correction(BiasCorrectionType.REGULAR)
             )
-            .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
-            .with_requantization_mode(RequantizationMode.sima)
-            .with_calibration(CalibrationMethod.from_str("mse"))
-            .with_bias_correction(BiasCorrectionType.REGULAR)
-        )
-        if hasattr(quantization, "with_quantization_mla"):
-            quantization = quantization.with_quantization_mla(quantization_mla).with_tesselation_mla(
-                bool(parameters["tesselation_mla"])
+        else:
+            bf16 = bfloat16_scheme()
+            quantization = (
+                default_quantization.with_activation_quantization(bf16)
+                .with_weight_quantization(bf16)
+                .with_requantization_mode(RequantizationMode.sima)
+                .with_calibration(CalibrationMethod.from_str("mse"))
             )
-        elif quantization_mla:
-            LOG.info("Model Compiler uses explicit graph boundary conversion instead of quantization_mla")
-        if hasattr(quantization, "with_neat_quantization"):
-            quantization = quantization.with_neat_quantization(str(parameters["profile"]))
         model_name = f"superpoint_{variant_id}"
         quantized = loaded.quantize(
             calibration_data=calibration,

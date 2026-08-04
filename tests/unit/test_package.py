@@ -21,7 +21,6 @@ def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
         "superpoint": (
             "modalix_bf16_tessellation_ev74",
             "modalix_bf16_tessellation_mla",
-            "modalix_fp32_dense",
             "modalix_int8_tessellation_ev74",
             "modalix_int8_tessellation_mla",
         ),
