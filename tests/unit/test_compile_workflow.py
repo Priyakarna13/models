@@ -56,6 +56,13 @@ def test_production_is_an_explicit_dispatch_choice() -> None:
     assert "variants" in workflow["on"]["workflow_dispatch"]["inputs"]
 
 
+def test_targeted_variant_compiles_do_not_publish_a_partial_catalog() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    package_condition = workflow["jobs"]["package"]["if"]
+    assert "needs.compile.result == 'success'" in package_condition
+    assert "inputs.variants == ''" in package_condition
+
+
 def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert (

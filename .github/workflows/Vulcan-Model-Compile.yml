@@ -310,7 +310,10 @@ jobs:
   package:
     name: Build sima-cli model catalog
     needs: [select, compile]
-    if: github.event_name != 'pull_request' && needs.compile.result == 'success'
+    if: >-
+      github.event_name != 'pull_request' &&
+      needs.compile.result == 'success' &&
+      inputs.variants == ''
     runs-on: ubuntu-latest
     steps:
       - name: Check out the trusted revision
