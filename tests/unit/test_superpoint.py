@@ -153,6 +153,37 @@ def test_surgery_produces_static_dense_heads(tmp_path: Path) -> None:
     assert len(model.graph.node) == 25
 
 
+@pytest.mark.parametrize(
+    ("input_dtype", "output_dtype", "input_elem_type", "output_elem_type", "cast_count"),
+    [
+        ("bfloat16", "bfloat16", TensorProto.BFLOAT16, TensorProto.BFLOAT16, 3),
+        ("bfloat16", "float32", TensorProto.BFLOAT16, TensorProto.FLOAT, 1),
+    ],
+)
+def test_explicit_float_boundary_is_valid_onnx(
+    tmp_path: Path,
+    input_dtype: str,
+    output_dtype: str,
+    input_elem_type: int,
+    output_elem_type: int,
+    cast_count: int,
+) -> None:
+    surgery = load_module("surgery")
+    compile_module = load_module("compile")
+    dense = surgery.prepare_model(superpoint_source(tmp_path / "source.onnx"), tmp_path / "dense.onnx")
+    output = compile_module._explicit_float_boundary(
+        dense,
+        tmp_path / "boundary.onnx",
+        input_dtype=input_dtype,
+        output_dtype=output_dtype,
+    )
+    model = onnx.load(output, load_external_data=False)
+    onnx.checker.check_model(model)
+    assert model.graph.input[0].type.tensor_type.elem_type == input_elem_type
+    assert {value.type.tensor_type.elem_type for value in model.graph.output} == {output_elem_type}
+    assert sum(node.op_type == "Cast" for node in model.graph.node) == cast_count
+
+
 def test_calibration_split_is_deterministic_and_disjoint() -> None:
     calibration = load_module("calibration")
     selected, held_out = calibration.split_indices()
