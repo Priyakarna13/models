@@ -206,12 +206,16 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
                 f"dequantize={dequantized_types}"
             )
 
-    external_tessellation = any(PurePosixPath(name).name == "0_tessellate.json" for name in names)
-    if external_tessellation == tessellation_mla or a65_plugins:
+    external_tessellation_stages = sorted(
+        PurePosixPath(name).name
+        for name in names
+        if PurePosixPath(name).name in {"0_quanttess.json", "0_tessellate.json"}
+    )
+    if bool(external_tessellation_stages) == tessellation_mla or a65_plugins:
         placement = "in MLA" if tessellation_mla else "on EV74 outside MLA"
         raise RuntimeError(
             f"SSD tessellation placement audit failed for {placement}: "
-            f"external_tessellation={external_tessellation}, A65={len(a65_plugins)}"
+            f"external_stages={external_tessellation_stages}, A65={len(a65_plugins)}"
         )
 
     return {
@@ -228,6 +232,7 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         "public_output_sizes": output_sizes,
         "shared_object_count": len(shared_objects),
         "tessellation": "mla" if tessellation_mla else "ev74",
+        "tessellation_stages": external_tessellation_stages,
         "validation_tensor_sha256": VALIDATION_ARRAY_SHA256,
     }
 

@@ -160,7 +160,8 @@ def write_mpk(path: Path, compile_module: ModuleType, precision: str, tessellati
     with tarfile.open(path, "w:gz") as stream:
         members = [("ssd_mpk.json", manifest), ("ssd.elf", b"ELF")]
         if not tessellation_mla:
-            members.append(("0_tessellate.json", b"{}"))
+            stage = "0_quanttess.json" if precision == "int8" else "0_tessellate.json"
+            members.append((stage, b"{}"))
         for name, payload in members:
             member = tarfile.TarInfo(name)
             member.size = len(payload)
@@ -178,6 +179,10 @@ def test_mpk_audit_proves_all_four_variants(tmp_path: Path, precision: str, tess
     report = compile_module.audit_mpk(archive, variant)
     assert report["output_transport_tensor_count"] == 12
     assert report["tessellation"] == ("mla" if tessellation_mla else "ev74")
+    expected_stages = []
+    if not tessellation_mla:
+        expected_stages = ["0_quanttess.json" if precision == "int8" else "0_tessellate.json"]
+    assert report["tessellation_stages"] == expected_stages
     assert report["public_output_dtype"] == "float32"
 
 
