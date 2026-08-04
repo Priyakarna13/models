@@ -19,6 +19,7 @@ from calibration import (
     CALIBRATION_ARRAY_SHA256,
     CALIBRATION_IMAGE_IDS,
     VALIDATION_ARRAY_SHA256,
+    sha256_file,
     validate_dataset,
 )
 from model_registry.fetch import Fetcher
@@ -122,6 +123,41 @@ def _params(plugin: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def audit_quantized_model(path: Path, precision: str) -> dict[str, Any]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        layers = document["modelTopology"]["model_config"]["config"]["layers"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(f"quantized SSD serialization has no layer topology: {path}") from exc
+    convolutions = [layer for layer in layers if str(layer.get("class_name", "")).startswith("MLA_0/ConvAddActivation")]
+    if len(convolutions) != 47:
+        raise RuntimeError(f"expected 47 quantized SSD MLA convolutions, found {len(convolutions)}")
+    expected_scalar_type = 6 if precision == "int8" else 13
+    scalar_types = {layer.get("config", {}).get("conv_attrs.input_type", {}).get("value") for layer in convolutions}
+    statuses = {layer.get("config", {}).get("_status") for layer in convolutions}
+    if scalar_types != {expected_scalar_type} or statuses != {"SIMA_QUANTIZED"}:
+        raise RuntimeError(
+            f"{precision.upper()} SSD compute precision audit failed: types={scalar_types}, statuses={statuses}"
+        )
+    if precision == "int8":
+        per_channel = {layer.get("config", {}).get("per_channel") for layer in convolutions}
+        has_weight_quantization = {"weight_quant_data" in layer.get("config", {}) for layer in convolutions}
+        if per_channel != {True} or has_weight_quantization != {True}:
+            raise RuntimeError("INT8 SSD weights are not represented as per-channel quantized convolution weights")
+    else:
+        has_bfloat_weights = {"weights_attrs.data" in layer.get("config", {}) for layer in convolutions}
+        has_integer_weights = {"weight_quant_data" in layer.get("config", {}) for layer in convolutions}
+        if has_bfloat_weights != {True} or has_integer_weights != {False}:
+            raise RuntimeError("BF16 SSD convolution weights do not match the serialized BF16 topology")
+    return {
+        "compute_convolution_count": len(convolutions),
+        "compute_scalar_type": expected_scalar_type,
+        "internal_precision": precision,
+        "quantized_model_json_sha256": sha256_file(path),
+        "weight_quantization": "per_channel_int8" if precision == "int8" else "bfloat16",
+    }
+
+
 def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     variant = variant_config(variant_id)
     precision = str(variant["parameters"]["precision"])
@@ -155,9 +191,9 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
     if len(unpack) != 1:
         raise RuntimeError(f"expected one SSD output unpack transform, found {len(unpack)}")
     internal_types = [str(value).lower() for value in _params(unpack[0]).get("tensor_types", [])]
-    aliases = {"int8"} if precision == "int8" else {"bf16", "bfloat16"}
+    aliases = {"int8"} if precision == "int8" or not tessellation_mla else {"bf16", "bfloat16"}
     if len(internal_types) != len(OUTPUTS) or any(value not in aliases for value in internal_types):
-        raise RuntimeError(f"{precision.upper()} SSD internal precision audit failed: {internal_types}")
+        raise RuntimeError(f"{precision.upper()} SSD output transport audit failed: {internal_types}")
 
     if precision == "int8":
         quantize = [plugin for plugin in plugins if _kernel(plugin) == "quantization_transform"]
@@ -170,10 +206,13 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
                 f"dequantize={dequantized_types}"
             )
 
-    expected_a65 = 0 if tessellation_mla else len(OUTPUTS)
-    if len(a65_plugins) != expected_a65:
-        placement = "in MLA" if tessellation_mla else "outside MLA"
-        raise RuntimeError(f"SSD tessellation placement audit failed for {placement}: A65={len(a65_plugins)}")
+    external_tessellation = any(PurePosixPath(name).name == "0_tessellate.json" for name in names)
+    if external_tessellation == tessellation_mla or a65_plugins:
+        placement = "in MLA" if tessellation_mla else "on EV74 outside MLA"
+        raise RuntimeError(
+            f"SSD tessellation placement audit failed for {placement}: "
+            f"external_tessellation={external_tessellation}, A65={len(a65_plugins)}"
+        )
 
     return {
         "archive": archive.name,
@@ -181,14 +220,14 @@ def audit_mpk(archive: Path, variant_id: str) -> dict[str, Any]:
         "calibration_tensor_sha256": CALIBRATION_ARRAY_SHA256,
         "compiler_version": COMPILER_VERSION,
         "elf": elfs[0],
-        "internal_precision": precision,
-        "internal_tensor_count": len(internal_types),
+        "output_transport_tensor_count": len(internal_types),
+        "output_transport_types": internal_types,
         "mla_plugin_count": len(mla_plugins),
         "public_input": {"dtype": "float32", "name": INPUT_NAME, "shape": list(INPUT_SHAPE)},
         "public_output_dtype": "float32",
         "public_output_sizes": output_sizes,
         "shared_object_count": len(shared_objects),
-        "tessellation": "mla" if tessellation_mla else "non_mla",
+        "tessellation": "mla" if tessellation_mla else "ev74",
         "validation_tensor_sha256": VALIDATION_ARRAY_SHA256,
     }
 
@@ -255,6 +294,7 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             log_level=logging.INFO,
         )
         quantized.save(model_name=model_name, output_directory=str(output_dir))
+        quantized_report = audit_quantized_model(output_dir / f"{model_name}.sima.json", precision)
         tessellation = None
         if tessellation_mla:
             tessellation = _tessellation_parameters(
@@ -274,6 +314,7 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     if len(archives) != 1:
         raise RuntimeError(f"expected one SSD MPK, found {len(archives)} in {output_dir}")
     report = audit_mpk(archives[0], variant_id)
+    report.update(quantized_report)
     (output_dir / "ssd-mobilenet-v1-audit.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

@@ -126,7 +126,7 @@ def write_mpk(path: Path, compile_module: ModuleType, precision: str, tessellati
         sequence += 1
     plugins.append(plugin("MLA", sequence))
     sequence += 1
-    internal_type = "int8" if precision == "int8" else "bfloat16"
+    internal_type = "int8" if precision == "int8" or not tessellation_mla else "bfloat16"
     plugins.append(
         plugin(
             "EV74",
@@ -141,10 +141,6 @@ def write_mpk(path: Path, compile_module: ModuleType, precision: str, tessellati
             plugins.append(
                 plugin("EV74", sequence, kernel="dequantization_transform", params={"input_data_type": "int8"})
             )
-            sequence += 1
-    if not tessellation_mla:
-        for _ in range(12):
-            plugins.append(plugin("A65", sequence))
             sequence += 1
     plugins.append(
         plugin(
@@ -162,7 +158,10 @@ def write_mpk(path: Path, compile_module: ModuleType, precision: str, tessellati
         }
     ).encode()
     with tarfile.open(path, "w:gz") as stream:
-        for name, payload in (("ssd_mpk.json", manifest), ("ssd.elf", b"ELF")):
+        members = [("ssd_mpk.json", manifest), ("ssd.elf", b"ELF")]
+        if not tessellation_mla:
+            members.append(("0_tessellate.json", b"{}"))
+        for name, payload in members:
             member = tarfile.TarInfo(name)
             member.size = len(payload)
             stream.addfile(member, io.BytesIO(payload))
@@ -177,9 +176,35 @@ def test_mpk_audit_proves_all_four_variants(tmp_path: Path, precision: str, tess
     variant = f"modalix_{precision}_{suffix}"
     archive = write_mpk(tmp_path / f"{variant}_mpk.tar.gz", compile_module, precision, tessellation_mla)
     report = compile_module.audit_mpk(archive, variant)
-    assert report["internal_precision"] == precision
-    assert report["tessellation"] == ("mla" if tessellation_mla else "non_mla")
+    assert report["output_transport_tensor_count"] == 12
+    assert report["tessellation"] == ("mla" if tessellation_mla else "ev74")
     assert report["public_output_dtype"] == "float32"
+
+
+@pytest.mark.parametrize(("precision", "scalar_type"), [("int8", 6), ("bf16", 13)])
+def test_quantized_topology_audit_proves_compute_and_weight_precision(
+    tmp_path: Path, precision: str, scalar_type: int
+) -> None:
+    compile_module = load_module("compile")
+    layers = []
+    for index in range(47):
+        config: dict[str, Any] = {
+            "_status": "SIMA_QUANTIZED",
+            "conv_attrs.input_type": {"value": scalar_type},
+        }
+        if precision == "int8":
+            config.update({"per_channel": True, "weight_quant_data": f"weights_{index}"})
+        else:
+            config["weights_attrs.data"] = f"weights_{index}"
+        layers.append({"class_name": f"MLA_0/ConvAddActivation_{index}", "config": config})
+    path = tmp_path / f"{precision}.sima.json"
+    path.write_text(
+        json.dumps({"modelTopology": {"model_config": {"config": {"layers": layers}}}}),
+        encoding="utf-8",
+    )
+    report = compile_module.audit_quantized_model(path, precision)
+    assert report["internal_precision"] == precision
+    assert report["compute_convolution_count"] == 47
 
 
 def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:

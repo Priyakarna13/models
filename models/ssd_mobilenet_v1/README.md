@@ -18,10 +18,13 @@ The recipe does not use `quantization_mla`, `public_input_types`, or
 `public_output_types`, because those APIs are not available in the qualified
 compiler. Only internal precision and tessellation placement vary.
 
-The MPK audit proves the resulting behavior. It checks one MLA ELF, no shared
-objects, all 12 internal output tensor types, FP32 public buffer sizes, and the
-expected A65 stage count for the selected tessellation placement. A variant name
-alone is never accepted as evidence of precision.
+The audit proves the resulting behavior from two independent compiler outputs.
+The serialized quantized topology checks all 47 MLA convolutions and verifies
+per-channel integer weights for INT8 or BF16 compute tensors/weights for BF16.
+The MPK checks one MLA ELF, no shared objects or A65 stages, all 12 output
+transport tensor types, FP32 public buffer sizes, and whether the external EV74
+tessellation stage is present. A variant name alone is never accepted as
+evidence of precision.
 
 ## Source and zero-cost surgery
 
