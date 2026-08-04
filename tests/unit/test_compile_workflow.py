@@ -63,6 +63,18 @@ def test_targeted_variant_compiles_do_not_publish_a_partial_catalog() -> None:
     assert "inputs.variants == ''" in package_condition
 
 
+def test_staging_catalogs_fall_back_to_develop() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    package_script = next(
+        step["run"]
+        for step in workflow["jobs"]["package"]["steps"]
+        if step.get("name") == "Generate root and per-model package metadata"
+    )
+    assert 'if [[ "$VULCAN_ENVIRONMENT" == "staging" ]]' in package_script
+    assert "fallback_branch=develop" in package_script
+    assert '--fallback-branch "$fallback_branch"' in package_script
+
+
 def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert (

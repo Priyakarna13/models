@@ -340,10 +340,14 @@ jobs:
           VULCAN_ENVIRONMENT: ${{ needs.select.outputs.vulcan_environment }}
         run: |
           set -euo pipefail
+          fallback_branch=main
+          if [[ "$VULCAN_ENVIRONMENT" == "staging" ]]; then
+            fallback_branch=develop
+          fi
           model-registry fetch-previous \
             --environment "$VULCAN_ENVIRONMENT" \
             --branch "$GITHUB_REF_NAME" \
-            --fallback-branch main \
+            --fallback-branch "$fallback_branch" \
             --output-file previous-latest.json \
             --json > previous-result.json
           package_args=(
