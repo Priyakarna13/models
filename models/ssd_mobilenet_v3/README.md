@@ -33,11 +33,11 @@ cosine similarity, normalized RMSE, mean absolute error, and maximum absolute
 error; calibration and validation image IDs are disjoint. Until the first
 Vulcan matrix provides model-specific evidence, the recipe rejects malformed,
 non-finite, and zero-energy results but records numeric measurements without
-inventing an acceptance threshold. Validation uses the standard AFE executor;
-the recipe replaces its quantize/compile process and reloads the saved model in
-a clean process before executing held-out samples. Model Compiler 2.1.3
-otherwise segfaults when execution follows this model's 128-sample calibration
-in the same long-lived process, for both INT8 and BF16.
+inventing an acceptance threshold. The recipe replaces its quantize/compile
+process and reloads the saved model in a clean process before executing held-out
+samples. BF16 validation uses Model Compiler 2.1.3's JAX executor because its
+standard executor segfaults on the saved V3 graph. INT8 remains on the standard
+executor so an invalid quantization cannot be masked by changing simulators.
 
 ## Source and zero-cost surgery
 

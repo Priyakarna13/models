@@ -228,18 +228,24 @@ def quantization_quality_report(
     }
 
 
-def validate_quantization(loaded: Any, quantized: Any, validation: np.ndarray, InputName: Any) -> dict[str, Any]:
+def validate_quantization(
+    loaded: Any,
+    quantized: Any,
+    validation: np.ndarray,
+    InputName: Any,
+    *,
+    use_jax: bool,
+) -> dict[str, Any]:
     reference_samples: list[list[np.ndarray]] = []
     candidate_samples: list[list[np.ndarray]] = []
     for index in range(validation.shape[0]):
         inputs = {InputName(INPUT_NAME): validation[index : index + 1]}
         reference_samples.append([np.asarray(output) for output in loaded.execute(inputs=inputs)])
-        # The 2.1.3 JAX executor segfaults on this INT8 graph after successful
-        # quantization. The standard AFE executor exercises the same saved
-        # quantized topology without taking that simulator-only crash path.
-        candidate_samples.append([np.asarray(output) for output in quantized.execute(inputs=inputs)])
+        candidate_samples.append(
+            [np.asarray(output) for output in quantized.execute(inputs=inputs, use_jax=use_jax)]
+        )
     report = quantization_quality_report(reference_samples, candidate_samples)
-    report["executor"] = "afe"
+    report["executor"] = "jax" if use_jax else "afe"
     if report["sample_count"] != validation.shape[0]:
         raise RuntimeError("quantization validation did not evaluate every held-out sample")
     return report
@@ -425,6 +431,7 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
 
     calibration_path, _ = Fetcher().fetch(calibration_source())
     _calibration, validation = validate_dataset(calibration_path)
+    precision = str(variant_config(variant_id)["parameters"]["precision"])
     model_name = f"ssd_mobilenet_v3_{variant_id}"
     with tempfile.TemporaryDirectory(
         prefix="ssd-mobilenet-v3-validation-",
@@ -444,7 +451,17 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
             target=gen2_target,
         )
         quantized = Model.load(model_name, str(output_dir))
-        validation_report = validate_quantization(loaded, quantized, validation, InputName)
+        # Model Compiler 2.1.3's standard executor segfaults for this V3 graph.
+        # Its JAX executor is stable for the qualified BF16 topology. INT8 is
+        # still exercised through AFE so a compiler defect cannot be hidden by
+        # selecting a different simulator.
+        validation_report = validate_quantization(
+            loaded,
+            quantized,
+            validation,
+            InputName,
+            use_jax=precision == "bf16",
+        )
 
     validation_report["qualification_status"] = "measurement_only_pending_vulcan_thresholds"
     audit_path = output_dir / "ssd-mobilenet-v3-audit.json"

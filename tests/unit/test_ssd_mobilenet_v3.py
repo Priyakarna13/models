@@ -262,6 +262,33 @@ def test_quantization_quality_report_rejects_non_finite_output() -> None:
         compile_module.quantization_quality_report([reference], [candidate])
 
 
+def test_quantization_validation_selects_executor_explicitly() -> None:
+    compile_module = load_module("compile")
+
+    class Executor:
+        def __init__(self) -> None:
+            self.use_jax: list[bool | None] = []
+
+        def execute(self, *, inputs: dict[Any, np.ndarray], use_jax: bool | None = None) -> list[np.ndarray]:
+            del inputs
+            self.use_jax.append(use_jax)
+            return [np.ones(shape, dtype=np.float32) for _, shape in compile_module.OUTPUTS]
+
+    floating = Executor()
+    quantized = Executor()
+    validation = np.zeros((2, 320, 320, 3), dtype=np.float32)
+    report = compile_module.validate_quantization(
+        floating,
+        quantized,
+        validation,
+        lambda name: name,
+        use_jax=True,
+    )
+    assert report["executor"] == "jax"
+    assert floating.use_jax == [None, None]
+    assert quantized.use_jax == [True, True]
+
+
 def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     source = (MODEL_DIR / "compile.py").read_text(encoding="utf-8")
     assert "with_activation_quantization" in source
@@ -269,7 +296,7 @@ def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     assert "quantization_mla" not in source
     assert "public_input_types" not in source
     assert "public_output_types" not in source
-    assert "use_jax=True" not in source
+    assert 'use_jax=precision == "bf16"' in source
     assert "os.execv" in source
     assert "Model.load" in source
     assert "--validation-only" in source
