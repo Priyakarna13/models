@@ -270,10 +270,13 @@ def validate_quantization(
     candidate_samples: list[list[np.ndarray]] = []
     for index in range(validation.shape[0]):
         inputs = {InputName(INPUT_NAME): validation[index : index + 1]}
+        LOG.info("Validation sample %d/%d: executing FP32 reference", index + 1, validation.shape[0])
         reference_samples.append([np.asarray(output) for output in loaded.execute(inputs=inputs)])
+        LOG.info("Validation sample %d/%d: executing quantized JAX graph", index + 1, validation.shape[0])
         candidate_samples.append(
             [np.asarray(output) for output in quantized.execute(inputs=inputs, use_jax=use_jax)]
         )
+        LOG.info("Validation sample %d/%d: complete", index + 1, validation.shape[0])
     report = quantization_quality_report(reference_samples, candidate_samples)
     report["executor"] = "jax" if use_jax else "afe"
     if report["sample_count"] != validation.shape[0]:
@@ -468,6 +471,7 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
     from afe.ir.tensor_type import ScalarType
     from afe.load.importers.general_importer import ImporterParams, ModelFormat
 
+    LOG.info("Fresh validation process: fetching calibration asset")
     calibration_path, _ = Fetcher().fetch(calibration_source())
     _calibration, validation = validate_dataset(calibration_path)
     model_name = f"ssd_mobilenet_v3_{variant_id}"
@@ -475,7 +479,9 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
         prefix="ssd-mobilenet-v3-validation-",
         dir=os.environ.get("RUNNER_TEMP"),
     ) as temporary:
+        LOG.info("Fresh validation process: preparing FP32 source")
         prepared = prepare_model(source, Path(temporary) / "ssd_mobilenet_v3_heads.onnx")
+        LOG.info("Fresh validation process: importing FP32 source")
         loaded = load_model(
             ImporterParams(
                 format=ModelFormat.onnx,
@@ -488,7 +494,9 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
             ),
             target=gen2_target,
         )
+        LOG.info("Fresh validation process: loading serialized quantized graph")
         quantized = Model.load(model_name, str(output_dir))
+        LOG.info("Fresh validation process: executing %d held-out samples", validation.shape[0])
         # Model Compiler 2.1.3's standard executor segfaults for this V3 graph.
         # Zero-weight integer quantization has already been rejected before the
         # model is saved, so JAX cannot mask that structural compiler defect.
@@ -498,6 +506,11 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
             validation,
             InputName,
             use_jax=True,
+        )
+        LOG.info(
+            "Fresh validation process: metrics cosine=%.10f normalized_rmse=%.10f",
+            validation_report["minimum_cosine_similarity"],
+            validation_report["maximum_normalized_root_mean_square_error"],
         )
 
     validation_report["qualification_status"] = "measurement_only_pending_vulcan_thresholds"
@@ -510,6 +523,7 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
     archives = sorted(output_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
         raise RuntimeError(f"expected one validated SSD MPK, found {len(archives)} in {output_dir}")
+    LOG.info("Fresh validation process: audit saved")
     return archives[0]
 
 
@@ -528,6 +542,12 @@ def main() -> int:
     output_dir = args.output_dir.expanduser().resolve()
     if args.validation_only:
         archive = validate_saved_model(source, output_dir, args.variant)
+        LOG.info("Compiled MPK: %s", archive)
+        # Model Compiler 2.1.3 can crash while tearing down the native V3/JAX
+        # executor. Validation and all durable output are complete at this
+        # boundary, so terminate the dedicated worker without native teardown.
+        logging.shutdown()
+        os._exit(0)
     else:
         compile_model(source, output_dir, args.variant)
         os.execv(
@@ -544,8 +564,7 @@ def main() -> int:
                 "--validation-only",
             ],
         )
-    LOG.info("Compiled MPK: %s", archive)
-    return 0
+    raise AssertionError("compile process replacement unexpectedly returned")
 
 
 if __name__ == "__main__":
