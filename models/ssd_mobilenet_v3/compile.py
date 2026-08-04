@@ -282,13 +282,13 @@ def validate_quantization(
         reference_samples.append(
             [np.asarray(output) for output in reference.run(None, {INPUT_NAME: sample.transpose(0, 3, 1, 2)})]
         )
-        LOG.info("Validation sample %d/%d: executing quantized fast graph", index + 1, validation.shape[0])
+        LOG.info("Validation sample %d/%d: executing quantized JAX graph", index + 1, validation.shape[0])
         candidate_samples.append(
-            [np.asarray(output) for output in quantized.execute(inputs=inputs, fast_mode=True)]
+            [np.asarray(output) for output in quantized.execute(inputs=inputs, use_jax=True)]
         )
         LOG.info("Validation sample %d/%d: complete", index + 1, validation.shape[0])
     report = quantization_quality_report(reference_samples, candidate_samples)
-    report["executor"] = "onnx_reference_and_tensorflow_fast_quantized"
+    report["executor"] = "onnx_reference_and_jax_quantized"
     if report["sample_count"] != validation.shape[0]:
         raise RuntimeError("quantization validation did not evaluate every held-out sample")
     return report
@@ -496,7 +496,7 @@ def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Pat
         LOG.info("Fresh validation process: executing %d held-out samples", validation.shape[0])
         # Model Compiler 2.1.3's TVM floating executor segfaults for this V3
         # graph. Use the prepared ONNX as the independent floating reference;
-        # fast mode is confined to the serialized quantized graph.
+        # the JAX executor is confined to the serialized quantized graph.
         validation_report = validate_quantization(
             reference,
             quantized,

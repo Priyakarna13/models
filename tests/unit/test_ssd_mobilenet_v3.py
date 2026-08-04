@@ -305,11 +305,11 @@ def test_quantization_validation_selects_fast_executor_explicitly() -> None:
 
     class Executor:
         def __init__(self) -> None:
-            self.fast_mode: list[bool | None] = []
+            self.use_jax: list[bool | None] = []
 
-        def execute(self, *, inputs: dict[Any, np.ndarray], fast_mode: bool | None = None) -> list[np.ndarray]:
+        def execute(self, *, inputs: dict[Any, np.ndarray], use_jax: bool | None = None) -> list[np.ndarray]:
             del inputs
-            self.fast_mode.append(fast_mode)
+            self.use_jax.append(use_jax)
             return [np.ones(shape, dtype=np.float32) for _, shape in compile_module.OUTPUTS]
 
     floating = Reference()
@@ -321,9 +321,9 @@ def test_quantization_validation_selects_fast_executor_explicitly() -> None:
         validation,
         lambda name: name,
     )
-    assert report["executor"] == "onnx_reference_and_tensorflow_fast_quantized"
+    assert report["executor"] == "onnx_reference_and_jax_quantized"
     assert floating.shapes == [(1, 3, 320, 320), (1, 3, 320, 320)]
-    assert quantized.fast_mode == [True, True]
+    assert quantized.use_jax == [True, True]
 
 
 def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
@@ -333,7 +333,7 @@ def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     assert "quantization_mla" not in source
     assert "public_input_types" not in source
     assert "public_output_types" not in source
-    assert "fast_mode=True" in source
+    assert "use_jax=True" in source
     assert "os.execv" in source
     assert "Model.load" in source
     assert "--validation-only" in source
