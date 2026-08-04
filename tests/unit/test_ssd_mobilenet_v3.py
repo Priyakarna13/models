@@ -270,6 +270,9 @@ def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     assert "public_input_types" not in source
     assert "public_output_types" not in source
     assert "use_jax=True" not in source
+    assert "os.execv" in source
+    assert "Model.load" in source
+    assert "--validation-only" in source
 
 
 def test_model_declares_exact_four_variant_cross_product() -> None:

@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -349,7 +350,7 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     from sima_utils.data.data_generator import DataGenerator
 
     calibration_path, _ = Fetcher().fetch(calibration_source())
-    calibration, validation = validate_dataset(calibration_path)
+    calibration, _validation = validate_dataset(calibration_path)
     output_dir.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="ssd-mobilenet-v3-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         prepared = prepare_model(source, Path(temporary) / "ssd_mobilenet_v3_heads.onnx")
@@ -386,9 +387,6 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
         )
         quantized.save(model_name=model_name, output_directory=str(output_dir))
         quantized_report = audit_quantized_model(output_dir / f"{model_name}.sima.json", precision)
-        quantization_validation = validate_quantization(loaded, quantized, validation, InputName)
-        quantization_validation["qualification_status"] = "measurement_only_pending_vulcan_thresholds"
-        quantized_report["quantization_validation"] = quantization_validation
         tessellation = None
         if tessellation_mla:
             tessellation = _tessellation_parameters(
@@ -416,18 +414,82 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     return archives[0]
 
 
+def validate_saved_model(source: Path, output_dir: Path, variant_id: str) -> Path:
+    """Reload compiler outputs in a fresh process and run held-out validation."""
+
+    from afe.apis.defines import InputName, gen2_target
+    from afe.apis.loaded_net import load_model
+    from afe.apis.model import Model
+    from afe.ir.tensor_type import ScalarType
+    from afe.load.importers.general_importer import ImporterParams, ModelFormat
+
+    calibration_path, _ = Fetcher().fetch(calibration_source())
+    _calibration, validation = validate_dataset(calibration_path)
+    model_name = f"ssd_mobilenet_v3_{variant_id}"
+    with tempfile.TemporaryDirectory(
+        prefix="ssd-mobilenet-v3-validation-",
+        dir=os.environ.get("RUNNER_TEMP"),
+    ) as temporary:
+        prepared = prepare_model(source, Path(temporary) / "ssd_mobilenet_v3_heads.onnx")
+        loaded = load_model(
+            ImporterParams(
+                format=ModelFormat.onnx,
+                file_paths=[str(prepared)],
+                input_names=[INPUT_NAME],
+                input_shapes=[INPUT_SHAPE],
+                input_types=[ScalarType.float32],
+                layout="NCHW",
+                output_names=[name for name, _ in OUTPUTS],
+            ),
+            target=gen2_target,
+        )
+        quantized = Model.load(model_name, str(output_dir))
+        validation_report = validate_quantization(loaded, quantized, validation, InputName)
+
+    validation_report["qualification_status"] = "measurement_only_pending_vulcan_thresholds"
+    audit_path = output_dir / "ssd-mobilenet-v3-audit.json"
+    if not audit_path.is_file():
+        raise RuntimeError(f"missing pre-validation SSD audit: {audit_path}")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["quantization_validation"] = validation_report
+    audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    archives = sorted(output_dir.glob("*_mpk.tar.gz"))
+    if len(archives) != 1:
+        raise RuntimeError(f"expected one validated SSD MPK, found {len(archives)} in {output_dir}")
+    return archives[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--variant", required=True)
+    parser.add_argument("--validation-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     source = args.model.expanduser().resolve()
     if not source.is_file():
         parser.error(f"model does not exist: {source}")
-    archive = compile_model(source, args.output_dir.expanduser().resolve(), args.variant)
+    output_dir = args.output_dir.expanduser().resolve()
+    if args.validation_only:
+        archive = validate_saved_model(source, output_dir, args.variant)
+    else:
+        compile_model(source, output_dir, args.variant)
+        os.execv(
+            sys.executable,
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--model",
+                str(source),
+                "--output-dir",
+                str(output_dir),
+                "--variant",
+                args.variant,
+                "--validation-only",
+            ],
+        )
     LOG.info("Compiled MPK: %s", archive)
     return 0
 
