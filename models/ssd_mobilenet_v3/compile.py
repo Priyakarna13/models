@@ -233,8 +233,12 @@ def validate_quantization(loaded: Any, quantized: Any, validation: np.ndarray, I
     for index in range(validation.shape[0]):
         inputs = {InputName(INPUT_NAME): validation[index : index + 1]}
         reference_samples.append([np.asarray(output) for output in loaded.execute(inputs=inputs)])
-        candidate_samples.append([np.asarray(output) for output in quantized.execute(inputs=inputs, use_jax=True)])
+        # The 2.1.3 JAX executor segfaults on this INT8 graph after successful
+        # quantization. The standard AFE executor exercises the same saved
+        # quantized topology without taking that simulator-only crash path.
+        candidate_samples.append([np.asarray(output) for output in quantized.execute(inputs=inputs)])
     report = quantization_quality_report(reference_samples, candidate_samples)
+    report["executor"] = "afe"
     if report["sample_count"] != validation.shape[0]:
         raise RuntimeError("quantization validation did not evaluate every held-out sample")
     return report

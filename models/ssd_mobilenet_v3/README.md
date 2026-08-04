@@ -33,7 +33,9 @@ cosine similarity, normalized RMSE, mean absolute error, and maximum absolute
 error; calibration and validation image IDs are disjoint. Until the first
 Vulcan matrix provides model-specific evidence, the recipe rejects malformed,
 non-finite, and zero-energy results but records numeric measurements without
-inventing an acceptance threshold.
+inventing an acceptance threshold. Validation uses the standard AFE executor;
+Model Compiler 2.1.3's optional JAX executor segfaults on the quantized V3 INT8
+graph after calibration, before returning the first held-out output.
 
 ## Source and zero-cost surgery
 
