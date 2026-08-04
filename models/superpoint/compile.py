@@ -311,12 +311,17 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             )
             .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
             .with_requantization_mode(RequantizationMode.sima)
-            .with_quantization_mla(quantization_mla)
-            .with_tesselation_mla(bool(parameters["tesselation_mla"]))
             .with_calibration(CalibrationMethod.from_str("mse"))
             .with_bias_correction(BiasCorrectionType.REGULAR)
-            .with_neat_quantization(str(parameters["profile"]))
         )
+        if hasattr(quantization, "with_quantization_mla"):
+            quantization = quantization.with_quantization_mla(quantization_mla).with_tesselation_mla(
+                bool(parameters["tesselation_mla"])
+            )
+        elif quantization_mla:
+            LOG.info("Model Compiler uses explicit graph boundary conversion instead of quantization_mla")
+        if hasattr(quantization, "with_neat_quantization"):
+            quantization = quantization.with_neat_quantization(str(parameters["profile"]))
         model_name = f"superpoint_{variant_id}"
         quantized = loaded.quantize(
             calibration_data=calibration,
