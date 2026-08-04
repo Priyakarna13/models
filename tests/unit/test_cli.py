@@ -37,6 +37,25 @@ def test_matrix_rejects_unknown_manual_model(capsys) -> None:
     assert "unknown model id" in capsys.readouterr().err
 
 
+def test_matrix_filters_manual_variants(capsys) -> None:
+    result = main(
+        [
+            "matrix",
+            "--repository",
+            str(ROOT),
+            "--models",
+            "superpoint",
+            "--variants",
+            "modalix_int8_packed,modalix_bf16_packed",
+        ]
+    )
+    assert result == 0
+    output = capsys.readouterr().out
+    assert '"variant_id":"modalix_int8_packed"' in output
+    assert '"variant_id":"modalix_bf16_packed"' in output
+    assert '"variant_id":"modalix_fp32_dense"' not in output
+
+
 def test_package_supports_python_module_entrypoint() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "model_registry", "--help"],

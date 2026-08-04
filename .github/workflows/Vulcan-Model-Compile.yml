@@ -31,6 +31,10 @@ on:
         description: Comma-separated model IDs; leave empty to build the entire catalog
         required: false
         type: string
+      variants:
+        description: Comma-separated variant IDs within the selected models; leave empty to build every variant
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -102,15 +106,20 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED_MODELS: ${{ inputs.models }}
+          REQUESTED_VARIANTS: ${{ inputs.variants }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            variant_args=()
+            if [[ -n "${REQUESTED_VARIANTS:-}" ]]; then
+              variant_args=(--variants "$REQUESTED_VARIANTS")
+            fi
             if [[ -n "${REQUESTED_MODELS:-}" ]]; then
-              matrix="$(model-registry matrix --repository . --models "$REQUESTED_MODELS")"
+              matrix="$(model-registry matrix --repository . --models "$REQUESTED_MODELS" "${variant_args[@]}")"
             else
-              matrix="$(model-registry matrix --repository . --all)"
+              matrix="$(model-registry matrix --repository . --all "${variant_args[@]}")"
             fi
           elif [[ "$BASE_SHA" =~ ^0+$ ]]; then
             matrix="$(model-registry matrix --repository . --all)"

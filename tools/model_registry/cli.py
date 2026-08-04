@@ -36,6 +36,7 @@ def _parser() -> argparse.ArgumentParser:
     matrix.add_argument("--repository", type=Path, default=Path.cwd())
     matrix.add_argument("--all", action="store_true", dest="all_models")
     matrix.add_argument("--models", help="comma-separated model IDs")
+    matrix.add_argument("--variants", help="comma-separated variant IDs within the selected models")
     matrix.add_argument("--changed-path", action="append", default=[])
     matrix.add_argument("--base")
     matrix.add_argument("--head")
@@ -123,7 +124,12 @@ def _matrix(args: argparse.Namespace) -> int:
                 raise ModelRegistryError("--base and --head must be supplied together")
             paths.extend(git_changed_paths(args.repository, args.base, args.head))
         model_ids = select_model_ids(catalog, paths)
-    print(json.dumps(build_matrix(catalog, model_ids), sort_keys=True, separators=(",", ":")))
+    variant_ids = None
+    if args.variants is not None:
+        variant_ids = [item.strip() for item in args.variants.split(",") if item.strip()]
+        if not variant_ids:
+            raise ModelRegistryError("--variants must contain at least one variant ID")
+    print(json.dumps(build_matrix(catalog, model_ids, variant_ids), sort_keys=True, separators=(",", ":")))
     return 0
 
 

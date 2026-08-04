@@ -53,6 +53,7 @@ def test_production_is_an_explicit_dispatch_choice() -> None:
     options = workflow["on"]["workflow_dispatch"]["inputs"]["environment"]["options"]
     assert options == ["staging", "production"]
     assert workflow["on"]["workflow_dispatch"]["inputs"]["environment"]["default"] == "staging"
+    assert "variants" in workflow["on"]["workflow_dispatch"]["inputs"]
 
 
 def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> None:
