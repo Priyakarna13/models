@@ -1,0 +1,13 @@
+schema_version: 1
+status: pending_hardware_qualification
+reference: onnx_fp32_raw_heads
+dataset: coco_val2017
+calibration_samples: 128
+validation_samples: 32
+split: category_balanced_and_disjoint
+metrics:
+  - raw_head_cosine_similarity
+  - raw_head_normalized_root_mean_square_error
+  - decoded_detection_recall_at_0_5_iou
+  - decoded_detection_mean_matched_iou
+note: The compiler records all held-out raw-head measurements and rejects malformed or non-finite output. Model-specific acceptance thresholds, decoded accuracy, and performance remain pending first Vulcan and Modalix qualification.
