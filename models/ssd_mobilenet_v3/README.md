@@ -28,6 +28,9 @@ recipes use SiMa requantization.
 The audit proves the resulting behavior from two independent compiler outputs.
 The serialized quantized topology checks all 98 MLA convolutions and verifies
 per-channel integer weights for INT8 or BF16 compute tensors/weights for BF16.
+The recipe also rejects compiler warnings that report zeroed convolution
+weights; serialized INT8 type metadata alone is not accepted as proof of a
+usable quantization.
 The MPK checks one MLA ELF, no shared objects or A65 stages, all 12 output
 transport tensor types, FP32 public buffer sizes, and whether the external EV74
 `tessellate` or fused INT8 `quanttess` stage is present. A variant name alone is

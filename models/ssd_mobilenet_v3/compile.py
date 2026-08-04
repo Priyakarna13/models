@@ -34,6 +34,32 @@ PUBLIC_INPUT_SIZE = int(np.prod(INPUT_SHAPE)) * np.dtype(np.float32).itemsize
 PUBLIC_OUTPUT_SIZES = [int(np.prod(shape)) * np.dtype(np.float32).itemsize for _, shape in OUTPUTS]
 
 
+class QuantizationWarningAudit(logging.Handler):
+    """Collect compiler warnings that prove an unusable integer topology."""
+
+    REJECTED_MESSAGES = (
+        "All weights in some channels are zero",
+        "Weights were set to zero",
+    )
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.rejected: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if any(pattern in message for pattern in self.REJECTED_MESSAGES):
+            self.rejected.append(message)
+
+    def enforce(self) -> None:
+        if self.rejected:
+            examples = " | ".join(dict.fromkeys(self.rejected[:3]))
+            raise RuntimeError(
+                f"compiler produced {len(self.rejected)} zero-weight quantization warnings; "
+                f"refusing the damaged INT8 model: {examples}"
+            )
+
+
 def variant_config(variant_id: str) -> dict[str, Any]:
     metadata = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
     matches = [item for item in metadata["compile_variants"] if item["id"] == variant_id]
@@ -388,14 +414,22 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             .with_calibration(CalibrationMethod.from_str(calibration_method))
         )
         model_name = f"ssd_mobilenet_v3_{variant_id}"
-        quantized = loaded.quantize(
-            calibration_data=calibration_data,
-            quantization_config=quantization,
-            any_shape_on_mla=False,
-            automatic_layout_conversion=False,
-            model_name=model_name,
-            log_level=logging.INFO,
-        )
+        warning_audit = QuantizationWarningAudit()
+        compiler_logger = logging.getLogger("afe.ir.defines")
+        compiler_logger.addHandler(warning_audit)
+        try:
+            quantized = loaded.quantize(
+                calibration_data=calibration_data,
+                quantization_config=quantization,
+                any_shape_on_mla=False,
+                automatic_layout_conversion=False,
+                model_name=model_name,
+                log_level=logging.INFO,
+            )
+        finally:
+            compiler_logger.removeHandler(warning_audit)
+        if precision == "int8":
+            warning_audit.enforce()
         quantized.save(model_name=model_name, output_directory=str(output_dir))
         quantized_report = audit_quantized_model(output_dir / f"{model_name}.sima.json", precision)
         tessellation = None

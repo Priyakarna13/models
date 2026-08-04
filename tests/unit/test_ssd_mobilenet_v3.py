@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import logging
 import sys
 import tarfile
 from pathlib import Path
@@ -260,6 +261,24 @@ def test_quantization_quality_report_rejects_non_finite_output() -> None:
     candidate[0].flat[0] = np.nan
     with pytest.raises(RuntimeError, match="non-finite"):
         compile_module.quantization_quality_report([reference], [candidate])
+
+
+def test_quantization_warning_audit_rejects_zeroed_weights() -> None:
+    compile_module = load_module("compile")
+    audit = compile_module.QuantizationWarningAudit()
+    audit.emit(
+        logging.LogRecord(
+            "afe.ir.defines",
+            logging.WARNING,
+            __file__,
+            1,
+            "Weights were set to zero to avoid numeric saturation",
+            (),
+            None,
+        )
+    )
+    with pytest.raises(RuntimeError, match="zero-weight quantization warnings"):
+        audit.enforce()
 
 
 def test_quantization_validation_selects_executor_explicitly() -> None:
