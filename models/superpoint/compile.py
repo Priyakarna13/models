@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import logging
 import os
@@ -14,12 +13,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
-import onnx
 import yaml
 from calibration import validate_calibration
 from model_registry.fetch import Fetcher
 from model_registry.source import SourceSpec
-from onnx import TensorProto, helper
 from surgery import HEADS, INPUT_NAME, INPUT_SHAPE, prepare_model
 
 LOG = logging.getLogger("superpoint.compile")
@@ -45,80 +42,6 @@ def calibration_source() -> SourceSpec:
 def _calibration_data(path: Path, input_name: Any) -> list[dict[Any, np.ndarray]]:
     calibration = validate_calibration(path)
     return [{input_name: np.transpose(calibration[index], (0, 2, 3, 1))} for index in range(calibration.shape[0])]
-
-
-def _explicit_float_boundary(
-    source: Path,
-    destination: Path,
-    *,
-    input_dtype: str,
-    output_dtype: str,
-) -> Path:
-    """Express a mixed float public ABI with ordinary ONNX Cast nodes.
-
-    Model Compiler 2.1.3 predates the ``ImporterParams.public_*_types``
-    convenience fields.  Keeping the conversion in the model graph gives that
-    compiler the same unambiguous BF16/FP32 boundary without patching AFE or
-    relying on an archived compiler helper.
-    """
-
-    float_types = {"float32": TensorProto.FLOAT, "bfloat16": TensorProto.BFLOAT16}
-    if input_dtype not in float_types or output_dtype not in float_types:
-        raise ValueError(f"unsupported explicit float boundary: input={input_dtype}, output={output_dtype}")
-
-    model = onnx.load(source, load_external_data=False)
-    graph = model.graph
-    if len(graph.input) != 1 or graph.input[0].name != INPUT_NAME:
-        raise RuntimeError(f"unexpected SuperPoint inputs: {[value.name for value in graph.input]}")
-
-    input_value = graph.input[0]
-    input_value.type.tensor_type.elem_type = float_types[input_dtype]
-    if input_dtype == "bfloat16":
-        internal_input = f"{INPUT_NAME}__fp32"
-        for node in graph.node:
-            for index, name in enumerate(node.input):
-                if name == INPUT_NAME:
-                    node.input[index] = internal_input
-        graph.node.insert(
-            0,
-            helper.make_node(
-                "Cast",
-                [INPUT_NAME],
-                [internal_input],
-                name="/boundary/input_bfloat16_to_float32",
-                to=TensorProto.FLOAT,
-            ),
-        )
-
-    output_values = {value.name: value for value in graph.output}
-    expected_outputs = [name for name, _ in HEADS.values()]
-    if sorted(output_values) != sorted(expected_outputs):
-        raise RuntimeError(f"unexpected SuperPoint outputs: {sorted(output_values)}")
-    for output_name in expected_outputs:
-        output_values[output_name].type.tensor_type.elem_type = float_types[output_dtype]
-        if output_dtype == "bfloat16":
-            internal_output = f"{output_name}__fp32"
-            producers = 0
-            for node in graph.node:
-                for index, name in enumerate(node.output):
-                    if name == output_name:
-                        node.output[index] = internal_output
-                        producers += 1
-            if producers != 1:
-                raise RuntimeError(f"expected one producer for {output_name}, found {producers}")
-            graph.node.append(
-                helper.make_node(
-                    "Cast",
-                    [internal_output],
-                    [output_name],
-                    name=f"/boundary/{output_name.strip('/').replace('/', '_')}_float32_to_bfloat16",
-                    to=TensorProto.BFLOAT16,
-                )
-            )
-
-    onnx.checker.check_model(model)
-    onnx.save(model, destination)
-    return destination
 
 
 def _channel_extent(shape: tuple[int, ...]) -> int | None:
@@ -270,9 +193,11 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
         public_output_mode = str(parameters["public_output_dtype"])
         float_types = {"float32": ScalarType.float32, "bfloat16": ScalarType.bfloat16}
         quantization_mla = bool(parameters["quantization_mla"])
-        importer_fields = inspect.signature(ImporterParams).parameters
-        supports_public_types = {"public_input_types", "public_output_types"}.issubset(importer_fields)
-        importer_arguments: dict[str, Any] = dict(
+        public_inputs = {InputName(INPUT_NAME): float_types[public_input_mode]} if quantization_mla else {}
+        public_outputs = (
+            {NodeName(name): float_types[public_output_mode] for name in output_names} if quantization_mla else None
+        )
+        importer = ImporterParams(
             format=ModelFormat.onnx,
             file_paths=[str(derived)],
             input_names=[INPUT_NAME],
@@ -280,29 +205,9 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             input_types=[ScalarType.float32],
             layout="NCHW",
             output_names=output_names,
+            public_input_types=public_inputs,
+            public_output_types=public_outputs,
         )
-        if quantization_mla and supports_public_types:
-            importer_arguments["public_input_types"] = {
-                InputName(INPUT_NAME): float_types[public_input_mode]
-            }
-            importer_arguments["public_output_types"] = {
-                NodeName(name): float_types[public_output_mode] for name in output_names
-            }
-        elif quantization_mla:
-            derived = _explicit_float_boundary(
-                derived,
-                Path(temporary) / "superpoint_dense_core_public_abi.onnx",
-                input_dtype=public_input_mode,
-                output_dtype=public_output_mode,
-            )
-            importer_arguments["file_paths"] = [str(derived)]
-            importer_arguments["input_types"] = [float_types[public_input_mode]]
-
-        LOG.info(
-            "Model Compiler public ABI mode: %s",
-            "ImporterParams" if supports_public_types else "explicit ONNX Cast boundary",
-        )
-        importer = ImporterParams(**importer_arguments)
         loaded = load_model(importer, target=gen2_target)
         calibration = _calibration_data(calibration_path, InputName(INPUT_NAME))
         quantization = (
@@ -311,17 +216,12 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             )
             .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
             .with_requantization_mode(RequantizationMode.sima)
+            .with_quantization_mla(quantization_mla)
+            .with_tesselation_mla(bool(parameters["tesselation_mla"]))
             .with_calibration(CalibrationMethod.from_str("mse"))
             .with_bias_correction(BiasCorrectionType.REGULAR)
+            .with_neat_quantization(str(parameters["profile"]))
         )
-        if hasattr(quantization, "with_quantization_mla"):
-            quantization = quantization.with_quantization_mla(quantization_mla).with_tesselation_mla(
-                bool(parameters["tesselation_mla"])
-            )
-        elif quantization_mla:
-            LOG.info("Model Compiler uses explicit graph boundary conversion instead of quantization_mla")
-        if hasattr(quantization, "with_neat_quantization"):
-            quantization = quantization.with_neat_quantization(str(parameters["profile"]))
         model_name = f"superpoint_{variant_id}"
         quantized = loaded.quantize(
             calibration_data=calibration,
