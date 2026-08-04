@@ -1,0 +1,12 @@
+schema_version: 1
+status: pending_hardware_qualification
+reference: onnx_fp32_raw_heads
+dataset: coco_val2017
+calibration_samples: 128
+validation_samples: 32
+split: category_balanced_and_disjoint
+metrics:
+  - raw_head_cosine_similarity
+  - decoded_detection_recall_at_0_5_iou
+  - decoded_detection_mean_matched_iou
+note: Record thresholds independently for INT8 and BF16 after all four compiler outputs run on Modalix.

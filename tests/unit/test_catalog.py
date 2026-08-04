@@ -97,6 +97,20 @@ def test_unknown_requested_model_fails(catalog_repository: Path) -> None:
         build_matrix(discover_catalog(catalog_repository), ["missing"])
 
 
+def test_matrix_can_select_requested_variants(catalog_repository: Path) -> None:
+    catalog = discover_catalog(catalog_repository)
+    second = copy.deepcopy(catalog["alpha"]["compile_variants"][0])
+    second["id"] = "second"
+    catalog["alpha"]["compile_variants"].append(second)
+    matrix = build_matrix(catalog, ["alpha"], ["second"])
+    assert [entry["variant_id"] for entry in matrix["include"]] == ["second"]
+
+
+def test_unknown_requested_variant_fails(catalog_repository: Path) -> None:
+    with pytest.raises(ValidationError, match="unknown variant id"):
+        build_matrix(discover_catalog(catalog_repository), ["alpha"], ["missing"])
+
+
 def test_git_diff_reports_added_modified_and_deleted_paths(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "models-test@example.invalid"], cwd=tmp_path, check=True)

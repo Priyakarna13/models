@@ -36,9 +36,7 @@ def test_model_compiler_is_resolved_before_requesting_a_runner() -> None:
     assert "model-registry resolve-compiler --repository ." in compiler_step["run"]
     assert select["outputs"]["model_compiler_version"] == "${{ steps.compiler.outputs.version }}"
     assert select["outputs"]["model_compiler_label"] == "${{ steps.compiler.outputs.label }}"
-    assert compile_job["env"]["EXPECTED_COMPILER_VERSION"] == (
-        "${{ needs.select.outputs.model_compiler_version }}"
-    )
+    assert compile_job["env"]["EXPECTED_COMPILER_VERSION"] == ("${{ needs.select.outputs.model_compiler_version }}")
     assert compile_job["env"]["MODEL_COMPILER_LABEL"] == "${{ needs.select.outputs.model_compiler_label }}"
 
 
@@ -47,6 +45,20 @@ def test_production_is_an_explicit_dispatch_choice() -> None:
     options = workflow["on"]["workflow_dispatch"]["inputs"]["environment"]["options"]
     assert options == ["staging", "production"]
     assert workflow["on"]["workflow_dispatch"]["inputs"]["environment"]["default"] == "staging"
+
+
+def test_dispatch_can_select_expensive_variants_and_passes_private_asset_token() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert "variants" in workflow["on"]["workflow_dispatch"]["inputs"]
+    compile_steps = workflow["jobs"]["compile"]["steps"]
+    source_step = next(step for step in compile_steps if step.get("id") == "source")
+    recipe_step = next(
+        step for step in compile_steps if step.get("name") == "Run model-specific surgery and compilation recipe"
+    )
+    assert source_step["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert recipe_step["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert workflow["jobs"]["select"]["outputs"]["publishable"] == "${{ steps.matrix.outputs.publishable }}"
+    assert "needs.select.outputs.publishable == 'true'" in workflow["jobs"]["package"]["if"]
 
 
 def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> None:
@@ -64,11 +76,12 @@ def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> Non
     assert "latest_tag" not in workflow["jobs"]["promote-latest"]["with"]
     assert workflow["jobs"]["promote-latest"]["with"]["validate_manifest"] == "true"
     assert workflow["jobs"]["publish-latest-index"]["needs"] == [
-        "select", "package", "publish", "resolve-vulcan-config"
+        "select",
+        "package",
+        "publish",
+        "resolve-vulcan-config",
     ]
-    assert workflow["jobs"]["promote-latest"]["needs"] == [
-        "select", "publish-latest-index", "resolve-vulcan-config"
-    ]
+    assert workflow["jobs"]["promote-latest"]["needs"] == ["select", "publish-latest-index", "resolve-vulcan-config"]
     cleanup = workflow["jobs"]["cleanup-github-artifacts"]
     assert cleanup["needs"] == ["publish", "publish-latest-index", "promote-latest"]
     assert cleanup["if"] == "always() && needs.publish.result == 'success'"
@@ -96,8 +109,7 @@ def test_compile_recipe_runs_in_activated_model_compiler_shell() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     steps = workflow["jobs"]["compile"]["steps"]
     compile_script = next(
-        step["run"] for step in steps
-        if step.get("name") == "Run model-specific surgery and compilation recipe"
+        step["run"] for step in steps if step.get("name") == "Run model-specific surgery and compilation recipe"
     )
     assert "bash --noprofile --norc" in compile_script
     assert "source /etc/profile.d/vulcan-model-compiler.sh" in compile_script
@@ -111,7 +123,8 @@ def test_registry_tool_install_does_not_replace_compiler_dependencies() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     steps = workflow["jobs"]["compile"]["steps"]
     install_script = next(
-        step["run"] for step in steps
+        step["run"]
+        for step in steps
         if step.get("name") == "Install shared registry tooling outside the read-only compiler image"
     )
     assert "--no-deps" in install_script

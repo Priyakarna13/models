@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from model_registry.artifact import verify_mpk
+from model_registry.catalog import discover_catalog
 from model_registry.errors import ValidationError
 from model_registry.package import package_compiled_models
 
@@ -16,30 +17,32 @@ GIT_SHA = "a" * 40
 
 
 def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
-    for variant_id in ("modalix_bf16", "modalix_int8"):
-        output = root / "resnet_50" / variant_id
-        output.mkdir(parents=True)
-        archive = output / f"resnet_50_{variant_id}_mpk.tar.gz"
-        with tarfile.open(archive, "w:gz") as stream:
-            for name in ("resnet/model.elf", "resnet/resnet_mpk.json"):
-                content = b"fixture"
-                info = tarfile.TarInfo(name)
-                info.size = len(content)
-                stream.addfile(info, io.BytesIO(content))
-        verify_mpk(
-            output,
-            write_manifest=True,
-            provenance={
-                "model_id": "resnet_50",
-                "variant_id": variant_id,
-                "git_sha": git_sha,
-                "target": "modalix",
-                "environment": "staging",
-                "compiler_version": "2.1.3",
-                "compiler_label": "model-compiler-2.1.3",
-                "source_sha256": "c" * 64,
-            },
-        )
+    for model_id, model in discover_catalog(ROOT).items():
+        for variant in model["compile_variants"]:
+            variant_id = variant["id"]
+            output = root / model_id / variant_id
+            output.mkdir(parents=True)
+            archive = output / f"{model_id}_{variant_id}_mpk.tar.gz"
+            with tarfile.open(archive, "w:gz") as stream:
+                for name in (f"{model_id}/model.elf", f"{model_id}/{model_id}_mpk.json"):
+                    content = b"fixture"
+                    info = tarfile.TarInfo(name)
+                    info.size = len(content)
+                    stream.addfile(info, io.BytesIO(content))
+            verify_mpk(
+                output,
+                write_manifest=True,
+                provenance={
+                    "model_id": model_id,
+                    "variant_id": variant_id,
+                    "git_sha": git_sha,
+                    "target": variant["target"],
+                    "environment": "staging",
+                    "compiler_version": "2.1.3",
+                    "compiler_label": "model-compiler-2.1.3",
+                    "source_sha256": "c" * 64,
+                },
+            )
     return root / "resnet_50"
 
 
@@ -108,7 +111,11 @@ def test_package_carries_forward_pointers_without_copying_unchanged_mpk(tmp_path
     next_sha = "b" * 40
     destination = tmp_path / "next"
     result = package_compiled_models(
-        ROOT, no_changes, destination, next_sha, branch="feature/catalog",
+        ROOT,
+        no_changes,
+        destination,
+        next_sha,
+        branch="feature/catalog",
         previous_index=previous / "latest.json",
     )
 

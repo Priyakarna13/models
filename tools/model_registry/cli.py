@@ -36,13 +36,12 @@ def _parser() -> argparse.ArgumentParser:
     matrix.add_argument("--repository", type=Path, default=Path.cwd())
     matrix.add_argument("--all", action="store_true", dest="all_models")
     matrix.add_argument("--models", help="comma-separated model IDs")
+    matrix.add_argument("--variants", help="comma-separated variant IDs within the selected models")
     matrix.add_argument("--changed-path", action="append", default=[])
     matrix.add_argument("--base")
     matrix.add_argument("--head")
 
-    compiler = subcommands.add_parser(
-        "resolve-compiler", help="resolve the repository-wide Model Compiler dependency"
-    )
+    compiler = subcommands.add_parser("resolve-compiler", help="resolve the repository-wide Model Compiler dependency")
     compiler.add_argument("--repository", type=Path, default=Path.cwd())
 
     mpk = subcommands.add_parser("verify-mpk", help="validate and checksum one compiler MPK output")
@@ -123,7 +122,12 @@ def _matrix(args: argparse.Namespace) -> int:
                 raise ModelRegistryError("--base and --head must be supplied together")
             paths.extend(git_changed_paths(args.repository, args.base, args.head))
         model_ids = select_model_ids(catalog, paths)
-    print(json.dumps(build_matrix(catalog, model_ids), sort_keys=True, separators=(",", ":")))
+    variant_ids = None
+    if args.variants is not None:
+        variant_ids = [item.strip() for item in args.variants.split(",") if item.strip()]
+        if not variant_ids:
+            raise ModelRegistryError("--variants must contain at least one variant ID")
+    print(json.dumps(build_matrix(catalog, model_ids, variant_ids), sort_keys=True, separators=(",", ":")))
     return 0
 
 
@@ -170,8 +174,11 @@ def _fetch_previous(args: argparse.Namespace) -> int:
     if index is None and args.fallback_branch and args.fallback_branch != args.branch:
         index = fetch_previous_index(args.environment, args.fallback_branch, args.output_file)
         source_branch = args.fallback_branch if index is not None else None
-    result = {"found": index is not None, "catalog_tag": index.get("catalog_tag") if index else None,
-              "source_branch": source_branch}
+    result = {
+        "found": index is not None,
+        "catalog_tag": index.get("catalog_tag") if index else None,
+        "source_branch": source_branch,
+    }
     print(json.dumps(result, sort_keys=True) if args.json_output else (result["catalog_tag"] or "No previous index"))
     return 0
 

@@ -72,15 +72,29 @@ def select_model_ids(catalog: dict[str, dict[str, Any]], changed_paths: list[str
     return sorted(selected)
 
 
-def build_matrix(catalog: dict[str, dict[str, Any]], model_ids: list[str]) -> dict[str, list[dict[str, str]]]:
+def build_matrix(
+    catalog: dict[str, dict[str, Any]],
+    model_ids: list[str],
+    variant_ids: list[str] | None = None,
+) -> dict[str, list[dict[str, str]]]:
     unknown = sorted(set(model_ids) - set(catalog))
     if unknown:
         raise ValidationError(f"unknown model id(s): {', '.join(unknown)}")
+
+    requested_variants = set(variant_ids or [])
+    available_variants = {
+        variant["id"] for model_id in set(model_ids) for variant in catalog[model_id]["compile_variants"]
+    }
+    unknown_variants = sorted(requested_variants - available_variants)
+    if unknown_variants:
+        raise ValidationError(f"unknown variant id(s): {', '.join(unknown_variants)}")
 
     include: list[dict[str, str]] = []
     for model_id in sorted(set(model_ids)):
         model = catalog[model_id]
         for variant in sorted(model["compile_variants"], key=lambda item: item["id"]):
+            if requested_variants and variant["id"] not in requested_variants:
+                continue
             include.append(
                 {
                     "model_dir": f"models/{model_id}",

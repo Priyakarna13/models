@@ -125,3 +125,27 @@ def test_hugging_face_token_is_sent_but_not_logged(tmp_path: Path, monkeypatch: 
     Fetcher(tmp_path, opener=opener).fetch(hf_source)
     assert observed["authorization"] == "Bearer top-secret-token"
     assert observed["redirect_authorization"] is None
+
+
+def test_github_token_is_scoped_to_release_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    observed = {}
+
+    def opener(request: Request, timeout: int) -> Response:
+        observed["authorization"] = request.get_header("Authorization")
+        observed["accept"] = request.get_header("Accept")
+        redirected = HTTPRedirectHandler().redirect_request(
+            request, None, 302, "Found", {}, "https://objects.githubusercontent.com/signed-data.npz"
+        )
+        observed["redirect_authorization"] = redirected.get_header("Authorization")
+        return Response(PAYLOAD)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "private-release-token")
+    release_source = SourceSpec(
+        uri="https://api.github.com/repos/sima-neat/models/releases/assets/123456",
+        sha256=DIGEST,
+        size_bytes=len(PAYLOAD),
+    )
+    Fetcher(tmp_path, opener=opener).fetch(release_source)
+    assert observed["authorization"] == "Bearer private-release-token"
+    assert observed["accept"] == "application/octet-stream"
+    assert observed["redirect_authorization"] is None

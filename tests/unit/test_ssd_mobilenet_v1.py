@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import sys
+import tarfile
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import numpy as np
+import onnx
+import pytest
+import yaml
+from onnx import TensorProto, helper, numpy_helper
+
+ROOT = Path(__file__).resolve().parents[2]
+MODEL_DIR = ROOT / "models" / "ssd_mobilenet_v1"
+
+
+def load_module(name: str) -> ModuleType:
+    path = MODEL_DIR / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"ssd_mobilenet_v1_{name}", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(MODEL_DIR))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(MODEL_DIR))
+    return module
+
+
+def synthetic_source(path: Path, surgery: ModuleType) -> Path:
+    nodes = []
+    initializers = []
+    strides = (16, 32, 64, 128, 256, 300)
+    for role, channel_index in (("BoxEncodingPredictor", 2), ("ClassPredictor", 3)):
+        for level, spec in enumerate(surgery.LEVELS):
+            channels = spec[channel_index]
+            prefix = f"BoxPredictor_{level}/{role}/BiasAdd"
+            weights = f"{prefix}/weights"
+            bias = f"{prefix}/bias"
+            initializers.extend(
+                [
+                    numpy_helper.from_array(np.zeros((channels, 3, 1, 1), dtype=np.float32), weights),
+                    numpy_helper.from_array(np.zeros((channels,), dtype=np.float32), bias),
+                ]
+            )
+            nodes.append(
+                helper.make_node(
+                    "Conv",
+                    [surgery.BOUNDARY_INPUT, weights, bias],
+                    [f"{prefix}:0"],
+                    name=prefix,
+                    strides=[strides[level], strides[level]],
+                )
+            )
+    graph = helper.make_graph(
+        nodes,
+        "ssd_source_fixture",
+        [helper.make_tensor_value_info(surgery.BOUNDARY_INPUT, TensorProto.FLOAT, surgery.INPUT_SHAPE)],
+        [helper.make_tensor_value_info(f"{node.name}:0", TensorProto.FLOAT, None) for node in nodes],
+        initializer=initializers,
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 12)])
+    onnx.save(model, path)
+    return path
+
+
+def test_surgery_extracts_static_heads_without_identity_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    surgery = load_module("surgery")
+    source = synthetic_source(tmp_path / "source.onnx", surgery)
+    monkeypatch.setattr(surgery, "_sha256", lambda path: surgery.SOURCE_SHA256)
+    destination = surgery.prepare_model(source, tmp_path / "prepared.onnx")
+    prepared = onnx.load(destination, load_external_data=False)
+    surgery.validate_prepared_model(prepared)
+    assert [value.name for value in prepared.graph.output] == [name for name, _ in surgery.OUTPUTS]
+    assert not any(node.op_type == "Identity" for node in prepared.graph.node)
+
+
+def test_calibration_split_has_128_representative_and_32_disjoint_samples() -> None:
+    calibration = load_module("calibration")
+    assert len(calibration.CALIBRATION_IMAGE_IDS) == 128
+    assert len(calibration.VALIDATION_IMAGE_IDS) == 32
+    assert set(calibration.CALIBRATION_IMAGE_IDS).isdisjoint(calibration.VALIDATION_IMAGE_IDS)
+    assert len(set(calibration.CALIBRATION_IMAGE_IDS)) == 128
+    assert len(set(calibration.VALIDATION_IMAGE_IDS)) == 32
+
+
+def test_calibration_rejects_wrong_sample_shape() -> None:
+    calibration = load_module("calibration")
+    with pytest.raises(ValueError, match="calibration must be"):
+        calibration.validate_arrays(
+            np.zeros((1, 300, 300, 3), dtype=np.float32),
+            np.zeros((32, 300, 300, 3), dtype=np.float32),
+            np.asarray(calibration.CALIBRATION_IMAGE_IDS, dtype=np.int64),
+            np.asarray(calibration.VALIDATION_IMAGE_IDS, dtype=np.int64),
+            check_hashes=False,
+        )
+
+
+def plugin(
+    processor: str,
+    sequence: int,
+    *,
+    kernel: str = "",
+    params: dict[str, Any] | None = None,
+    output_nodes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "sequence": sequence,
+        "processor": processor,
+        "config_params": {"kernel": kernel, "params": params or {}},
+        "input_nodes": [],
+        "output_nodes": output_nodes or [],
+    }
+
+
+def write_mpk(path: Path, compile_module: ModuleType, precision: str, tessellation_mla: bool) -> Path:
+    sequence = 1
+    plugins = []
+    if precision == "int8":
+        plugins.append(plugin("EV74", sequence, kernel="quantization_transform", params={"output_data_type": "int8"}))
+        sequence += 1
+    plugins.append(plugin("MLA", sequence))
+    sequence += 1
+    internal_type = "int8" if precision == "int8" else "bfloat16"
+    plugins.append(
+        plugin(
+            "EV74",
+            sequence,
+            kernel="unpack_transform",
+            params={"tensor_types": [internal_type] * 12},
+        )
+    )
+    sequence += 1
+    if precision == "int8":
+        for _ in range(12):
+            plugins.append(
+                plugin("EV74", sequence, kernel="dequantization_transform", params={"input_data_type": "int8"})
+            )
+            sequence += 1
+    if not tessellation_mla:
+        for _ in range(12):
+            plugins.append(plugin("A65", sequence))
+            sequence += 1
+    plugins.append(
+        plugin(
+            "EV74",
+            sequence,
+            kernel="pass_through",
+            output_nodes=[{"size": size} for size in compile_module.PUBLIC_OUTPUT_SIZES],
+        )
+    )
+    manifest = json.dumps(
+        {
+            "model_sdk_version": compile_module.COMPILER_VERSION,
+            "input_nodes": [{"name": compile_module.INPUT_NAME, "size": compile_module.PUBLIC_INPUT_SIZE}],
+            "plugins": plugins,
+        }
+    ).encode()
+    with tarfile.open(path, "w:gz") as stream:
+        for name, payload in (("ssd_mpk.json", manifest), ("ssd.elf", b"ELF")):
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            stream.addfile(member, io.BytesIO(payload))
+    return path
+
+
+@pytest.mark.parametrize("precision", ["int8", "bf16"])
+@pytest.mark.parametrize("tessellation_mla", [False, True])
+def test_mpk_audit_proves_all_four_variants(tmp_path: Path, precision: str, tessellation_mla: bool) -> None:
+    compile_module = load_module("compile")
+    suffix = "tess_mla" if tessellation_mla else "tess_off_mla"
+    variant = f"modalix_{precision}_{suffix}"
+    archive = write_mpk(tmp_path / f"{variant}_mpk.tar.gz", compile_module, precision, tessellation_mla)
+    report = compile_module.audit_mpk(archive, variant)
+    assert report["internal_precision"] == precision
+    assert report["tessellation"] == ("mla" if tessellation_mla else "non_mla")
+    assert report["public_output_dtype"] == "float32"
+
+
+def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
+    source = (MODEL_DIR / "compile.py").read_text(encoding="utf-8")
+    assert "with_activation_quantization" in source
+    assert "with_weight_quantization" in source
+    assert "quantization_mla" not in source
+    assert "public_input_types" not in source
+    assert "public_output_types" not in source
+
+
+def test_model_declares_exact_four_variant_cross_product() -> None:
+    metadata = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
+    matrix = {
+        (variant["parameters"]["precision"], variant["parameters"]["tessellation_mla"])
+        for variant in metadata["compile_variants"]
+    }
+    assert matrix == {("int8", False), ("int8", True), ("bf16", False), ("bf16", True)}
+    assert all(variant["parameters"]["calibration_samples"] == 128 for variant in metadata["compile_variants"])
