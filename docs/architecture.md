@@ -93,7 +93,8 @@ the same inventory for automation without interactive `sima-cli` selection.
 To preserve incremental compilation without copying large MPKs, the packaging
 job reads the previous branch's versioned `latest.json`. Each model entry owns
 an immutable `latest_tag`, `artifact_branch`, build timestamp, and per-variant
-provenance. New branches fall back to the `main` index. Changed model outputs
+provenance. New branches fall back to the published `develop` integration
+index. Changed model outputs
 are stored under the current commit; unchanged entries continue to reference
 their prior immutable build. Root metadata and `catalog.json` remain complete
 and use absolute artifact URLs. Direct model installs use the model-aware index.

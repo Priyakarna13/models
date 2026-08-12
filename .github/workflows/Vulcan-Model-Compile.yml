@@ -31,6 +31,10 @@ on:
         description: Comma-separated model IDs; leave empty to build the entire catalog
         required: false
         type: string
+      variants:
+        description: Comma-separated variant IDs within selected models; leave empty to build every variant
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -53,6 +57,7 @@ jobs:
       runner_environment: ${{ steps.environment.outputs.runner_environment }}
       model_compiler_version: ${{ steps.compiler.outputs.version }}
       model_compiler_label: ${{ steps.compiler.outputs.label }}
+      publishable: ${{ steps.matrix.outputs.publishable }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v6
@@ -99,15 +104,20 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED_MODELS: ${{ inputs.models }}
+          REQUESTED_VARIANTS: ${{ inputs.variants }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            variant_args=()
+            if [[ -n "${REQUESTED_VARIANTS:-}" ]]; then
+              variant_args=(--variants "$REQUESTED_VARIANTS")
+            fi
             if [[ -n "${REQUESTED_MODELS:-}" ]]; then
-              matrix="$(model-registry matrix --repository . --models "$REQUESTED_MODELS")"
+              matrix="$(model-registry matrix --repository . --models "$REQUESTED_MODELS" "${variant_args[@]}")"
             else
-              matrix="$(model-registry matrix --repository . --all)"
+              matrix="$(model-registry matrix --repository . --all "${variant_args[@]}")"
             fi
           elif [[ "$BASE_SHA" =~ ^0+$ ]]; then
             matrix="$(model-registry matrix --repository . --all)"
@@ -115,8 +125,14 @@ jobs:
             matrix="$(model-registry matrix --repository . --base "$BASE_SHA" --head "$HEAD_SHA")"
           fi
           count="$(python -c 'import json,sys; print(len(json.load(sys.stdin)["include"]))' <<< "$matrix")"
+          publishable=true
+          if [[ -n "${REQUESTED_VARIANTS:-}" ]]; then
+            publishable=false
+            echo "Targeted variant dispatch is compile-only; catalog publication is skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "publishable=$publishable" >> "$GITHUB_OUTPUT"
           echo "Selected $count model variant(s)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Explain pull-request safety boundary
@@ -188,6 +204,8 @@ jobs:
 
       - name: Fetch and verify the immutable model source
         id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           result="$RUNNER_TEMP/source.json"
@@ -199,6 +217,7 @@ jobs:
 
       - name: Run model-specific surgery and compilation recipe
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           SOURCE_PATH: ${{ steps.source.outputs.path }}
         run: |
           set -euo pipefail
@@ -255,7 +274,7 @@ jobs:
   resolve-vulcan-config:
     name: Resolve Vulcan publication config
     needs: select
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && needs.select.outputs.publishable == 'true'
     permissions:
       contents: read
       id-token: write
@@ -267,7 +286,10 @@ jobs:
   package:
     name: Build sima-cli model catalog
     needs: [select, compile]
-    if: github.event_name != 'pull_request' && needs.compile.result == 'success'
+    if: >-
+      github.event_name != 'pull_request' &&
+      needs.compile.result == 'success' &&
+      needs.select.outputs.publishable == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the trusted revision
@@ -297,7 +319,7 @@ jobs:
           model-registry fetch-previous \
             --environment "$VULCAN_ENVIRONMENT" \
             --branch "$GITHUB_REF_NAME" \
-            --fallback-branch main \
+            --fallback-branch develop \
             --output-file previous-latest.json \
             --json > previous-result.json
           package_args=(
