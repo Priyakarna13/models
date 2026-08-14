@@ -53,9 +53,11 @@ def test_purge_is_polled_and_restore_is_idempotent() -> None:
     )
     script = lifecycle["run"]
 
-    assert "/v1/repositories/${REPOSITORY}/branches:${OPERATION}" in script
+    assert "/v1/repositories/${REPOSITORY}/branches/${OPERATION}" in script
     assert "/v1/purge-jobs/${job_id}" in script
     assert "for attempt in {1..60}" in script
     assert 'if [[ "$OPERATION" == restore ]]' in script
     assert "Registered S3 object versions removed" in script
     assert lifecycle["env"]["REPOSITORY"] == "${{ github.repository }}"
+    assert "--retry-connrefused" in script
+    assert "--retry-all-errors" not in script
