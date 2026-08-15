@@ -42,6 +42,13 @@ def test_duplicate_variant_ids_fail() -> None:
         validate_model(FIXTURES / "fixture_model", model, SCHEMA)
 
 
+def test_unsupported_variant_requires_reason() -> None:
+    model = load_model(FIXTURES / "fixture_model")
+    model["compile_variants"][0]["status"] = "unsupported"
+    with pytest.raises(ValidationError, match="compile_variants.*reason.*required"):
+        validate_model(FIXTURES / "fixture_model", model, SCHEMA)
+
+
 def test_unapproved_https_host_is_a_validation_error() -> None:
     model = load_model(FIXTURES / "fixture_model")
     model["source"]["uri"] = "https://unapproved.example/model.onnx"
@@ -67,3 +74,8 @@ def test_yaml_uses_safe_loader(tmp_path: Path) -> None:
 def test_catalog_model_is_valid() -> None:
     model = load_and_validate_model(ROOT / "models" / "resnet_50", SCHEMA)
     assert model["source"]["sha256"] == "de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50"
+    variants = {variant["id"]: variant for variant in model["compile_variants"]}
+    assert set(variants) == {"modalix_bf16", "modalix_int8"}
+    assert variants["modalix_bf16"]["parameters"]["precision"] == "bf16"
+    assert variants["modalix_int8"]["parameters"]["precision"] == "int8"
+    assert variants["modalix_int8"]["parameters"]["calibration_samples"] == 8
