@@ -1,0 +1,11 @@
+schema_version: 1
+status: pending_hardware_qualification
+target: modalix
+configuration:
+  warmup_frames: 5
+  measured_frames: 25
+  batch_size: 1
+metrics:
+  - name: latency_p50_ms
+  - name: latency_p95_ms
+note: Record AUTO/A65 and explicit EV74 independently after correctness qualification.

@@ -1,0 +1,89 @@
+schema_version: 1
+id: runtime_lightglue_superpoint_600
+display_name: LightGlue SuperPoint-600 NEAT-68 regression
+description: >-
+  Fixed-shape LightGlue matcher preserving the exact 601x601 CBlock output layout
+  that exposed NEAT-68.
+owners:
+  - "@sima-neat/models"
+license:
+  spdx: Apache-2.0
+  redistribution: restricted
+  attribution: Internal regression archive derived from the LightGlue SuperPoint matcher.
+source:
+  uri: https://api.github.com/repos/sima-neat/models/releases/assets/521804308
+  sha256: 0ceb6304167d3a5ca4e3e0bcf3bd873ace6966d8a35e73d790c4496019bae7af
+  size_bytes: 75587010
+  media_type: application/gzip
+upstream:
+  repository: https://github.com/cvg/LightGlue
+  revision: lightglue-neat68-regression-v1
+  model_card: https://github.com/cvg/LightGlue
+interface:
+  format: onnx
+  inputs:
+    - name: kpts0
+      dtype: float32
+      shape: [2, 600, 32]
+      layout: CKF
+      description: Fourier positional encoding for image 0 keypoints.
+    - name: desc0
+      dtype: float32
+      shape: [1, 600, 256]
+      layout: NKD
+      description: SuperPoint descriptors for image 0.
+    - name: kpts1
+      dtype: float32
+      shape: [2, 600, 32]
+      layout: CKF
+      description: Fourier positional encoding for image 1 keypoints.
+    - name: desc1
+      dtype: float32
+      shape: [1, 600, 256]
+      layout: NKD
+      description: SuperPoint descriptors for image 1.
+  outputs:
+    - name: score_matrix
+      dtype: float32
+      shape: [1, 601, 601]
+      layout: NHW
+      description: Pairwise log-assignment scores including the dustbin row and column.
+preprocessing:
+  pipeline:
+    - op: lightglue_fourier_position_encoding
+      parameters:
+        image_width: 640
+        image_height: 480
+        feature_dim: 32
+    - op: pad_keypoints
+      parameters:
+        count: 600
+postprocessing:
+  pipeline:
+    - op: mutual_nearest_neighbor
+      parameters:
+        body_shape: [600, 600]
+        filter_threshold: 0.01
+calibration:
+  status: not_required
+  reason: The immutable regression archive is already quantized and is imported byte-for-byte.
+surgery:
+  type: none
+compile_variants:
+  - id: modalix_int8_neat68_regression
+    target: modalix
+    recipe: import_mpk.py
+    parameters:
+      artifact_kind: precompiled_mpk
+      model_sdk_version: 2.1.0
+      output_shape: [1, 601, 601]
+      output_tile: [67, 601]
+      issue: NEAT-68
+tests:
+  correctness:
+    - id: identical_feature_match
+      config: tests/correctness.yaml
+  performance:
+    - id: modalix_latency
+      config: tests/performance.yaml
+maturity: staging
