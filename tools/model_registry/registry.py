@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from .catalog import discover_catalog
+from .catalog import discover_catalog, select_environment_eligible_model_ids
 from .dependencies import resolve_model_compiler, validate_result_producer_compiler
 from .errors import ModelRegistryError, ValidationError
 from .fetch import sha256_file
@@ -245,6 +245,12 @@ def publish_compilations(
         model_id, variant_id = result_path.relative_to(dist).parts[:2]
         if model_id not in catalog:
             raise ValidationError(f"compiled output references unknown model: {model_id}")
+        select_environment_eligible_model_ids(
+            catalog,
+            [model_id],
+            environment,
+            require_all=True,
+        )
         variants = {item["id"]: item for item in catalog[model_id]["compile_variants"]}
         if variant_id not in variants:
             raise ValidationError(f"compiled output references unknown variant: {model_id}/{variant_id}")

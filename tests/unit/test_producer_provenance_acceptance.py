@@ -20,7 +20,13 @@ VARIANT_ID = "modalix_int8_neat68_regression"
 GIT_SHA = "a" * 40
 
 
-def _write_result(root: Path, *, compiler_version: str, compiler_label: str) -> Path:
+def _write_result(
+    root: Path,
+    *,
+    compiler_version: str,
+    compiler_label: str,
+    environment: str = "staging",
+) -> Path:
     output = root / MODEL_ID / VARIANT_ID
     output.mkdir(parents=True)
     model = discover_catalog(ROOT)[MODEL_ID]
@@ -35,7 +41,7 @@ def _write_result(root: Path, *, compiler_version: str, compiler_label: str) -> 
                     "compiler_label": compiler_label,
                     "source_sha256": model["source"]["sha256"],
                     "git_sha": GIT_SHA,
-                    "environment": "staging",
+                    "environment": environment,
                     "build_fingerprint": "b" * 64,
                 }
             }
@@ -78,6 +84,35 @@ def test_registry_rejects_result_with_wrong_precompiled_producer_label(tmp_path:
             bucket="artifacts",
             kms_key_id=None,
             environment="staging",
+            branch="feature/import",
+            git_sha=GIT_SHA,
+            github_run_id="1234",
+            github_run_attempt="1",
+            github_run_url="https://github.com/sima-neat/models/actions/runs/1234",
+            request=lambda *_args: {},
+        )
+
+
+def test_registry_rejects_model_outside_publication_environment(tmp_path: Path) -> None:
+    dist = _write_result(
+        tmp_path / "dist",
+        compiler_version="2.1.0",
+        compiler_label="model-sdk-2.1.0",
+        environment="production",
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match=r"not eligible for the production catalog.*publication environments: staging",
+    ):
+        publish_compilations(
+            repository=ROOT,
+            dist_dir=dist,
+            api_url="https://registry.example.invalid",
+            aws_region="us-west-2",
+            bucket="artifacts",
+            kms_key_id=None,
+            environment="production",
             branch="feature/import",
             git_sha=GIT_SHA,
             github_run_id="1234",
