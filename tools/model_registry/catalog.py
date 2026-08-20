@@ -231,11 +231,20 @@ def build_matrix(
     include: list[dict[str, str]] = []
     for model_id in sorted(set(model_ids)):
         model = catalog[model_id]
+        compiler_provenance = model["source"].get("compiler_provenance")
+        provenance_fields: dict[str, str] = {}
+        fingerprint_compiler_version = compiler_version or ""
+        if isinstance(compiler_provenance, dict):
+            fingerprint_compiler_version = str(compiler_provenance["version"])
+            provenance_fields = {
+                "provenance_compiler_version": fingerprint_compiler_version,
+                "provenance_compiler_label": str(compiler_provenance["label"]),
+            }
         fingerprint = ""
         if repository is not None or compiler_version is not None or previous_models is not None:
             if repository is None or compiler_version is None:
                 raise ValidationError("repository and compiler version are required for reusable matrix selection")
-            fingerprint = model_build_fingerprint(repository, model_id, compiler_version)
+            fingerprint = model_build_fingerprint(repository, model_id, fingerprint_compiler_version)
             previous = (previous_models or {}).get(model_id)
             if isinstance(previous, dict) and previous.get("build_fingerprint") == fingerprint:
                 continue
@@ -251,6 +260,7 @@ def build_matrix(
                     "recipe": variant["recipe"],
                     "target": variant["target"],
                     "variant_id": variant["id"],
+                    **provenance_fields,
                     **({"build_fingerprint": fingerprint} if fingerprint else {}),
                 }
             )

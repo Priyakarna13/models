@@ -255,6 +255,8 @@ jobs:
       RECIPE: ${{ matrix.recipe }}
       EXPECTED_COMPILER_VERSION: ${{ needs.select.outputs.model_compiler_version }}
       MODEL_COMPILER_LABEL: ${{ needs.select.outputs.model_compiler_label }}
+      PROVENANCE_COMPILER_VERSION: ${{ matrix.provenance_compiler_version || needs.select.outputs.model_compiler_version }}
+      PROVENANCE_COMPILER_LABEL: ${{ matrix.provenance_compiler_label || needs.select.outputs.model_compiler_label }}
       BUILD_FINGERPRINT: ${{ matrix.build_fingerprint }}
     steps:
       - name: Check out the trusted revision
@@ -340,8 +342,8 @@ jobs:
             --model-id "$MODEL_ID" \
             --variant-id "$VARIANT_ID" \
             --target "${{ matrix.target }}" \
-            --compiler-version "$EXPECTED_COMPILER_VERSION" \
-            --compiler-label "$MODEL_COMPILER_LABEL" \
+            --compiler-version "$PROVENANCE_COMPILER_VERSION" \
+            --compiler-label "$PROVENANCE_COMPILER_LABEL" \
             --source-sha256 "${{ steps.source.outputs.sha256 }}" \
             --git-sha "$GITHUB_SHA" \
             --environment "${{ needs.select.outputs.vulcan_environment }}" \

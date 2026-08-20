@@ -273,6 +273,7 @@ def publish_compilations(
         build_fingerprint = _require_sha256(provenance.get("build_fingerprint"), "build_fingerprint")
         model = catalog[model_id]
         variant = variants[variant_id]
+        source_artifact_type = model["source"].get("artifact_type", "onnx")
         parameters = {
             "schema_version": 1,
             "model_id": model_id,
@@ -334,7 +335,7 @@ def publish_compilations(
             "PUT",
             f"/v1/runs/{run_id}/inputs/source-model",
             {
-                "input_type": "onnx",
+                "input_type": source_artifact_type,
                 "source_reference": model["source"]["uri"],
                 "sha256": source_sha,
                 "size_bytes": model["source"]["size_bytes"],

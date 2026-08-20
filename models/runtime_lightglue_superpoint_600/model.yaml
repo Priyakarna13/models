@@ -15,6 +15,10 @@ source:
   sha256: 0ceb6304167d3a5ca4e3e0bcf3bd873ace6966d8a35e73d790c4496019bae7af
   size_bytes: 75587010
   media_type: application/gzip
+  artifact_type: precompiled_mpk
+  compiler_provenance:
+    version: "2.1.0"
+    label: model-sdk-2.1.0
 upstream:
   repository: https://github.com/cvg/LightGlue
   revision: lightglue-neat68-regression-v1
@@ -74,8 +78,6 @@ compile_variants:
     target: modalix
     recipe: import_mpk.py
     parameters:
-      artifact_kind: precompiled_mpk
-      model_sdk_version: 2.1.0
       output_shape: [1, 601, 601]
       output_tile: [67, 601]
       issue: NEAT-68
