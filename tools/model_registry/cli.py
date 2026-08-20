@@ -33,6 +33,14 @@ def _parser() -> argparse.ArgumentParser:
     fetch.add_argument("--cache-dir", type=Path)
     fetch.add_argument("--json", action="store_true", dest="json_output")
 
+    calibration = subcommands.add_parser(
+        "fetch-calibration", help="download and verify a model's immutable calibration snapshot"
+    )
+    calibration.add_argument("model_dir", type=Path)
+    calibration.add_argument("--schema", type=Path)
+    calibration.add_argument("--cache-dir", type=Path)
+    calibration.add_argument("--json", action="store_true", dest="json_output")
+
     matrix = subcommands.add_parser("matrix", help="emit a deterministic changed-model compilation matrix")
     matrix.add_argument("--repository", type=Path, default=Path.cwd())
     matrix.add_argument("--all", action="store_true", dest="all_models")
@@ -64,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     mpk.add_argument("--compiler-version")
     mpk.add_argument("--compiler-label")
     mpk.add_argument("--source-sha256")
+    mpk.add_argument("--calibration-sha256")
     mpk.add_argument("--git-sha")
     mpk.add_argument("--environment")
     mpk.add_argument("--build-fingerprint")
@@ -76,6 +85,11 @@ def _parser() -> argparse.ArgumentParser:
     package.add_argument("--environment", choices=("staging", "production"), required=True)
     package.add_argument("--branch", required=True)
     package.add_argument("--previous-index", type=Path)
+    package.add_argument(
+        "--allow-partial-catalog",
+        action="store_true",
+        help="omit unbuilt models with no previous index entry (intended for feature branches)",
+    )
     package.add_argument("--json", action="store_true", dest="json_output")
 
     previous = subcommands.add_parser("fetch-previous", help="fetch the previous model-aware latest index")
@@ -128,6 +142,30 @@ def _fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fetch_calibration(args: argparse.Namespace) -> int:
+    model = load_and_validate_model(args.model_dir, args.schema)
+    calibration = model["calibration"]
+    if calibration["status"] != "ready":
+        result = {"model_id": model["id"], "path": "", "sha256": "", "size_bytes": 0}
+    else:
+        source = SourceSpec.from_mapping(calibration["source"])
+        path, cache_hit = Fetcher(args.cache_dir).fetch(source)
+        result = {
+            "cache_hit": cache_hit,
+            "model_id": model["id"],
+            "path": str(path),
+            "sha256": source.sha256,
+            "size_bytes": source.size_bytes,
+        }
+    if args.json_output:
+        print(json.dumps(result, sort_keys=True))
+    elif result["path"]:
+        print(f"Verified calibration: {result['path']}")
+    else:
+        print(f"No calibration required: {result['model_id']}")
+    return 0
+
+
 def _matrix(args: argparse.Namespace) -> int:
     catalog = discover_catalog(args.repository)
     selection_modes = (
@@ -162,14 +200,20 @@ def _matrix(args: argparse.Namespace) -> int:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ModelRegistryError(f"could not read previous index {args.previous_index}: {exc}") from exc
         previous_models = validate_latest_index(value)["models"]
-    print(json.dumps(build_matrix(
-        catalog,
-        model_ids,
-        variant_ids,
-        repository=args.repository if args.compiler_version is not None else None,
-        compiler_version=args.compiler_version,
-        previous_models=previous_models,
-    ), sort_keys=True, separators=(",", ":")))
+    print(
+        json.dumps(
+            build_matrix(
+                catalog,
+                model_ids,
+                variant_ids,
+                repository=args.repository if args.compiler_version is not None else None,
+                compiler_version=args.compiler_version,
+                previous_models=previous_models,
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
     return 0
 
 
@@ -198,6 +242,7 @@ def _verify_mpk(args: argparse.Namespace) -> int:
         "compiler_version",
         "compiler_label",
         "source_sha256",
+        "calibration_sha256",
         "git_sha",
         "environment",
         "build_fingerprint",
@@ -217,6 +262,7 @@ def _package(args: argparse.Namespace) -> int:
         environment=args.environment,
         branch=args.branch,
         previous_index=args.previous_index,
+        allow_partial_catalog=args.allow_partial_catalog,
     )
     message = json.dumps(result, sort_keys=True) if args.json_output else f"Packaged {len(result['models'])} variant(s)"
     print(message)
@@ -266,6 +312,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _validate(args)
         if args.command == "fetch":
             return _fetch(args)
+        if args.command == "fetch-calibration":
+            return _fetch_calibration(args)
         if args.command == "matrix":
             return _matrix(args)
         if args.command == "resolve-base":

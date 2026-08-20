@@ -56,6 +56,8 @@ def test_redaction_removes_credentials_query_and_fragment() -> None:
 @pytest.mark.parametrize(
     "uri",
     [
+        "https://api.github.com/repos/sima-neat/models/releases/assets/508126877",
+        "https://github.com/sima-neat/models/releases/download/source-v1/model.onnx",
         "https://github.com/owner/repository/releases/download/calibration-v1/data.npz",
         "https://api.github.com/repos/owner/repository/releases/assets/123456",
     ],
@@ -67,6 +69,8 @@ def test_github_release_assets_are_immutable_sources(uri: str) -> None:
 @pytest.mark.parametrize(
     "uri",
     [
+        "https://api.github.com/repos/sima-neat/models/releases/latest",
+        "https://github.com/sima-neat/models/raw/main/model.onnx",
         "https://github.com/owner/repository/raw/main/data.npz",
         "https://github.com/owner/repository/releases/latest/download/data.npz",
         "https://api.github.com/repos/owner/repository/releases/latest",

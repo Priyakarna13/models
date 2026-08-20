@@ -13,6 +13,10 @@ GLOBAL_COMPILE_INPUT_PATHS = (
     "deps/",
 )
 
+MODEL_COMPILE_INPUT_PATHS = {
+    "yolo26_tiny_drone": ("training/yolo26_tiny_drone/",),
+}
+
 _IGNORED_BUILD_PARTS = {".git", "__pycache__"}
 _IGNORED_BUILD_SUFFIXES = {".pyc", ".pyo"}
 _IGNORED_MODEL_BUILD_NAMES = {"README.md"}
@@ -120,12 +124,16 @@ def resolve_base_branch(
 
 def _build_input_files(root: Path, model_id: str) -> list[Path]:
     candidates: list[Path] = []
-    for prefix in GLOBAL_COMPILE_INPUT_PATHS:
+    global_prefixes = GLOBAL_COMPILE_INPUT_PATHS
+    model_prefixes = MODEL_COMPILE_INPUT_PATHS.get(model_id, ())
+    for prefix in (*global_prefixes, *model_prefixes):
         path = root / prefix.rstrip("/")
         if path.is_file():
             candidates.append(path)
         elif path.is_dir():
             candidates.extend(item for item in path.rglob("*") if item.is_file())
+        elif prefix in model_prefixes:
+            raise ValidationError(f"model compile input not found: {path}")
     model_dir = root / "models" / model_id
     candidates.extend(
         item
@@ -168,10 +176,12 @@ def model_build_fingerprint(repository: str | Path, model_id: str, compiler_vers
 
 
 def _is_global_compile_input(path: str) -> bool:
-    return any(
-        path == prefix or (prefix.endswith("/") and path.startswith(prefix))
-        for prefix in GLOBAL_COMPILE_INPUT_PATHS
-    )
+    return any(_matches_path_prefix(path, prefix) for prefix in GLOBAL_COMPILE_INPUT_PATHS)
+
+
+def _matches_path_prefix(path: str, prefix: str) -> bool:
+    normalized = prefix.rstrip("/")
+    return path == normalized or path.startswith(f"{normalized}/")
 
 
 def select_model_ids(catalog: dict[str, dict[str, Any]], changed_paths: list[str]) -> list[str]:
@@ -187,6 +197,9 @@ def select_model_ids(catalog: dict[str, dict[str, Any]], changed_paths: list[str
 
     selected: set[str] = set()
     for path in normalized:
+        for model_id, prefixes in MODEL_COMPILE_INPUT_PATHS.items():
+            if model_id in catalog and any(_matches_path_prefix(path, prefix) for prefix in prefixes):
+                selected.add(model_id)
         parts = PurePosixPath(path).parts
         if len(parts) >= 2 and parts[0] == "models" and parts[1] in catalog:
             selected.add(parts[1])

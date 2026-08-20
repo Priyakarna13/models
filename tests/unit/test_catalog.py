@@ -64,6 +64,34 @@ def test_model_local_added_modified_and_deleted_paths(catalog_repository: Path, 
 @pytest.mark.parametrize(
     "path",
     [
+        "training/yolo26_tiny_drone/compile.py",
+        "training/yolo26_tiny_drone/contract.py",
+        "training/yolo26_tiny_drone/dataset.py",
+        "training/yolo26_tiny_drone/onnx_audit.py",
+    ],
+)
+def test_yolo26_training_inputs_select_only_the_tiny_drone_model(catalog_repository: Path, path: str) -> None:
+    _write_model(catalog_repository, "yolo26_tiny_drone")
+
+    assert select_model_ids(discover_catalog(catalog_repository), [path]) == ["yolo26_tiny_drone"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "training/yolo26_tiny_drone_extra/compile.py",
+        "training/unrelated_model/compile.py",
+    ],
+)
+def test_unrelated_training_inputs_do_not_select_tiny_drone(catalog_repository: Path, path: str) -> None:
+    _write_model(catalog_repository, "yolo26_tiny_drone")
+
+    assert select_model_ids(discover_catalog(catalog_repository), [path]) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "deps/manifest.json",
     ],
 )
@@ -223,6 +251,30 @@ def test_build_fingerprint_invalidates_model_dependency_and_compiler_changes(cat
     dependency_changed = model_build_fingerprint(catalog_repository, "alpha", "2.1.3")
     assert dependency_changed != model_changed
     assert model_build_fingerprint(catalog_repository, "alpha", "2.1.4") != dependency_changed
+
+
+def test_yolo26_build_fingerprint_includes_its_training_subtree(
+    catalog_repository: Path,
+) -> None:
+    _write_model(catalog_repository, "yolo26_tiny_drone")
+    training_dir = catalog_repository / "training" / "yolo26_tiny_drone"
+    training_dir.mkdir(parents=True)
+    helper = training_dir / "compile.py"
+    helper.write_text("# qualified helper\n", encoding="utf-8")
+    first = model_build_fingerprint(catalog_repository, "yolo26_tiny_drone", "2.1.3")
+
+    helper.write_text("# changed helper\n", encoding="utf-8")
+
+    assert model_build_fingerprint(catalog_repository, "yolo26_tiny_drone", "2.1.3") != first
+
+
+def test_yolo26_build_fingerprint_requires_its_training_subtree(
+    catalog_repository: Path,
+) -> None:
+    _write_model(catalog_repository, "yolo26_tiny_drone")
+
+    with pytest.raises(ValidationError, match="model compile input not found"):
+        model_build_fingerprint(catalog_repository, "yolo26_tiny_drone", "2.1.3")
 
 
 def test_build_fingerprint_ignores_non_transforming_registry_tooling_changes(

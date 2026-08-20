@@ -16,8 +16,15 @@ ROOT = Path(__file__).resolve().parents[2]
 GIT_SHA = "a" * 40
 
 
-def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
+def _compiled_fixture(
+    root: Path,
+    *,
+    git_sha: str = GIT_SHA,
+    models: tuple[str, ...] | None = None,
+) -> None:
     for model_id, model in discover_catalog(ROOT).items():
+        if models is not None and model_id not in models:
+            continue
         for variant in model["compile_variants"]:
             if variant.get("status", "supported") == "unsupported":
                 continue
@@ -31,22 +38,25 @@ def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
                     info = tarfile.TarInfo(name)
                     info.size = len(content)
                     stream.addfile(info, io.BytesIO(content))
+            provenance = {
+                "model_id": model_id,
+                "variant_id": variant_id,
+                "git_sha": git_sha,
+                "target": variant["target"],
+                "environment": "staging",
+                "compiler_version": "2.1.3",
+                "compiler_label": "model-compiler-2.1.3",
+                "source_sha256": "c" * 64,
+                "build_fingerprint": model_build_fingerprint(ROOT, model_id, "2.1.3"),
+            }
+            calibration = model["calibration"]
+            if calibration["status"] == "ready":
+                provenance["calibration_sha256"] = calibration["source"]["sha256"]
             verify_mpk(
                 output,
                 write_manifest=True,
-                provenance={
-                    "model_id": model_id,
-                    "variant_id": variant_id,
-                    "git_sha": git_sha,
-                    "target": variant["target"],
-                    "environment": "staging",
-                    "compiler_version": "2.1.3",
-                    "compiler_label": "model-compiler-2.1.3",
-                    "source_sha256": "c" * 64,
-                    "build_fingerprint": model_build_fingerprint(ROOT, model_id, "2.1.3"),
-                },
+                provenance=provenance,
             )
-    return root / "resnet_50"
 
 
 def test_package_builds_root_and_per_model_sima_cli_metadata(tmp_path: Path) -> None:
@@ -161,3 +171,23 @@ def test_first_package_requires_every_catalog_model(tmp_path: Path) -> None:
     compiled.mkdir()
     with pytest.raises(ValidationError, match="no compiled output and no previous"):
         package_compiled_models(ROOT, compiled, tmp_path / "dist", GIT_SHA)
+
+
+def test_feature_package_can_start_with_only_its_compiled_model(tmp_path: Path) -> None:
+    compiled = tmp_path / "compiled"
+    _compiled_fixture(compiled, models=("yolo26_tiny_drone",))
+    destination = tmp_path / "dist"
+
+    result = package_compiled_models(
+        ROOT,
+        compiled,
+        destination,
+        GIT_SHA,
+        branch="feature/yolo26",
+        allow_partial_catalog=True,
+    )
+
+    assert {model["id"] for model in result["models"]} == {"yolo26_tiny_drone"}
+    latest = json.loads((destination / "latest.json").read_text(encoding="utf-8"))
+    assert set(latest["models"]) == {"yolo26_tiny_drone"}
+    assert (destination / "yolo26_tiny_drone" / "metadata.json").is_file()

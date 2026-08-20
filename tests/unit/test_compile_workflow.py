@@ -25,6 +25,8 @@ def test_changed_models_compile_on_pushes_to_every_branch() -> None:
     assert "branches-ignore" not in push_trigger
     assert "models/**" in push_trigger["paths"]
     assert "deps/**" in push_trigger["paths"]
+    assert "training/yolo26_tiny_drone/**" in push_trigger["paths"]
+    assert "training/yolo26_tiny_drone/**" in workflow["on"]["pull_request"]["paths"]
 
 
 def test_model_compiler_is_resolved_before_requesting_a_runner() -> None:
@@ -102,6 +104,18 @@ def test_publication_uses_standard_branch_manifest_and_latest_workflows() -> Non
     assert "--cache-control no-store" in upload_script
 
 
+def test_only_feature_branch_publication_can_seed_a_partial_catalog() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    package_script = next(
+        step["run"]
+        for step in workflow["jobs"]["package"]["steps"]
+        if step.get("name") == "Generate root and per-model package metadata"
+    )
+
+    assert 'if [[ "$GITHUB_REF_NAME" != "main" && "$GITHUB_REF_NAME" != "develop" ]]' in package_script
+    assert "package_args+=(--allow-partial-catalog)" in package_script
+
+
 def test_staging_publication_records_new_compilations_in_registry() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     compile_job = workflow["jobs"]["compile"]
@@ -109,16 +123,14 @@ def test_staging_publication_records_new_compilations_in_registry() -> None:
     assert compile_job["needs"] == ["select", "resolve-vulcan-config"]
     assert compile_job["permissions"]["id-token"] == "write"
     credentials = next(
-        step
-        for step in compile_job["steps"]
-        if step.get("name") == "Configure artifact-registry publisher credentials"
+        step for step in compile_job["steps"] if step.get("name") == "Configure artifact-registry publisher credentials"
     )
     assert "needs.select.outputs.publishable == 'true'" in credentials["if"]
     assert "needs.select.outputs.vulcan_environment == 'staging'" in credentials["if"]
     assert credentials["with"]["role-to-assume"] == "${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN }}"
     publish = next(step for step in compile_job["steps"] if step.get("name") == "Publish this model compilation")
     assert publish["env"]["REGISTRY_API_URL"] == "${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}"
-    assert '-m model_registry publish' in publish["run"]
+    assert "-m model_registry publish" in publish["run"]
     assert '--dist-dir "$ARTIFACT_ROOT"' in publish["run"]
     assert 'result["count"] == 1' in publish["run"]
     publish_index = compile_job["steps"].index(publish)
@@ -212,3 +224,18 @@ def test_registry_tool_install_does_not_replace_compiler_dependencies() -> None:
     )
     assert "--no-deps" in install_script
     assert "import certifi, jsonschema, yaml" in install_script
+
+
+def test_ready_calibration_is_fetched_and_bound_to_compile_provenance() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["compile"]["steps"]
+    calibration = next(step for step in steps if step.get("id") == "calibration")
+    compile_step = next(
+        step for step in steps if step.get("name") == "Run model-specific surgery and compilation recipe"
+    )
+    verify_step = next(step for step in steps if step.get("name") == "Validate and checksum the MPK")
+
+    assert "model_registry fetch-calibration" in calibration["run"]
+    assert calibration["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert compile_step["env"]["CALIBRATION_PATH"] == "${{ steps.calibration.outputs.path }}"
+    assert "--calibration-sha256" in verify_step["run"]

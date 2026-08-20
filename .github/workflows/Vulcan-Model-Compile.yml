@@ -7,6 +7,7 @@ on:
       - "deps/**"
       - "models/**"
       - "schemas/**"
+      - "training/yolo26_tiny_drone/**"
       - "tools/model_registry/**"
       - "tools/runtime/**"
       - "pyproject.toml"
@@ -16,6 +17,7 @@ on:
       - "deps/**"
       - "models/**"
       - "schemas/**"
+      - "training/yolo26_tiny_drone/**"
       - "tools/model_registry/**"
       - "tools/runtime/**"
       - "pyproject.toml"
@@ -303,10 +305,26 @@ jobs:
           echo "path=$source_path" >> "$GITHUB_OUTPUT"
           echo "sha256=$source_sha256" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch and verify the immutable calibration snapshot
+        id: calibration
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/calibration.json"
+          "$MODEL_COMPILER_PYTHON" -m model_registry fetch-calibration "$MODEL_DIR" --json > "$result"
+          calibration_path="$("$MODEL_COMPILER_PYTHON" -c \
+            'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$result")"
+          calibration_sha256="$("$MODEL_COMPILER_PYTHON" -c \
+            'import json,sys; print(json.load(open(sys.argv[1])).get("sha256", ""))' "$result")"
+          echo "path=$calibration_path" >> "$GITHUB_OUTPUT"
+          echo "sha256=$calibration_sha256" >> "$GITHUB_OUTPUT"
+
       - name: Run model-specific surgery and compilation recipe
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SOURCE_PATH: ${{ steps.source.outputs.path }}
+          CALIBRATION_PATH: ${{ steps.calibration.outputs.path }}
         run: |
           set -euo pipefail
           test -f "$MODEL_DIR/$RECIPE"
@@ -335,6 +353,10 @@ jobs:
         run: |
           set -euo pipefail
           result="$RUNNER_TEMP/mpk-result.json"
+          calibration_args=()
+          if [[ -n "${{ steps.calibration.outputs.sha256 }}" ]]; then
+            calibration_args=(--calibration-sha256 "${{ steps.calibration.outputs.sha256 }}")
+          fi
           "$MODEL_COMPILER_PYTHON" -m model_registry verify-mpk "$OUTPUT_DIR" \
             --write-manifest --json \
             --model-id "$MODEL_ID" \
@@ -343,6 +365,7 @@ jobs:
             --compiler-version "$EXPECTED_COMPILER_VERSION" \
             --compiler-label "$MODEL_COMPILER_LABEL" \
             --source-sha256 "${{ steps.source.outputs.sha256 }}" \
+            "${calibration_args[@]}" \
             --git-sha "$GITHUB_SHA" \
             --environment "${{ needs.select.outputs.vulcan_environment }}" \
             --build-fingerprint "$BUILD_FINGERPRINT" \
@@ -470,6 +493,9 @@ jobs:
           )
           if [[ -f _previous/previous-latest.json ]]; then
             package_args+=(--previous-index _previous/previous-latest.json)
+          fi
+          if [[ "$GITHUB_REF_NAME" != "main" && "$GITHUB_REF_NAME" != "develop" ]]; then
+            package_args+=(--allow-partial-catalog)
           fi
           model-registry package "${package_args[@]}" > package-result.json
           python -m json.tool dist/metadata.json >/dev/null
