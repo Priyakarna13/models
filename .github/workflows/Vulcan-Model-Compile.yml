@@ -188,6 +188,7 @@ jobs:
           COMPARISON_BASE: ${{ steps.base.outputs.comparison_base }}
           COMPILER_VERSION: ${{ steps.compiler.outputs.version }}
           PREVIOUS_FOUND: ${{ steps.previous.outputs.found }}
+          VULCAN_ENVIRONMENT: ${{ steps.environment.outputs.vulcan_environment }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -197,10 +198,12 @@ jobs:
             fi
             if [[ -n "${REQUESTED_MODELS:-}" ]]; then
               matrix="$(model-registry matrix --repository . --models "$REQUESTED_MODELS" \
-                --compiler-version "$COMPILER_VERSION" "${variant_args[@]}")"
+                --compiler-version "$COMPILER_VERSION" --environment "$VULCAN_ENVIRONMENT" \
+                "${variant_args[@]}")"
             else
               matrix="$(model-registry matrix --repository . --all \
-                --compiler-version "$COMPILER_VERSION" "${variant_args[@]}")"
+                --compiler-version "$COMPILER_VERSION" --environment "$VULCAN_ENVIRONMENT" \
+                "${variant_args[@]}")"
             fi
           else
             reuse_args=(--compiler-version "$COMPILER_VERSION")
@@ -208,7 +211,8 @@ jobs:
               reuse_args+=(--previous-index previous-latest.json)
             fi
             matrix="$(model-registry matrix --repository . \
-              --base "$COMPARISON_BASE" --head "$HEAD_SHA" "${reuse_args[@]}")"
+              --base "$COMPARISON_BASE" --head "$HEAD_SHA" --environment "$VULCAN_ENVIRONMENT" \
+              "${reuse_args[@]}")"
           fi
           count="$(python -c 'import json,sys; print(len(json.load(sys.stdin)["include"]))' <<< "$matrix")"
           publishable=true

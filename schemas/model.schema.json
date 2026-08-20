@@ -47,8 +47,25 @@
       "items": {"$ref": "#/$defs/compileVariant"}
     },
     "tests": {"$ref": "#/$defs/tests"},
-    "maturity": {"enum": ["experimental", "staging", "approved", "deprecated"]}
+    "maturity": {"enum": ["experimental", "staging", "approved", "deprecated"]},
+    "publication": {"$ref": "#/$defs/publication"}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "license": {
+            "properties": {
+              "redistribution": {"enum": ["restricted", "prohibited", "unknown"]}
+            },
+            "required": ["redistribution"]
+          }
+        },
+        "required": ["license"]
+      },
+      "then": {"required": ["publication"]}
+    }
+  ],
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "immutableSource": {
@@ -101,6 +118,19 @@
         "spdx": {"type": "string", "minLength": 1},
         "redistribution": {"enum": ["allowed", "restricted", "prohibited", "unknown"]},
         "attribution": {"type": "string", "minLength": 1}
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environments"],
+      "properties": {
+        "environments": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"enum": ["staging", "production"]}
+        }
       }
     },
     "upstream": {

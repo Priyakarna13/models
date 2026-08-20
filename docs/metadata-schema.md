@@ -8,6 +8,13 @@ provenance, ONNX inputs and outputs, preprocessing and postprocessing,
 calibration status, surgery behavior, compile variants, tests, and release
 maturity. Remote sources require SHA-256 and byte size.
 
+Catalog authorization is independent of maturity. Models with unrestricted
+redistribution and no `publication` policy retain legacy eligibility in both
+staging and production. Models whose redistribution is `restricted`,
+`prohibited`, or `unknown` must declare `publication.environments` explicitly;
+an empty list prevents catalog publication. Matrix selection and packaging both
+enforce the policy, and an explicit request cannot override it.
+
 Calibration is explicit even before a dataset is approved. `status: pending`
 keeps an experimental entry honest and blocks a future release gate; `status:
 ready` requires a checksummed source declaration.

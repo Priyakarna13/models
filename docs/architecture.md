@@ -71,6 +71,10 @@ job validates `deps/manifest.json`, resolves its exact Model Compiler version,
 and derives the `model-compiler-<version>` runner label. The selected runner's
 `/etc/vulcan/model-compiler-artifact.json` version must also match before any
 model code executes. Model variants do not carry independent compiler pins.
+Matrix selection applies each model's explicit publication-environment policy
+without treating lifecycle maturity as publication authorization. Packaging
+repeats that gate so an ineligible compiled output or inherited catalog entry
+cannot bypass selection.
 
 ## Artifact publication contract
 

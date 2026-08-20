@@ -17,6 +17,8 @@ _IGNORED_BUILD_PARTS = {".git", "__pycache__"}
 _IGNORED_BUILD_SUFFIXES = {".pyc", ".pyo"}
 _IGNORED_MODEL_BUILD_NAMES = {"README.md"}
 
+_CATALOG_ENVIRONMENTS = frozenset({"staging", "production"})
+
 
 def discover_catalog(repository: str | Path) -> dict[str, dict[str, Any]]:
     root = Path(repository).expanduser().resolve()
@@ -193,6 +195,42 @@ def select_model_ids(catalog: dict[str, dict[str, Any]], changed_paths: list[str
     return sorted(selected)
 
 
+def select_environment_eligible_model_ids(
+    catalog: dict[str, dict[str, Any]],
+    model_ids: list[str],
+    environment: str,
+    *,
+    require_all: bool = False,
+) -> list[str]:
+    if environment not in _CATALOG_ENVIRONMENTS:
+        expected = ", ".join(sorted(_CATALOG_ENVIRONMENTS))
+        raise ValidationError(f"unknown catalog environment {environment!r}; expected one of: {expected}")
+
+    unknown = sorted(set(model_ids) - set(catalog))
+    if unknown:
+        raise ValidationError(f"unknown model id(s): {', '.join(unknown)}")
+
+    ineligible: dict[str, list[str]] = {}
+    for model_id in sorted(set(model_ids)):
+        publication = catalog[model_id].get("publication")
+        environments = (
+            list(publication["environments"])
+            if isinstance(publication, dict)
+            else sorted(_CATALOG_ENVIRONMENTS)
+        )
+        if environment not in environments:
+            ineligible[model_id] = environments
+    if require_all and ineligible:
+        evidence = ", ".join(
+            f"{model_id} (publication environments: {', '.join(environments) or 'none'})"
+            for model_id, environments in ineligible.items()
+        )
+        raise ValidationError(
+            f"model id(s) are not eligible for the {environment} catalog: {evidence}"
+        )
+    return sorted(set(model_ids) - set(ineligible))
+
+
 def build_matrix(
     catalog: dict[str, dict[str, Any]],
     model_ids: list[str],
@@ -201,10 +239,15 @@ def build_matrix(
     repository: str | Path | None = None,
     compiler_version: str | None = None,
     previous_models: dict[str, Any] | None = None,
+    environment: str = "staging",
+    require_all_models_eligible: bool = False,
 ) -> dict[str, list[dict[str, str]]]:
-    unknown = sorted(set(model_ids) - set(catalog))
-    if unknown:
-        raise ValidationError(f"unknown model id(s): {', '.join(unknown)}")
+    model_ids = select_environment_eligible_model_ids(
+        catalog,
+        model_ids,
+        environment,
+        require_all=require_all_models_eligible,
+    )
 
     requested_variants = set(variant_ids or [])
     available_variants = {

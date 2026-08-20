@@ -43,6 +43,7 @@ def _parser() -> argparse.ArgumentParser:
     matrix.add_argument("--head")
     matrix.add_argument("--compiler-version")
     matrix.add_argument("--previous-index", type=Path)
+    matrix.add_argument("--environment", choices=("staging", "production"), default="staging")
 
     base = subcommands.add_parser("resolve-base", help="resolve the closest base branch and merge base")
     base.add_argument("--repository", type=Path, default=Path.cwd())
@@ -169,6 +170,8 @@ def _matrix(args: argparse.Namespace) -> int:
         repository=args.repository if args.compiler_version is not None else None,
         compiler_version=args.compiler_version,
         previous_models=previous_models,
+        environment=args.environment,
+        require_all_models_eligible=args.models is not None,
     ), sort_keys=True, separators=(",", ":")))
     return 0
 

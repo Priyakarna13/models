@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifact import verify_mpk
-from .catalog import discover_catalog, model_build_fingerprint
+from .catalog import discover_catalog, model_build_fingerprint, select_environment_eligible_model_ids
 from .errors import ValidationError
 from .fetch import sha256_file
 from .published import artifact_url, validate_latest_index
@@ -55,6 +55,7 @@ def package_compiled_models(repository: str | Path, compiled_dir: str | Path, ou
         raise ValidationError("branch must not be empty")
 
     catalog = discover_catalog(root)
+    eligible_model_ids = set(select_environment_eligible_model_ids(catalog, list(catalog), environment))
     version = git_sha[:12]
     previous_models: dict[str, Any] = {}
     if previous_index is not None:
@@ -68,6 +69,12 @@ def package_compiled_models(repository: str | Path, compiled_dir: str | Path, ou
         model_id, variant_id = result_path.relative_to(compiled).parts[:2]
         if model_id not in catalog:
             raise ValidationError(f"compiled output references unknown model: {model_id}")
+        if model_id not in eligible_model_ids:
+            environments = catalog[model_id].get("publication", {}).get("environments", ["production", "staging"])
+            raise ValidationError(
+                f"compiled output references a model that is not eligible for the {environment} catalog: "
+                f"{model_id} (publication environments: {', '.join(environments) or 'none'})"
+            )
         variants = {item["id"]: item for item in catalog[model_id]["compile_variants"]}
         if variant_id not in variants:
             raise ValidationError(f"compiled output references unknown variant: {model_id}/{variant_id}")
@@ -118,6 +125,8 @@ def package_compiled_models(repository: str | Path, compiled_dir: str | Path, ou
 
     index_models: dict[str, Any] = {}
     for model_id, model in sorted(catalog.items()):
+        if model_id not in eligible_model_ids:
+            continue
         expected_variants = {
             item["id"] for item in model["compile_variants"] if item.get("status", "supported") == "supported"
         }

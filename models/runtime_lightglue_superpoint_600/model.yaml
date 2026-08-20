@@ -88,4 +88,6 @@ tests:
   performance:
     - id: modalix_latency
       config: tests/performance.yaml
+publication:
+  environments: [staging]
 maturity: staging
