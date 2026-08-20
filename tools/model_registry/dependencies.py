@@ -29,3 +29,33 @@ def resolve_model_compiler(repository: str | Path) -> dict[str, str]:
     if not isinstance(version, str) or MODEL_COMPILER_VERSION.fullmatch(version) is None:
         raise ValidationError("model-compiler.version must use MAJOR.MINOR.PATCH format")
     return {"label": f"model-compiler-{version}", "version": version}
+
+
+def model_producer_compiler(
+    model: dict[str, Any],
+    repository_compiler: dict[str, str],
+) -> dict[str, str]:
+    declared = model["source"].get("compiler_provenance")
+    if isinstance(declared, dict):
+        return {"label": str(declared["label"]), "version": str(declared["version"])}
+    return repository_compiler
+
+
+def validate_result_producer_compiler(
+    model: dict[str, Any],
+    provenance: dict[str, Any],
+    repository_compiler: dict[str, str],
+    *,
+    context: str | Path,
+) -> None:
+    expected = model_producer_compiler(model, repository_compiler)
+    fields = [("compiler_version", "version")]
+    if isinstance(model["source"].get("compiler_provenance"), dict):
+        fields.append(("compiler_label", "label"))
+    for provenance_field, expected_field in fields:
+        actual = provenance.get(provenance_field)
+        if actual != expected[expected_field]:
+            raise ValidationError(
+                f"{context}: provenance {provenance_field} must be {expected[expected_field]!r} "
+                f"for the declared model source, found {actual!r}"
+            )

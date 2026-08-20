@@ -8,6 +8,7 @@ from typing import Any
 
 from .artifact import verify_mpk
 from .catalog import discover_catalog, model_build_fingerprint, select_environment_eligible_model_ids
+from .dependencies import resolve_model_compiler, validate_result_producer_compiler
 from .errors import ValidationError
 from .fetch import sha256_file
 from .published import artifact_url, validate_latest_index
@@ -55,6 +56,7 @@ def package_compiled_models(repository: str | Path, compiled_dir: str | Path, ou
         raise ValidationError("branch must not be empty")
 
     catalog = discover_catalog(root)
+    repository_compiler = resolve_model_compiler(root)
     eligible_model_ids = set(select_environment_eligible_model_ids(catalog, list(catalog), environment))
     version = git_sha[:12]
     previous_models: dict[str, Any] = {}
@@ -85,6 +87,14 @@ def package_compiled_models(repository: str | Path, compiled_dir: str | Path, ou
             )
         result = json.loads(result_path.read_text(encoding="utf-8"))
         provenance = result.get("provenance", {})
+        if not isinstance(provenance, dict):
+            raise ValidationError(f"{result_path}: provenance must be an object")
+        validate_result_producer_compiler(
+            catalog[model_id],
+            provenance,
+            repository_compiler,
+            context=result_path,
+        )
         expected_provenance = {
             "model_id": model_id,
             "variant_id": variant_id,

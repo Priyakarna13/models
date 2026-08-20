@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .dependencies import model_producer_compiler
 from .errors import ValidationError
 from .model import load_and_validate_model
 
@@ -276,12 +277,18 @@ def build_matrix(
         model = catalog[model_id]
         compiler_provenance = model["source"].get("compiler_provenance")
         provenance_fields: dict[str, str] = {}
-        fingerprint_compiler_version = compiler_version or ""
+        producer_compiler = model_producer_compiler(
+            model,
+            {
+                "label": f"model-compiler-{compiler_version}" if compiler_version else "",
+                "version": compiler_version or "",
+            },
+        )
+        fingerprint_compiler_version = producer_compiler["version"]
         if isinstance(compiler_provenance, dict):
-            fingerprint_compiler_version = str(compiler_provenance["version"])
             provenance_fields = {
                 "provenance_compiler_version": fingerprint_compiler_version,
-                "provenance_compiler_label": str(compiler_provenance["label"]),
+                "provenance_compiler_label": producer_compiler["label"],
             }
         fingerprint = ""
         if repository is not None or compiler_version is not None or previous_models is not None:

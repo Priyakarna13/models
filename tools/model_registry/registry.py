@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .catalog import discover_catalog
+from .dependencies import resolve_model_compiler, validate_result_producer_compiler
 from .errors import ModelRegistryError, ValidationError
 from .fetch import sha256_file
 
@@ -233,6 +234,7 @@ def publish_compilations(
         raise ValidationError("branch, GitHub run ID, and run attempt must not be empty")
 
     catalog = discover_catalog(root)
+    repository_compiler = resolve_model_compiler(root)
     client = SigV4RegistryClient(api_url, aws_region, request=request)
     store = artifact_store or S3ArtifactStore(bucket, kms_key_id=kms_key_id)
     branch_key = quote(branch, safe="")
@@ -254,6 +256,12 @@ def publish_compilations(
         for field, value in expected.items():
             if provenance.get(field) != value:
                 raise ValidationError(f"{result_path}: provenance {field} must be {value!r}")
+        validate_result_producer_compiler(
+            catalog[model_id],
+            provenance,
+            repository_compiler,
+            context=result_path,
+        )
 
         archive_name = _require_text(result.get("archive"), "archive")
         archive = result_path.parent / archive_name

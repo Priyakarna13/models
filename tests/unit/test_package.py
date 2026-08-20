@@ -18,6 +18,9 @@ GIT_SHA = "a" * 40
 
 def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
     for model_id, model in discover_catalog(ROOT).items():
+        compiler_provenance = model["source"].get("compiler_provenance")
+        compiler_version = compiler_provenance["version"] if compiler_provenance else "2.1.3"
+        compiler_label = compiler_provenance["label"] if compiler_provenance else "model-compiler-2.1.3"
         for variant in model["compile_variants"]:
             if variant.get("status", "supported") == "unsupported":
                 continue
@@ -40,10 +43,10 @@ def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
                     "git_sha": git_sha,
                     "target": variant["target"],
                     "environment": "staging",
-                    "compiler_version": "2.1.3",
-                    "compiler_label": "model-compiler-2.1.3",
+                    "compiler_version": compiler_version,
+                    "compiler_label": compiler_label,
                     "source_sha256": "c" * 64,
-                    "build_fingerprint": model_build_fingerprint(ROOT, model_id, "2.1.3"),
+                    "build_fingerprint": model_build_fingerprint(ROOT, model_id, compiler_version),
                 },
             )
     return root / "resnet_50"
