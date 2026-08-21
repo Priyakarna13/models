@@ -20,3 +20,16 @@ levels:
 
 Independent AFE recalibration is not an acceptable substitute for the selected
 QAT catalogue.
+
+## Qualified Modalix deployment
+
+The accepted Modalix deployment is the accuracy-first `r57` variant. It keeps
+the representable backbone QAT paths quantized, executes semantic attention and
+the 15 score/size/offset head affines in BF16, and contains exactly one MLA ELF.
+It is therefore **mixed precision**, not full INT8. The content-bound silicon
+results and artifact digests are recorded in `silicon_qualification.json`.
+
+On the fixed 32-record COCO17/TrackingNet development set, Modalix `.1.246`
+matched serialized AFE execution per sample, reached IoU `0.8690026236` and
+Success@0.5 `0.96875`, and stayed within 0.02 IoU of both the BF16 and PyTorch
+QAT references. Warmup-excluded mean latency was `17.064 ms` (`58.60 FPS`).
