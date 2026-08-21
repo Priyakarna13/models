@@ -3,6 +3,8 @@
     "artifact": {
       "media_type": "application/gzip",
       "path": "artifacts/ostrack_r57_bf16io_fp32cast_mpk.tar.gz",
+      "release_asset_id": 523827871,
+      "release_uri": "https://api.github.com/repos/sima-neat/models/releases/assets/523827871",
       "sha256": "de2b3ac7ec5db0380b7588f2628fffbb9f3c23305b2416afd09192c25bd93193",
       "size_bytes": 168355735
     },
@@ -36,8 +38,10 @@
       "Add a schema-valid model.yaml and model-local registry recipe bound to that immutable source.",
       "Reproduce or adopt the accepted MPK through the pinned registry build workflow so compile provenance and build fingerprint are generated."
     ],
+    "qualified_mpk_uploaded": true,
     "ready": false,
-    "remote_asset_url_recorded": false
+    "remote_asset_url_recorded": true,
+    "release_tag": "ostrack-vitb-noce-qat-r57-v1"
   },
   "qualification": {
     "board": "192.168.1.246",
