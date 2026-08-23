@@ -15,9 +15,17 @@ The qualification meets the requested 1.5-point accuracy bound:
 
 Download the complete, content-bound reproduction bundle from the
 [`edgetam-pure-w8a8-r160-v1` prerelease](https://github.com/sima-neat/models/releases/tag/edgetam-pure-w8a8-r160-v1).
-The same release attaches the three MPKs and standalone MLA ELFs separately.
+Because this build required Model Compiler changes, the same release provides
+the exact
+[`edgetam_model_compiler_overlay_r160_20260823.tar.gz`](https://github.com/sima-neat/models/releases/download/edgetam-pure-w8a8-r160-v1/edgetam_model_compiler_overlay_r160_20260823.tar.gz)
+overlay separately. Its SHA-256 is
+`c2c5f17e587a5e85e402433e6829f7824d5f70f7dc5ee037d3e239ac26e12a44`.
+It is an internal reproduction workaround, not a supported general-purpose
+Model Compiler release.
+
+The release also attaches the three MPKs and standalone MLA ELFs separately.
 Exact asset URLs, hashes, sizes, board metrics, and evidence limitations are
-recorded in `qualification.json` and
+recorded in `qualification.json`, `artifacts/COMPILER_OVERLAY.json`, and
 `artifacts/TERMINAL_PURE_W8A8_ACCEPTANCE.json`.
 
 A `model.yaml` is intentionally not present yet. Standard registry compilation

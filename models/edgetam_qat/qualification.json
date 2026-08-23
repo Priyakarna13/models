@@ -1,5 +1,16 @@
 {
   "accepted_variant": {
+    "compiler_overlay_bundle": {
+      "api_url": "https://api.github.com/repos/sima-neat/models/releases/assets/526755427",
+      "base_tree": "afe_qdq_boundary_fix_r64b/source",
+      "download_url": "https://github.com/sima-neat/models/releases/download/edgetam-pure-w8a8-r160-v1/edgetam_model_compiler_overlay_r160_20260823.tar.gz",
+      "kind": "Model Compiler overlay bundle",
+      "name": "edgetam_model_compiler_overlay_r160_20260823.tar.gz",
+      "release_asset_id": 526755427,
+      "sha256": "c2c5f17e587a5e85e402433e6829f7824d5f70f7dc5ee037d3e239ac26e12a44",
+      "size_bytes": 741029,
+      "support_status": "internal workaround pending upstream"
+    },
     "components": {
       "memory": {
         "elf": {
