@@ -34,6 +34,16 @@ def test_browser_links_home_relative_to_the_deployed_subpath() -> None:
     assert 'class="brand" href="/"' not in html
 
 
+def test_browser_redirects_the_extensionless_models_route_before_loading_assets() -> None:
+    html = (BROWSER / "index.html").read_text(encoding="utf-8")
+
+    redirect = 'if (location.pathname === "/models")'
+    assert redirect in html
+    assert 'location.replace(`/models/${location.search}${location.hash}`)' in html
+    assert html.index(redirect) < html.index('href="styles.css"')
+    assert html.index(redirect) < html.index('src="config.js"')
+
+
 def test_staging_deployment_publishes_models_to_docs_origin() -> None:
     workflow = yaml.load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
@@ -60,6 +70,14 @@ def test_catalog_avoids_per_run_enrichment_and_uses_local_cache() -> None:
     assert "state.runs[0]?.id" not in script
 
 
+def test_concurrent_requests_do_not_overwrite_newer_selections() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+
+    assert "const requestId = ++state.runsRequestId" in script
+    assert "if (requestId !== state.runsRequestId) return" in script
+    assert "if (state.selectedId === runId)" in script
+
+
 def test_branch_filter_defaults_to_main_and_persists_user_selection() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
 
@@ -68,6 +86,8 @@ def test_branch_filter_defaults_to_main_and_persists_user_selection() -> None:
     assert "readBranchPreference" in script
     assert "writeBranchPreference(state.preferredBranch)" in script
     assert "branches.includes(DEFAULT_BRANCH) ? DEFAULT_BRANCH" in script
+    assert 'knownBranches.has(DEFAULT_BRANCH) ? DEFAULT_BRANCH : ""' in script
+    assert "limit: fallbackBranch ? 50 : 200" in script
 
 
 def test_earlier_builds_pagination_tracks_the_selected_branch() -> None:
@@ -88,6 +108,8 @@ def test_browser_has_persistent_dual_theme_and_accessibility_controls() -> None:
     assert "prefers-color-scheme: dark" in html
     assert "sima-neat-artifact-theme" in html
     assert "sima-neat-artifact-theme" in script
+    assert "Storage is optional; use the system preference when unavailable." in html
+    assert "Storage may be disabled; theme selection still works for this page load." in script
     assert 'class="skip-link"' in html
     assert 'aria-live="polite"' in html
     assert "prefers-reduced-motion: reduce" in styles

@@ -10,6 +10,7 @@ const state = {
   cursor: null,
   hasMore: false,
   availableBranches: [],
+  runsRequestId: 0,
   selectedId: new URLSearchParams(location.search).get("run"),
   preferredBranch: null,
   detailCache: new Map(),
@@ -145,7 +146,11 @@ function applyCatalog(payload, { append = false, cache = true } = {}) {
 
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem("sima-neat-artifact-theme", theme);
+  try {
+    localStorage.setItem("sima-neat-artifact-theme", theme);
+  } catch {
+    // Storage may be disabled; theme selection still works for this page load.
+  }
   const dark = theme === "dark";
   elements["theme-toggle"].innerHTML = dark ? icons.sun : icons.moon;
   elements["theme-toggle"].setAttribute("aria-label", `Switch to ${dark ? "light" : "dark"} mode`);
@@ -241,7 +246,9 @@ async function selectRun(runId, { updateUrl = true } = {}) {
     }
     if (state.selectedId === runId) renderDetail(detail);
   } catch (error) {
-    elements["detail-pane"].innerHTML = errorPanel(error.message, "Could not load this build");
+    if (state.selectedId === runId) {
+      elements["detail-pane"].innerHTML = errorPanel(error.message, "Could not load this build");
+    }
   }
 }
 
@@ -339,6 +346,7 @@ async function copyText(value) {
 async function loadRuns({ append = false, branch = elements["branch-filter"].value, limit = 50 } = {}) {
   const repo = state.repository;
   if (!repo) return;
+  const requestId = ++state.runsRequestId;
   elements["load-more"].disabled = true;
   const query = new URLSearchParams({ limit: String(limit) });
   if (branch) query.set("git_ref", `refs/heads/${branch}`);
@@ -346,16 +354,25 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
 
   try {
     const payload = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/runs?${query}`);
-    if (!append && branch && !payload.runs.length && branch !== DEFAULT_BRANCH) {
-      state.availableBranches = state.availableBranches.filter((value) => value !== branch);
-      state.preferredBranch = DEFAULT_BRANCH;
-      writeBranchPreference(DEFAULT_BRANCH);
-      await loadRuns({ branch: DEFAULT_BRANCH });
+    if (requestId !== state.runsRequestId) return;
+    if (!append && branch && !payload.runs.length) {
+      const knownBranches = new Set([
+        ...(payload.branches || []),
+        ...state.availableBranches,
+      ]);
+      knownBranches.delete(branch);
+      state.availableBranches = [...knownBranches].sort();
+      const fallbackBranch = branch !== DEFAULT_BRANCH && knownBranches.has(DEFAULT_BRANCH) ? DEFAULT_BRANCH : "";
+      state.preferredBranch = fallbackBranch;
+      writeBranchPreference(fallbackBranch);
+      await loadRuns({ branch: fallbackBranch, limit: fallbackBranch ? 50 : 200 });
       return;
     }
     applyCatalog(payload, { append });
+  } catch (error) {
+    if (requestId === state.runsRequestId) throw error;
   } finally {
-    elements["load-more"].disabled = false;
+    if (requestId === state.runsRequestId) elements["load-more"].disabled = false;
   }
 
   const requested = state.selectedId && state.runs.some((run) => run.id === state.selectedId) ? state.selectedId : null;
