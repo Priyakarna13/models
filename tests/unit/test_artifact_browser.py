@@ -47,7 +47,7 @@ def test_browser_redirects_the_extensionless_models_route_before_loading_assets(
 def test_staging_deployment_publishes_models_to_docs_origin() -> None:
     workflow = yaml.load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
-    assert workflow["on"]["push"]["branches"] == ["main"]
+    assert workflow["on"]["push"]["branches"] == ["main", "develop", "feat/artifact-browser"]
     assert workflow["jobs"]["resolve-vulcan-config"]["with"]["vulcan_env"] == "staging"
 
     publish = workflow["jobs"]["publish"]["with"]

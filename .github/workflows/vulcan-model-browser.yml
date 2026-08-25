@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      - develop
+      - feat/artifact-browser
     paths:
       - ".github/workflows/vulcan-model-browser.yml"
       - "artifact-browser/**"
