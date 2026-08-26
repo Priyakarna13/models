@@ -78,6 +78,21 @@ def test_concurrent_requests_do_not_overwrite_newer_selections() -> None:
     assert "if (state.selectedId === runId)" in script
 
 
+def test_linked_run_loads_independently_of_the_current_catalog_page() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+
+    assert "if (state.selectedId) await selectRun(state.selectedId, { updateUrl: false });" in script
+    assert "state.runs.some((run) => run.id === state.selectedId)" not in script
+
+
+def test_detail_error_can_be_retried_and_closed() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+
+    assert 'errorPanel(error.message, "Could not load this build", { closable: true })' in script
+    assert "event.target.closest('[data-action=\"retry\"]') && state.selectedId" in script
+    assert "selectRun(state.selectedId, { updateUrl: false });" in script
+
+
 def test_branch_filter_defaults_to_main_and_persists_user_selection() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
 

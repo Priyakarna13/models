@@ -247,7 +247,7 @@ async function selectRun(runId, { updateUrl = true } = {}) {
     if (state.selectedId === runId) renderDetail(detail);
   } catch (error) {
     if (state.selectedId === runId) {
-      elements["detail-pane"].innerHTML = errorPanel(error.message, "Could not load this build");
+      elements["detail-pane"].innerHTML = errorPanel(error.message, "Could not load this build", { closable: true });
     }
   }
 }
@@ -305,8 +305,8 @@ function renderDetail(detail) {
   </div>`;
 }
 
-function errorPanel(message, title = "Registry unavailable") {
-  return `<div class="error-state"><span>!</span><p class="kicker">Connection error</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p><button type="button" data-action="retry">Try again</button></div>`;
+function errorPanel(message, title = "Registry unavailable", { closable = false } = {}) {
+  return `<div class="error-state">${closable ? `<button class="close-detail" type="button" aria-label="Close details">×</button>` : ""}<span>!</span><p class="kicker">Connection error</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p><button type="button" data-action="retry">Try again</button></div>`;
 }
 
 async function downloadArtifact(runId, name, button) {
@@ -375,8 +375,6 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
     if (requestId === state.runsRequestId) elements["load-more"].disabled = false;
   }
 
-  const requested = state.selectedId && state.runs.some((run) => run.id === state.selectedId) ? state.selectedId : null;
-  if (requested && !append) selectRun(requested, { updateUrl: false });
 }
 
 async function initialize() {
@@ -424,6 +422,8 @@ async function initialize() {
       elements["result-list"].setAttribute("aria-busy", "false");
     }
   }
+
+  if (state.selectedId) await selectRun(state.selectedId, { updateUrl: false });
 }
 
 elements["theme-toggle"].addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
@@ -458,6 +458,10 @@ elements["result-list"].addEventListener("click", (event) => {
   if (event.target.closest('[data-action="retry"]')) initialize();
 });
 elements["detail-pane"].addEventListener("click", (event) => {
+  if (event.target.closest('[data-action="retry"]') && state.selectedId) {
+    selectRun(state.selectedId, { updateUrl: false });
+    return;
+  }
   const copy = event.target.closest("[data-copy]");
   if (copy) copyText(copy.dataset.copy);
   const download = event.target.closest("[data-download]");

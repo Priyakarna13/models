@@ -191,6 +191,7 @@ details pre { max-height: 320px; overflow: auto; margin: 17px 0 0; padding: 17px
 .detail-loading span:nth-child(3) { width: 100%; height: 120px; }
 .detail-loading span:nth-child(4) { width: 100%; height: 190px; }
 .no-results, .error-state { padding: 70px 10px; }
+.error-state .close-detail { align-self: flex-end; }
 .no-results > span, .error-state > span { font-size: 2rem; color: var(--line-strong); }
 .no-results h3 { margin: 3px 0 7px; font-size: 1.25rem; font-weight: 500; }
 .no-results p { color: var(--ink-soft); font-size: 16px; }
