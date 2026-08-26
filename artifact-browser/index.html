@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Browse, inspect, and download verified SiMa.ai model artifacts." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23286fbe' d='M4 19h6v9H4zm9-8h6v17h-6zm9-7h6v24h-6z'/%3E%3C/svg%3E" />
+    <title>SiMa.ai Model Registry</title>
+    <script>
+      (() => {
+        if (location.pathname === "/models") {
+          location.replace(`/models/${location.search}${location.hash}`);
+          return;
+        }
+        let stored = null;
+        try {
+          stored = localStorage.getItem("sima-neat-artifact-theme");
+        } catch {
+          // Storage is optional; use the system preference when unavailable.
+        }
+        const theme = stored || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to artifact results</a>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="SiMa.ai Model Registry home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span><b>SiMa.ai</b> Model Registry</span>
+      </a>
+      <div class="topbar-actions">
+        <span class="environment"><i></i> <span id="environment-name">Registry</span></span>
+        <button class="icon-button" id="theme-toggle" type="button" aria-label="Switch color theme"></button>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="page-header" aria-labelledby="page-title">
+        <h1 id="page-title">Model artifacts</h1>
+        <div class="registry-line"><span id="registry-status" class="status-dot loading"></span><span id="registry-copy">Connecting to registry…</span></div>
+      </section>
+
+      <section class="toolbar" aria-label="Artifact filters">
+        <label class="search-field">
+          <span class="sr-only">Search artifacts</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.15A7.5 7.5 0 1 1 4 11.5a7.5 7.5 0 0 1 15 0Z" /></svg>
+          <input id="search" type="search" placeholder="Search model, variant, branch, commit…" autocomplete="off" />
+          <kbd>/</kbd>
+        </label>
+        <div class="filters">
+          <label><span>Branch</span><select id="branch-filter"><option value="">All branches</option></select></label>
+          <label><span>Status</span><select id="status-filter"><option value="">Any status</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></label>
+          <label><span>Compiler</span><select id="compiler-filter"><option value="">Any version</option></select></label>
+          <button id="clear-filters" class="text-button" type="button">Clear</button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="results-pane">
+          <div class="section-heading">
+            <h2 id="result-title">Builds</h2>
+            <span id="result-count" aria-live="polite">—</span>
+          </div>
+          <div id="result-list" class="result-list" aria-busy="true"></div>
+          <button id="load-more" class="load-more" type="button" hidden>Load earlier builds</button>
+        </div>
+        <aside id="detail-pane" class="detail-pane" aria-label="Selected artifact details">
+          <div class="detail-empty">
+            <h2>No build selected</h2>
+            <p>Select a build to inspect provenance, validation results, checksums, and downloads.</p>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script src="config.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
