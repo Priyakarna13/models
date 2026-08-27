@@ -271,3 +271,136 @@ def test_ready_calibration_is_fetched_and_bound_to_compile_provenance() -> None:
     assert calibration["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
     assert compile_step["env"]["CALIBRATION_PATH"] == "${{ steps.calibration.outputs.path }}"
     assert "--calibration-sha256" in verify_step["run"]
+
+
+def test_each_successful_compile_dispatches_its_benchmark_immediately() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    compile_job = workflow["jobs"]["compile"]
+    dispatch = next(
+        step
+        for step in compile_job["steps"]
+        if step.get("name") == "Start this model benchmark without waiting for the compile matrix"
+    )
+
+    assert compile_job["permissions"]["actions"] == "write"
+    assert "needs.select.outputs.publishable" not in dispatch["if"]
+    assert "matrix.target == 'modalix'" in dispatch["if"]
+    assert "github.ref_name != 'main'" in dispatch["if"]
+    assert "github.ref_name != 'develop'" in dispatch["if"]
+    assert "gh workflow run" not in dispatch["run"]
+    assert 'method="POST"' in dispatch["run"]
+    assert "/actions/workflows/Vulcan-Model-Compile.yml/dispatches" in dispatch["run"]
+    assert '"operation": "benchmark"' in dispatch["run"]
+    assert '"source_run_id": os.environ["GITHUB_RUN_ID"]' in dispatch["run"]
+    assert '"source_sha": os.environ["GITHUB_SHA"]' in dispatch["run"]
+    assert '"model_id": os.environ["BENCHMARK_MODEL_ID"]' in dispatch["run"]
+    assert '"variant_id": os.environ["BENCHMARK_VARIANT_ID"]' in dispatch["run"]
+    dispatch_python = dispatch["run"].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    compile(dispatch_python, "<benchmark-dispatch>", "exec")
+    retain_index = next(
+        index
+        for index, step in enumerate(compile_job["steps"])
+        if step.get("name") == "Retain the validated model output for packaging"
+    )
+    assert retain_index < compile_job["steps"].index(dispatch)
+    assert "discover-benchmark-matrix" not in workflow["jobs"]
+    assert "inputs.operation || 'compile'" in workflow["concurrency"]["group"]
+
+
+def test_dispatched_benchmark_stages_only_its_compiled_artifact() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    stage = workflow["jobs"]["stage-dispatched-benchmark"]
+
+    assert stage["needs"] == "resolve-dispatched-benchmark-config"
+    assert stage["environment"] == "${{ inputs.environment }}"
+    assert stage["permissions"]["id-token"] == "write"
+    assert "inputs.operation == 'benchmark'" in stage["if"]
+    verify = next(step for step in stage["steps"] if step.get("name") == "Verify the source run and compiled artifact")
+    assert 'actions/runs/$SOURCE_RUN_ID' in verify["run"]
+    assert ".head_sha == $sha" in verify["run"]
+    download = next(step for step in stage["steps"] if step.get("uses") == "actions/download-artifact@v7")
+    assert download["with"]["name"] == "compiled-model-${{ inputs.model_id }}-${{ inputs.variant_id }}"
+    assert download["with"]["run-id"] == "${{ inputs.source_run_id }}"
+    checkout = next(
+        step
+        for step in stage["steps"]
+        if step.get("name") == "Check out the trusted source revision for registry tooling"
+    )
+    assert checkout["with"]["ref"] == "${{ inputs.source_sha }}"
+    assert checkout["with"]["path"] == "_registry_source"
+    publication = next(
+        step for step in stage["steps"] if step.get("name") == "Register an unpublished compilation for benchmarking"
+    )
+    assert publication["if"] == "steps.publication.outputs.required == 'true'"
+    assert "model-registry publish" in publication["run"]
+    assert '--repository _registry_source' in publication["run"]
+    assert '--dist-dir _compiled' in publication["run"]
+    assert '--github-run-id "$SOURCE_RUN_ID"' in publication["run"]
+    assert '--github-run-attempt "$SOURCE_RUN_ATTEMPT"' in publication["run"]
+    assert 'registry-publication.json' in publication["run"]
+    upload = next(step for step in stage["steps"] if step.get("uses") == "actions/upload-artifact@v7")
+    assert upload["with"]["name"] == "benchmark-input-${{ inputs.model_id }}-${{ inputs.variant_id }}"
+
+
+def test_dispatched_benchmark_runs_on_the_resolved_devkit() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    resolver = workflow["jobs"]["resolve-dispatched-benchmark-runner"]
+    benchmark = workflow["jobs"]["benchmark-dispatched-model"]
+    steps = benchmark["steps"]
+
+    assert resolver["uses"].endswith("/vulcan-resolve-modalix-runner.yml@main")
+    assert benchmark["needs"] == ["stage-dispatched-benchmark", "resolve-dispatched-benchmark-runner"]
+    assert benchmark["runs-on"]["group"] == (
+        "${{ needs.resolve-dispatched-benchmark-runner.outputs.modalix_runner_group }}"
+    )
+    assert benchmark["runs-on"]["labels"] == [
+        "self-hosted",
+        "Linux",
+        "ARM64",
+        "modalix",
+        "vulcan-${{ inputs.environment }}",
+    ]
+    assert benchmark["env"]["SIMA_CLI_AUTO_ACCEPT_UPDATE"] == "1"
+    checkout = next(step for step in steps if step.get("name") == "Check out the trusted revision")
+    assert checkout["with"]["ref"] == "${{ inputs.source_sha }}"
+    download = next(step for step in steps if step.get("name") == "Download the staged compiled model output")
+    assert download["with"]["name"] == "benchmark-input-${{ inputs.model_id }}-${{ inputs.variant_id }}"
+    runtime = next(step for step in steps if step.get("name") == "Resolve and verify benchmark runtime")
+    install = next(step for step in steps if step.get("name") == "Install pinned benchmarker and Neat dependency")
+    execute = next(step for step in steps if step.get("name") == "Generate manifest and run benchmark")
+    assert "resolve-benchmark-runtime" in runtime["run"]
+    assert "/etc/buildinfo" in runtime["run"]
+    assert "sed -n 's/^DISTRO_VERSION=//p'" not in runtime["run"]
+    assert "^[[:space:]]*DISTRO_VERSION[[:space:]]*=" in runtime["run"]
+    assert 'gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)' in runtime["run"]
+    assert "Could not read DISTRO_VERSION from /etc/buildinfo" in runtime["run"]
+    assert "DevKit platform mismatch: expected $platform_version, found $actual_platform" in runtime["run"]
+    assert "sima-cli neat install" in install["run"]
+    assert 'primary_target="$name@$branch:$tag"' in install["run"]
+    assert 'fallback_target="$name@develop:latest"' in install["run"]
+    assert '[[ "$tag" == "latest" && "$branch" != "develop" ]]' in install["run"]
+    assert "make-benchmark-manifest" in execute["run"]
+    assert '--model "$MODEL_ID"' in execute["run"]
+    assert '--variant "$VARIANT_ID"' in execute["run"]
+    assert "performance-result-v2.json" in execute["run"]
+    assert "kerrigan" not in WORKFLOW.read_text(encoding="utf-8").lower()
+
+
+def test_completed_dispatched_benchmark_is_published_from_a_hosted_runner() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    publish = workflow["jobs"]["publish-dispatched-benchmark"]
+
+    assert publish["runs-on"] == "ubuntu-latest"
+    assert publish["needs"] == ["benchmark-dispatched-model", "resolve-dispatched-benchmark-config"]
+    checkout = next(step for step in publish["steps"] if step.get("uses") == "actions/checkout@v6")
+    assert checkout["with"]["ref"] == "${{ github.sha }}"
+    download = next(step for step in publish["steps"] if step.get("uses") == "actions/download-artifact@v7")
+    assert download["with"]["name"] == "benchmark-${{ inputs.model_id }}-${{ inputs.variant_id }}"
+    publication = next(
+        step for step in publish["steps"] if step.get("name") == "Publish every completed schema-v2 result and log"
+    )
+    assert "find _benchmarks -type f -name performance-result-v2.json" in publication["run"]
+    assert 'for result in "${results[@]}"' in publication["run"]
+    assert "model-registry publish-benchmark" in publication["run"]
+    assert "--schema schemas/performance-result-v2.schema.json" in publication["run"]
+    assert '--git-sha "$SOURCE_SHA"' in publication["run"]

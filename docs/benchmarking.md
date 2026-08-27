@@ -41,7 +41,10 @@ benchmarker --version
 The package declares `core@v0.4.0` in its own package metadata. Its installer
 checks the DevKit platform, installs that Core package through `sima-cli` when
 pyneat 0.4.0 is not already satisfied, and installs the benchmarker wheel into
-the resulting `~/pyneat` environment.
+the resulting `~/pyneat` environment. CI resolves `latest` from the configured
+feature branch first and falls back to `develop:latest` when that branch does
+not have an installable benchmarker package. The installed benchmarker and
+pyneat versions are verified before execution.
 
 For a downloaded package payload, the equivalent manual installation is:
 
@@ -116,7 +119,7 @@ benchmarker \
 ```
 
 The output follows
-[`performance-result-v1.schema.json`](../schemas/performance-result-v1.schema.json)
+[`performance-result-v2.schema.json`](../schemas/performance-result-v2.schema.json)
 and is written atomically. Average latency and throughput are available from
 Neat 0.4.0. Percentiles are marked `unsupported` until the installed public
 BenchmarkReport exposes them. Missing power telemetry is `unavailable`, never a
@@ -130,8 +133,12 @@ compiled batch size.
 
 Each result records a deterministic identity, resolved model route and output
 topology, board/platform/kernel/Core information, CPU governor, and start/end
-load and temperature observations. Invalid manifests and runtime failures also
-produce schema-valid error reports at `--output`.
+load and temperature observations. Schema-v2 results also record a timestamped
+temperature sample at benchmark start, after every completed trial, and at
+benchmark end. Temperature readings include the hwmon sensor ID and source so
+duplicate kernel labels such as `temp1` remain distinguishable. Invalid
+manifests and runtime failures also produce schema-valid error reports at
+`--output`.
 
 ## Publish a result to Vulcan
 
@@ -142,6 +149,7 @@ result as a benchmark run linked to its originating compile run:
 ```bash
 model-registry publish-benchmark \
   --result /workspace/results/performance-result.json \
+  --log /workspace/results/benchmark.log \
   --api-url "$VULCAN_ARTIFACT_REGISTRY_API_URL" \
   --aws-region us-west-2 \
   --bucket "$VULCAN_ARTIFACT_BUCKET" \
@@ -183,6 +191,9 @@ build and verify the package without publishing. Trusted branch pushes publish
 under the isolated `models-utils/benchmarker` Vulcan namespace and advance that branch's
 benchmarker-specific `latest.tag`.
 
-The future automated hardware acceptance step can run the same manifest and CLI
-through the Kerrigan/Fleet Manager runner bridge. Until then, the DevKit returns
-the JSON report and log for manual publication from a trusted host.
+The compile workflow inventories the `compiled-model-*` artifacts produced by the
+current run and intersects them with its selected Modalix compile matrix. It then
+resolves the approved Modalix GitHub runner group, verifies the DevKit platform
+against `deps/manifest.json`, and benchmarks each discovered model variant directly
+on that runner. A separate trusted hosted job publishes every completed JSON result
+and log, including successes from a partially failed benchmark matrix.

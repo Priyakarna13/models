@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
+from jsonschema import Draft202012Validator, FormatChecker
 
 ROOT = Path(__file__).resolve().parents[2]
 BROWSER = ROOT / "artifact-browser"
@@ -10,7 +12,15 @@ DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "vulcan-model-browser.yml"
 
 
 def test_artifact_browser_assets_exist() -> None:
-    for name in ("index.html", "app.js", "styles.css", "config.js", "favicon.svg", "README.md"):
+    for name in (
+        "index.html",
+        "app.js",
+        "benchmark-adapters.js",
+        "styles.css",
+        "config.js",
+        "favicon.svg",
+        "README.md",
+    ):
         assert (BROWSER / name).is_file()
 
 
@@ -79,7 +89,7 @@ def test_staging_deployment_fingerprints_mutable_browser_assets() -> None:
     )
 
     assert 'revision="${GITHUB_SHA:0:12}"' in assemble
-    for asset in ("app", "styles", "config"):
+    for asset in ("app", "benchmark-adapters", "styles", "config"):
         assert f"{asset}.${{revision}}" in assemble
     assert "sed -i" in assemble
 
@@ -160,9 +170,9 @@ def test_browser_uses_refined_search_first_layout() -> None:
 
     assert "Manrope:wght@400;500;600;700" in html
     assert "IBM+Plex+Mono" in html
-    assert 'id="page-title">Find a model' in html
+    assert '<h1 class="sr-only">Model Registry</h1>' in html
     assert "Search models, tasks, or architectures" in html
-    assert 'class="page-header"' in html
+    assert 'class="page-header"' not in html
     assert "Trace every" not in html
     assert "--font-display" not in styles
     assert "font-family: var(--font-body)" in styles
@@ -252,3 +262,132 @@ def test_model_card_links_to_the_exact_compiled_github_source() -> None:
     assert "View ${model} source on GitHub at commit ${shortSha(run.commit_sha)}" in script
     assert 'target="_blank" rel="noreferrer"' in script
     assert ".model-source-link:focus-visible" in styles
+
+
+def test_mpk_validation_is_a_compact_accessible_status_mark() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+
+    assert 'test.name === "mpk-validation" && test.status === "passed"' in script
+    assert 'class="mpk-validation-mark" tabindex="0" role="img"' in script
+    assert "MPK package integrity verified: archive structure, checksum, and build provenance match." in script
+    assert '<h3>Validation</h3>' not in script
+    assert ".detail-title-actions" in styles
+    assert ".model-source-link, .huggingface-source-link, .benchmark-shortcut, .artifact-download-shortcut, .mpk-validation-mark { width: 38px; height: 38px" in styles
+    assert ".detail-title-actions > [data-tooltip]:hover::after" in styles
+
+
+def test_existing_benchmark_has_an_accessible_scroll_shortcut() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+
+    assert "const hasBenchmark = Boolean(detail.benchmark && benchmarkMarkup)" in script
+    assert 'data-scroll-benchmark aria-label="Jump to benchmark results" data-tooltip="Jump to benchmark results"' in script
+    assert 'id="benchmark-section" class="benchmark-section" tabindex="-1"' in script
+    assert 'querySelector("#benchmark-section")' in script
+    assert 'benchmark.scrollIntoView({' in script
+    assert 'matchMedia("(prefers-reduced-motion: reduce)").matches' in script
+    assert ".benchmark-shortcut:focus-visible" in styles
+
+
+def test_download_is_promoted_and_artifacts_show_only_size_and_checksum() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="artifact-download-shortcut"' in script
+    assert 'aria-label="Download model artifact"' in script
+    assert 'data-tooltip="Download model artifact"' in script
+    assert '<dl class="artifact-metadata">' in script
+    assert '<dt>File size</dt>' in script
+    assert '<dt>SHA-256</dt>' in script
+    assert 'class="download-button"' not in script
+    assert 'class="artifact-main"' not in script
+    assert ".artifact-download-shortcut:focus-visible" in styles
+
+
+def test_source_input_links_to_the_original_hugging_face_model_card() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+
+    assert "function trustedHuggingFaceUrl" in script
+    assert 'url.hostname !== "huggingface.co"' in script
+    assert "function huggingFaceSourceLink" in script
+    assert 'sourceReference.startsWith("hf://")' in script
+    assert "input.metadata?.model_card" in script
+    assert "hf:\\/\\/(models|datasets|spaces)" in script
+    assert 'class="huggingface-source-link"' in script
+    assert 'target="_blank" rel="noreferrer"' in script
+    assert "Open source ONNX model card on Hugging Face" in script
+    assert 'data-tooltip="Open source ONNX model card on Hugging Face"' in script
+    assert "Official no-border logo from https://huggingface.co/brand" in script
+    assert 'viewBox="0 0 95 88"' in script
+    assert 'fill="#FFD21E"' in script
+    assert ".huggingface-source-link:focus-visible" in styles
+    assert ".huggingface-source-link svg { width: 20px; height: 19px; }" in styles
+    assert "https://huggingface.co/onnx-community/resnet-50-ONNX" in preview
+
+
+def test_benchmark_rendering_is_schema_versioned_and_charted() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    adapters = (BROWSER / "benchmark-adapters.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+
+    assert 'import { adaptBenchmarkResult } from "./benchmark-adapters.js"' in script
+    assert "new Map([[1, adaptV1], [2, adaptV2]])" in adapters
+    assert "/benchmarks/latest" in script
+    assert 'class="trial-chart benchmark-chart"' in script
+    assert "data-trial-metric" in script
+    assert "availableTrialMetrics" in script
+    assert "data-temperature-sensor" not in script
+    assert 'item.sensor.toLowerCase() === "temp1"' in script
+    assert 'class="temperature-line"' in script
+    assert 'role="img"' in script
+    assert 'class="sr-only"' in script
+    assert ".chart-points circle" in styles
+    assert ".temperature-line" in styles
+    assert "temperature_samples" in adapters
+    assert "sensor_id" in adapters
+
+
+def test_detail_layout_can_focus_the_selected_model() -> None:
+    html = (BROWSER / "index.html").read_text(encoding="utf-8")
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="workspace"' in html
+    assert "sima-neat-model-detail-layout" in script
+    assert 'class="detail-layout-toggle"' in script
+    assert 'aria-pressed="${state.detailLayout === "focused"}"' in script
+    assert '.workspace[data-detail-layout="focused"]' in styles
+    assert '.workspace[data-detail-layout="focused"] .result-list { width: calc(100% + 30px); }' in styles
+    assert "@media (max-width: 840px)" in styles
+    assert ".detail-layout-toggle { display: none; }" in styles
+
+
+def test_model_metadata_tags_use_semantic_icons() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+
+    for icon in ("branch", "precision", "compiler", "modelType", "architecture", "task"):
+        assert f"{icon}: `<svg" in script
+    assert "detailTag(icons.branch, branchName(run.git_ref), \"branch\")" in script
+    assert 'class="detail-tag detail-tag-${kind}"' in script
+    assert ".detail-tag svg" in styles
+    assert ".detail-tag-branch svg { stroke: var(--blue); }" in styles
+
+
+def test_local_preview_fixture_is_schema_v2_and_server_is_same_origin() -> None:
+    fixture_path = BROWSER / "fixtures" / "performance-result-v2.json"
+    schema_path = ROOT / "schemas" / "performance-result-v2.schema.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    server = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(fixture)
+    assert fixture["schema_version"] == 2
+    assert len(fixture["trials"]) == 3
+    assert 'apiBase: location.origin' in server
+    assert "/benchmarks/latest" in server
+    assert "127\\.0\\.0\\.1|localhost" in script

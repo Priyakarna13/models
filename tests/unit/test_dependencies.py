@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from model_registry.dependencies import resolve_model_compiler
+from model_registry.dependencies import resolve_benchmark_runtime, resolve_model_compiler
 from model_registry.errors import ValidationError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +15,43 @@ def test_repository_model_compiler_dependency_is_pinned() -> None:
         "label": "model-compiler-2.1.3",
         "version": "2.1.3",
     }
+
+
+def test_repository_benchmark_runtime_uses_branch_latest() -> None:
+    manifest = json.loads((ROOT / "deps" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["platform-version"] == "2.1.3"
+    assert "platform_version" not in manifest["devkit"]
+
+    runtime = resolve_benchmark_runtime(ROOT)
+    assert runtime["devkit"] == {"board": "modalix", "os_type": "elxr", "platform_version": "2.1.3"}
+    assert runtime["neat_core"] == {"version": "0.4.0", "install_target": "core@v0.4.0"}
+    assert runtime["benchmarker"]["vulcan"] == {
+        "environment": "stg",
+        "name": "models-utils/benchmarker",
+        "branch": "feat/resnet50-post-compile-benchmark",
+        "tag": "latest",
+    }
+
+
+def test_benchmark_runtime_accepts_an_immutable_artifact_tag(tmp_path: Path) -> None:
+    manifest = json.loads((ROOT / "deps" / "manifest.json").read_text(encoding="utf-8"))
+    manifest["benchmarker"]["vulcan"]["tag"] = "fe4bc16544b1"
+    path = tmp_path / "deps" / "manifest.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert resolve_benchmark_runtime(tmp_path)["benchmarker"]["vulcan"]["tag"] == "fe4bc16544b1"
+
+
+def test_benchmark_runtime_rejects_an_unversioned_artifact_tag(tmp_path: Path) -> None:
+    manifest = json.loads((ROOT / "deps" / "manifest.json").read_text(encoding="utf-8"))
+    manifest["benchmarker"]["vulcan"]["tag"] = "nightly"
+    path = tmp_path / "deps" / "manifest.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="latest or an immutable"):
+        resolve_benchmark_runtime(tmp_path)
 
 
 @pytest.mark.parametrize("version", ["2.1", "develop", "2.1.3-develop", 213, None])

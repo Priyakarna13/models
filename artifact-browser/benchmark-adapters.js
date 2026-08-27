@@ -1,0 +1,116 @@
+function measured(metric) {
+  return metric?.status === "measured" && Number.isFinite(metric.value)
+    ? {
+      value: metric.value,
+      unit: metric.unit,
+      minimum: metric.minimum,
+      maximum: metric.maximum,
+      standardDeviation: metric.standard_deviation,
+      sampleCount: metric.sample_count,
+    }
+    : null;
+}
+
+const TRIAL_METRIC_FIELDS = [
+  "latency_avg_ms",
+  "latency_p50_ms",
+  "latency_p95_ms",
+  "throughput_fps",
+  "avg_power_watts",
+  "energy_joules",
+  "energy_per_inference_joules",
+];
+
+function finite(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function temperatureSeries(result) {
+  const environment = result.environment || {};
+  const observations = environment.observations || {};
+  const explicit = Array.isArray(environment.temperature_samples)
+    ? environment.temperature_samples
+    : [];
+  const snapshots = explicit.length
+    ? explicit
+    : [
+      observations.start && { ...observations.start, phase: "start", trial: null },
+      observations.end && { ...observations.end, phase: "end", trial: null },
+    ].filter(Boolean);
+  const series = new Map();
+  snapshots.forEach((snapshot, sampleIndex) => {
+    const timestamp = Date.parse(snapshot.timestamp_utc);
+    if (!Number.isFinite(timestamp)) return;
+    const duplicateCounts = new Map();
+    (snapshot.temperatures_c || []).forEach((reading) => {
+      if (!Number.isFinite(reading.celsius)) return;
+      const sensor = String(reading.sensor || "Temperature");
+      const source = String(reading.source || "");
+      const duplicateKey = `${source}\u0000${sensor}`;
+      const occurrence = duplicateCounts.get(duplicateKey) || 0;
+      duplicateCounts.set(duplicateKey, occurrence + 1);
+      const id = String(reading.sensor_id || `${duplicateKey}\u0000${occurrence}`);
+      if (!series.has(id)) {
+        series.set(id, {
+          id,
+          sensor,
+          source,
+          label: source ? `${sensor} · ${source}` : `${sensor}${occurrence ? ` #${occurrence + 1}` : ""}`,
+          samples: [],
+          legacy: !explicit.length,
+        });
+      }
+      series.get(id).samples.push({
+        timestamp,
+        celsius: reading.celsius,
+        phase: snapshot.phase || "sample",
+        trial: Number.isInteger(snapshot.trial) ? snapshot.trial : null,
+        sampleIndex,
+      });
+    });
+  });
+  return [...series.values()]
+    .filter((item) => item.samples.length >= 2)
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function common(result) {
+  return {
+    schemaVersion: result.schema_version,
+    status: result.status,
+    timestamp: result.timestamp_utc,
+    metrics: {
+      latency: measured(result.metrics?.latency_avg_ms),
+      latencyP50: measured(result.metrics?.latency_p50_ms),
+      latencyP95: measured(result.metrics?.latency_p95_ms),
+      throughput: measured(result.metrics?.throughput_fps),
+      power: measured(result.metrics?.avg_power_watts),
+      energy: measured(result.metrics?.energy_per_inference_joules),
+    },
+    trials: (result.trials || []).map((trial) => ({
+      number: trial.trial,
+      metrics: Object.fromEntries(TRIAL_METRIC_FIELDS.map((field) => [field, finite(trial[field])])),
+    })).filter((trial) => Number.isInteger(trial.number)),
+    temperatureSeries: temperatureSeries(result),
+    samples: result.configuration?.samples,
+    platformVersion: result.compatibility?.actual_platform_version,
+    neatVersion: result.compatibility?.actual_neat_version,
+  };
+}
+
+function adaptV1(result) {
+  return { ...common(result), orchestration: null };
+}
+
+function adaptV2(result) {
+  return { ...common(result), orchestration: result.orchestration || null };
+}
+
+export const benchmarkAdapters = new Map([[1, adaptV1], [2, adaptV2]]);
+
+export function adaptBenchmarkResult(result) {
+  if (!result || typeof result !== "object") return { kind: "missing" };
+  const adapter = benchmarkAdapters.get(result.schema_version);
+  if (!adapter) return { kind: "unsupported", schemaVersion: result.schema_version };
+  return { kind: "supported", value: adapter(result) };
+}

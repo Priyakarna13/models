@@ -43,7 +43,10 @@ class SigV4RegistryClient:
         self._request = request or self._curl_request
 
     def request(self, method: str, path: str, body: JsonObject | None, idempotency_key: str) -> JsonObject:
-        return self._request(method, path, body, idempotency_key)
+        try:
+            return self._request(method, path, body, idempotency_key)
+        except RegistryPublicationError as exc:
+            raise RegistryPublicationError(f"{method} {path}: {exc}") from exc
 
     def _curl_request(self, method: str, path: str, body: JsonObject | None, idempotency_key: str) -> JsonObject:
         access_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
@@ -383,6 +386,10 @@ def publish_compilations(
             f"{stable_key}-create",
         )
         run_id = _require_text(create.get("run_id"), "run_id")
+        source_metadata = {"model_id": model_id}
+        model_card = model.get("upstream", {}).get("model_card")
+        if isinstance(model_card, str) and model_card:
+            source_metadata["model_card"] = model_card
         client.request(
             "PUT",
             f"/v1/runs/{run_id}/inputs/source-model",
@@ -392,7 +399,7 @@ def publish_compilations(
                 "sha256": source_sha,
                 "size_bytes": model["source"]["size_bytes"],
                 "media_type": model["source"].get("media_type", "application/onnx"),
-                "metadata": {"model_id": model_id},
+                "metadata": source_metadata,
             },
             f"{stable_key}-input",
         )
