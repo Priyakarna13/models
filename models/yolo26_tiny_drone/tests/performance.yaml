@@ -6,6 +6,11 @@ configuration:
   precision: int8
   tessellation_owner: mla
   tracker_profile: tiny_drone
+benchmark:
+  mode: bounded_runner
+  warmup_samples: 1
+  samples: 5
+  trials: 3
 metrics:
   - model_inference_latency_ms
   - preprocessing_latency_ms
@@ -13,4 +18,4 @@ metrics:
   - tracking_latency_ms
   - overlay_latency_ms
   - end_to_end_latency_ms
-note: Preserve per-stage and end-to-end latency evidence when the registry artifact is requalified on a DevKit.
+note: Use the bounded runner settings above to keep DevKit requalification within the workflow timeout while preserving per-stage and end-to-end latency evidence.
