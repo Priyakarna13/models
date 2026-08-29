@@ -59,6 +59,7 @@
     "interface": {"$ref": "#/$defs/interface"},
     "preprocessing": {"$ref": "#/$defs/pipeline"},
     "postprocessing": {"$ref": "#/$defs/pipeline"},
+    "training": {"$ref": "#/$defs/training"},
     "calibration": {"$ref": "#/$defs/calibration"},
     "surgery": {"$ref": "#/$defs/surgery"},
     "compile_variants": {
@@ -194,6 +195,18 @@
       "required": ["pipeline"],
       "properties": {
         "pipeline": {"type": "array", "items": {"$ref": "#/$defs/pipelineStage"}}
+      }
+    },
+    "training": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "config"],
+      "properties": {
+        "method": {"const": "qat"},
+        "config": {
+          "type": "string",
+          "pattern": "^training/[a-z][a-z0-9]*(?:_[a-z0-9]+)*/[A-Za-z0-9_.-]+\\.ya?ml$"
+        }
       }
     },
     "calibration": {

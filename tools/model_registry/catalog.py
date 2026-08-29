@@ -9,13 +9,7 @@ from typing import Any
 from .errors import ValidationError
 from .model import load_and_validate_model
 
-GLOBAL_COMPILE_INPUT_PATHS = (
-    "deps/",
-)
-
-MODEL_COMPILE_INPUT_PATHS = {
-    "yolo26_tiny_drone": ("training/yolo26_tiny_drone/",),
-}
+GLOBAL_COMPILE_INPUT_PATHS = ("deps/",)
 
 _IGNORED_BUILD_PARTS = {".git", "__pycache__"}
 _IGNORED_BUILD_SUFFIXES = {".pyc", ".pyo"}
@@ -128,15 +122,14 @@ def resolve_base_branch(
 def _build_input_files(root: Path, model_id: str) -> list[Path]:
     candidates: list[Path] = []
     global_prefixes = GLOBAL_COMPILE_INPUT_PATHS
-    model_prefixes = MODEL_COMPILE_INPUT_PATHS.get(model_id, ())
+    training_prefix = f"training/{model_id}/"
+    model_prefixes = (training_prefix,) if (root / training_prefix.rstrip("/")).is_dir() else ()
     for prefix in (*global_prefixes, *model_prefixes):
         path = root / prefix.rstrip("/")
         if path.is_file():
             candidates.append(path)
         elif path.is_dir():
             candidates.extend(item for item in path.rglob("*") if item.is_file())
-        elif prefix in model_prefixes:
-            raise ValidationError(f"model compile input not found: {path}")
     model_dir = root / "models" / model_id
     candidates.extend(
         item
@@ -203,11 +196,10 @@ def select_model_ids(catalog: dict[str, dict[str, Any]], changed_paths: list[str
 
     selected: set[str] = set()
     for path in normalized:
-        for model_id, prefixes in MODEL_COMPILE_INPUT_PATHS.items():
-            if model_id in catalog and any(_matches_path_prefix(path, prefix) for prefix in prefixes):
-                selected.add(model_id)
         parts = PurePosixPath(path).parts
         if len(parts) >= 2 and parts[0] == "models" and parts[1] in catalog:
+            selected.add(parts[1])
+        if len(parts) >= 2 and parts[0] == "training" and parts[1] in catalog:
             selected.add(parts[1])
     return sorted(selected)
 

@@ -1,0 +1,32 @@
+schema_version: 1
+status: qualified_reference
+target: modalix
+configuration:
+  public_input_shape: [1, 448, 576, 3]
+  public_input_dtype: int8
+  public_output_shape: [1, 448, 576, 16]
+  public_output_dtype: int8
+  internal_precision: strict_w8a8
+  mla_plugins: 1
+  mla_elfs: 1
+benchmark:
+  mode: bounded_runner
+  warmup_samples: 10
+  samples: 1000
+  trials: 3
+  include_plugin_latency: false
+metrics:
+  reference_measured_run_mean_latency_ms: 7.588877972245319
+  reference_measured_run_p50_latency_ms: 7.546749548055232
+  reference_measured_run_p95_latency_ms: 7.723781676031649
+  reference_samples: 654
+  short_runtime_latency_ms: 6.1536795
+  short_runtime_fps: 238.2364555904376
+  registry_recipe_board_smoke:
+    samples: 10
+    benchmark_frames: 100
+    runtime_version: 0.4.0+develop.5aa4f7af822b
+    latency_ms: 5.995904810000002
+    fps: 275.361717354811
+  power_status: unavailable
+note: The committed values are qualification references, not CI output. Registry CI must benchmark the exact rebuilt MPK on a compatible Modalix DevKit and publish the new result to Vulcan.

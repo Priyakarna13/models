@@ -1,0 +1,112 @@
+schema_version: 1
+model_id: depthart_base
+method: qat
+status: external_runner_dependency
+runner_contract:
+  package: sima-neat/qat
+  install_via: sima-cli
+  requirement: The separately packaged SiMa QAT runner must support this schema before customer promotion; shared QAT code is intentionally not vendored in this repository.
+resume:
+  required: true
+  checkpoint_interval_optimizer_updates: 16
+  preserve_optimizer_and_scheduler: true
+  artifact_store: vulcan
+source:
+  repository: https://github.com/xuefeng-cvr/DepthART
+  revision: 0384521b3bcb4c64adf03eeb5d55ebdb1cbdd84c
+  checkpoint:
+    uri: hf://models/Fengxue93/DepthART@483c4b9c59f476b7e37d879f44e13a1088249522/relative/depthart_relative_b_224.pth
+    sha256: 87bdec998a91c262142e2d8df058a708a76585cf0b82e2916204fca1e392f653
+    size_bytes: 46258554
+  architecture_patch:
+    uri: https://api.github.com/repos/sima-neat/models/releases/assets/534820241
+    sha256: a9d67f5dbd086a6fabe44b502167fc83f003a7eb62ee762e561938889fda6a7b
+    size_bytes: 31295
+architecture:
+  encoder: B
+  deployment_input_nchw: [1, 3, 448, 576]
+  output_channels: 16
+  output_publication: wide_conv
+  transformations:
+    - replace_selective_scan_with_trainable_quant_conv_mixer
+    - fuse_reparameterizable_convolution_and_batchnorm
+    - fold_local_layer_scale
+    - use_target_realizable_gelu
+    - move_silu_to_each_channel_split_branch
+    - widen_terminal_depth_convolution_to_identical_c16
+quantization:
+  activations: {dtype: int8, granularity: per_tensor, symmetric: false, observer: minmax}
+  weights: {dtype: int8, granularity: per_output_channel, symmetric: true, quant_min: -127, quant_max: 127}
+  activation_fake_quantizers: 437
+  weight_fake_quantizers: 146
+  full_range_ste: true
+  quantize_all_concat: true
+  target_coupled_weight_scales: true
+  target_integer_forward:
+    convolution: true
+    elementwise: true
+  forbidden_compute_dtypes: [bfloat16, float16]
+data:
+  training_manifest:
+    id: nyuv2_cityscapes_qat_mixture_v1
+    sha256: 9799b492a499286b901ef3492748872fde6138785e305584f732492bc53433f0
+    access: private_dataset_repository
+  streams:
+    - {dataset: nyuv2_train, role: paired_supervision_and_distillation, samples: 768}
+    - {dataset: cityscapes, role: unpaired_teacher_distillation, samples: 256}
+  validation:
+    dataset: nyuv2_test654
+    split_manifest_sha256: 41c9d775b5fd7e5a65252187de15f2b3cd325b26baaa72fafd43ddc8ea505944
+    access: private_dataset_repository
+  disjoint_validation_required: true
+preprocessing:
+  resize: {width: 576, height: 448, resample: bicubic, preserve_aspect_ratio: false}
+  color_space: RGB
+  scale: 0.00392156862745098
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+loss:
+  teacher_distillation:
+    standardized_prediction: true
+    spatial_gradient: true
+    weight: 1.0
+  supervised_affine_inverse_depth:
+    weight: 0.2
+  terminal_c16_policy: mean_of_exact_repeated_channels
+schedule:
+  device: cuda
+  minimum_gpu_memory_gb: 24
+  pytorch: 2.8.0
+  batch_size: 1
+  gradient_accumulation: 8
+  stages:
+    - id: fp32_architecture_distillation
+      optimizer_updates: 1024
+      base_learning_rate: 0.00001
+      mixer_learning_rate: 0.0003
+    - id: strict_target_integer_qat
+      paired_sample_visits: 768
+      optimizer_updates: 96
+      learning_rate: 0.000001
+      seed: 260845
+    - id: afe_projected_refinement
+      paired_sample_visits: 768
+      optimizer_updates: 96
+      learning_rate: 0.0000005
+      seed: 260846
+      project_afe_activation_qparams: true
+export:
+  format: onnx
+  opset: 17
+  input: {name: image, dtype: float32, shape: [1, 3, 448, 576]}
+  output: {name: depth, dtype: float32, shape: [1, 16, 448, 576]}
+  expected_sha256: 25fb78ac659c6936dc2cac9a739262e6c8a028d4e2f6f8a65350016ee8458d79
+acceptance:
+  strict_qat_audit_required: true
+  activation_fake_quant_coverage: 437
+  weight_fake_quant_coverage: 146
+  minimum_delta1_retention_vs_matched_fp32: 0.95
+  require_single_mla_elf: true
+  require_zero_bfloat16_and_float16_compute: true
+  require_modalix_full_split: true
+  require_repeat_run_bit_exact: true

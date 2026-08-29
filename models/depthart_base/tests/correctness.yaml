@@ -1,0 +1,43 @@
+schema_version: 1
+status: qualified_reference
+target: modalix
+qualification_artifact:
+  mpk_sha256: 19cbd8bf11139a452264b6a179642e9f77813145f057caa91eb4b6a1bcf8aefa
+  registry_recipe_mpk_sha256: 33f4f8da7bfb9d9061e155b02b9d0a354894a3bd71d1e90d88ce11fa09ec7ce5
+  mla_elf_sha256: 5d887d7aed1ca44ec22c5edc3ed1efaf3389aa3da01c58dc27efe8a6027f72d0
+  note: The registry recipe rebuild has different archive metadata but reproduces the exact board-qualified MLA ELF and public ABI.
+dataset:
+  id: nyuv2_test654_private_snapshot
+  samples: 654
+  split_manifest_sha256: 41c9d775b5fd7e5a65252187de15f2b3cd325b26baaa72fafd43ddc8ea505944
+  normalized_input_manifest_sha256: 385c78dbf325a0af402ea0e36a4654d1c066f48884a0c126aee815e47a72e1d1
+  redistribution: prohibited
+  note: CI must obtain this immutable evaluation snapshot from the private validation-data repository; no NYUv2 files are stored here.
+metrics:
+  - {name: delta1, direction: higher, measured: 0.7703587221596656}
+  - {name: delta2, direction: higher, measured: 0.952155395420433}
+  - {name: delta3, direction: higher, measured: 0.9901886599925752}
+  - {name: abs_rel, direction: lower, measured: 0.1521478206858343}
+  - {name: rmse, direction: lower, measured: 0.5881654464099166}
+  - {name: silog, direction: lower, measured: 19.368406537132348}
+acceptance:
+  metric: delta1_retention_vs_matched_fp32
+  minimum: 0.95
+  measured: 0.9505142586891481
+  passed: true
+reported_non_gates:
+  - {name: absolute_delta1_0_90, measured: 0.7703587221596656, passed: false}
+  - {name: absolute_abs_rel_0_09, measured: 0.1521478206858343, passed: false}
+execution:
+  all_outputs_finite: true
+  c16_max_absolute_channel_delta: 0
+  repeat_runs_bit_exact: true
+  aggregate_prediction_sha256: ac2d8606dd062d1b3fe50abb9d42167a78f0edfb60b7e6401bfbc6d87763ea32
+  registry_recipe_board_smoke:
+    samples: 10
+    mpk_sha256: 33f4f8da7bfb9d9061e155b02b9d0a354894a3bd71d1e90d88ce11fa09ec7ce5
+    prediction_set_sha256: efbd33495eb2d53b020366af473cd72dc9498330bde5e411d359b61432f099b8
+    matches_qualification_prediction_set: true
+    all_outputs_finite: true
+    c16_max_absolute_channel_delta: 0
+note: This candidate passes the declared model-relative retention gate. It does not meet the older absolute delta1/AbsRel targets, which are preserved above rather than hidden.

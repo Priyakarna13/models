@@ -277,13 +277,12 @@ def test_yolo26_build_fingerprint_includes_its_training_subtree(
     assert model_build_fingerprint(catalog_repository, "yolo26_tiny_drone", "2.1.3") != first
 
 
-def test_yolo26_build_fingerprint_requires_its_training_subtree(
+def test_model_without_training_subtree_still_has_a_build_fingerprint(
     catalog_repository: Path,
 ) -> None:
     _write_model(catalog_repository, "yolo26_tiny_drone")
 
-    with pytest.raises(ValidationError, match="model compile input not found"):
-        model_build_fingerprint(catalog_repository, "yolo26_tiny_drone", "2.1.3")
+    assert len(model_build_fingerprint(catalog_repository, "yolo26_tiny_drone", "2.1.3")) == 64
 
 
 def test_build_fingerprint_ignores_non_transforming_registry_tooling_changes(

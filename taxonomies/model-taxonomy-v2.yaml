@@ -61,6 +61,10 @@ architectures:
     display_name: YOLO26
     paradigm: cnn
     allowed_model_types: [vision]
+  depthart:
+    display_name: DepthART
+    paradigm: encoder_transformer
+    allowed_model_types: [vision]
   gemma_3:
     display_name: Gemma 3
     paradigm: decoder_transformer

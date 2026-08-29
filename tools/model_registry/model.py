@@ -119,6 +119,19 @@ def validate_model(
     if duplicates:
         raise ValidationError(f"{directory}: duplicate compile variant ids: {', '.join(duplicates)}")
 
+    training = model.get("training")
+    if training is not None:
+        relative = Path(training["config"])
+        expected_parent = Path("training") / model_id
+        if relative.parent != expected_parent:
+            raise ValidationError(
+                f"{directory}: training config must be under {expected_parent.as_posix()}: {relative.as_posix()}"
+            )
+        repository = schema_file.parent.parent.resolve()
+        candidate = (repository / relative).resolve()
+        if not candidate.is_relative_to(repository) or not candidate.is_file():
+            raise ValidationError(f"{directory}: referenced training config does not exist: {relative.as_posix()}")
+
     referenced_paths = [case["config"] for group in model["tests"].values() for case in group]
     referenced_paths.extend(variant["recipe"] for variant in model["compile_variants"])
     if model["surgery"]["type"] == "python":

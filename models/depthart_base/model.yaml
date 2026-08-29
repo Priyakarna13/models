@@ -1,0 +1,125 @@
+schema_version: 2
+id: depthart_base
+display_name: DepthART Base strict INT8
+description: Source-QAT monocular relative-depth model with strict W8A8 MLA compute and INT8 public boundaries.
+taxonomy_version: 2
+model_type: vision
+tasks:
+  - depth_estimation
+modalities:
+  inputs:
+    - image
+  outputs:
+    - depth_map
+architecture:
+  id: depthart
+  variant: base_quant_conv_mixer
+owners:
+  - "@sima-neat/models"
+license:
+  spdx: Apache-2.0
+  redistribution: restricted
+  attribution: DepthART by Feng Xue et al.; the Hugging Face model card declares Apache-2.0 for the checkpoint. Upstream source-code redistribution requires separate approval.
+source:
+  uri: https://api.github.com/repos/sima-neat/models/releases/assets/534820229
+  sha256: 25fb78ac659c6936dc2cac9a739262e6c8a028d4e2f6f8a65350016ee8458d79
+  size_bytes: 12192947
+  media_type: application/onnx
+upstream:
+  repository: https://github.com/xuefeng-cvr/DepthART
+  revision: 0384521b3bcb4c64adf03eeb5d55ebdb1cbdd84c
+  model_card: https://huggingface.co/Fengxue93/DepthART
+  derived_from: https://huggingface.co/Fengxue93/DepthART/resolve/483c4b9c59f476b7e37d879f44e13a1088249522/relative/depthart_relative_b_224.pth
+interface:
+  format: onnx
+  opset: 17
+  inputs:
+    - name: image
+      dtype: float32
+      shape: [1, 3, 448, 576]
+      layout: NCHW
+      description: RGB image resized to 576x448, ImageNet-normalized, and represented as float32 by the QDQ source.
+  outputs:
+    - name: depth
+      dtype: float32
+      shape: [1, 16, 448, 576]
+      layout: NCHW
+      description: Sixteen identical channels of relative inverse depth; C16 is an MLA publication contract.
+preprocessing:
+  pipeline:
+    - op: decode_image
+      parameters: {color_space: RGB}
+    - op: resize
+      parameters: {width: 576, height: 448, resample: bicubic, preserve_aspect_ratio: false}
+    - op: rescale
+      parameters: {factor: 0.00392156862745098}
+    - op: normalize
+      parameters:
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+    - op: transpose
+      parameters: {from: HWC, to: CHW}
+postprocessing:
+  pipeline:
+    - op: assert_repeated_channels
+      parameters: {axis: 1, channels: 16, maximum_absolute_delta: 0}
+    - op: select_channel
+      parameters: {axis: 1, index: 0}
+    - op: relative_inverse_depth
+      parameters: {metric_depth_requires_external_scale_and_shift: true}
+training:
+  method: qat
+  config: training/depthart_base/qat.yaml
+calibration:
+  status: not_required
+  reason: The compiler consumes a checksum-pinned, already calibrated QAT .sima snapshot; no PTQ observer or bias-correction pass is permitted.
+surgery:
+  type: none
+compile_variants:
+  - id: modalix_strict_int8
+    target: modalix
+    recipe: compile.py
+    parameters:
+      precision: int8
+      quantization_method: qat
+      activation_quantization: asymmetric_per_tensor_8bit
+      weight_quantization: symmetric_per_channel_8bit
+      public_input_dtype: int8
+      public_input_layout: NHWC
+      public_input_shape: [1, 448, 576, 3]
+      public_input_inverse_scale: 53.59502566491281
+      public_input_zero_point: -14
+      public_output_dtype: int8
+      public_output_layout: NHWC
+      public_output_shape: [1, 448, 576, 16]
+      public_output_inverse_scale: 7.004845439346729
+      public_output_zero_point: -128
+      tessellation_owner: mla
+      require_single_mla: true
+      require_zero_float_compute: true
+      expected_convolutions: 146
+      expected_guarded_concat_emitters: 2
+      expected_elf_sha256: 5d887d7aed1ca44ec22c5edc3ed1efaf3389aa3da01c58dc27efe8a6027f72d0
+      quantized_source:
+        uri: https://api.github.com/repos/sima-neat/models/releases/assets/534820227
+        sha256: 8b2518ef6492865d7f7cde2bb8be6879d00259c08d2565557573d290928575a3
+        size_bytes: 13680259
+        media_type: application/vnd.sima.model
+      qat_checkpoint:
+        uri: https://api.github.com/repos/sima-neat/models/releases/assets/534820226
+        sha256: 7e7909271692ff3b2e24d4ce82f7cf17cd99393f3dbb4557c73120bfc1a4997c
+        size_bytes: 49677949
+        media_type: application/x-pytorch
+      qualification_evidence:
+        uri: https://api.github.com/repos/sima-neat/models/releases/assets/534820231
+        sha256: a296706e72764f9667f8cbfb9659d1462f7e39d96c34b16ea1c2f70693e654b9
+        size_bytes: 12005
+        media_type: application/json
+tests:
+  correctness:
+    - id: nyuv2_test654_relative_depth
+      config: tests/correctness.yaml
+  performance:
+    - id: modalix_strict_int8_latency
+      config: tests/performance.yaml
+maturity: staging

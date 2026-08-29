@@ -65,6 +65,20 @@ def test_missing_model_local_test_config_fails() -> None:
         validate_model(FIXTURES / "fixture_model", model, SCHEMA)
 
 
+def test_qat_config_must_be_in_model_training_directory() -> None:
+    model = load_model(FIXTURES / "fixture_model")
+    model["training"] = {"method": "qat", "config": "training/another_model/qat.yaml"}
+    with pytest.raises(ValidationError, match="training config must be under training/fixture_model"):
+        validate_model(FIXTURES / "fixture_model", model, SCHEMA)
+
+
+def test_missing_qat_config_fails() -> None:
+    model = load_model(FIXTURES / "fixture_model")
+    model["training"] = {"method": "qat", "config": "training/fixture_model/qat.yaml"}
+    with pytest.raises(ValidationError, match="referenced training config does not exist"):
+        validate_model(FIXTURES / "fixture_model", model, SCHEMA)
+
+
 def test_yaml_uses_safe_loader(tmp_path: Path) -> None:
     directory = tmp_path / "unsafe"
     directory.mkdir()

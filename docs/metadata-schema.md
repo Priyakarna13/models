@@ -165,6 +165,15 @@ calibration:
 Synthetic data may exercise a compiler path, but it does not become
 representative accuracy evidence merely because compilation succeeds.
 
+## QAT training reference
+
+`training` is optional and currently supports `method: qat`. `config` is a
+repository-relative YAML path and must be exactly under
+`training/<model-id>/`. The referenced YAML contains model-specific policy;
+standard QAT scaffolding and orchestration remain in the separately packaged
+SiMa QAT tool. Training-config changes enter only that model's build
+fingerprint and changed-model selection.
+
 ## Surgery
 
 Use `type: none` when no model-specific transformation is needed. Python
