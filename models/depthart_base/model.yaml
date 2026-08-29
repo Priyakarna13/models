@@ -2,7 +2,7 @@ schema_version: 2
 id: depthart_base
 display_name: DepthART Base strict INT8
 description: Source-QAT monocular relative-depth model with strict W8A8 MLA compute and INT8 public boundaries.
-taxonomy_version: 2
+taxonomy_version: 3
 model_type: vision
 tasks:
   - depth_estimation
