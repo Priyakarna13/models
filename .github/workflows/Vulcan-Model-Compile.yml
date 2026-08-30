@@ -723,21 +723,22 @@ jobs:
           set -euo pipefail
           environment="$(jq -er '.benchmarker.vulcan.environment' <<< "$BENCHMARK_RUNTIME")"
           name="$(jq -er '.benchmarker.vulcan.name' <<< "$BENCHMARK_RUNTIME")"
-          fallback_branch="$(jq -er '.benchmarker.vulcan.branch' <<< "$BENCHMARK_RUNTIME")"
-          fallback_tag="$(jq -er '.benchmarker.vulcan.tag' <<< "$BENCHMARK_RUNTIME")"
           expected_version="$(jq -er '.benchmarker.version' <<< "$BENCHMARK_RUNTIME")"
-          primary_target="$name@$SOURCE_BRANCH:latest"
-          fallback_target="$name@$fallback_branch:$fallback_tag"
-          if sima-cli neat install --env "$environment" "$primary_target"; then
-            echo "Installed benchmarker from $primary_target."
-          elif [[ "$primary_target" != "$fallback_target" ]]; then
-            echo "Failed to install $primary_target; falling back to $fallback_target." >&2
-            sima-cli neat install --env "$environment" "$fallback_target"
-            echo "Installed benchmarker from $fallback_target."
-          else
-            echo "Failed to install benchmarker from $primary_target; no fallback is configured." >&2
-            exit 1
-          fi
+          tooling_tag="${GITHUB_SHA:0:12}"
+          target="$name@$GITHUB_REF_NAME:$tooling_tag"
+          for attempt in {1..6}; do
+            if sima-cli neat install --env "$environment" "$target"; then
+              echo "Installed benchmarker from $target."
+              break
+            fi
+            if [[ "$attempt" == "6" ]]; then
+              echo "Failed to install benchmarker from $target after $attempt attempts." >&2
+              exit 1
+            else
+              echo "Benchmarker $target is not available yet; retrying in 5 seconds ($attempt/6)." >&2
+              sleep 5
+            fi
+          done
           "$HOME/pyneat/bin/python" -c 'import pyneat, os; assert pyneat.__version__.split("+", 1)[0] == os.environ["NEAT_VERSION"]'
           "$HOME/pyneat/bin/benchmarker" --version | grep -E " ${expected_version}(\\+|$)"
           "$HOME/pyneat/bin/python" -c 'import benchmarker; assert getattr(benchmarker, "RESULT_SCHEMA_VERSION", None) == 3, "installed benchmarker cannot emit schema-v3 results"'
