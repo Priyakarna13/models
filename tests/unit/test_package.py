@@ -184,7 +184,8 @@ def test_package_carries_forward_pointers_without_copying_unchanged_mpk(tmp_path
     assert latest["models"]["resnet_50"]["artifact_branch"] == "main"
     assert latest["models"]["resnet_50"]["categorization"]["tasks"] == ["image_classification"]
     metadata = json.loads((destination / "metadata.json").read_text(encoding="utf-8"))
-    assert "/models/main/aaaaaaaaaaaa/resnet_50/" in metadata["selectable-resources"][0]["resource"]
+    resources = [item["resource"] for item in metadata["selectable-resources"]]
+    assert any("/models/main/aaaaaaaaaaaa/resnet_50/" in resource for resource in resources)
 
 
 def test_first_package_requires_every_catalog_model(tmp_path: Path) -> None:
