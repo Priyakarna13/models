@@ -72,7 +72,8 @@ The input follows
   "schema_version": 1,
   "model": {
     "id": "resnet_50",
-    "variant_id": "modalix_bf16",
+    "build_profile_id": "modalix_bf16",
+    "component_id": "model",
     "path": "/workspace/models/resnet_50_modalix_bf16_mpk.tar.gz",
     "sha256": "<64 lowercase hexadecimal characters>"
   },
@@ -147,7 +148,7 @@ the JSON result and benchmark log outside Git. Local results are developer
 evidence; they are not registry publications.
 
 The output follows
-[`performance-result-v3.schema.json`](https://github.com/sima-neat/models/blob/develop/schemas/performance-result-v3.schema.json)
+[`performance-result-v4.schema.json`](https://github.com/sima-neat/models/blob/develop/schemas/performance-result-v4.schema.json)
 and is written atomically. Average latency and throughput are available from
 Neat 0.4.0. Percentiles are marked `unsupported` for the default
 `Model.benchmark()` path; bounded runner measurements include them. Missing

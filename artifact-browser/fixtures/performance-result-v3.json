@@ -9,7 +9,7 @@
   "identity": {
     "algorithm": "sha256",
     "canonicalization_version": 3,
-    "fingerprint": "4f877a7da647d2cfdcf59bcef1fe6d8e90a46f1a583be32d124d30e8121bca9f"
+    "fingerprint": "4ea2eee0cd8dc098e9af9e7ce88d93ab0a459bb4cc44d3cf60956653f58b048b"
   },
   "timestamp_utc": "2026-08-26T19:42:31Z",
   "failure_classification": null,

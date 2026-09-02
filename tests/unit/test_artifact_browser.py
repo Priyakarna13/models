@@ -344,6 +344,22 @@ def test_smart_search_uses_names_and_taxonomy_labels_on_client_and_server() -> N
     assert "setTimeout(() => loadRuns" in script
 
 
+def test_browser_formats_v1_and_v2_build_identities_without_a_false_default() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+
+    assert "function buildIdentity(run)" in script
+    assert "metadata.build_profile_id || metadata.variant_id" in script
+    assert 'component !== "model"' in script
+    assert '`${profile} · ${component}`' in script
+    assert '"Build identity unavailable"' in script
+    assert '"default artifact"' not in script
+    assert "const build = buildIdentity(run);" in script
+    assert "run.metadata?.build_profile_id, run.metadata?.component_id" in script
+    assert '"build_profile_id": variant_id' in preview
+    assert '"component_id": "model"' in preview
+
+
 def test_model_card_links_to_the_exact_compiled_github_source() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
@@ -439,7 +455,7 @@ def test_benchmark_rendering_is_schema_versioned_and_charted() -> None:
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
 
     assert 'import { adaptBenchmarkResult } from "./benchmark-adapters.js"' in script
-    assert "new Map([[1, adaptV1], [2, adaptV2], [3, adaptV3]])" in adapters
+    assert "new Map([[1, adaptV1], [2, adaptV2], [3, adaptV3], [4, adaptV4]])" in adapters
     assert "Object.entries(result.metrics || {})" in adapters
     assert "Object.entries(trial)" in adapters
     assert "/benchmarks/latest" in script
@@ -578,20 +594,20 @@ def test_model_license_metadata_is_rendered_with_redistribution_and_attribution(
     assert '"redistribution": "allowed"' in preview
 
 
-def test_local_preview_fixture_is_extensible_schema_v3_and_server_is_same_origin() -> None:
-    fixture_path = BROWSER / "fixtures" / "performance-result-v3.json"
-    schema_path = ROOT / "schemas" / "performance-result-v3.schema.json"
+def test_local_preview_fixture_is_extensible_schema_v4_and_server_is_same_origin() -> None:
+    fixture_path = BROWSER / "fixtures" / "performance-result-v4.json"
+    schema_path = ROOT / "schemas" / "performance-result-v4.schema.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     server = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
 
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(fixture)
-    prior_v3 = json.loads(json.dumps(fixture))
-    prior_v3["metrics"].pop("model_load_ms")
-    prior_v3["metrics"].pop("time_to_first_inference_ms")
-    Draft202012Validator(schema, format_checker=FormatChecker()).validate(prior_v3)
-    assert fixture["schema_version"] == 3
+    prior_v4 = json.loads(json.dumps(fixture))
+    prior_v4["metrics"].pop("model_load_ms")
+    prior_v4["metrics"].pop("time_to_first_inference_ms")
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(prior_v4)
+    assert fixture["schema_version"] == 4
     assert fixture["metrics"]["mla_memory_peak_delta_mib"]["value"] == 136.5
     assert fixture["metrics"]["time_to_first_inference_ms"]["value"] == 348.7
     assert fixture["metrics"]["preview_only_extension_metric"]["unit"] == "mock-units"
