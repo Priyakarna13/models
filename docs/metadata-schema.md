@@ -212,6 +212,12 @@ reason: Model Compiler 2.x rejects the documented operator after the recorded qu
 Unsupported variants are visible in the manifest but omitted from matrices and
 release packaging. A non-empty reason is mandatory.
 
+`runner_class` is an optional per-variant resource request with allowed values
+`default`, `expensive`, and `most-expensive`. When omitted, it defaults to
+`default`. Elevated classes must have a matching approval in the Vulcan scaler
+specification and pass admission before scheduling. See [Compile runner class
+requests and approvals](runner-class-requests.md).
+
 ## Tests
 
 Tests reference YAML files inside the model directory:

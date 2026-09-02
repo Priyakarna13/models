@@ -201,6 +201,12 @@ combination cannot work with the repository compiler, retain it as
 variants remain documented but are excluded from compilation and packaging.
 Do not mark an untested or temporarily failing variant unsupported.
 
+Variants may request a logical runner class when the default runner is
+insufficient. Read [Compile runner class requests and
+approvals](runner-class-requests.md) before adding one. Elevated capacity must
+be approved in the Vulcan scaler specification and is enforced before the build
+is scheduled; a model manifest cannot authorize its own infrastructure cost.
+
 ## 8. Validate the contribution
 
 Run the model-owned recipe and benchmark flow from
