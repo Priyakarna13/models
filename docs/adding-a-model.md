@@ -1,9 +1,10 @@
-# Adding a model
+# Define the model contract
 
-This guide takes a model from an upstream ONNX file to a reviewable Model
-Registry contribution. Read the [`model.yaml` reference](metadata-schema.md)
-for field-level details and [local development](local-development.md) for the
-complete command reference.
+This guide owns the source-controlled model contract: the model directory,
+immutable source, metadata, recipe, variants, and test declarations. It ends
+when those files validate. The separate [local qualification
+guide](local-development.md) owns compilation, accuracy, MPK verification, and
+DevKit testing.
 
 ## 1. Confirm that the model is suitable
 
@@ -112,7 +113,7 @@ If the correct category does not exist, follow the versioning rules in the
 [taxonomy guide](model-taxonomy.md). Do not invent an authoritative category in
 one model manifest.
 
-## 5. Declare calibration and tests honestly
+## 5. Declare calibration and tests
 
 Use `calibration.status: ready` only when the declared source is immutable,
 checksummed, representative, and legally usable. Use `pending` with a concrete
@@ -124,6 +125,13 @@ should say what evidence is missing. A qualified reference should identify the
 dataset checksum, thresholds, and measured values needed by reviewers. The
 model schema verifies that test paths exist; model-specific test formats and
 release gates may impose additional requirements.
+
+Every calibration or correctness dataset must resolve through Dataset Registry.
+Set up private Artifactory access and follow
+[Datasets for local model development](datasets.md) before adding dataset
+metadata. If the required dataset or variant is not registered, introduce it in
+`sima-neat/dataset` and complete that review before referencing it from the
+model.
 
 For image-classification accuracy measurement, add an executable correctness
 YAML with `engine: model_registry`. Keep sampling, workers, executors, metrics,
@@ -168,12 +176,15 @@ compile.py --model <verified-source> --output-dir <new-directory> --variant <var
 The recipe must:
 
 - consume the already verified source passed by `--model`;
+- consume registered calibration datasets passed by `--dataset`, or immutable
+  `calibration.source` files passed through `CALIBRATION_PATH`;
 - read only the selected, declared variant parameters;
 - fail on an unknown or incompatible variant;
 - make preparation, quantization, and compilation deterministic;
 - create the new output directory rather than reuse stale output;
 - leave exactly one directly consumable `*_mpk.tar.gz` there;
-- never download an unpinned input or select another compiler version.
+- never download an unpinned input, re-download a provided calibration input,
+  or select another compiler version.
 
 The repository-wide compiler version comes from
 [`deps/manifest.json`](https://github.com/sima-neat/models/blob/develop/deps/manifest.json).
@@ -207,38 +218,22 @@ approvals](runner-class-requests.md) before adding one. Elevated capacity must
 be approved in the Vulcan scaler specification and is enforced before the build
 is scheduled; a model manifest cannot authorize its own infrastructure cost.
 
-## 8. Validate the contribution
+## 8. Check the contract
 
-Run the model-owned recipe and benchmark flow from
-[Local development and testing](local-development.md). Use these internal,
-non-publishing repository checks before and after that work:
+Before moving to qualification, check the model directory and its effect on the
+complete catalog:
 
 ```bash
 model-registry validate models/<model-id>
-model-registry fetch models/<model-id>
-model-registry fetch-calibration models/<model-id>
-model-registry matrix --repository . --changed-path models/<model-id>/model.yaml
-model-registry resolve-compiler --repository .
 model-registry validate-catalog --repository .
 ```
 
-`fetch-calibration` reports that no calibration is required when status is not
-`ready`. Inspect the matrix JSON and confirm that it contains every intended
-supported variant and no unintended model.
+These checks prove that the files form a coherent contract; they do not prove
+that the model compiles or runs.
 
-When the exact pinned Model Compiler environment and a compatible Modalix
-DevKit are available, continue through local compilation, MPK verification, and
-the declared performance test in
-[Local development and testing](local-development.md). If either environment is
-unavailable, stop at the last completed stage and state exactly which compiler
-or DevKit checks were not run in the pull request.
+## Next: qualify the model locally
 
-## 9. Submit the change
-
-Follow [Contributing with Git and GitHub](contributing.md). A typical new-model
-commit contains only the model directory and, when necessary, a separately
-reviewable taxonomy update. Never commit downloaded models, calibration or test
-datasets, MPKs, compiler intermediates, logs, credentials, or signed URLs.
-
-See [Contributing with Git and GitHub](contributing.md) for the submission and
-automation boundary. Model authors never publish registry state directly.
+Continue with [Qualify locally](local-development.md). Complete
+its full qualification loop for every submitted supported variant before
+opening a pull request. When that work passes, the local guide sends you to the
+Git and pull-request guide.

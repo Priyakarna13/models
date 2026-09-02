@@ -1,9 +1,15 @@
-# Local development and testing
+# Qualify locally
 
 This guide covers the complete local qualification loop: validate `model.yaml`,
-fetch immutable inputs, compile a declared variant, benchmark the resulting MPK
-on a Modalix DevKit, and review the local evidence. Commands assume the
-repository root as the current directory.
+fetch immutable inputs, compile a declared variant, measure declared accuracy,
+benchmark the resulting MPK on a Modalix DevKit, and review the local evidence.
+Commands assume the repository root as the current directory.
+
+Schema, catalog, dependency, and matrix checks run on an ordinary development
+machine with the contributor tool installed. Compilation requires the exact
+pinned Model Compiler environment. Performance measurement requires a
+compatible Modalix DevKit. Treat those as distinct required environments and
+complete the entire loop before submitting a model pull request.
 
 ## Local-first qualification loop
 
@@ -15,8 +21,9 @@ request:
 3. Confirm the pinned compiler and YAML-derived compile matrix.
 4. Compile the variant in the pinned Model Compiler environment.
 5. Validate the generated MPK.
-6. Run the declared performance test on a compatible Modalix DevKit.
-7. Review the machine-readable result and retain the result and log outside the
+6. Run the declared dataset-backed accuracy evaluation when it applies.
+7. Run the declared performance test on a compatible Modalix DevKit.
+8. Review the machine-readable results and retain the results and logs outside the
    repository.
 
 ## Install the contributor tool
@@ -50,6 +57,11 @@ or invoke the executable from its `bin` directory if it is not already on
 This is an author-safe command surface for validation, verified downloads,
 matrix inspection, and MPK checks. It cannot package or publish models,
 taxonomy, or benchmark results; those operations remain CI-only.
+
+Models that require calibration or accuracy data also require Dataset Registry
+and working private Artifactory access. Complete
+[Datasets for local model development](datasets.md) before fetching those
+inputs.
 
 ## Validate one model
 
@@ -138,7 +150,7 @@ public compile command. Use the model recipe directly:
 compile.py --model <verified-source> --output-dir <new-directory> --variant <variant-id>
 ```
 
-When the pinned environment is available:
+In the pinned Model Compiler environment:
 
 1. Resolve the compiler version and choose a supported variant from the matrix.
 2. Activate that exact locally installed Model Compiler environment using its
@@ -150,26 +162,58 @@ When the pinned environment is available:
    command -v mla-masm
    ```
 
-3. Fetch the source as JSON and take the returned verified `path`:
+3. Fetch the source and variant-specific calibration input as JSON, then take
+   the returned verified paths:
 
    ```bash
-   model-registry fetch models/<model-id> --json
-   model-registry fetch-calibration models/<model-id> --json
+   source_json="$(model-registry fetch models/<model-id> --json)"
+   source_path="$(jq -r .path <<<"$source_json")"
+
+   calibration_json="$(model-registry fetch-calibration \
+     models/<model-id> --variant <variant-id> --json)"
+   calibration_kind="$(jq -r .kind <<<"$calibration_json")"
+   calibration_path="$(jq -r .path <<<"$calibration_json")"
    ```
 
-   When calibration is ready, set `CALIBRATION_PATH` to the verified path
-   returned by `fetch-calibration`. Recipes that need the snapshot use that
-   preverified input.
+   `calibration_kind` distinguishes three outcomes: `dataset` resolves a
+   registered dataset archive, `source` resolves the immutable file declared
+   by `calibration.source`, and `none` has no calibration input or path. Keep a
+   nonempty path from either resolved kind; do not make the recipe download the
+   same input again.
 
 4. Invoke the recipe declared by the selected `compile_variants` entry, using a
    new output directory:
 
    ```bash
+   recipe_args=()
+   case "$calibration_kind" in
+     dataset)
+       recipe_args=(--dataset "$calibration_path")
+       unset CALIBRATION_PATH
+       ;;
+     source)
+       export CALIBRATION_PATH="$calibration_path"
+       ;;
+     none)
+       unset CALIBRATION_PATH
+       ;;
+     *)
+       echo "Unknown calibration kind: $calibration_kind" >&2
+       exit 1
+       ;;
+   esac
+
    python models/<model-id>/compile.py \
-     --model <verified-source-path> \
+     --model "$source_path" \
      --output-dir <new-output-directory> \
-     --variant <variant-id>
+     --variant <variant-id> \
+     "${recipe_args[@]}"
    ```
+
+   Dataset-based recipes receive `--dataset`. Source-based recipes read the
+   already verified file from `CALIBRATION_PATH`; this environment variable is
+   the standard recipe interface for `calibration.source`. A recipe must not
+   fall back to a network download when that variable is present.
 
 5. Verify that the directory contains exactly one `*_mpk.tar.gz` and validate
    it:
@@ -180,8 +224,22 @@ When the pinned environment is available:
 
 Use a location outside the repository or an ignored build directory. Never
 commit the MPK or compiler intermediates. If the pinned compiler environment is
-not available, stop after validation rather than claiming a successful
-local compile.
+not installed, obtain access to it before continuing; validation alone is not
+sufficient for model submission.
+
+## Measure declared accuracy locally
+
+If the selected variant has an executable correctness declaration with
+`engine: model_registry`, evaluate the saved `.sima` candidate produced by the
+recipe before benchmarking the MPK. This compares the candidate graph with the
+pinned reference model over the declared correctness dataset; it does not run
+the MPK on the DevKit.
+
+Follow [Local accuracy development](local-accuracy-development.md) for dataset
+resolution, regular versus qualification profiles, the `evaluate` command, and
+result interpretation. If `fetch-accuracy-dataset --variant <variant-id>`
+returns `kind: none`, the declaration does not apply to that variant and both
+local development and CI skip the accuracy step.
 
 ## Benchmark locally on a Modalix DevKit
 
@@ -190,40 +248,29 @@ Benchmark the exact MPK produced above using the performance declaration in
 model route with deterministic synthetic inputs; it does not establish model
 accuracy or measure application preprocessing and postprocessing.
 
-### 1. Check the DevKit environment
+Complete the installation and compatibility checks in [Synthetic model
+benchmarking](benchmarking.md#install-on-a-devkit) once for the target DevKit.
+For each qualified variant, follow this shorter model-contribution sequence.
 
-The DevKit must match the versions from `deps/manifest.json`. When working from
-a NEAT SDK, confirm that its DevKit runner is available and keep the MPK,
-manifest, and result paths under `/workspace`:
+### 1. Prepare the exact MPK and manifest
+
+Confirm that the NEAT SDK can reach the DevKit:
 
 ```bash
 bash -lic 'type dk || type devkit-run'
 ```
 
-Non-Python programs launched through the SDK runner must be ARM64. The
-benchmarker itself runs in the DevKit's installed `pyneat` environment. If the
-SDK runner is unavailable, use a direct DevKit shell and copy the same assets
-there explicitly.
-
-### 2. Install and verify the benchmarker on the DevKit
-
-```bash
-sima-cli neat install --stg models-utils/benchmarker@develop:latest
-source ~/pyneat/bin/activate
-benchmarker --version
-```
-
-### 3. Create the local benchmark manifest
-
 Copy the compiled `*_mpk.tar.gz` under `/workspace`, calculate its SHA-256, and
-create `/workspace/benchmark-test.json` using the manifest shown in
-[Synthetic model benchmarking](benchmarking.md#create-a-benchmark-manifest).
-For a local run, `provenance.compile_run_id` may be omitted. Keep `model.id`,
-`model.variant_id`, compatibility versions, sample counts, and any
-bounded-runner geometry consistent with `model.yaml`, `deps/manifest.json`, and
-the model's `tests/performance.yaml`.
+create `/workspace/benchmark-test.json` from the [benchmark manifest
+reference](benchmarking.md#create-a-benchmark-manifest). Keep its model,
+variant, compatibility, and test settings consistent with the checked-in
+contracts. For a local run, `provenance.compile_run_id` may be omitted.
 
-### 4. Run on the DevKit and retain evidence
+The published contributor command intentionally does not expose CI's
+`make-benchmark-manifest` helper. Creating the local manifest explicitly keeps
+the MPK path, checksum, tested revision, and performance settings reviewable.
+
+### 2. Run on the DevKit and retain evidence
 
 From a DevKit shell:
 
@@ -236,16 +283,14 @@ benchmarker \
   2>&1 | tee /workspace/results/benchmark.log
 ```
 
-From a NEAT SDK, prefer its `dk` or `devkit-run` mechanism to execute the same
-files under `/workspace`; use direct SSH only when that runner is unavailable.
-
 Confirm that the command exits successfully and that
 `performance-result.json` reports a successful result with the expected model,
 variant, platform, Neat version, and measured sample count. Retain the JSON and
 log outside the repository, but do not commit either file.
 
-See [Synthetic model benchmarking](benchmarking.md) for manifest fields,
-bounded-runner behavior, power telemetry, and result semantics.
+See [Synthetic model benchmarking](benchmarking.md) for runner installation,
+manifest fields, bounded-runner behavior, power telemetry, and result
+semantics.
 
 ## Finish the local review
 
@@ -254,12 +299,19 @@ Before leaving the local workflow, confirm:
 - the model and complete catalog validate;
 - each intended supported variant appears in the matrix;
 - each locally tested variant produces exactly one valid MPK;
+- each applicable dataset-backed accuracy run records the expected variant,
+  profile, and sample count;
 - the DevKit benchmark succeeds for that exact MPK;
 - the reported model, variant, versions, and sample count are correct; and
 - fetched inputs, MPKs, result JSON, and logs remain outside the repository.
 
+Summarize the result of each stage in the pull request. A compact record such
+as `validate: pass`, `compile modalix_int8: pass`, `accuracy: not applicable`,
+and `DevKit benchmark: pass` is clearer than a broad claim that local testing
+passed.
+
 When this checklist passes, continue to
-[Contributing with Git and GitHub](contributing.md) for commit, push, pull
+[Submit for review](contributing.md) for commit, push, pull
 request, and submission guidance.
 
 ## Common failures
