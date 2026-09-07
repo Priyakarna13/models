@@ -180,6 +180,19 @@ def test_catalog_avoids_per_run_enrichment_and_uses_local_cache() -> None:
     assert "state.runs[0]?.id" not in script
 
 
+def test_cached_build_history_preserves_run_mode() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+
+    assert 'catalogMode: "runs"' in script
+    assert 'state.catalogMode = modelsMode ? "models" : "runs"' in script
+    assert 'mode: state.catalogMode' in script
+    assert 'cached.models?.length || !cached.runs?.length ? "models" : "runs"' in script
+    assert 'payload.mode !== "runs" && Object.hasOwn(payload, "models")' in script
+    assert "applyCatalog(cached, { cache: false })" in script
+    assert 'return state.catalogMode === "models"' in script
+    assert 'elements["branch-filter"].value && !elements["history-filter"].checked' not in script
+
+
 def test_concurrent_requests_do_not_overwrite_newer_selections() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
 
@@ -193,6 +206,7 @@ def test_linked_run_loads_independently_of_the_current_catalog_page() -> None:
 
     assert "if (state.selectedId) await selectRun(state.selectedId, { updateUrl: false });" in script
     assert "state.runs.some((run) => run.id === state.selectedId)" not in script
+    assert "state.detailCache.get(runId)?.summary?.run" in script
 
 
 def test_detail_error_can_be_retried_and_closed() -> None:
@@ -221,7 +235,7 @@ def test_branch_filter_uses_an_independent_cached_registry_catalog() -> None:
     assert "branchCatalogCacheKey" in script
     assert "readCachedBranches" in script
     assert "writeCachedBranches" in script
-    assert "Promise.allSettled([loadTaxonomy(), loadBranches()])" in script
+    assert "loadTaxonomy(elements[\"branch-filter\"].value || DEFAULT_BRANCH)" in script
     assert "The registry returned an empty branch catalog; keeping saved branches." in script
     assert "knownBranches.delete(branch)" not in script
     assert "...(payload.branches || [])" not in script
@@ -288,13 +302,15 @@ def test_secondary_filters_are_collapsed_and_status_is_not_presented() -> None:
     assert 'run.status === "completed"' in script
 
 
-def test_latest_model_build_per_compiler_is_the_default_with_history_opt_in() -> None:
+def test_model_catalog_is_default_with_explicit_build_history_mode() -> None:
     html = (BROWSER / "index.html").read_text(encoding="utf-8")
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
 
     assert 'id="history-filter" type="checkbox" role="switch"' in html
-    assert "Latest per compiler is shown by default." in html
+    assert "Switches from models to chronological build runs." in html
+    assert "Show build history" in html
+    assert 'historical ? "runs" : "models"' in script
     assert 'query.set("run_type", "model_compile")' in script
     assert 'if (!elements["history-filter"].checked) query.set("latest_per_model_compiler", "true")' in script
     assert 'initialQuery.get("history") === "1"' in script
@@ -303,7 +319,7 @@ def test_latest_model_build_per_compiler_is_the_default_with_history_opt_in() ->
     assert ".switch-row input:checked + i" in styles
 
 
-def test_browser_loads_the_published_taxonomy_and_exposes_category_facets() -> None:
+def test_browser_loads_taxonomy_from_the_current_catalog_and_exposes_category_facets() -> None:
     html = (BROWSER / "index.html").read_text(encoding="utf-8")
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
 
@@ -315,8 +331,8 @@ def test_browser_loads_the_published_taxonomy_and_exposes_category_facets() -> N
         "input-modality-filter",
     ):
         assert f'id="{element_id}"' in html
-    assert "/taxonomies/latest" in script
-    assert "payload.taxonomy?.document" in script
+    assert "/catalogs/current?git_ref=" in script
+    assert "payload.catalog?.document?.taxonomy" in script
     assert '"task-filter": "task"' in script
     assert '"architecture-filter": "architecture_id"' in script
     assert "setCategoryFiltersDisabled(true)" in script
@@ -384,7 +400,11 @@ def test_mpk_validation_is_a_compact_accessible_status_mark() -> None:
     assert "MPK package integrity verified: archive structure, checksum, and build provenance match." in script
     assert '<h3>Validation</h3>' not in script
     assert ".detail-title-actions" in styles
-    assert ".model-source-link, .huggingface-source-link, .benchmark-shortcut, .artifact-download-shortcut, .mpk-validation-mark { width: 38px; height: 38px" in styles
+    compact_controls = (
+        ".model-source-link, .huggingface-source-link, .benchmark-shortcut, "
+        ".artifact-download-shortcut, .mpk-validation-mark { width: 38px; height: 38px"
+    )
+    assert compact_controls in styles
     assert ".detail-title-actions > [data-tooltip]:hover::after" in styles
 
 
@@ -393,7 +413,10 @@ def test_existing_benchmark_has_an_accessible_scroll_shortcut() -> None:
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
 
     assert "const hasBenchmark = Boolean(detail.benchmark && benchmarkMarkup)" in script
-    assert 'data-scroll-benchmark aria-label="Jump to benchmark results" data-tooltip="Jump to benchmark results"' in script
+    assert (
+        'data-scroll-benchmark aria-label="Jump to benchmark results" data-tooltip="Jump to benchmark results"'
+        in script
+    )
     assert 'id="benchmark-section" class="benchmark-section" tabindex="-1"' in script
     assert 'querySelector("#benchmark-section")' in script
     assert 'benchmark.scrollIntoView({' in script
@@ -508,6 +531,36 @@ def test_accuracy_result_is_rendered_with_scope_and_reference_comparison() -> No
     assert 'parts[3:] == ["accuracy", "latest"]' in preview
 
 
+def test_numerical_fidelity_is_rendered_from_correctness_results() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+
+    assert 'item.name === "numerical-fidelity"' in script
+    assert "fidelityPanel(tests, run.id)" in script
+    assert 'data-download="numerical-fidelity"' in script
+    panel = script.split("function fidelityPanel(", 1)[1].split("function licensePanel(", 1)[0]
+    assert '<div class="benchmark-summary">${metrics}</div>' in panel
+    assert panel.count('class="benchmark-metric"') == 2
+    assert '<span>${escapeHtml(metric.name)} · Cosine similarity</span>' in panel
+    assert '<span>${escapeHtml(metric.name)} · Normalized RMSE</span>' in panel
+    assert '<table>' not in panel
+    assert panel.index('class="benchmark-summary"') < panel.index('class="muted-message"')
+    assert "<details><summary>Evaluation details</summary>" in panel
+    assert '<details open' not in panel
+    assert 'Number(metric.cosine_similarity).toFixed(4)' in panel
+    assert 'Number(metric.normalized_rmse).toFixed(4)' in panel
+    assert "Mean absolute error" not in panel
+    assert "Maximum absolute error" not in panel
+    assert "Output similarity, not task accuracy" in panel
+    assert 'keyValue("Reference", report.reference)' in panel
+    assert 'keyValue("Candidate", report.candidate)' in panel
+    assert "report.dataset?.id" in panel
+    assert ".fidelity-output" not in styles
+    assert ".fidelity-summary" not in styles
+    assert '"name": "numerical-fidelity"' in preview
+
+
 def test_models_can_be_selected_and_compared_in_an_accessible_dialog() -> None:
     html = (BROWSER / "index.html").read_text(encoding="utf-8")
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
@@ -518,7 +571,8 @@ def test_models_can_be_selected_and_compared_in_an_accessible_dialog() -> None:
     assert 'aria-labelledby="compare-title" aria-describedby="compare-description"' in html
     assert "compareSelection: new Map()" in script
     assert 'data-compare-run-id="${run.id}"' in script
-    assert "state.compareSelection.size ? [...state.compareSelection.values()] : filteredRuns()" in script
+    assert "return [...state.compareSelection.values()]" in script
+    assert 'elements["compare-button"].disabled = selectedCount < 2' in script
     assert "mapWithConcurrency(runs, 6, loadComparisonEntry)" in script
     assert 'api(`/v1/runs/${run.id}/benchmarks/latest`)' in script
     assert "adaptBenchmarkResult(detail.benchmark.result)" in script
@@ -536,14 +590,53 @@ def test_models_can_be_selected_and_compared_in_an_accessible_dialog() -> None:
     assert ".compare-select input:focus-visible + span" in styles
 
 
+def test_model_catalog_uses_clean_model_navigation_and_detail_build_switching() -> None:
+    script = (BROWSER / "app.js").read_text(encoding="utf-8")
+    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+
+    assert "models: []" in script
+    assert "function profileGroups(model)" in script
+    assert 'class="model-row' in script
+    assert 'class="detail-variant-tabs" role="tablist"' in script
+    assert 'class="detail-variant-tab" type="button" role="tab"' in script
+    assert '<strong>Variants</strong>' in script
+    assert '<span>Components</span>' in script
+    assert '"<b>Current</b>"' in script
+    assert 'class="detail-component-tabs" role="group"' in script
+    assert 'class="detail-compare-select compare-select"' in script
+    assert "activeProfileByModel: new Map()" in script
+    assert "activeComponentByProfile: new Map()" in script
+    assert "function selectedCatalogBuild(" in script
+    assert "function compilerFilteredBuilds(model)" in script
+    assert "compilerFilteredBuilds(model).filter" in script
+    assert "build.toolchain_version === compiler" in script
+    assert 'query.set("toolchain_version", elements["compiler-filter"].value)' in script
+    assert "selectedCompiler,\n    ...state.runs.map((run) => run.toolchain_version)" in script
+    assert "payload.models.flatMap" not in script
+    assert ".detail-variant-tab[aria-selected=\"true\"]::before" in styles
+    assert ".model-row.selected" in styles
+    render_model_row = script.split("function renderModelRow(", 1)[1].split("function renderModels(", 1)[0]
+    assert 'role="tablist"' not in render_model_row
+    assert "data-compare-run-id" not in render_model_row
+    assert "const [activeProfile, activeBuilds] = profiles.find(" in script
+    assert "componentId(build) === requestedComponent" in script
+    assert '("rf_detr_small", "modalix_int8_bf16", "backbone"' in preview
+    assert '("rf_detr_small", "modalix_int8_bf16", "transformer"' in preview
+
+
 def test_focused_model_layout_collapses_list_metadata_without_overflow() -> None:
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
 
     assert '.workspace[data-detail-layout="focused"] .results-pane { overflow: hidden; padding-right: 0; }' in styles
     assert '.workspace[data-detail-layout="focused"] .section-heading { gap: 8px; padding-right: 16px; }' in styles
     assert '.workspace[data-detail-layout="focused"] .compare-button #compare-label { display: none; }' in styles
-    assert '.workspace[data-detail-layout="focused"] .run-entry { grid-template-columns: 34px minmax(0, 1fr); }' in styles
-    assert '.workspace[data-detail-layout="focused"] .run-row { grid-template-columns: minmax(0, 1fr); gap: 0; }' in styles
+    assert (
+        '.workspace[data-detail-layout="focused"] .run-entry { grid-template-columns: 34px minmax(0, 1fr); }' in styles
+    )
+    assert (
+        '.workspace[data-detail-layout="focused"] .run-row { grid-template-columns: minmax(0, 1fr); gap: 0; }' in styles
+    )
     assert '.run-row { width: 100%; min-width: 0;' in styles
     assert 'width: calc(100% + 30px)' not in styles
     assert '.workspace[data-detail-layout="focused"] .run-date,' in styles

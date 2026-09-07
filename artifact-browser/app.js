@@ -43,7 +43,9 @@ const SUMMARY_METRICS = Object.entries(METRIC_DEFINITIONS)
 const state = {
   apiBase: configuredApiBase,
   repository: configuredRepository,
+  models: [],
   runs: [],
+  catalogMode: "runs",
   cursor: null,
   hasMore: false,
   availableBranches: [],
@@ -53,6 +55,8 @@ const state = {
   detailCache: new Map(),
   comparisonCache: new Map(),
   compareSelection: new Map(),
+  activeProfileByModel: new Map(),
+  activeComponentByProfile: new Map(),
   taxonomy: null,
   detailLayout: readDetailLayout(),
   trialMetric: "latency_avg_ms",
@@ -239,7 +243,9 @@ function catalogCacheKey() {
   const categories = Object.entries(categoryFilters()).filter(([, value]) => value).sort();
   const search = elements.search.value.trim();
   const history = elements["history-filter"].checked ? "history" : "latest";
-  return `sima-neat-model-catalog:${state.apiBase}:${repo.organization}/${repo.name}:${history}:${search}:${JSON.stringify(categories)}`;
+  const branch = (state.preferredBranch ?? elements["branch-filter"].value) || "all";
+  const compiler = elements["compiler-filter"].value || "any";
+  return `sima-neat-model-catalog:${state.apiBase}:${repo.organization}/${repo.name}:${history}:${branch}:${compiler}:${search}:${JSON.stringify(categories)}`;
 }
 
 function branchCatalogCacheKey() {
@@ -292,8 +298,11 @@ function writeCachedBranches() {
 function readCachedCatalog() {
   try {
     const cached = JSON.parse(localStorage.getItem(catalogCacheKey()));
-    if (!cached || !Array.isArray(cached.runs)) return null;
-    return cached;
+    if (!cached || (!Array.isArray(cached.runs) && !Array.isArray(cached.models))) return null;
+    const mode = ["models", "runs"].includes(cached.mode)
+      ? cached.mode
+      : (cached.models?.length || !cached.runs?.length ? "models" : "runs");
+    return { ...cached, mode };
   } catch {
     return null;
   }
@@ -303,6 +312,8 @@ function writeCachedCatalog() {
   try {
     localStorage.setItem(catalogCacheKey(), JSON.stringify({
       savedAt: new Date().toISOString(),
+      mode: state.catalogMode,
+      models: state.models,
       runs: state.runs,
       cursor: state.cursor,
       hasMore: state.hasMore,
@@ -344,12 +355,12 @@ function setCategoryFiltersDisabled(disabled) {
   });
 }
 
-async function loadTaxonomy() {
+async function loadTaxonomy(branch = elements["branch-filter"].value || DEFAULT_BRANCH) {
   const repo = state.repository;
   const payload = await api(
-    `/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/taxonomies/latest`,
+    `/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/catalogs/current?git_ref=${encodeURIComponent(`refs/heads/${branch}`)}`,
   );
-  state.taxonomy = payload.taxonomy?.document || null;
+  state.taxonomy = payload.catalog?.document?.taxonomy || null;
   if (!state.taxonomy) throw new Error("The registry did not return a model taxonomy.");
   populateCategoryFilters();
   setCategoryFiltersDisabled(false);
@@ -409,10 +420,21 @@ function updateFilterDisclosure() {
 }
 
 function applyCatalog(payload, { append = false, cache = true } = {}) {
-  state.runs = append ? [...state.runs, ...payload.runs] : payload.runs;
+  const models = Array.isArray(payload.models) ? payload.models : [];
+  const runs = Array.isArray(payload.runs) ? payload.runs : [];
+  const modelsMode = payload.mode === "models"
+    || (payload.mode !== "runs" && Object.hasOwn(payload, "models"));
+  state.catalogMode = modelsMode ? "models" : "runs";
+  if (modelsMode) {
+    state.models = append ? [...state.models, ...models] : models;
+    state.runs = state.models.flatMap((model) => (model.builds || []).map((build) => runFromCatalogBuild(model, build)));
+  } else {
+    state.models = [];
+    state.runs = append ? [...state.runs, ...runs] : runs;
+  }
   state.availableBranches = [...new Set([
     ...state.availableBranches,
-    ...payload.runs.map((run) => branchName(run.git_ref)),
+    ...state.runs.map((run) => branchName(run.git_ref)),
   ])].sort();
   state.cursor = payload.next_cursor ?? payload.cursor ?? null;
   state.hasMore = Boolean(payload.has_more ?? payload.hasMore);
@@ -483,6 +505,56 @@ function buildIdentity(run) {
   return profile || component || "Build identity unavailable";
 }
 
+function catalogMode() {
+  return state.catalogMode === "models";
+}
+
+function buildProfileId(build) {
+  return build.build_profile_id || build.variant_id || "default";
+}
+
+function componentId(build) {
+  return build.component_id || "model";
+}
+
+function modelCategory(model, name, fallback) {
+  return model[name] ?? fallback;
+}
+
+function runFromCatalogBuild(model, build) {
+  const categories = model.categories || {};
+  const architecture = categories.architecture || {};
+  const branch = elements["branch-filter"].value || DEFAULT_BRANCH;
+  return {
+    id: build.run_id,
+    repository: `${state.repository.organization}/${state.repository.name}`,
+    run_type: "model_compile",
+    status: build.status || "completed",
+    git_ref: model.git_ref || `refs/heads/${branch}`,
+    commit_sha: build.commit_sha || model.catalog_revision,
+    created_at: build.created_at,
+    finished_at: build.finished_at,
+    toolchain_name: build.toolchain_name,
+    toolchain_version: build.toolchain_version,
+    target_platform: build.target_platform,
+    metadata: {
+      model_id: model.model_id,
+      display_name: model.display_name,
+      build_profile_id: buildProfileId(build),
+      component_id: componentId(build),
+      compile_invocation_id: build.compile_invocation_id,
+    },
+    model_type: modelCategory(model, "model_type", categories.model_type),
+    architecture_id: modelCategory(model, "architecture_id", architecture.id),
+    architecture_paradigm: modelCategory(model, "architecture_paradigm", architecture.paradigm),
+    tasks: modelCategory(model, "tasks", categories.tasks) || [],
+    input_modalities: modelCategory(model, "input_modalities", categories.input_modalities) || [],
+    output_modalities: modelCategory(model, "output_modalities", categories.output_modalities) || [],
+    model_tags: modelCategory(model, "model_tags", categories.tags) || [],
+    model_categories: categories,
+  };
+}
+
 function runSearchDocument(run) {
   return [
     run.metadata?.model_id, run.metadata?.model_name, run.metadata?.display_name,
@@ -518,10 +590,73 @@ function filteredRuns() {
   });
 }
 
+function modelSearchDocument(model) {
+  return [
+    model.model_id, model.display_name, model.description, model.maturity, model.license,
+    taxonomyLabel("model_types", model.model_type),
+    taxonomyLabel("architectures", model.architecture_id),
+    taxonomyLabel("architecture_paradigms", model.architecture_paradigm),
+    ...(model.tasks || []).flatMap((id) => [id, taxonomyLabel("tasks", id)]),
+    ...(model.input_modalities || []).flatMap((id) => [id, taxonomyLabel("modalities", id)]),
+    ...(model.output_modalities || []).flatMap((id) => [id, taxonomyLabel("modalities", id)]),
+    ...(model.model_tags || []),
+    ...(model.builds || []).flatMap((build) => [
+      buildProfileId(build), componentId(build), build.toolchain_name,
+      build.toolchain_version, build.target_platform,
+    ]),
+  ].filter(Boolean).join(" ");
+}
+
+function filteredModels() {
+  const current = filters();
+  const terms = normalizedSearchTerms(current.query);
+  return state.models.flatMap((model) => {
+    const searchableText = normalizedSearchTerms(modelSearchDocument(model)).join(" ");
+    const builds = (model.builds || []).filter((build) => (
+      !current.compiler || build.toolchain_version === current.compiler
+    ));
+    const matches = terms.every((term) => searchableText.includes(term))
+      && (!current.model_type || model.model_type === current.model_type)
+      && (!current.task || (model.tasks || []).includes(current.task))
+      && (!current.architecture_id || model.architecture_id === current.architecture_id)
+      && (!current.architecture_paradigm || model.architecture_paradigm === current.architecture_paradigm)
+      && (!current.input_modality || (model.input_modalities || []).includes(current.input_modality));
+    return matches && builds.length ? [{ ...model, builds }] : [];
+  });
+}
+
+function profileGroups(model) {
+  const groups = new Map();
+  model.builds.forEach((build) => {
+    const profile = buildProfileId(build);
+    if (!groups.has(profile)) groups.set(profile, []);
+    groups.get(profile).push(build);
+  });
+  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right));
+}
+
+function activeModelBuild(model) {
+  const profiles = profileGroups(model);
+  if (!profiles.length) return { profile: null, builds: [], build: null };
+  const requestedProfile = state.activeProfileByModel.get(model.model_id);
+  const [profile, builds] = profiles.find(([id]) => id === requestedProfile) || profiles[0];
+  state.activeProfileByModel.set(model.model_id, profile);
+  const componentKey = `${model.model_id}:${profile}`;
+  const requestedComponent = state.activeComponentByProfile.get(componentKey);
+  const build = builds.find((item) => componentId(item) === requestedComponent)
+    || builds.find((item) => componentId(item) === "model")
+    || builds[0];
+  state.activeComponentByProfile.set(componentKey, componentId(build));
+  return { profile, builds, build };
+}
+
 function populateFilters({ persistBranchFallback = false } = {}) {
   const selectedCompiler = elements["compiler-filter"].value;
   const branches = state.availableBranches;
-  const compilers = [...new Set(state.runs.map((run) => run.toolchain_version).filter(Boolean))].sort().reverse();
+  const compilers = [...new Set([
+    selectedCompiler,
+    ...state.runs.map((run) => run.toolchain_version),
+  ].filter(Boolean))].sort().reverse();
   elements["branch-filter"].innerHTML = `<option value="">All branches</option>${branches.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}`;
   elements["compiler-filter"].innerHTML = `<option value="">Any version</option>${compilers.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}`;
   const preferredBranch = state.preferredBranch ?? DEFAULT_BRANCH;
@@ -538,34 +673,42 @@ function populateFilters({ persistBranchFallback = false } = {}) {
 }
 
 function comparisonRuns() {
-  return state.compareSelection.size ? [...state.compareSelection.values()] : filteredRuns();
+  return [...state.compareSelection.values()];
 }
 
 function updateCompareAction() {
   const selectedCount = state.compareSelection.size;
-  const visibleCount = filteredRuns().length;
-  const count = selectedCount || visibleCount;
-  elements["compare-button"].disabled = count === 0;
-  elements["compare-label"].textContent = selectedCount ? "Compare selected" : "Compare visible";
-  elements["compare-count"].textContent = count;
-  elements["compare-count"].hidden = count === 0;
+  elements["compare-button"].disabled = selectedCount < 2;
+  elements["compare-label"].textContent = "Compare selected";
+  elements["compare-count"].textContent = selectedCount;
+  elements["compare-count"].hidden = selectedCount === 0;
   elements["compare-button"].setAttribute(
     "aria-label",
-    selectedCount
-      ? `Compare ${selectedCount} selected build${selectedCount === 1 ? "" : "s"}`
-      : `Compare ${visibleCount} visible build${visibleCount === 1 ? "" : "s"}`,
+    selectedCount < 2
+      ? `Select ${2 - selectedCount} more build${selectedCount === 1 ? "" : "s"} to compare`
+      : `Compare ${selectedCount} selected builds`,
   );
 }
 
-function renderRuns() {
+function setComparisonSelection(checkbox) {
+  const runId = checkbox.dataset.compareRunId;
+  const run = state.runs.find((item) => item.id === runId)
+    || state.detailCache.get(runId)?.summary?.run;
+  if (!run) return null;
+  if (checkbox.checked) state.compareSelection.set(run.id, run);
+  else state.compareSelection.delete(run.id);
+  checkbox.closest(".run-entry")?.classList.toggle("compared", checkbox.checked);
+  checkbox.setAttribute("aria-label", `${checkbox.checked ? "Remove" : "Add"} ${run.metadata?.model_id || run.run_type} ${buildIdentity(run)} ${checkbox.checked ? "from" : "to"} comparison`);
+  checkbox.closest("label")?.setAttribute("title", `${checkbox.checked ? "Remove from" : "Add to"} comparison`);
+  updateCompareAction();
+  return run;
+}
+
+function renderHistory() {
   const runs = filteredRuns();
   elements["result-count"].textContent = `${runs.length}${state.hasMore ? "+" : ""} build${runs.length === 1 ? "" : "s"}`;
-  elements["result-list"].setAttribute("aria-busy", "false");
-  elements["load-more"].hidden = !state.hasMore;
-  updateCompareAction();
-
   if (!runs.length) {
-    elements["result-list"].innerHTML = `<div class="no-results"><span>0</span><h3>No matching artifacts</h3><p>Broaden the search or clear the current filters.</p><button type="button" data-action="clear">Reset filters</button></div>`;
+    elements["result-list"].innerHTML = `<div class="no-results"><span>0</span><h3>No matching builds</h3><p>Broaden the search or clear the current filters.</p><button type="button" data-action="clear">Reset filters</button></div>`;
     return;
   }
 
@@ -590,6 +733,42 @@ function renderRuns() {
       </button>
     </div>`;
   }).join("");
+}
+
+function renderModelRow(model) {
+  const profiles = profileGroups(model);
+  const active = activeModelBuild(model);
+  const run = runFromCatalogBuild(model, active.build);
+  const selected = model.builds.some((build) => build.run_id === state.selectedId);
+  const displayName = model.display_name || model.model_id;
+  const profileCount = profiles.length;
+  return `<button class="model-row${selected ? " selected" : ""}" type="button" data-model-card="${escapeHtml(model.model_id)}" data-run-id="${run.id}" aria-current="${selected ? "true" : "false"}">
+    <span class="model-row-identity"><strong>${escapeHtml(displayName)}</strong>${displayName !== model.model_id ? `<code>${escapeHtml(model.model_id)}</code>` : ""}</span>
+    <span class="model-row-count">${profileCount}<small>variant${profileCount === 1 ? "" : "s"}</small></span>
+    <span class="row-arrow">${icons.arrow}</span>
+  </button>`;
+}
+
+function renderModels() {
+  const models = filteredModels();
+  elements["result-count"].textContent = `${models.length}${state.hasMore ? "+" : ""} model${models.length === 1 ? "" : "s"}`;
+  if (!models.length) {
+    elements["result-list"].innerHTML = `<div class="no-results"><span>0</span><h3>No matching models</h3><p>Broaden the search or clear the current filters.</p><button type="button" data-action="clear">Reset filters</button></div>`;
+    return;
+  }
+  elements["result-list"].innerHTML = models.map(renderModelRow).join("");
+}
+
+function renderRuns() {
+  const modelsMode = catalogMode();
+  const runTitle = elements["history-filter"].checked ? "Build history" : "Latest builds";
+  elements["result-title"].textContent = modelsMode ? "Models" : runTitle;
+  elements["load-more"].textContent = modelsMode ? "Load more models" : "Load more builds";
+  elements["result-list"].setAttribute("aria-busy", "false");
+  elements["load-more"].hidden = !state.hasMore;
+  if (modelsMode) renderModels();
+  else renderHistory();
+  updateCompareAction();
 }
 
 function comparisonMetric(metric, definition) {
@@ -689,12 +868,9 @@ function renderComparisonTable(entries) {
 
 async function openComparison() {
   const runs = comparisonRuns();
-  if (!runs.length) return;
-  const selected = state.compareSelection.size > 0;
+  if (runs.length < 2) return;
   elements["compare-title"].textContent = `Compare ${runs.length} build${runs.length === 1 ? "" : "s"}`;
-  elements["compare-description"].textContent = selected
-    ? "Showing your selected builds. Empty benchmark cells mean that measurement is unavailable."
-    : "Showing all builds currently visible in the list. Empty benchmark cells mean that measurement is unavailable.";
+  elements["compare-description"].textContent = "Showing your selected builds. Empty benchmark cells mean that measurement is unavailable.";
   elements["compare-content"].innerHTML = `<div class="comparison-loading" role="status"><span class="spinner"></span> Loading artifact and benchmark data…</div>`;
   elements["compare-dialog"].showModal();
   const entries = await mapWithConcurrency(runs, 6, loadComparisonEntry);
@@ -708,6 +884,13 @@ function detailSkeleton() {
 
 async function selectRun(runId, { updateUrl = true } = {}) {
   state.selectedId = runId;
+  const catalogRun = state.runs.find((run) => run.id === runId);
+  if (catalogRun?.metadata?.model_id) {
+    const modelId = catalogRun.metadata.model_id;
+    const profile = catalogRun.metadata.build_profile_id || catalogRun.metadata.variant_id || "default";
+    state.activeProfileByModel.set(modelId, profile);
+    state.activeComponentByProfile.set(`${modelId}:${profile}`, catalogRun.metadata.component_id || "model");
+  }
   renderRuns();
   detailSkeleton();
   if (updateUrl) {
@@ -935,6 +1118,28 @@ function accuracyPanel(payload, tests = []) {
   </section>`;
 }
 
+function fidelityPanel(tests, runId) {
+  const result = tests.find((item) =>
+    item.suite === "correctness"
+    && item.name === "numerical-fidelity"
+    && item.summary?.schema_version === 1
+  );
+  const report = result?.summary;
+  if (!report) return "";
+  const metrics = (report.metrics || []).map((metric) => `
+    <div class="benchmark-metric"><span>${escapeHtml(metric.name)} · Cosine similarity</span><strong>${Number(metric.cosine_similarity).toFixed(4)}</strong></div>
+    <div class="benchmark-metric"><span>${escapeHtml(metric.name)} · Normalized RMSE</span><strong>${Number(metric.normalized_rmse).toFixed(4)}</strong></div>
+  `).join("");
+  const scope = report.scope === "full_pipeline" ? "Full pipeline" : "Component";
+  return `<section class="fidelity-section">
+    <div class="detail-section-title"><h3>Numerical fidelity</h3><button class="text-button" type="button" data-download="numerical-fidelity" data-run-id="${escapeHtml(runId)}">Download JSON</button></div>
+    <p class="fidelity-scope"><strong>${escapeHtml(scope)}</strong> · ${escapeHtml(report.status)} · ${Number(report.samples).toLocaleString()} samples · ${escapeHtml(report.dataset?.id || "Dataset unavailable")} ${escapeHtml(report.dataset?.variant || "")}</p>
+    <div class="benchmark-summary">${metrics}</div>
+    <p class="muted-message">Output similarity, not task accuracy. Output reordering can affect these metrics.</p>
+    <details><summary>Evaluation details</summary><dl>${keyValue("Reference", report.reference)}${keyValue("Candidate", report.candidate)}</dl></details>
+  </section>`;
+}
+
 function licensePanel(license) {
   if (!license?.spdx) return "";
   const redistribution = license.redistribution
@@ -950,6 +1155,66 @@ function modelPackArtifacts(artifacts) {
   return (artifacts || []).filter((artifact) => artifact.artifact_type === "model-pack");
 }
 
+function catalogModelForRun(run) {
+  const modelId = run.metadata?.model_id;
+  return state.models.find((model) => model.model_id === modelId) || null;
+}
+
+function compilerFilteredBuilds(model) {
+  const compiler = elements["compiler-filter"].value;
+  return compiler
+    ? model.builds.filter((build) => build.toolchain_version === compiler)
+    : model.builds;
+}
+
+function selectedCatalogBuild(modelId, profileId, requestedComponent = null) {
+  const model = state.models.find((item) => item.model_id === modelId);
+  if (!model) return null;
+  const builds = compilerFilteredBuilds(model).filter((build) => buildProfileId(build) === profileId);
+  const componentKey = `${modelId}:${profileId}`;
+  const component = requestedComponent || state.activeComponentByProfile.get(componentKey);
+  const build = builds.find((item) => componentId(item) === component)
+    || builds.find((item) => componentId(item) === "model")
+    || builds[0];
+  if (!build) return null;
+  state.activeProfileByModel.set(modelId, profileId);
+  state.activeComponentByProfile.set(componentKey, componentId(build));
+  return build;
+}
+
+function detailBuildSwitcher(run) {
+  const model = catalogModelForRun(run);
+  if (!model) return "";
+  const availableModel = { ...model, builds: compilerFilteredBuilds(model) };
+  const profiles = profileGroups(availableModel);
+  if (!profiles.length) return "";
+  const requestedProfile = run.metadata?.build_profile_id || run.metadata?.variant_id;
+  const [activeProfile, activeBuilds] = profiles.find(([profile]) => profile === requestedProfile) || profiles[0];
+  const requestedComponent = run.metadata?.component_id;
+  const activeComponent = componentId(
+    activeBuilds.find((build) => componentId(build) === requestedComponent) || activeBuilds[0],
+  );
+  const compared = state.compareSelection.has(run.id);
+  const label = `${model.display_name || model.model_id} ${activeProfile} ${activeComponent}`;
+  const tabs = profiles.map(([profile]) => {
+    const selected = profile === activeProfile;
+    return `<button class="detail-variant-tab" type="button" role="tab" data-detail-model-id="${escapeHtml(model.model_id)}" data-detail-profile-id="${escapeHtml(profile)}" aria-selected="${selected}" aria-controls="detail-build-panel" tabindex="${selected ? "0" : "-1"}"><span>${escapeHtml(profile)}</span>${selected ? "<b>Current</b>" : ""}</button>`;
+  }).join("");
+  const components = activeBuilds.length > 1 ? `<div class="detail-component-row"><span>Components</span><div class="detail-component-tabs" role="group" aria-label="${escapeHtml(activeProfile)} components">${activeBuilds.map((build) => {
+    const component = componentId(build);
+    return `<button type="button" data-detail-model-id="${escapeHtml(model.model_id)}" data-detail-profile-id="${escapeHtml(activeProfile)}" data-detail-component-id="${escapeHtml(component)}" aria-pressed="${component === activeComponent}">${escapeHtml(component)}</button>`;
+  }).join("")}</div></div>` : "";
+  return `<section class="detail-build-switcher" aria-label="Build selection">
+    <div class="detail-switcher-heading"><strong>Variants</strong><span>${profiles.length} variant${profiles.length === 1 ? "" : "s"}</span></div>
+    <div class="detail-variant-tabs" role="tablist" aria-label="${escapeHtml(model.display_name || model.model_id)} variants">${tabs}</div>
+    <div id="detail-build-panel" role="tabpanel">${components}</div>
+    <label class="detail-compare-select compare-select" title="${compared ? "Remove from" : "Add to"} comparison">
+      <input type="checkbox" data-compare-run-id="${run.id}" aria-label="${compared ? "Remove" : "Add"} ${escapeHtml(label)} ${compared ? "from" : "to"} comparison"${compared ? " checked" : ""} />
+      <span aria-hidden="true">✓</span><b>${compared ? "Selected for comparison" : "Add build to comparison"}</b>
+    </label>
+  </section>`;
+}
+
 function renderDetail(detail) {
   const run = detail.summary.run;
   const artifacts = modelPackArtifacts(detail.summary.artifacts);
@@ -958,7 +1223,8 @@ function renderDetail(detail) {
   const input = provenance.inputs?.[0];
   const tests = detail.tests.test_results || [];
   const model = run.metadata?.model_id || run.run_type;
-  const build = buildIdentity(run);
+  const catalogModel = catalogModelForRun(run);
+  const displayName = catalogModel?.display_name || model;
   const precision = parameters.compile_parameters?.precision;
   const categories = run.model_categories || {};
   const license = run.metadata?.license;
@@ -966,13 +1232,15 @@ function renderDetail(detail) {
   const sourceLabel = `View ${model} source on GitHub at commit ${shortSha(run.commit_sha)}`;
   const benchmarkMarkup = benchmarkPanel(detail.benchmark);
   const accuracyMarkup = accuracyPanel(detail.accuracy, tests);
+  const fidelityMarkup = fidelityPanel(tests, run.id);
   const hasBenchmark = Boolean(detail.benchmark && benchmarkMarkup);
   const primaryArtifact = artifacts[0];
   const huggingFaceSource = input ? huggingFaceSourceLink(input) : null;
 
   elements["detail-pane"].innerHTML = `<div class="detail-content">
     <div class="detail-topline"><button class="detail-layout-toggle" type="button" aria-pressed="${state.detailLayout === "focused"}" title="Give the selected model more space">${state.detailLayout === "focused" ? "Show wider list" : "Focus model"}</button><button class="close-detail" type="button" aria-label="Close details">×</button></div>
-    <div class="detail-title"><div class="detail-title-copy"><p class="kicker">${escapeHtml(run.target_platform || "Model artifact")}</p><h2>${escapeHtml(model)}</h2><p>${escapeHtml(build)}</p></div><div class="detail-title-actions">${primaryArtifact ? `<button class="artifact-download-shortcut" type="button" data-download="${escapeHtml(primaryArtifact.name)}" data-run-id="${run.id}" aria-label="Download model artifact" data-tooltip="Download model artifact">${icons.download}</button>` : ""}${mpkValidationMark(tests)}${hasBenchmark ? `<button class="benchmark-shortcut" type="button" data-scroll-benchmark aria-label="Jump to benchmark results" data-tooltip="Jump to benchmark results">${icons.benchmark}</button>` : ""}${huggingFaceSource ? `<a class="huggingface-source-link" href="${escapeHtml(huggingFaceSource.href)}" target="_blank" rel="noreferrer" aria-label="Open source ONNX model card on Hugging Face" data-tooltip="Open source ONNX model card on Hugging Face">${icons.huggingFace}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div></div>
+    <div class="detail-title"><div class="detail-title-copy"><p class="kicker">${escapeHtml(run.target_platform || "Model artifact")}</p><h2>${escapeHtml(displayName)}</h2>${displayName !== model ? `<p>${escapeHtml(model)}</p>` : ""}</div><div class="detail-title-actions">${primaryArtifact ? `<button class="artifact-download-shortcut" type="button" data-download="${escapeHtml(primaryArtifact.name)}" data-run-id="${run.id}" aria-label="Download model artifact" data-tooltip="Download model artifact">${icons.download}</button>` : ""}${mpkValidationMark(tests)}${hasBenchmark ? `<button class="benchmark-shortcut" type="button" data-scroll-benchmark aria-label="Jump to benchmark results" data-tooltip="Jump to benchmark results">${icons.benchmark}</button>` : ""}${huggingFaceSource ? `<a class="huggingface-source-link" href="${escapeHtml(huggingFaceSource.href)}" target="_blank" rel="noreferrer" aria-label="Open source ONNX model card on Hugging Face" data-tooltip="Open source ONNX model card on Hugging Face">${icons.huggingFace}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div></div>
+    ${detailBuildSwitcher(run)}
     <div class="detail-tags">${precision ? detailTag(icons.precision, precision, "precision") : ""}${detailTag(icons.compiler, `${run.toolchain_name || "compiler"} ${run.toolchain_version || ""}`.trim(), "compiler")}${detailTag(icons.branch, branchName(run.git_ref), "branch")}${license?.spdx ? detailTag(icons.license, license.spdx, "license") : ""}${categories.model_type ? detailTag(icons.modelType, categories.model_type, "model-type") : ""}${categories.architecture?.id ? detailTag(icons.architecture, categories.architecture.id, "architecture") : ""}${(categories.tasks || []).map((task) => detailTag(icons.task, task, "task")).join("")}</div>
 
     <section class="artifact-section"><div class="detail-section-title"><h3>Artifacts</h3><span>${artifacts.length}</span></div>
@@ -999,10 +1267,14 @@ function renderDetail(detail) {
 
     ${accuracyMarkup}
 
+    ${fidelityMarkup}
+
     ${benchmarkMarkup}
 
     ${Object.keys(parameters.compile_parameters || {}).length ? `<details><summary>Compile parameters <span>JSON</span></summary><pre>${escapeHtml(JSON.stringify(parameters.compile_parameters, null, 2))}</pre></details>` : ""}
   </div>`;
+  elements["detail-pane"].querySelector('.detail-variant-tab[aria-selected="true"]')
+    ?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 function errorPanel(message, title = "Registry unavailable", { closable = false } = {}) {
@@ -1054,18 +1326,24 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
   const requestId = ++state.runsRequestId;
   elements["load-more"].disabled = true;
   const query = new URLSearchParams({ limit: String(limit) });
-  query.set("status", "completed");
-  query.set("run_type", "model_compile");
-  if (!elements["history-filter"].checked) query.set("latest_per_model_compiler", "true");
+  const historical = elements["history-filter"].checked || !branch;
+  if (historical) {
+    query.set("status", "completed");
+    query.set("run_type", "model_compile");
+    if (!elements["history-filter"].checked) query.set("latest_per_model_compiler", "true");
+  }
   if (branch) query.set("git_ref", `refs/heads/${branch}`);
   if (elements.search.value.trim()) query.set("q", elements.search.value.trim());
   Object.entries(categoryFilters()).forEach(([name, value]) => {
     if (value) query.set(name, value);
   });
+  if (!historical && elements["compiler-filter"].value) {
+    query.set("toolchain_version", elements["compiler-filter"].value);
+  }
   if (append && state.cursor) query.set("cursor", state.cursor);
 
   try {
-    const payload = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/runs?${query}`);
+    const payload = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/${historical ? "runs" : "models"}?${query}`);
     if (requestId !== state.runsRequestId) return;
     applyCatalog(payload, { append });
   } catch (error) {
@@ -1099,15 +1377,18 @@ async function initialize() {
     if (!cachedBranches && Array.isArray(cached.branches)) state.availableBranches = cached.branches;
     state.taxonomy = cached.taxonomy || null;
     if (state.taxonomy) populateCategoryFilters();
-    applyCatalog({
-      runs: cached.runs,
-      next_cursor: cached.cursor,
-      has_more: cached.hasMore,
-    }, { cache: false });
+    applyCatalog(cached, { cache: false });
   }
 
   try {
-    const [taxonomyResult, branchResult] = await Promise.allSettled([loadTaxonomy(), loadBranches()]);
+    const branchResult = await Promise.resolve(loadBranches()).then(
+      () => ({ status: "fulfilled" }),
+      (reason) => ({ status: "rejected", reason }),
+    );
+    const taxonomyResult = await Promise.resolve(loadTaxonomy(elements["branch-filter"].value || DEFAULT_BRANCH)).then(
+      () => ({ status: "fulfilled" }),
+      (reason) => ({ status: "rejected", reason }),
+    );
     if (taxonomyResult.status === "rejected") {
       setCategoryFiltersDisabled(true);
       showToast(`Category filters are temporarily unavailable. ${taxonomyResult.reason.message}`, true);
@@ -1123,7 +1404,6 @@ async function initialize() {
       // from a broad runs page without making that page authoritative.
       await loadRuns({ branch: "", limit: 200 });
     }
-    elements["result-title"].textContent = state.repository.name === "models" ? "Models" : state.repository.name;
   } catch (error) {
     if (cached) showToast(error.message, true);
     else {
@@ -1151,14 +1431,20 @@ elements["branch-filter"].addEventListener("change", async () => {
   writeBranchPreference(state.preferredBranch);
   updateFilterDisclosure();
   try {
+    await loadTaxonomy(state.preferredBranch || DEFAULT_BRANCH);
     await loadRuns({ branch: state.preferredBranch });
   } catch (error) {
     showToast(error.message, true);
   }
 });
-elements["compiler-filter"].addEventListener("change", () => {
+elements["compiler-filter"].addEventListener("change", async () => {
   updateFilterDisclosure();
   renderRuns();
+  try {
+    await loadRuns({ branch: state.preferredBranch });
+  } catch (error) {
+    showToast(error.message, true);
+  }
 });
 elements["history-filter"].addEventListener("change", async () => {
   writeHistoryUrl();
@@ -1181,8 +1467,9 @@ Object.keys(CATEGORY_QUERY_FIELDS).forEach((elementId) => elements[elementId].ad
 }));
 elements["clear-filters"].addEventListener("click", async () => {
   elements.search.value = "";
-  elements["branch-filter"].value = "";
-  state.preferredBranch = "";
+  const resetBranch = state.availableBranches.includes(DEFAULT_BRANCH) ? DEFAULT_BRANCH : state.availableBranches[0] || "";
+  elements["branch-filter"].value = resetBranch;
+  state.preferredBranch = resetBranch;
   writeBranchPreference(state.preferredBranch);
   elements["compiler-filter"].value = "";
   elements["history-filter"].checked = false;
@@ -1195,7 +1482,7 @@ elements["clear-filters"].addEventListener("click", async () => {
   writeHistoryUrl();
   updateFilterDisclosure();
   try {
-    await loadRuns({ branch: "", limit: 200 });
+    await loadRuns({ branch: resetBranch });
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1209,14 +1496,7 @@ elements["result-list"].addEventListener("click", (event) => {
 elements["result-list"].addEventListener("change", (event) => {
   const checkbox = event.target.closest("[data-compare-run-id]");
   if (!checkbox) return;
-  const run = state.runs.find((item) => item.id === checkbox.dataset.compareRunId);
-  if (!run) return;
-  if (checkbox.checked) state.compareSelection.set(run.id, run);
-  else state.compareSelection.delete(run.id);
-  checkbox.closest(".run-entry")?.classList.toggle("compared", checkbox.checked);
-  checkbox.setAttribute("aria-label", `${checkbox.checked ? "Remove" : "Add"} ${run.metadata?.model_id || run.run_type} ${buildIdentity(run)} ${checkbox.checked ? "from" : "to"} comparison`);
-  checkbox.closest("label")?.setAttribute("title", `${checkbox.checked ? "Remove from" : "Add to"} comparison`);
-  updateCompareAction();
+  setComparisonSelection(checkbox);
 });
 elements["compare-button"].addEventListener("click", () => {
   openComparison().catch((error) => {
@@ -1229,6 +1509,22 @@ elements["compare-dialog"].addEventListener("click", (event) => {
   if (event.target === elements["compare-dialog"]) elements["compare-dialog"].close();
 });
 elements["detail-pane"].addEventListener("click", (event) => {
+  const variant = event.target.closest("[data-detail-profile-id]:not([data-detail-component-id])");
+  if (variant) {
+    const build = selectedCatalogBuild(variant.dataset.detailModelId, variant.dataset.detailProfileId);
+    if (build) selectRun(build.run_id);
+    return;
+  }
+  const component = event.target.closest("[data-detail-component-id]");
+  if (component) {
+    const build = selectedCatalogBuild(
+      component.dataset.detailModelId,
+      component.dataset.detailProfileId,
+      component.dataset.detailComponentId,
+    );
+    if (build) selectRun(build.run_id);
+    return;
+  }
   if (event.target.closest('[data-action="retry"]') && state.selectedId) {
     selectRun(state.selectedId, { updateUrl: false });
     return;
@@ -1261,16 +1557,33 @@ elements["detail-pane"].addEventListener("click", (event) => {
     url.searchParams.delete("run");
     history.replaceState({}, "", url);
     renderRuns();
-    elements["detail-pane"].innerHTML = `<div class="detail-empty"><h2>No build selected</h2><p>Select a build to inspect provenance, validation results, checksums, and downloads.</p></div>`;
+    elements["detail-pane"].innerHTML = `<div class="detail-empty"><h2>No model selected</h2><p>Select a model to choose a variant, inspect provenance, and download a verified build.</p></div>`;
   }
 });
 elements["detail-pane"].addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-compare-run-id]");
+  if (checkbox) {
+    const run = setComparisonSelection(checkbox);
+    if (run && state.selectedId) renderDetail(state.detailCache.get(state.selectedId));
+    return;
+  }
   const trialMetric = event.target.closest("[data-trial-metric]");
   if (trialMetric && trialMetric.value) {
     state.trialMetric = trialMetric.value;
     if (state.selectedId) renderDetail(state.detailCache.get(state.selectedId));
     return;
   }
+});
+elements["detail-pane"].addEventListener("keydown", (event) => {
+  const tab = event.target.closest('[role="tab"]');
+  if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const tabs = [...tab.closest('[role="tablist"]').querySelectorAll('[role="tab"]')];
+  const current = tabs.indexOf(tab);
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? tabs.length - 1
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  event.preventDefault();
+  tabs[next].click();
 });
 elements["compare-content"].addEventListener("change", (event) => {
   const comparisonMetric = event.target.closest("[data-comparison-metric]");
