@@ -32,7 +32,7 @@ from .dependencies import resolve_model_compiler
 from .errors import ModelRegistryError, ValidationError
 from .fetch import sha256_file
 from .fidelity_config import find_recipe_fidelity_config, validate_recipe_fidelity_result
-from .model import compile_invocations_for, load_and_validate_model
+from .model import compile_invocations_for, load_and_validate_model, profile_component_for
 from .source import source_identity
 from .taxonomy import (
     TAXONOMY_RELATIVE_PATH,
@@ -316,11 +316,15 @@ def build_catalog_snapshot(
                 raise ValidationError(
                     f"no immutable MPK checksum matches {key[0]}/{key[1]}/{key[2]}"
                 )
+            _, binding = profile_component_for(catalog[key[0]], key[1], key[2])
+            if "artifact_suffix" in binding and len(f"{key[0]}_{binding['artifact_suffix']}_mpk.tar.gz") > 255:
+                raise ValidationError(f"artifact_suffix for {key[0]}/{key[1]}/{key[2]} exceeds the filename limit")
             builds_by_model[key[0]].append(
                 {
                     "build_profile_id": key[1],
                     "compile_invocation_id": invocation["compile_invocation_id"],
                     "component_id": key[2],
+                    **({"artifact_suffix": binding["artifact_suffix"]} if "artifact_suffix" in binding else {}),
                     "compile_fingerprint": invocation["build_fingerprint"],
                     "artifact_sha256": artifact_sha256,
                     "validation_fingerprint": (
@@ -383,6 +387,7 @@ def publish_catalog(
     branch: str,
     git_sha: str,
     compiled_dir: str | Path | None = None,
+    base_branch: str | None = None,
     request: Request | None = None,
     read_request: ReadRequest | None = None,
 ) -> JsonObject:
@@ -390,17 +395,22 @@ def publish_catalog(
     read = read_request or _public_registry_json
     read_base_url = read_api_url.rstrip("/")
     previous: JsonObject | None = None
-    try:
-        current = read(
-            f"{read_base_url}/v1/repositories/sima-neat/models/catalogs/current?"
-            f"git_ref={quote(f'refs/heads/{branch}', safe='')}"
-        )
-        candidate = current.get("catalog")
-        if isinstance(candidate, dict):
-            previous = candidate.get("document") if isinstance(candidate.get("document"), dict) else candidate
-    except RegistryPublicationError as exc:
-        if "HTTP 404 catalog_not_found" not in str(exc):
-            raise
+    source_branches = [branch]
+    if base_branch and base_branch != branch:
+        source_branches.append(base_branch)
+    for source_branch in source_branches:
+        try:
+            current = read(
+                f"{read_base_url}/v1/repositories/sima-neat/models/catalogs/current?"
+                f"git_ref={quote(f'refs/heads/{source_branch}', safe='')}"
+            )
+            candidate = current.get("catalog")
+            if isinstance(candidate, dict):
+                previous = candidate.get("document") if isinstance(candidate.get("document"), dict) else candidate
+            break
+        except RegistryPublicationError as exc:
+            if "HTTP 404 catalog_not_found" not in str(exc):
+                raise
     document = build_catalog_snapshot(
         repository=repository,
         branch=branch,
