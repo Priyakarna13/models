@@ -77,7 +77,8 @@ const elements = Object.fromEntries(
     "result-count", "result-list", "load-more", "detail-pane", "toast-region", "workspace",
     "compare-button", "compare-label", "compare-count", "compare-dialog", "compare-close", "compare-content",
     "compare-title", "compare-description",
-    "download-dialog", "download-description", "download-list", "download-confirm", "download-cancel", "download-status",
+    "download-dialog", "download-kicker", "download-title", "download-description", "download-package-info",
+    "download-list", "download-confirm", "download-cancel", "download-status",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -1165,6 +1166,14 @@ function catalogModelForRun(run) {
   return state.models.find((model) => model.model_id === modelId) || null;
 }
 
+function fullPackageForRun(run) {
+  const model = catalogModelForRun(run);
+  const profile = run.metadata?.build_profile_id || run.metadata?.variant_id;
+  if (!model || !profile) return null;
+  return (model.packages || []).find((item) => item.build_profile_id === profile
+    && item.component_run_ids?.[run.metadata?.component_id] === run.id) || null;
+}
+
 function compilerFilteredBuilds(model) {
   const compiler = elements["compiler-filter"].value;
   return compiler
@@ -1240,11 +1249,12 @@ function renderDetail(detail) {
   const fidelityMarkup = fidelityPanel(tests, run.id);
   const hasBenchmark = Boolean(detail.benchmark && benchmarkMarkup);
   const primaryArtifact = artifacts[0];
+  const fullPackage = fullPackageForRun(run);
   const huggingFaceSource = input ? huggingFaceSourceLink(input) : null;
 
   elements["detail-pane"].innerHTML = `<div class="detail-content">
     <div class="detail-topline"><button class="detail-layout-toggle" type="button" aria-pressed="${state.detailLayout === "focused"}" title="Give the selected model more space">${state.detailLayout === "focused" ? "Show wider list" : "Focus model"}</button><button class="close-detail" type="button" aria-label="Close details">×</button></div>
-    <div class="detail-title"><div class="detail-title-copy"><p class="kicker">${escapeHtml(run.target_platform || "Model artifact")}</p><h2>${escapeHtml(displayName)}</h2>${displayName !== model ? `<p>${escapeHtml(model)}</p>` : ""}</div><div class="detail-title-actions">${primaryArtifact ? `<button class="artifact-download-shortcut" type="button" data-download-variant="${run.id}" data-run-id="${run.id}" aria-label="Download model artifact" data-tooltip="Download model artifact">${icons.download}</button>` : ""}${mpkValidationMark(tests)}${hasBenchmark ? `<button class="benchmark-shortcut" type="button" data-scroll-benchmark aria-label="Jump to benchmark results" data-tooltip="Jump to benchmark results">${icons.benchmark}</button>` : ""}${huggingFaceSource ? `<a class="huggingface-source-link" href="${escapeHtml(huggingFaceSource.href)}" target="_blank" rel="noreferrer" aria-label="Open source ONNX model card on Hugging Face" data-tooltip="Open source ONNX model card on Hugging Face">${icons.huggingFace}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div></div>
+    <div class="detail-title"><div class="detail-title-copy"><p class="kicker">${escapeHtml(run.target_platform || "Model artifact")}</p><h2>${escapeHtml(displayName)}</h2>${displayName !== model ? `<p>${escapeHtml(model)}</p>` : ""}</div><div class="detail-title-actions">${fullPackage ? `<button class="artifact-download-shortcut" type="button" data-download="package" data-run-id="${escapeHtml(fullPackage.run_id)}" aria-label="Download full package" data-tooltip="Download full package">${icons.download}</button>` : primaryArtifact ? `<button class="artifact-download-shortcut" type="button" data-download-variant="${run.id}" data-run-id="${run.id}" aria-label="Download individual components" data-tooltip="Download individual components">${icons.download}</button>` : ""}${mpkValidationMark(tests)}${hasBenchmark ? `<button class="benchmark-shortcut" type="button" data-scroll-benchmark aria-label="Jump to benchmark results" data-tooltip="Jump to benchmark results">${icons.benchmark}</button>` : ""}${huggingFaceSource ? `<a class="huggingface-source-link" href="${escapeHtml(huggingFaceSource.href)}" target="_blank" rel="noreferrer" aria-label="Open source ONNX model card on Hugging Face" data-tooltip="Open source ONNX model card on Hugging Face">${icons.huggingFace}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div></div>
     ${detailBuildSwitcher(run)}
     <div class="detail-tags">${precision ? detailTag(icons.precision, precision, "precision") : ""}${detailTag(icons.compiler, `${run.toolchain_name || "compiler"} ${run.toolchain_version || ""}`.trim(), "compiler")}${detailTag(icons.branch, branchName(run.git_ref), "branch")}${license?.spdx ? detailTag(icons.license, license.spdx, "license") : ""}${categories.model_type ? detailTag(icons.modelType, categories.model_type, "model-type") : ""}${categories.architecture?.id ? detailTag(icons.architecture, categories.architecture.id, "architecture") : ""}${(categories.tasks || []).map((task) => detailTag(icons.task, task, "task")).join("")}</div>
 
@@ -1254,6 +1264,8 @@ function renderDetail(detail) {
         <div><dt>SHA-256</dt><dd class="artifact-hash"><code>${escapeHtml(artifact.sha256)}</code><button type="button" class="copy-button" data-copy="${escapeHtml(artifact.sha256)}" aria-label="Copy artifact checksum">${icons.copy}</button></dd></div>
       </dl>`).join("") : `<p class="muted-message">No artifact metadata was registered for this run.</p>`}
     </section>
+
+    ${fullPackage ? `<section class="artifact-section"><div class="detail-section-title"><h3>Full Package</h3><button class="text-button" type="button" data-download="package" data-run-id="${escapeHtml(fullPackage.run_id)}">Download ZIP</button></div><dl class="artifact-metadata"><div><dt>File size</dt><dd>${escapeHtml(formatBytes(fullPackage.size_bytes))}</dd></div><div><dt>SHA-256</dt><dd class="artifact-hash"><code>${escapeHtml(fullPackage.artifact_sha256)}</code><button type="button" class="copy-button" data-copy="${escapeHtml(fullPackage.artifact_sha256)}" aria-label="Copy package checksum">${icons.copy}</button></dd></div></dl><p class="muted-message">Includes all components and declared runtime resources.</p><button class="text-button" type="button" data-download-variant="${escapeHtml(run.id)}" data-run-id="${escapeHtml(run.id)}">Download individual components</button></section>` : ""}
 
     <section><div class="detail-section-title"><h3>Build provenance</h3></div><dl class="key-grid">
       ${keyValue("Commit", run.commit_sha, { copy: true, mono: true })}
@@ -1292,17 +1304,31 @@ function errorPanel(message, title = "Registry unavailable", { closable = false 
 let pendingDownloads = null;
 let downloadRequest = 0;
 
+function resetDownloadDialog({ kicker, title, description, confirmLabel }) {
+  pendingDownloads = null;
+  elements["download-kicker"].textContent = kicker;
+  elements["download-title"].textContent = title;
+  elements["download-description"].textContent = description;
+  elements["download-list"].innerHTML = "";
+  elements["download-list"].hidden = false;
+  elements["download-package-info"].hidden = true;
+  elements["download-package-info"].innerHTML = "";
+  elements["download-dialog"].querySelector(".download-note").hidden = true;
+  elements["download-status"].textContent = "";
+  elements["download-confirm"].disabled = true;
+  elements["download-confirm"].textContent = confirmLabel;
+}
+
 async function downloadVariant(runId) {
   const request = ++downloadRequest;
   const catalogModels = elements["history-filter"].checked ? [] : state.models;
   const dialog = elements["download-dialog"];
-  pendingDownloads = null;
-  elements["download-description"].textContent = "Checking the selected variant’s components…";
-  elements["download-list"].innerHTML = "";
-  elements["download-dialog"].querySelector(".download-note").hidden = true;
-  elements["download-status"].textContent = "";
-  elements["download-confirm"].disabled = true;
-  elements["download-confirm"].textContent = "Download all files";
+  resetDownloadDialog({
+    kicker: "Model variant",
+    title: "Download components",
+    description: "Checking the selected variant’s components…",
+    confirmLabel: "Download all files",
+  });
   dialog.showModal();
   try {
     const summary = await api(`/v1/runs/${encodeURIComponent(runId)}`);
@@ -1318,6 +1344,59 @@ async function downloadVariant(runId) {
     note.textContent = "Files download separately and in parallel. Your browser may ask you to allow multiple downloads.";
     elements["download-list"].innerHTML = downloads.map((item) => `<li><div><strong>${escapeHtml(item.component)}</strong><span>${escapeHtml(item.filename)}</span></div><span>${formatBytes(item.size)}</span></li>`).join("");
     elements["download-confirm"].textContent = `Download ${downloads.length} ${fileLabel}`;
+    elements["download-confirm"].disabled = false;
+  } catch (error) {
+    if (request === downloadRequest && dialog.open) elements["download-status"].textContent = error.message;
+  }
+}
+
+async function downloadPackage(runId) {
+  const request = ++downloadRequest;
+  const dialog = elements["download-dialog"];
+  resetDownloadDialog({
+    kicker: "Full package",
+    title: "Download model package",
+    description: "Checking the package manifest and download metadata…",
+    confirmLabel: "Download ZIP",
+  });
+  dialog.showModal();
+  try {
+    const summary = await api(`/v1/runs/${encodeURIComponent(runId)}`);
+    const run = summary.run;
+    const artifact = (summary.artifacts || []).find((item) => item.artifact_type === "model-package");
+    if (!run || !artifact) throw new Error("No complete ZIP package is available for this build.");
+    const metadata = run.metadata || {};
+    const packageId = metadata.package_id || artifact.metadata?.package_id || "default";
+    const modelId = metadata.model_id || "model";
+    const profile = metadata.build_profile_id || "build";
+    const components = Object.keys(metadata.component_run_ids || artifact.metadata?.component_run_ids || {});
+    const filename = `${modelId}_${profile}_${packageId}.zip`;
+    const downloads = await prepareDownloads([{
+      runId: run.id,
+      component: "Full package",
+      name: artifact.name,
+      size: artifact.size_bytes,
+      downloadFilename: filename,
+    }], api);
+    if (request !== downloadRequest || !dialog.open) return;
+    pendingDownloads = downloads;
+    const license = metadata.license || {};
+    const redistribution = license.redistribution
+      ? `${license.spdx || "License"} · redistribution ${license.redistribution}`
+      : license.spdx || "Not recorded";
+    const componentLabel = `${components.length} ${components.length === 1 ? "component" : "components"}`;
+    elements["download-description"].textContent = `${profile} is packaged as one verified ZIP. Confirm to start the download.`;
+    elements["download-package-info"].hidden = false;
+    elements["download-package-info"].innerHTML = `
+      <dt>File name</dt><dd><code>${escapeHtml(filename)}</code></dd>
+      <dt>Package</dt><dd>${escapeHtml(packageId)} · ${escapeHtml(componentLabel)}</dd>
+      <dt>ZIP size</dt><dd>${escapeHtml(formatBytes(artifact.size_bytes))}</dd>
+      <dt>SHA-256</dt><dd><code>${escapeHtml(artifact.sha256 || "Not recorded")}</code></dd>
+      <dt>License</dt><dd>${escapeHtml(redistribution)}</dd>`;
+    const note = elements["download-dialog"].querySelector(".download-note");
+    note.hidden = !license.attribution;
+    note.textContent = license.attribution ? `Attribution: ${license.attribution}` : "";
+    elements["download-list"].hidden = true;
     elements["download-confirm"].disabled = false;
   } catch (error) {
     if (request === downloadRequest && dialog.open) elements["download-status"].textContent = error.message;
@@ -1601,7 +1680,8 @@ elements["detail-pane"].addEventListener("click", (event) => {
   const variantDownload = event.target.closest("[data-download-variant]");
   if (variantDownload) downloadVariant(variantDownload.dataset.downloadVariant);
   const download = event.target.closest("[data-download]");
-  if (download) downloadArtifact(download.dataset.runId, download.dataset.download, download);
+  if (download?.dataset.download === "package") downloadPackage(download.dataset.runId);
+  else if (download) downloadArtifact(download.dataset.runId, download.dataset.download, download);
   if (event.target.closest("[data-scroll-benchmark]")) {
     const benchmark = elements["detail-pane"].querySelector("#benchmark-section");
     if (benchmark) {
