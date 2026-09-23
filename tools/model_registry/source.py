@@ -23,7 +23,9 @@ PYPI_PACKAGE_RE = re.compile(
     r"^/packages/[a-f0-9]{2}/[a-f0-9]{2}/[a-f0-9]{60}/[A-Za-z0-9_.+-]+\.whl$"
 )
 RFDETR_GCS_RE = re.compile(r"^/rfdetr/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx$")
 DEFAULT_HTTPS_HOSTS = {
+    "artifacts.stg.neat.sima.ai",
     "api.github.com",
     "files.pythonhosted.org",
     "github.com",
@@ -127,4 +129,6 @@ class SourceSpec:
             raise SourcePolicyError("Python package sources must identify an immutable package artifact")
         if hostname == "storage.googleapis.com" and not RFDETR_GCS_RE.fullmatch(parts.path):
             raise SourcePolicyError("Google Cloud Storage sources must identify an RF-DETR model artifact")
+        if hostname == "artifacts.stg.neat.sima.ai" and not VULCAN_ONNX_RE.fullmatch(parts.path):
+            raise SourcePolicyError("Vulcan sources must identify a versioned ONNX file")
         return self.uri
