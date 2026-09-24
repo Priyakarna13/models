@@ -301,6 +301,10 @@ jobs:
     permissions:
       actions: write
       contents: read
+    # Let each matrix entry finish independently. A failed or timed-out model
+    # must not prevent durable publication of the other verified outputs.
+    # report-partial-publication records the overall failure after publication.
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.authorize-runner-classes.outputs.matrix) }}
@@ -717,6 +721,9 @@ jobs:
       actions: write
       contents: read
       id-token: write
+    # A publisher whose compiler artifact is absent fails only that matrix
+    # entry; the remaining verified component sets remain publishable.
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.authorize-runner-classes.outputs.matrix) }}
@@ -870,13 +877,16 @@ jobs:
     name: Assemble complete model packages
     needs: [select, publish-compilations]
     if: >-
+      !cancelled() &&
       github.event_name != 'pull_request' &&
       needs.select.outputs.publishable == 'true' &&
-      needs.publish-compilations.result == 'success'
+      (needs.publish-compilations.result == 'success' || needs.publish-compilations.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
+    outputs:
+      package_count: ${{ steps.packages.outputs.count }}
     steps:
       - name: Check out the trusted revision
         uses: actions/checkout@v6
@@ -898,6 +908,7 @@ jobs:
           merge-multiple: true
 
       - name: Assemble every complete package
+        id: packages
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -908,12 +919,17 @@ jobs:
             --output-dir _packages \
             --resource-cache-dir "$RUNNER_TEMP/model-registry-resources" \
             --all \
-            --json > "$RUNNER_TEMP/packages.json"
+          --json > "$RUNNER_TEMP/packages.json"
           count="$(jq -er '.count' "$RUNNER_TEMP/packages.json")"
-          (( count > 0 )) || { echo "No complete packages were assembled" >&2; exit 1; }
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if (( count == 0 )); then
+            echo "No complete packages were assembled; the catalog will publish pending builds only." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           echo "Assembled $count complete model package(s)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Retain deterministic package bundles
+        if: steps.packages.outputs.count != '0'
         uses: actions/upload-artifact@v7
         with:
           name: model-packages-${{ github.sha }}
@@ -937,9 +953,11 @@ jobs:
     name: Publish complete model packages
     needs: [select, resolve-vulcan-config, assemble-packages]
     if: >-
+      !cancelled() &&
       github.event_name != 'pull_request' &&
       needs.select.outputs.publishable == 'true' &&
-      needs.assemble-packages.result == 'success'
+      needs.assemble-packages.result == 'success' &&
+      needs.assemble-packages.outputs.package_count != '0'
     runs-on: ubuntu-latest
     environment: ${{ needs.select.outputs.vulcan_environment }}
     permissions:
@@ -1028,14 +1046,14 @@ jobs:
 
   publish-catalog:
     name: Publish complete model catalog snapshot
-    needs: [select, resolve-vulcan-config, publish-compilations, publish-packages, validation-gate]
+    needs: [select, resolve-vulcan-config, publish-compilations, assemble-packages, publish-packages, validation-gate]
     if: >-
-      always() &&
+      !cancelled() &&
       github.event_name != 'pull_request' &&
       needs.select.outputs.publishable == 'true' &&
       needs.resolve-vulcan-config.result == 'success' &&
       needs.validation-gate.result == 'success' &&
-      (needs.select.outputs.count == '0' || (needs.publish-compilations.result == 'success' && needs.publish-packages.result == 'success'))
+      (needs.select.outputs.count == '0' || ((needs.publish-compilations.result == 'success' || needs.publish-compilations.result == 'failure') && needs.assemble-packages.result == 'success' && (needs.assemble-packages.outputs.package_count == '0' || needs.publish-packages.result == 'success')))
     runs-on: ubuntu-latest
     environment: ${{ needs.select.outputs.vulcan_environment }}
     permissions:
@@ -1063,7 +1081,7 @@ jobs:
           merge-multiple: true
 
       - name: Download finalized package receipts
-        if: needs.select.outputs.count != '0'
+        if: needs.publish-packages.result == 'success'
         uses: actions/download-artifact@v7
         with:
           name: published-model-packages-${{ github.sha }}
@@ -1138,3 +1156,43 @@ jobs:
             -f component_ids="$COMPONENT_IDS"
           echo "Dispatched registry-backed benchmark for ${{ matrix.model_id }}/${{ matrix.compile_invocation_id }} ($COMPONENT_IDS)." \
             >> "$GITHUB_STEP_SUMMARY"
+
+  report-partial-publication:
+    name: Report failed model builds after publication
+    needs: [select, compile, publish-compilations, publish-catalog]
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.select.outputs.count != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Fail after publishing every available verified artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHABLE: ${{ needs.select.outputs.publishable }}
+        run: |
+          set -euo pipefail
+          failed="$RUNNER_TEMP/failed-model-jobs.json"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            | jq '[.[].jobs[] | select(
+                (.name | startswith("Compile ") or startswith("Publish ")) and
+                .conclusion != "success" and
+                (env.PUBLISHABLE == "true" or .conclusion != "skipped")
+              ) | {name, conclusion, html_url}]' > "$failed"
+          count="$(jq 'length' "$failed")"
+          if (( count == 0 )); then
+            echo "All selected model builds and publications completed successfully." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Partial model publication"
+            echo
+            echo "Published every complete, verified package that was available. The following jobs failed or were cancelled:"
+            jq -r '.[] | "- [\(.name)](\(.html_url)) — \(.conclusion)"' "$failed"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::$count model build or publication job(s) did not complete; available artifacts were still published."
+          exit 1
