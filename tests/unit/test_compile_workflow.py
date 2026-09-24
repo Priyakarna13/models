@@ -122,8 +122,60 @@ def test_runner_classes_are_authorized_before_compile_matrix_is_queued() -> None
     authorization = next(step for step in admission["steps"] if step.get("id") == "authorization")
     assert "authorize-runner-matrix" in authorization["run"]
     assert authorization["env"]["VULCAN_CONFIG_S3_URI"] == ("${{ needs.resolve-vulcan-config.outputs.config_s3_uri }}")
-    assert compile_job["needs"] == ["select", "resolve-vulcan-config", "authorize-runner-classes"]
+    assert compile_job["needs"] == [
+        "select", "resolve-vulcan-config", "authorize-runner-classes", "initialize-catalog"
+    ]
     assert compile_job["strategy"]["matrix"] == ("${{ fromJSON(needs.authorize-runner-classes.outputs.matrix) }}")
+
+
+def test_catalog_progress_is_initialized_then_updated_per_invocation() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    initialize = workflow["jobs"]["initialize-catalog"]
+    publisher = workflow["jobs"]["publish-compilations"]
+    plan = next(step for step in initialize["steps"] if step.get("name") == "Publish the pending invocation plan")
+    progress = next(step for step in publisher["steps"] if step.get("name") == "Publish this invocation in the catalog")
+
+    assert initialize["needs"] == ["select", "resolve-vulcan-config", "authorize-runner-classes"]
+    assert "needs.select.outputs.publishable == 'true'" in initialize["if"]
+    assert "needs.select.outputs.validation_count == '0'" in initialize["if"]
+    assert "needs.authorize-runner-classes.result == 'success'" in initialize["if"]
+    assert "model-registry publish-catalog" in plan["run"]
+    assert "--base-branch \"$BASE_BRANCH\"" in plan["run"]
+    assert "needs.select.outputs.publishable == 'true'" in progress["if"]
+    assert "needs.select.outputs.validation_count == '0'" in progress["if"]
+    assert "--compiled-dir _compiled" in progress["run"]
+    assert "catalog_snapshot_conflict" in progress["run"]
+
+
+@pytest.mark.parametrize(
+    ("publishable", "validation_count", "initialize_result", "expected"),
+    [
+        ("false", "0", "skipped", True),
+        ("true", "1", "skipped", True),
+        ("true", "0", "success", True),
+        ("true", "0", "skipped", False),
+        ("true", "0", "failure", False),
+    ],
+)
+def test_compile_allows_only_intentional_catalog_initialization_skips(
+    publishable, validation_count, initialize_result, expected,
+) -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    condition = workflow["jobs"]["compile"]["if"]
+    replacements = {
+        "!cancelled()": True,
+        "github.event_name": "workflow_dispatch",
+        "needs.select.outputs.count": "1",
+        "needs.select.outputs.publishable": publishable,
+        "needs.select.outputs.validation_count": validation_count,
+        "needs.resolve-vulcan-config.result": "success",
+        "needs.authorize-runner-classes.result": "success",
+        "needs.initialize-catalog.result": initialize_result,
+    }
+    for name, value in replacements.items():
+        condition = condition.replace(name, repr(value))
+    condition = condition.replace("&&", "and").replace("||", "or")
+    assert eval(condition, {"__builtins__": {}}, {}) is expected
 
 
 def test_catalog_taxonomy_is_validated_before_compiler_selection() -> None:
@@ -197,7 +249,9 @@ def test_compiler_output_is_published_from_a_hosted_runner() -> None:
     compile_job = workflow["jobs"]["compile"]
     publish_job = workflow["jobs"]["publish-compilations"]
 
-    assert compile_job["needs"] == ["select", "resolve-vulcan-config", "authorize-runner-classes"]
+    assert compile_job["needs"] == [
+        "select", "resolve-vulcan-config", "authorize-runner-classes", "initialize-catalog"
+    ]
     assert "id-token" not in compile_job["permissions"]
     assert all("aws-actions/configure-aws-credentials" not in step.get("uses", "") for step in compile_job["steps"])
     assert all("model_registry publish" not in step.get("run", "") for step in compile_job["steps"])
@@ -231,6 +285,10 @@ def test_compiler_output_is_published_from_a_hosted_runner() -> None:
         if step.get("name") == "Retain the published model output for benchmark handoff"
     )
     assert published_output["with"]["name"].startswith("compiled-model-")
+    progress = next(
+        step for step in publish_job["steps"] if step.get("name") == "Publish this invocation in the catalog"
+    )
+    assert publish_job["steps"].index(published_output) < publish_job["steps"].index(progress)
 
 
 def test_catalog_publication_does_not_require_a_model_compile() -> None:
