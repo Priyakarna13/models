@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 from model_registry.benchmark_publication import load_benchmark_result
-from model_registry.core_benchmark import import_core_benchmark
+from model_registry.core_benchmark import (
+    _has_neat_runtime_package,
+    _installed_packages,
+    import_core_benchmark,
+)
 from model_registry.errors import ValidationError
 
 
@@ -63,6 +67,32 @@ def package(core_inputs, tmp_path):
     return load_benchmark_result(
         output, Path(__file__).resolve().parents[2] / "schemas/performance-result-v5.schema.json"
     )
+
+
+@pytest.mark.parametrize(
+    ("packages", "expected"),
+    [
+        ({"neat-runtime": "0.5.0"}, True),
+        ({"neat-runtime:arm64": "0.5.0"}, True),
+        ({"sima-neat-internals": "0.4.0"}, True),
+        ({"sima-neat": "0.5.0"}, False),
+    ],
+)
+def test_runtime_package_identity_supports_current_and_legacy_names(packages, expected):
+    assert _has_neat_runtime_package(packages) is expected
+
+
+def test_package_inventory_excludes_removed_packages_with_stale_config_files():
+    output = (
+        "neat-runtime:arm64\t0.5.0\tconfig-files\n"
+        "sima-neat:arm64\t0.5.0\tinstalled\n"
+        "sima-neat-internals:arm64\t0.4.0\tinstalled\n"
+    )
+
+    assert _installed_packages(output) == {
+        "sima-neat:arm64": "0.5.0",
+        "sima-neat-internals:arm64": "0.4.0",
+    }
 
 
 def test_core_report_keeps_values_units_and_unavailable_metrics(core_inputs, tmp_path):

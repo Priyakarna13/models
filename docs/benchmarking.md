@@ -81,7 +81,7 @@ CI verifies the dispatched component set and compiled archive digests, installs
 the pinned Core package, then invokes each model's script once per component.
 `model-registry import-core-benchmark` validates the raw Core report and packages
 it with compilation identity, script digest, source revision, runner build, and
-actual Core/Internals package versions. The CI metadata step loads the same MPK
+actual Core/runtime package versions. The CI metadata step loads the same MPK
 with default options to inspect its workload; it does not run inference. The
 importer never executes or times a model.
 

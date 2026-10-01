@@ -35,18 +35,40 @@ UNAVAILABLE_UNITS = {
 }
 
 
+def _has_neat_runtime_package(installed: dict[str, str]) -> bool:
+    for name in installed:
+        package = name.split(":", 1)[0]
+        if package == "neat-runtime" or "internals" in package:
+            return True
+    return False
+
+
+def _installed_packages(raw: str) -> dict[str, str]:
+    installed = {}
+    for line in raw.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[2] == "installed":
+            installed[fields[0]] = fields[1]
+    return installed
+
+
 def runner_environment() -> dict[str, Any]:
     """Record installation identity, without taking performance measurements."""
     buildinfo = Path("/etc/buildinfo").read_text(encoding="utf-8")
     packages = subprocess.run(
-        ["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\n", "*neat*"],
+        [
+            "dpkg-query",
+            "-W",
+            "-f=${binary:Package}\t${Version}\t${db:Status-Status}\n",
+            "*neat*",
+        ],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    installed = dict(line.split("\t", 1) for line in packages.splitlines() if "\t" in line)
-    if not any("internals" in name for name in installed):
-        raise ValidationError("could not establish installed Neat Internals version")
+    installed = _installed_packages(packages)
+    if not _has_neat_runtime_package(installed):
+        raise ValidationError("could not establish installed Neat runtime package version")
     return {
         "buildinfo": buildinfo,
         "packages": installed,
