@@ -1556,6 +1556,9 @@ def publish_compilations(
                 "metadata": {
                     "model_id": model_id,
                     "build_profile_id": build_profile_id,
+                    # sima-cli <=2.1.17 names this selector "variant". Keep the
+                    # alias until its v2 build-profile reader is ubiquitous.
+                    "variant_id": build_profile_id,
                     "component_id": component_id,
                     "artifact_kind": "llima" if native else "mpk",
                     **({"build_on_demand": True} if on_demand else {}),

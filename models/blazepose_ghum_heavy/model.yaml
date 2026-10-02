@@ -1,0 +1,158 @@
+schema_version: 2
+id: blazepose_ghum_heavy
+display_name: BlazePose GHUM Heavy 3D
+description: MediaPipe BlazePose GHUM Heavy landmark model with image-space and world-space 3D pose outputs.
+model_type: vision
+tasks:
+- pose_estimation
+modalities:
+  inputs:
+  - image
+  outputs:
+  - landmarks
+architecture:
+  id: blaze_pose
+  variant: ghum_heavy_3d
+owners:
+- '@sima-neat/models'
+license:
+  spdx: Apache-2.0
+  redistribution: allowed
+  attribution: BlazePose GHUM Heavy was created by the MediaPipe authors and is distributed under Apache-2.0.
+upstream:
+  repository: https://github.com/google-ai-edge/mediapipe
+  revision: 59e42d71bcd44cbdbabc419f0ff76686595fd265419566bd4009ef703ea8e1fe
+  model_card: https://developers.google.com/ml-kit/images/vision/pose-detection/pose_model_card.pdf
+  derived_from: https://storage.googleapis.com/mediapipe-assets/pose_landmark_heavy.tflite
+components:
+- id: model
+  role: inference
+  source:
+    type: file_set
+    entrypoint: pose_landmark_heavy.onnx
+    files:
+    - path: pose_landmark_heavy.onnx
+      uri: https://api.github.com/repos/sima-neat/models/releases/assets/603713934
+      sha256: efcc9e62707d596c86bfc962a26a673401d8438702216f82fc15ead54c6f3a83
+      size_bytes: 55181411
+      media_type: application/onnx
+    - path: pose_landmark_heavy.tflite
+      uri: https://api.github.com/repos/sima-neat/models/releases/assets/603713936
+      sha256: 59e42d71bcd44cbdbabc419f0ff76686595fd265419566bd4009ef703ea8e1fe
+      size_bytes: 27709200
+      media_type: application/vnd.tensorflow.lite
+  interface:
+    format: onnx
+    opset: 16
+    entrypoints:
+    - id: default
+      inputs:
+      - name: input_1
+        dtype: float32
+        shape:
+        - 1
+        - 256
+        - 256
+        - 3
+        layout: NHWC
+        description: RGB pose ROI resized to 256x256 and normalized to [0, 1].
+      outputs:
+      - name: Identity
+        dtype: float32
+        shape:
+        - 1
+        - 195
+        layout: NC
+        description: Thirty-nine x/y/z/visibility-logit/presence-logit image-space landmark records.
+      - name: Identity_1
+        dtype: float32
+        shape:
+        - 1
+        - 1
+        layout: NC
+        description: Global pose-presence logit.
+      - name: Identity_4
+        dtype: float32
+        shape:
+        - 1
+        - 117
+        layout: NC
+        description: Thirty-nine x/y/z world-coordinate landmark records.
+    shape_profiles: []
+  preprocessing:
+    pipeline:
+    - op: decode_image
+      parameters:
+        color_space: RGB
+    - op: resize
+      parameters:
+        width: 256
+        height: 256
+        resample: bilinear
+    - op: rescale
+      parameters:
+        factor: 0.00392156862745098
+  postprocessing:
+    pipeline: []
+  surgery:
+    type: python
+    entrypoint: surgery.py:prepare_model
+    parameters:
+      retained_outputs:
+      - Identity
+      - Identity_1
+      - Identity_4
+      replace_channel_padding: true
+  recipe: compile.py
+resources: []
+calibrations: []
+build_profiles:
+- id: modalix_bf16
+  target: modalix
+  components:
+  - id: model
+    artifact_suffix: bf16_tmio
+    parameters:
+      precision: bf16
+      input_name: input_1
+      input_shape:
+      - 1
+      - 256
+      - 256
+      - 3
+      output_names:
+      - Identity
+      - Identity_1
+      - Identity_4
+compositions:
+- id: default
+  type: single
+  component: model
+  entrypoint: default
+packages:
+- id: default
+  default: true
+  components:
+  - model
+  resources: []
+  build_profiles:
+  - modalix_bf16
+  composition: default
+tests:
+  correctness:
+  - id: tflite_conversion_fidelity
+    config: tests/correctness.yaml
+    scope:
+      type: component
+      component: model
+    build_profiles:
+    - modalix_bf16
+  performance:
+  - id: modalix_latency
+    config: tests/performance.yaml
+    scope:
+      type: component
+      component: model
+    build_profiles:
+    - modalix_bf16
+maturity: staging

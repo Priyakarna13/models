@@ -58,6 +58,10 @@ sima-cli models list --branch develop
 sima-cli models download --id resnet_50 --variant w8a8 --branch develop
 ```
 
+Registry run metadata publishes the canonical `build_profile_id` plus the
+equivalent `variant_id` compatibility alias consumed by released sima-cli
+versions.
+
 ## CI
 
 | Workflow | Trigger | What it does |
