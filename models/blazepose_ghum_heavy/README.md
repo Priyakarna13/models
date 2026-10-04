@@ -47,6 +47,25 @@ The first 33 records are the public BlazePose body landmarks. The remaining six
 are auxiliary ROI-tracking landmarks. Consumers apply sigmoid to visibility and
 presence logits; the model intentionally leaves them raw.
 
+Neither landmark output is in source-image coordinates; consumers must apply
+the transforms MediaPipe's pose landmark graph performs after inference:
+
+- `Identity` x and y are pixel positions in the 256×256 model input. Map them
+  back through the inverse of the crop and resize that produced the input. For
+  an axis-aligned square crop of side `s` at `(left, top)`, resized to 256×256
+  without padding, the source position is `left + x * s / 256` and
+  `top + y * s / 256`. If the crop was letterboxed or rotated, also remove the
+  padding and rotate about the crop centre. z is relative depth on roughly the
+  same scale as x, with the midpoint of the hips near zero; it is not metric.
+- `Identity_4` x, y, and z are in metres, with the origin at the midpoint of
+  the hips. They are not projected through the crop. With an axis-aligned
+  crop they are already in the image orientation; for a rotated crop, rotate
+  them by the crop rotation to return to camera orientation.
+
+The multi-stream BlazePose 3D example in sima-neat/apps uses axis-aligned
+square crops, maps `Identity` back with the inverse affine that Neat
+preprocessing reports for each crop, and uses `Identity_4` unchanged.
+
 ## Available builds
 
 The registry declares one `modalix_bf16` build profile with a single `model`
