@@ -97,10 +97,17 @@ Redistribution is allowed under that license.
 The ONNX conversion used TensorFlow 2.17.0, tf2onnx 1.17.0, ONNX 1.17.0,
 opset 16, and the command below. tf2onnx gives internal constants generated
 names that are not byte-deterministic, so the converted ONNX is itself pinned.
+The official TFLite is part of the verified source set, so fetch it first and
+convert the cached copy.
 
 ```bash
+source_json="$(model-registry fetch models/blazepose_ghum_heavy \
+  --component model --json)"
+source_root="$(jq -er .root <<<"$source_json")"
+test -f "$source_root/pose_landmark_heavy.tflite"
+
 python -m tf2onnx.convert \
-  --tflite pose_landmark_heavy.tflite \
+  --tflite "$source_root/pose_landmark_heavy.tflite" \
   --output pose_landmark_heavy.onnx \
   --opset 16
 ```
@@ -126,8 +133,13 @@ TFLite file is part of the verified source set and is required by the numerical
 conversion gate.
 
 ```bash
+source_json="$(model-registry fetch models/blazepose_ghum_heavy \
+  --component model --json)"
+verified_model="$(jq -er .path <<<"$source_json")"
+test -f "$verified_model"
+
 python models/blazepose_ghum_heavy/compile.py \
-  --model /path/to/source-set/pose_landmark_heavy.onnx \
+  --model "$verified_model" \
   --output-dir /tmp/blazepose-ghum-heavy-bf16 \
   --build-profile modalix_bf16 \
   --component model
