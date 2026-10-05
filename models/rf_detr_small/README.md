@@ -94,6 +94,11 @@ measure model accuracy.
 
 ### Calibration and compilation
 
+`surgery.py` rewrites the attention layout before calibration: the nine
+backbone window blocks run in head/window order, and the three decoder
+self-attention blocks run in NCHW with a 1x1 Conv projection. Both rewrites
+leave the interfaces unchanged and fail on an unexpected export.
+
 The recipe sorts the COCO 2017 mini image names and shuffles them with the
 declared seed. It uses the first 50 images for calibration and the next 50 for
 fidelity; labels are not needed for the tensor comparison. Resolve the dataset,
