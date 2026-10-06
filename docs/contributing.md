@@ -26,12 +26,11 @@ A typical new-model change contains:
 
 ```text
 models/<model-id>/README.md
-models/<model-id>/model.yaml
-models/<model-id>/compile.py
-models/<model-id>/export.py               # only for an upstream checkpoint source
-models/<model-id>/surgery.py              # only when declared
-models/<model-id>/tests/correctness.yaml
-models/<model-id>/tests/performance.yaml
+models/<model-id>/model.yaml              # identity, builds, validation and benchmark settings
+models/<model-id>/scripts/compile.py
+models/<model-id>/scripts/benchmark.py
+models/<model-id>/scripts/export.py       # only for an upstream checkpoint source
+models/<model-id>/scripts/surgery.py      # only when declared
 ```
 
 A taxonomy change may also be necessary, but it changes a repository-wide
@@ -120,8 +119,8 @@ Vulcan runner.
 For a model change, interpret a successful pull-request workflow as confirmation
 that:
 
-- the complete catalog, taxonomy, accuracy configuration, performance
-  configuration, and declarative compositions are structurally valid;
+- the complete catalog, taxonomy, conversion sources, validation and benchmark
+  entries, and declarative compositions are structurally valid;
 - the repository-wide Model Compiler dependency resolves;
 - the comparison base and changed models were identified; and
 - the resulting supported component/profile matrix is deterministic.
