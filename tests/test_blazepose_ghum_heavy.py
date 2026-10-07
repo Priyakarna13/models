@@ -16,20 +16,21 @@ from onnx import TensorProto, helper, numpy_helper
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = ROOT / "models" / "blazepose_ghum_heavy"
+SCRIPTS_DIR = MODEL_DIR / "scripts"
 
 
 def load_module(name: str) -> ModuleType:
-    path = MODEL_DIR / f"{name}.py"
+    path = SCRIPTS_DIR / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"blazepose_ghum_heavy_{name}", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     local_imports = ("surgery", "validate_conversion")
     previous = {key: sys.modules.get(key) for key in local_imports}
-    sys.path.insert(0, str(MODEL_DIR))
+    sys.path.insert(0, str(SCRIPTS_DIR))
     try:
         spec.loader.exec_module(module)
     finally:
-        sys.path.remove(str(MODEL_DIR))
+        sys.path.remove(str(SCRIPTS_DIR))
         for key, value in previous.items():
             if value is None:
                 sys.modules.pop(key, None)

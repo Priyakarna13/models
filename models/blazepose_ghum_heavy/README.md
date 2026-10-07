@@ -35,7 +35,7 @@ through Neat's runtime preprocessing options; the compile audit checks the
 manifest input range, tensor shape, and boundary conversion independently.
 
 The upstream model exposes segmentation and heatmap tensors that the Apps
-example does not consume. `surgery.py` retains the three application outputs in
+example does not consume. `scripts/surgery.py` retains the three application outputs in
 their original order:
 
 1. `Identity [1,195]`: 39 image-space records of x, y, z, visibility logit,
@@ -133,7 +133,7 @@ python -m tf2onnx.convert \
 
 ### Graph surgery
 
-`surgery.py` retains the three application outputs in their original order and
+`scripts/surgery.py` retains the three application outputs in their original order and
 replaces three compiler-incompatible channel-padding operators with numerically
 equivalent 1x1 convolutions.
 
@@ -147,7 +147,7 @@ model-registry matrix --repository . --models blazepose_ghum_heavy
 ```
 
 In the repository-pinned Model Compiler environment, pass the verified ONNX
-entrypoint returned by `model-registry fetch` to `compile.py`. The sibling
+entrypoint returned by `model-registry fetch` to `scripts/compile.py`. The sibling
 TFLite file is part of the verified source set and is required by the numerical
 conversion gate.
 
@@ -157,7 +157,7 @@ source_json="$(model-registry fetch models/blazepose_ghum_heavy \
 verified_model="$(jq -er .path <<<"$source_json")"
 test -f "$verified_model"
 
-python models/blazepose_ghum_heavy/compile.py \
+python models/blazepose_ghum_heavy/scripts/compile.py \
   --model "$verified_model" \
   --output-dir /tmp/blazepose-ghum-heavy-bf16 \
   --build-profile modalix_bf16 \

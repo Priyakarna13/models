@@ -96,14 +96,14 @@ components:
     pipeline: []
   surgery:
     type: python
-    entrypoint: surgery.py:prepare_model
+    entrypoint: scripts/surgery.py:prepare_model
     parameters:
       retained_outputs:
       - Identity
       - Identity_1
       - Identity_4
       replace_channel_padding: true
-  recipe: compile.py
+  recipe: scripts/compile.py
 resources: []
 calibrations: []
 build_profiles:
@@ -138,21 +138,41 @@ packages:
   build_profiles:
   - modalix_bf16
   composition: default
-tests:
-  correctness:
-  - id: tflite_conversion_fidelity
-    config: tests/correctness.yaml
-    scope:
-      type: component
-      component: model
-    build_profiles:
-    - modalix_bf16
-  performance:
-  - id: modalix_latency
-    config: tests/performance.yaml
-    scope:
-      type: component
-      component: model
-    build_profiles:
-    - modalix_bf16
+validation:
+- id: tflite_conversion_fidelity
+  scope:
+    type: component
+    component: model
+  build_profiles:
+  - modalix_bf16
+  status: provisional
+  reference: official_mediapipe_tflite
+  sample: deterministic_modulo_251_rgb
+  outputs:
+  - Identity
+  - Identity_1
+  - Identity_4
+  metrics:
+  - maximum_absolute_error
+  - mean_absolute_error
+  thresholds:
+    maximum_absolute_error: 0.005
+    maximum_mean_absolute_error: 0.0005
+  note: The compile recipe enforces conversion fidelity before surgery; task-level landmark accuracy remains upstream-qualified.
+benchmark:
+- id: modalix_latency
+  scope:
+    type: component
+    component: model
+  build_profiles:
+  - modalix_bf16
+  status: pending
+  target: modalix
+  reason: Establish a Core API baseline for the default BF16 MPK workload.
+  metrics:
+  - latency_avg_ms
+  - throughput_fps
+  - avg_power_watts
+  - energy_joules
+  - energy_per_inference_joules
 maturity: staging

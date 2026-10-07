@@ -20,7 +20,7 @@ from surgery import INPUT_NAME, INPUT_SHAPE, OUTPUTS, prepare_model
 from validate_conversion import deterministic_input, validate_conversion
 
 LOG = logging.getLogger("blazepose_ghum_heavy.compile")
-MODEL_DIR = Path(__file__).resolve().parent
+MODEL_DIR = Path(__file__).resolve().parents[1]
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 PUBLIC_INPUT_SIZE = int(np.prod(INPUT_SHAPE)) * np.dtype(np.float32).itemsize
 PUBLIC_OUTPUT_SIZES = [int(np.prod(shape)) * np.dtype(np.float32).itemsize for _, shape in OUTPUTS]
