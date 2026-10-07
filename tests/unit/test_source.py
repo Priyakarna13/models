@@ -56,6 +56,8 @@ def test_redaction_removes_credentials_query_and_fragment() -> None:
 @pytest.mark.parametrize(
     "uri",
     [
+        "https://api.github.com/repos/sima-neat/models/releases/assets/508126877",
+        "https://github.com/sima-neat/models/releases/download/source-v1/model.onnx",
         "https://github.com/owner/repository/releases/download/calibration-v1/data.npz",
         "https://api.github.com/repos/owner/repository/releases/assets/123456",
     ],
@@ -64,9 +66,41 @@ def test_github_release_assets_are_immutable_sources(uri: str) -> None:
     assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
 
 
+def test_google_cloud_storage_object_is_an_approved_checksum_verified_source() -> None:
+    uri = "https://storage.googleapis.com/rfdetr/small_coco/checkpoint_best_regular.pth"
+    assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
+
+
+def test_python_package_artifact_is_an_approved_checksum_verified_source() -> None:
+    uri = (
+        "https://files.pythonhosted.org/packages/57/d4/"
+        "082da42f39a29acadd47f487b4186c0d6203eb8ce4d145baa72a12103b52/"
+        "rfdetr-1.9.4-py3-none-any.whl"
+    )
+    assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
+
+
 @pytest.mark.parametrize(
     "uri",
     [
+        "https://storage.googleapis.com/unrelated/model.pth",
+        "https://storage.googleapis.com/rfdetr/checkpoint.pth",
+        "https://files.pythonhosted.org/packages/rfdetr-1.9.4-py3-none-any.whl",
+        "https://files.pythonhosted.org/unrelated/package.whl",
+        "https://artifacts.stg.neat.sima.ai/models-onnx/rf_detr_small/latest/model.onnx",
+        f"https://artifacts.stg.neat.sima.ai/other/{DIGEST}/123-1/model.onnx",
+    ],
+)
+def test_approved_hosts_reject_sources_outside_bounded_paths(uri: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url()
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://api.github.com/repos/sima-neat/models/releases/latest",
+        "https://github.com/sima-neat/models/raw/main/model.onnx",
         "https://github.com/owner/repository/raw/main/data.npz",
         "https://github.com/owner/repository/releases/latest/download/data.npz",
         "https://api.github.com/repos/owner/repository/releases/latest",
@@ -75,3 +109,8 @@ def test_github_release_assets_are_immutable_sources(uri: str) -> None:
 def test_non_asset_github_urls_fail(uri: str) -> None:
     with pytest.raises(SourcePolicyError):
         SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url()
+
+
+def test_vulcan_onnx_source() -> None:
+    uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/rf_detr_small/{DIGEST}/123-1/model.onnx"
+    assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri

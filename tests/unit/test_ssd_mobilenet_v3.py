@@ -17,10 +17,11 @@ from onnx import TensorProto, helper, numpy_helper
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = ROOT / "models" / "ssd_mobilenet_v3"
+SCRIPTS_DIR = MODEL_DIR / "scripts"
 
 
 def load_module(name: str) -> ModuleType:
-    path = MODEL_DIR / f"{name}.py"
+    path = SCRIPTS_DIR / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"ssd_mobilenet_v3_{name}", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -29,11 +30,11 @@ def load_module(name: str) -> ModuleType:
         "surgery": ("contract", "source_bundle", "onnx_audit"),
     }.get(name, ())
     previous_dependencies = {dependency: sys.modules.pop(dependency, None) for dependency in local_dependencies}
-    sys.path.insert(0, str(MODEL_DIR))
+    sys.path.insert(0, str(SCRIPTS_DIR))
     try:
         spec.loader.exec_module(module)
     finally:
-        sys.path.remove(str(MODEL_DIR))
+        sys.path.remove(str(SCRIPTS_DIR))
         for dependency, previous in previous_dependencies.items():
             sys.modules.pop(dependency, None)
             if previous is not None:
@@ -42,20 +43,45 @@ def load_module(name: str) -> ModuleType:
 
 
 def load_qat_module(name: str) -> ModuleType:
-    path = MODEL_DIR / "qat" / f"{name}.py"
+    path = SCRIPTS_DIR / "qat" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"ssd_mobilenet_v3_qat_{name}", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     previous_contract = sys.modules.pop("contract", None)
-    sys.path.insert(0, str(MODEL_DIR / "qat"))
+    sys.path.insert(0, str(SCRIPTS_DIR / "qat"))
     try:
         spec.loader.exec_module(module)
     finally:
-        sys.path.remove(str(MODEL_DIR / "qat"))
+        sys.path.remove(str(SCRIPTS_DIR / "qat"))
         sys.modules.pop("contract", None)
         if previous_contract is not None:
             sys.modules["contract"] = previous_contract
     return module
+
+
+def test_validation_restart_preserves_component(tmp_path: Path, monkeypatch) -> None:
+    recipe = load_module("compile")
+    source = tmp_path / "source.onnx"
+    source.touch()
+    profile = "modalix_int8"
+    monkeypatch.setattr(sys, "argv", [
+        "compile.py", "--model", str(source), "--output-dir", str(tmp_path / "out"),
+        "--build-profile", profile, "--component", "model",
+    ])
+    monkeypatch.setattr(recipe, "compile_model", lambda *args: None)
+    captured = []
+
+    def capture_restart(executable, argv):
+        captured.extend(argv)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(recipe.os, "execv", capture_restart)
+    with pytest.raises(SystemExit) as stopped:
+        recipe.main()
+    assert stopped.value.code == 0
+    assert captured[captured.index("--component") + 1] == "model"
+    assert captured[captured.index("--build-profile") + 1] == profile
+    assert "--validation-only" in captured
 
 
 def synthetic_source(path: Path, contract: ModuleType, *, qat: bool) -> Path:
@@ -189,20 +215,23 @@ def test_int8_reference_evaluator_adapts_opset17_qdq_dispatch(tmp_path: Path) ->
 def test_model_sources_match_pinned_v3_assets() -> None:
     calibration = load_module("calibration")
     metadata = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
-    assert metadata["source"] == {
+    component = metadata["components"][0]
+    assert component["source"] == {
+        "type": "file",
         "uri": "https://api.github.com/repos/sima-neat/models/releases/assets/502158604",
         "sha256": "5655500a6f5046b60c3e90b24d18d9c67977a732abeeccdbacadf9dfbce3ac5a",
         "size_bytes": 15784877,
         "media_type": "application/x-gtar",
     }
-    assert metadata["calibration"]["source"] == {
+    assert metadata["calibrations"][0]["source"] == {
+        "type": "file",
         "uri": "https://api.github.com/repos/sima-neat/models/releases/assets/500803386",
         "sha256": calibration.ARCHIVE_SHA256,
         "size_bytes": 55112720,
         "media_type": "application/x-npz",
     }
-    assert metadata["surgery"]["parameters"]["bf16_source"] == "ssd_mobilenet_v3_torchvision_fp32.onnx"
-    assert metadata["surgery"]["parameters"]["int8_source"] == "ssd_mobilenet_v3_torchvision_qat_int8.onnx"
+    assert component["surgery"]["parameters"]["bf16_source"] == "ssd_mobilenet_v3_torchvision_fp32.onnx"
+    assert component["surgery"]["parameters"]["int8_source"] == "ssd_mobilenet_v3_torchvision_qat_int8.onnx"
 
 
 def test_calibration_split_has_128_representative_and_32_disjoint_samples() -> None:
@@ -214,6 +243,22 @@ def test_calibration_split_has_128_representative_and_32_disjoint_samples() -> N
     assert len(set(calibration.VALIDATION_IMAGE_IDS)) == 32
     assert calibration.IMAGE_SIZE == 320
     assert calibration.IMAGE_DATASET_REVISION == "9e50abcdc1361852f34841af4939cbcd2d37c92f"
+
+
+def test_compile_recipe_uses_verified_calibration_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = load_module("compile")
+    verified = tmp_path / "calibration.npz"
+    verified.write_bytes(b"verified")
+    monkeypatch.setenv("CALIBRATION_PATH", str(verified))
+
+    class UnexpectedFetcher:
+        def fetch(self, _source: Any) -> None:
+            raise AssertionError("verified calibration must not be downloaded again")
+
+    monkeypatch.setattr(recipe, "Fetcher", UnexpectedFetcher)
+    assert recipe.resolve_calibration_path() == verified.resolve()
 
 
 def test_calibration_rejects_wrong_sample_shape() -> None:
@@ -254,7 +299,7 @@ def test_torchvision_qat_contract_uses_six_anchors_on_every_level() -> None:
 
 
 def test_qat_environment_is_python310_and_fully_pinned() -> None:
-    qat_dir = MODEL_DIR / "qat"
+    qat_dir = SCRIPTS_DIR / "qat"
     direct = {
         line.strip().lower()
         for line in (qat_dir / "requirements.in").read_text(encoding="utf-8").splitlines()
@@ -352,24 +397,15 @@ def write_mpk(path: Path, compile_module: ModuleType, precision: str, tessellati
     if precision == "int8":
         plugins.append(plugin("EV74", sequence, kernel="quantization_transform", params={"output_data_type": "int8"}))
         sequence += 1
-    plugins.append(plugin("MLA", sequence))
+    plugins.append(plugin("MLA", sequence, output_nodes=[{"name": f"MLA_{i}"} for i in range(12)]))
     sequence += 1
-    internal_type = "int8" if precision == "int8" or not tessellation_mla else "bfloat16"
-    plugins.append(
-        plugin(
-            "EV74",
-            sequence,
-            kernel="unpack_transform",
-            params={"tensor_types": [internal_type] * 12},
-        )
-    )
-    sequence += 1
-    if precision == "int8":
-        for _ in range(12):
-            plugins.append(
-                plugin("EV74", sequence, kernel="dequantization_transform", params={"input_data_type": "int8"})
-            )
-            sequence += 1
+    for _ in range(12):
+        kernel = "dequantization_transform" if precision == "int8" else "cast_transform"
+        params = {"input_data_type": "int8"} if precision == "int8" else {
+            "in_dtype": "bfloat16", "out_dtype": "float32"
+        }
+        plugins.append(plugin("EV74", sequence, kernel=kernel, params=params))
+        sequence += 1
     plugins.append(
         plugin(
             "EV74",
@@ -398,11 +434,10 @@ def write_mpk(path: Path, compile_module: ModuleType, precision: str, tessellati
 
 
 @pytest.mark.parametrize("precision", ["int8", "bf16"])
-@pytest.mark.parametrize("tessellation_mla", [False, True])
-def test_mpk_audit_proves_all_four_variants(tmp_path: Path, precision: str, tessellation_mla: bool) -> None:
+def test_mpk_audit_proves_default_variants(tmp_path: Path, precision: str) -> None:
     compile_module = load_module("compile")
-    suffix = "tess_mla" if tessellation_mla else "tess_off_mla"
-    variant = f"modalix_{precision}_{suffix}"
+    tessellation_mla = True
+    variant = f"modalix_{precision}"
     archive = write_mpk(tmp_path / f"{variant}_mpk.tar.gz", compile_module, precision, tessellation_mla)
     report = compile_module.audit_mpk(archive, variant)
     assert report["output_transport_tensor_count"] == 12
@@ -534,8 +569,8 @@ def test_quantization_validation_selects_executor_explicitly() -> None:
     assert quantized.use_jax == [True, True]
 
 
-def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
-    source = (MODEL_DIR / "compile.py").read_text(encoding="utf-8")
+def test_recipe_preserves_quantization_and_public_io_policy() -> None:
+    source = (SCRIPTS_DIR / "compile.py").read_text(encoding="utf-8")
     assert "with_activation_quantization" in source
     assert "with_weight_quantization" in source
     assert "with_smooth_quant" not in source
@@ -550,41 +585,40 @@ def test_recipe_uses_supported_compiler_2_1_3_api_only() -> None:
     assert "--validation-only" in source
 
 
-def test_model_declares_exact_four_variant_cross_product() -> None:
+def test_model_declares_default_precision_profiles() -> None:
     metadata = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
+    bindings = [profile["components"][0] for profile in metadata["build_profiles"]]
     matrix = {
-        (variant["parameters"]["precision"], variant["parameters"]["tessellation_mla"])
-        for variant in metadata["compile_variants"]
+        binding["parameters"]["precision"]
+        for binding in bindings
     }
-    assert matrix == {("int8", False), ("int8", True), ("bf16", False), ("bf16", True)}
-    assert all(variant["parameters"]["calibration_samples"] == 128 for variant in metadata["compile_variants"])
+    assert matrix == {"int8", "bf16"}
+    assert all(binding["parameters"]["calibration_samples"] == 128 for binding in bindings)
     assert {
-        (variant["parameters"]["precision"], variant["parameters"]["calibration_method"])
-        for variant in metadata["compile_variants"]
+        (binding["parameters"]["precision"], binding["parameters"]["calibration_method"])
+        for binding in bindings
     } == {("int8", "min_max"), ("bf16", "mse")}
     int8_parameters = [
-        variant["parameters"]
-        for variant in metadata["compile_variants"]
-        if variant["parameters"]["precision"] == "int8"
+        binding["parameters"]
+        for binding in bindings
+        if binding["parameters"]["precision"] == "int8"
     ]
     assert all(parameters["quantization_method"] == "qat" for parameters in int8_parameters)
     assert all(parameters.get("smooth_quant", False) is False for parameters in int8_parameters)
     assert all(parameters.get("bias_correction", "none") == "none" for parameters in int8_parameters)
     bf16_parameters = [
-        variant["parameters"]
-        for variant in metadata["compile_variants"]
-        if variant["parameters"]["precision"] == "bf16"
+        binding["parameters"]
+        for binding in bindings
+        if binding["parameters"]["precision"] == "bf16"
     ]
     assert all(parameters["quantization_method"] == "ptq" for parameters in bf16_parameters)
     status = {
-        (variant["parameters"]["precision"], variant["parameters"]["tessellation_mla"]): variant.get(
+        binding["parameters"]["precision"]: binding.get(
             "status", "supported"
         )
-        for variant in metadata["compile_variants"]
+        for binding in bindings
     }
     assert status == {
-        ("int8", False): "supported",
-        ("int8", True): "supported",
-        ("bf16", False): "supported",
-        ("bf16", True): "supported",
+        "int8": "supported",
+        "bf16": "supported",
     }

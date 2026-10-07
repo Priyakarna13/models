@@ -1,102 +1,103 @@
 # SSD-MobileNet V3 Large 320x320
 
-This entry deploys the 12 raw predictor heads of TorchVision's pretrained
-`ssdlite320_mobilenet_v3_large` COCO model. Neat owns anchor decode, scoring,
-and NMS, so postprocessing is deliberately outside the compiled graph.
+## Overview
 
-## Four supported variants
+SSD-MobileNet V3 Large is a TorchVision COCO object detector that accepts a
+normalized 320×320 RGB image and returns 12 raw box and class predictor heads.
+Neat owns anchor decoding, scoring, and non-maximum suppression, so applications
+must complete postprocessing outside the compiled graph. The INT8 build uses a
+qualified quantization-aware-trained source, while BF16 uses the corresponding
+FP32 source. Published compiler checks measure raw-head agreement; the source
+qualification provides the end-to-end COCO accuracy evidence.
 
-| Variant | Precision source | Tessellation | Public ABI |
+## Usage
+
+Download either published build from the `develop` catalog:
+
+```bash
+sima-cli models download --id ssd_mobilenet_v3 --variant modalix_int8 --branch develop
+sima-cli models download --id ssd_mobilenet_v3 --variant modalix_bf16 --branch develop
+```
+
+Use the 12 outputs as six localization heads followed by six confidence heads.
+The application is responsible for generating anchors, decoding boxes,
+computing class scores, and applying NMS.
+
+## Model interface
+
+The model consumes one NCHW FP32 RGB tensor with shape `1×3×320×320`. Images
+are stretched to 320×320, rescaled to `[0, 1]`, normalized with the ImageNet
+mean and standard deviation, and transposed to NCHW. It emits 12 FP32 public
+buffers over six predictor levels sized 20, 10, 5, 3, 2, and 1. Each level uses
+six anchors, for 3,234 anchors in total.
+
+## Available builds
+
+| Build profile | Source | Internal precision | Public interface |
 | --- | --- | --- | --- |
-| `modalix_int8_tess_mla` | learned W8A8 QAT QDQ | MLA | FP32 input and 12 FP32 heads |
-| `modalix_int8_tess_off_mla` | learned W8A8 QAT QDQ | EV74 outside MLA | FP32 input and 12 FP32 heads |
-| `modalix_bf16_tess_mla` | FP32 source, BF16 compiler quantization | MLA | FP32 input and 12 FP32 heads |
-| `modalix_bf16_tess_off_mla` | FP32 source, BF16 compiler quantization | EV74 outside MLA | FP32 input and 12 FP32 heads |
+| `modalix_int8` | Qualified QAT QDQ ONNX | INT8 | FP32 input and 12 FP32 heads |
+| `modalix_bf16` | FP32 ONNX | BF16 | FP32 input and 12 FP32 heads |
 
-The immutable source bundle contains one FP32 ONNX and one learned INT8 QDQ
-ONNX with the same input, outputs, and 98-convolution topology. `surgery.py`
-only validates the bundle and extracts the appropriate member; it never edits
-weights or adds runtime nodes. Both tessellation placements therefore consume
-the same precision source and can differ only in compiler placement.
+AFE 3.0 owns tensor-layout defaults. The immutable source bundle contains both
+graphs with the same input, outputs, and 98-convolution topology. `surgery.py`
+validates the bundle and extracts the correct member without editing weights or
+adding runtime nodes.
 
-Model Compiler 2.1.3 lacks `quantization_mla` and public BF16/FP32 boundary
-APIs, so this recipe does not use them. The public buffers remain FP32. The
-serialized graph and MPK audits prove internal precision and placement instead
-of inferring them from a variant name.
+## Quality and performance
 
-## Why INT8 uses QAT
+The qualified source measured `0.21268746` FP32 bbox AP and `0.20692255` QAT
+bbox AP over full COCO validation, a `0.57649`-point loss. The QAT exporter
+rejects incomplete or smoke training, unfrozen observers, missing COCO evidence,
+or a default loss above 1.5 AP points.
 
-Pure post-training W8A8 quantization of the former TensorFlow V3 source failed
-the shared raw-head gate even after 128 representative samples, SmoothQuant,
-iterative bias correction, and lossless graph preparation. The failure was
-numerical, not a tessellation problem, so changing placement could not repair
-it.
+Each compiler run reloads the saved graph in a clean process and evaluates all
+32 held-out, category-balanced COCO samples. INT8 is compared with the QDQ
+source and requires at least `0.98` minimum cosine and at most `0.20` normalized
+RMSE. BF16 is compared with the FP32 source and requires `0.999` and `0.05`.
 
-The replacement uses TorchVision's stock COCO_V1 SSDLite checkpoint and SiMa
-fake quantization. All 70 mature BatchNorm layers are folded before observers
-are inserted, making training see the exact small folded weights that will be
-deployed. Activations use per-tensor INT8 fake quantization and convolution
+Structural checks require exactly 98 `SIMA_QUANTIZED` MLA convolutions, the
+declared precision for tensors and weights, one MLA ELF, no shared libraries or
+A65 stages, all 12 output transport types, correct FP32 public buffer sizes, and
+no external tessellation stage. The QAT audit also records activation QDQ count,
+minimum learned weight scale, and all-zero quantized weight channels.
+
+## Source and license
+
+The source is derived from TorchVision 0.18.1
+`ssdlite320_mobilenet_v3_large` COCO_V1 weights. The immutable bundle pins the
+upstream weight URL, source and checkpoint digests, tool versions, training
+schedule, both ONNX digests, and full-COCO accuracy evidence. Exact bundle
+provenance is declared in `model.yaml`.
+
+TorchVision and the derived model are distributed under BSD-3-Clause.
+
+## Reproducing the artifact
+
+### QAT training and export
+
+The INT8 source uses SiMa fake quantization after all 70 mature BatchNorm layers
+are folded. Activations use per-tensor INT8 fake quantization and convolution
 weights use symmetric axis-0 per-output-channel INT8 fake quantization. No
 post-hoc weight floor, SmoothQuant, bias correction, BF16 fallback, INT16, or
 mixed-precision escape is applied.
 
-The QAT exporter will publish only a full `train2017` run evaluated against all
-of `val2017`, with at least 128 representative observer images, frozen
-observers, and no more than 1.5 bbox AP points of loss from the independently
-measured FP32 baseline. Diagnostic `--smoke` checkpoints are explicitly marked
-ineligible. See [`qat/README.md`](qat/README.md) for the reproducible Python
-3.10 environment, training command, export contract, and provenance checks.
-The qualified v1 source measured `0.21268746` FP32 AP and `0.20692255` QAT AP,
-a `0.57649`-point drop.
+Follow [`scripts/qat/README.md`](scripts/qat/README.md) for the reproducible Python 3.10
+environment, full `train2017` training command, frozen-observer requirements,
+export contract, and provenance checks. Diagnostic `--smoke` checkpoints are
+explicitly ineligible for publication.
 
-## Independent compiler gates
+### Calibration
 
-Each compiler run reloads the saved graph in a clean process and evaluates all
-32 held-out, category-balanced COCO samples. INT8 is compared with its qualified
-QDQ source; BF16 is compared with the FP32 source. The audit records every raw
-head's cosine similarity, normalized RMSE, mean absolute error, and maximum
-absolute error. INT8 requires at least `0.98` minimum cosine and at most `0.20`
-normalized RMSE; BF16 requires `0.999` and `0.05`.
+The compiler reuses the immutable category-balanced archive containing 128
+calibration tensors and 32 disjoint validation tensors. The archive stores the
+older `[-1, 1]` representation; the recipe converts it back to `[0, 1]` and
+applies ImageNet normalization before execution. This preserves the pinned
+selection and checksums without republishing the source images.
 
-Structural checks independently require:
+### Compilation and validation
 
-- exactly 98 `SIMA_QUANTIZED` MLA convolutions;
-- per-channel integer convolution weights for INT8 or BF16 tensors and weights
-  for BF16;
-- one MLA ELF, no shared libraries, and no A65 stages;
-- all 12 internal output transport types and the FP32 public buffer sizes;
-- an external EV74 tessellation stage exactly when tessellation is not fused
-  into MLA.
-
-The QAT ONNX audit also reports activation QDQ count, minimum learned weight
-scale, and all-zero quantized weight channels. Such channels are visible to and
-optimized by QAT, so a compiler warning about them is evidence about the learned
-source rather than silent PTQ corruption. The full-COCO AP gate and compiled
-numerical gate remain authoritative.
-
-## Source, input, and calibration
-
-Release `ssd-mobilenet-v3-qat-source-v1` contains the deterministic bundle
-(`5655500a6f5046b60c3e90b24d18d9c67977a732abeeccdbacadf9dfbce3ac5a`,
-15,784,877 bytes). It pins TorchVision 0.18.1, the COCO_V1 weight URL, its full SHA-256,
-the QAT checkpoint digest, tool versions, training schedule, both ONNX digests,
-and full-COCO accuracy evidence. `model.yaml` pins the deterministic bundle by
-release asset ID, size, and SHA-256. The six predictor maps are 20, 10, 5, 3,
-2, and 1; every level uses six anchors, for 3,234 anchors total.
-
-The public tensor is RGB stretched to 320x320, rescaled to `[0, 1]`, normalized
-by ImageNet mean `(0.485, 0.456, 0.406)` and standard deviation
-`(0.229, 0.224, 0.225)`, then transposed to NCHW. The existing immutable
-calibration asset contains 128 calibration and 32 disjoint validation tensors
-in the old `[-1, 1]` representation. The compiler recipe converts those values
-back to `[0, 1]` and applies ImageNet normalization before execution, preserving
-the pinned category-balanced sample selection and hashes without republishing
-the images.
-
-## Run on Vulcan
-
-Dispatch `Vulcan Model Compile` in staging with model `ssd_mobilenet_v3`.
-Leaving `variants` empty builds all four supported combinations; one variant ID
-can be supplied for focused diagnosis. Compilation, fresh-process numerical
-validation, structural graph audit, MPK audit, and artifact publication must
-all succeed before a variant is usable.
+Dispatch **Vulcan Model Compile** in staging with model
+`ssd_mobilenet_v3`. Leaving the profile selection empty builds both declared
+profiles; select one profile only for focused diagnosis. Compilation,
+fresh-process numerical validation, structural graph inspection, MPK
+inspection, and artifact publication must all succeed before a build is usable.

@@ -9,94 +9,96 @@ artifacts do not belong in Git. Model directories contain immutable provenance
 and checksums; shared lifecycle implementation lives in `tools/model_registry`.
 
 Model directories do own model-specific surgery and compile recipes. Those
-recipes consume verified sources and must emit exactly one directly consumable
-`*_mpk.tar.gz`; common discovery, downloading, runner selection, MPK validation,
-checksumming, and publication remain shared.
+recipes consume verified sources. A normal invocation emits one directly
+consumable `*_mpk.tar.gz`; a declared grouped invocation emits one per component
+and a manifest for the complete set. Common discovery, downloading, runner
+selection, MPK validation, checksumming, and publication remain shared.
+
+`model-registry` is an author-safe `sima-cli` package for local validation,
+verified input handling, variant inspection, and MPK checks. It is not a direct
+registry publishing client. Model authors compile with the model-owned
+`scripts/compile.py` and run each model’s `scripts/benchmark.py` on the DevKit; CI keeps
+the separate packaging and publication command surface.
 
 ## Local setup
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
+sima-cli neat install --stg models-utils/model-registry@develop:latest
+model-registry --version
 model-registry validate models/resnet_50
 model-registry fetch models/resnet_50
-python -m pytest
 ```
+
+Install the repository-pinned Model Compiler first. The package installer finds
+its NEAT SDK or standalone environment and installs `model-registry` there
+without replacing compiler-owned dependencies.
+
+Start with the [developer documentation](docs/README.md) for the end-to-end
+model contribution path, the field-level `model.yaml` contract, local testing,
+and the GitHub review checklist.
 
 ## Vulcan compilation
 
 [`Vulcan-Model-Compile.yml`](.github/workflows/Vulcan-Model-Compile.yml) validates
-pull requests without granting them a self-hosted runner. Trusted pushes build
-only changed models on staging. The first build of a new branch resolves its
-closest base branch, compares from the merge base, and inherits unchanged model
-artifacts from that branch's published `latest.json`; it does not rebuild the
-catalog merely because GitHub reports an all-zero previous SHA. A maintainer can
+pull requests without granting them a self-hosted runner. Trusted pushes compare
+semantic compile, validation, and benchmark fingerprints on staging. The first
+build of a new branch resolves its
+closest base branch and compares from the merge base, so GitHub's all-zero
+previous SHA does not force a full rebuild. A maintainer can
 run the workflow manually, choose `staging` or protected `production`, and
-optionally provide a comma-separated model list and variant list or an explicit
-base branch; empty model and variant lists build the full catalog.
-A targeted variant run is compile-only and never advances the published catalog.
+optionally provide comma-separated model, profile, and component lists or an explicit
+base branch; empty model and profile lists build the full catalog.
+
+Each successful staging Modalix compile dispatches the dedicated
+[`Vulcan-Model-Benchmarking.yml`](.github/workflows/Vulcan-Model-Benchmarking.yml)
+workflow, shown in GitHub Actions as `Vulcan Model Benchmarking`.
+
+Each model has a minimal benchmark script that loads its MPK and calls Core’s
+benchmark API. CI installs Core directly from the dependency manifest and exports
+its structured measurements for registry publication.
 
 The workflow first resolves the repository-wide Model Compiler pin from
 [`deps/manifest.json`](deps/manifest.json), then requests the environment label,
-`model-compiler`, and the derived `model-compiler-<version>` label. Successful matrix outputs are
-assembled and published with the standard Vulcan branch layout:
+`model-compiler`, and a label derived from the pin. Pins with a channel and revision
+use `model-compiler-<channel>-<revision>`, such as
+`model-compiler-develop-e94f03a8f59c`; version-only pins use
+`model-compiler-<version>`. Each matrix item validates its complete output and
+uploads one GitHub Actions artifact. A GitHub-hosted job checks that artifact,
+publishes each component under an
+immutable object key, records its checksum, provenance, exact S3 object version,
+through the IAM-authenticated Model Registry API, then finalizes each component
+run. A hosted job publishes one complete catalog snapshot identified by the full
+Git SHA and a taxonomy checksum. Metadata-only changes reuse matching immutable
+compile runs; benchmark-only changes restore their MPKs from the registry.
 
-```text
-models/
-  <url-encoded-branch>/
-    latest.tag                         # 12-character catalog commit
-    latest.json                        # per-model latest build index
-    <12-character-commit>/
-      metadata.json                    # selectable model catalog
-      catalog.json                     # machine-readable catalog
-      latest.json                      # immutable copy of the index
-      manifest.json                    # Vulcan checksums and S3 keys
-      <changed-model-id>/
-        metadata.json                  # directly installable model package
-        <variant-id>/
-          *_mpk.tar.gz
-          SHA256SUMS
-          compile-result.json
-  branches.json
-```
-
-The shared Vulcan publisher uploads the immutable commit folder first. The
-branch's `latest.tag` is advanced only after the commit manifest exists. For
-example:
+Model discovery and checksum-verified downloads use registry database records
+and presigned artifact URLs:
 
 ```bash
-# Select one or more models interactively from the branch catalog.
-sima-cli neat install --stg models@develop:latest --install-dir ./compiled-models
-
-# Install every compiled variant for one model directly.
-sima-cli neat install --stg models/resnet_50@develop:latest --install-dir ./compiled-models
+sima-cli models list --branch develop
+sima-cli models download --id resnet_50 --variant modalix_bf16 --branch develop
 ```
 
-Only affected models are recompiled. `latest.tag` remains a plain-text pointer
-to the newest complete catalog for existing Vulcan consumers. The versioned
-[`latest.json`](schemas/latest-index-v1.schema.json) maps each model to its own
-build tag, build time, source/compiler provenance, and artifact branch. Root
-catalog metadata uses immutable URLs from that index, while a direct
-`models/<model-id>@<branch>:latest` install resolves the model's build tag.
-Unchanged MPKs are not copied into every catalog commit. A new branch inherits
-unchanged pointers from its resolved base branch until those models are rebuilt
-on the branch. Each compiled model records a deterministic fingerprint covering
-its model-local inputs, shared build tooling, and Model Compiler version. A
-matching fingerprint is reused; a missing or changed fingerprint rebuilds every
-supported variant of that model. A branch with no compilation work still
-publishes a lightweight catalog whose entries reference inherited immutable
-artifacts. Model README and test-description edits do not invalidate compiled
-MPKs.
+The former Models-specific `metadata.json`, `latest.json`, `latest.tag`, and
+`catalog.json` publication path is retired. Existing objects remain historical
+artifacts, but workflows no longer read, carry forward, validate, generate, or
+promote those pointers. Branch purge and restore use registry API operations
+over registered runs and immutable S3 object versions.
 
-Successful staging compilations are also written through the IAM-authenticated
-Vulcan Artifact Registry API as one immutable run per newly compiled variant.
 Each record links the model source checksum, variant parameters, Model Compiler
-version, build fingerprint, and exact versioned S3 MPK. These records currently
-cover compilation and MPK validation only; DevKit correctness and performance
-results will be added by the later Kerrigan workflow.
+version, build fingerprint, and exact versioned S3 MPK. For staging feature
+branches, the workflow discovers the Modalix compile artifacts actually produced
+by the current run and benchmarks each one on the resolved Modalix GitHub runner.
+The runner verifies the manifest-selected Platform version and installs Core from
+the configured target. Each schema-v5 result records the actual board build and
+installed Core and Internals versions, alongside a log for each model component/profile. A
+trusted hosted job publishes every completed result under its model's S3 hierarchy
+and records an immutable `model_benchmark` child of the matching compile run.
 
-See [the architecture](docs/architecture.md),
-[adding a model](docs/adding-a-model.md), and the
-[SSD-MobileNet matrix qualification plan](docs/ssd-mobilenet-precision-matrix-plan.md)
+See [the developer documentation](docs/README.md),
+[the Model Registry design](design-doc/model-registry-architecture.md), the
+[local accuracy development guide](docs/local-accuracy-development.md), the
+[synthetic benchmarking guide](docs/benchmarking.md), the
+[model taxonomy](docs/model-taxonomy.md), and the
+[SSD-MobileNet matrix qualification plan](design-doc/ssd-mobilenet-precision-matrix-plan.md)
 for repository conventions.

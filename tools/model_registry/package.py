@@ -1,199 +1,290 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import shutil
+import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .artifact import verify_mpk
-from .catalog import discover_catalog, model_build_fingerprint
+import yaml
+from jsonschema import Draft202012Validator
+
 from .errors import ValidationError
-from .fetch import sha256_file
-from .published import artifact_url, validate_latest_index
+from .fetch import Fetcher, sha256_file
+from .model import composition_document, load_and_validate_model
+from .source import source_identity
 
 
-def _size_text(size_bytes: int) -> str:
-    for suffix, divisor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
-        if size_bytes >= divisor:
-            return f"{size_bytes / divisor:.1f}".rstrip("0").rstrip(".") + suffix
-    return "1KB" if size_bytes else "0KB"
+def _load_json(path: Path, description: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationError(f"could not read {description} {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValidationError(f"{description} must be a JSON object: {path}")
+    return value
 
 
-def _metadata(*, name: str, version: str, description: str, resources: list[str],
-              checksums: dict[str, str], selectables: list[dict[str, str]], size_bytes: int) -> dict[str, Any]:
-    if not resources:
-        raise ValidationError(f"{name}: sima-cli metadata requires at least one non-selectable resource")
-    size = _size_text(size_bytes)
-    return {
-        "name": name, "version": version, "release": "", "description": description,
-        "platforms": [], "resources": resources, "resources-checksum": checksums,
-        "selectable-resources": selectables, "size": {"download": size, "install": size},
-        "installation": {"script": 'echo "Compiled model MPK artifacts downloaded"',
-                         "post-message": "[bold]Compiled model artifacts are ready.[/bold]\n"},
-    }
+def _zip_info(name: str) -> zipfile.ZipInfo:
+    """Return a platform-independent, non-executable ZIP member descriptor."""
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.create_system = 3
+    info.external_attr = 0o100644 << 16
+    info.compress_type = zipfile.ZIP_STORED
+    return info
 
 
-def _write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def _add_bytes(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
+    archive.writestr(_zip_info(name), payload)
 
 
-def package_compiled_models(repository: str | Path, compiled_dir: str | Path, output_dir: str | Path,
-                            git_sha: str, *, environment: str = "staging", branch: str = "main",
-                            previous_index: str | Path | None = None) -> dict[str, Any]:
+def _add_file(archive: zipfile.ZipFile, name: str, path: Path) -> None:
+    with path.open("rb") as stream:
+        archive.writestr(_zip_info(name), stream.read())
+
+
+def assemble_package(
+    *,
+    repository: str | Path,
+    compiled_dir: str | Path,
+    output_dir: str | Path,
+    model_id: str,
+    build_profile_id: str,
+    package_id: str,
+    resource_cache_dir: str | Path | None = None,
+) -> dict[str, Any]:
     root = Path(repository).expanduser().resolve()
     compiled = Path(compiled_dir).expanduser().resolve()
-    output = Path(output_dir).expanduser().resolve()
-    if output.exists():
-        raise ValidationError(f"package output directory already exists: {output}")
-    if not compiled.is_dir():
-        raise ValidationError(f"compiled model directory not found: {compiled}")
-    if len(git_sha) != 40 or any(c not in "0123456789abcdef" for c in git_sha.lower()):
-        raise ValidationError("git SHA must contain exactly 40 hexadecimal characters")
-    if not branch.strip():
-        raise ValidationError("branch must not be empty")
+    output_root = Path(output_dir).expanduser().resolve()
+    model_dir = root / "models" / model_id
+    model = load_and_validate_model(model_dir, root / "schemas" / "model.schema.json")
+    profiles = {item["id"]: item for item in model["build_profiles"]}
+    packages = {item["id"]: item for item in model["packages"]}
+    resources = {item["id"]: item for item in model["resources"]}
+    components = {item["id"]: item for item in model["components"]}
+    compositions = {item["id"]: item for item in model["compositions"]}
+    if build_profile_id not in profiles:
+        raise ValidationError(f"unknown build profile: {model_id}/{build_profile_id}")
+    if package_id not in packages:
+        raise ValidationError(f"unknown package: {model_id}/{package_id}")
+    package = packages[package_id]
+    if build_profile_id not in package["build_profiles"]:
+        raise ValidationError(f"package {model_id}/{package_id} does not support build profile {build_profile_id}")
 
-    catalog = discover_catalog(root)
-    version = git_sha[:12]
-    previous_models: dict[str, Any] = {}
-    if previous_index is not None:
-        path = Path(previous_index).expanduser().resolve()
-        if path.is_file():
-            previous_models = validate_latest_index(json.loads(path.read_text(encoding="utf-8")))["models"]
-
-    current_results = sorted(compiled.glob("*/*/compile-result.json"))
-    current_by_model: dict[str, list[dict[str, Any]]] = {}
-    for result_path in current_results:
-        model_id, variant_id = result_path.relative_to(compiled).parts[:2]
-        if model_id not in catalog:
-            raise ValidationError(f"compiled output references unknown model: {model_id}")
-        variants = {item["id"]: item for item in catalog[model_id]["compile_variants"]}
-        if variant_id not in variants:
-            raise ValidationError(f"compiled output references unknown variant: {model_id}/{variant_id}")
-        if variants[variant_id].get("status", "supported") == "unsupported":
-            raise ValidationError(
-                f"compiled output references unsupported variant: {model_id}/{variant_id}: "
-                f"{variants[variant_id]['reason']}"
-            )
-        result = json.loads(result_path.read_text(encoding="utf-8"))
-        provenance = result.get("provenance", {})
-        expected_provenance = {
+    component_entries: list[dict[str, Any]] = []
+    component_files: list[tuple[str, Path]] = []
+    provenance_identity: dict[str, str] | None = None
+    for component_id in sorted(package["components"]):
+        result_dir = compiled / model_id / build_profile_id / component_id
+        result = _load_json(result_dir / "compile-result.json", "compile result")
+        provenance = result.get("provenance")
+        if not isinstance(provenance, dict):
+            raise ValidationError(f"{result_dir}: compile result provenance must be an object")
+        expected = {
             "model_id": model_id,
-            "variant_id": variant_id,
-            "git_sha": git_sha,
-            "target": variants[variant_id]["target"],
-            "environment": environment,
+            "build_profile_id": build_profile_id,
+            "component_id": component_id,
+            "target": profiles[build_profile_id]["target"],
+            "source_sha256": source_identity(components[component_id]["source"]),
         }
-        compiler_version = provenance.get("compiler_version")
-        if isinstance(compiler_version, str) and compiler_version.strip():
-            expected_provenance["build_fingerprint"] = model_build_fingerprint(root, model_id, compiler_version)
-        for key, value in expected_provenance.items():
-            if provenance.get(key) != value:
-                raise ValidationError(
-                    f"{result_path}: provenance {key} must be {value!r}, found {provenance.get(key)!r}"
-                )
-        for key in ("compiler_version", "compiler_label"):
-            if not isinstance(provenance.get(key), str) or not provenance[key].strip():
-                raise ValidationError(f"{result_path}: provenance {key} must be a non-empty string")
-        source_sha256 = provenance.get("source_sha256")
-        if not isinstance(source_sha256, str) or len(source_sha256) != 64 or any(
-            character not in "0123456789abcdef" for character in source_sha256.lower()
-        ):
-            raise ValidationError(f"{result_path}: provenance source_sha256 must be a SHA-256 digest")
-        verified = verify_mpk(result_path.parent)
-        if result.get("sha256") != verified["sha256"] or result.get("archive") != verified["archive"]:
-            raise ValidationError(f"{result_path}: compile result does not match the MPK archive")
-        destination = output / model_id / variant_id
-        destination.mkdir(parents=True, exist_ok=True)
-        for source in (result_path.parent / verified["archive"], result_path.parent / "SHA256SUMS", result_path):
-            if not source.is_file():
-                raise ValidationError(f"{result_path.parent}: incomplete compiled model output")
-            shutil.copy2(source, destination / source.name)
-        current_by_model.setdefault(model_id, []).append({
-            "target": variants[variant_id]["target"], "variant_id": variant_id,
-            "mpk": f"{model_id}/{variant_id}/{verified['archive']}", "sha256": verified["sha256"],
-            "size_bytes": verified["size_bytes"], "built_at": result.get("built_at"), "provenance": provenance,
-        })
+        for field, value in expected.items():
+            if provenance.get(field) != value:
+                raise ValidationError(f"{result_dir}: provenance {field} must be {value!r}")
+        current_identity = {
+            field: str(provenance.get(field) or "")
+            for field in ("git_sha", "environment", "compiler_version", "compiler_label", "target")
+        }
+        if provenance_identity is None:
+            provenance_identity = current_identity
+        elif current_identity != provenance_identity:
+            raise ValidationError(f"{result_dir}: component provenance is incompatible with its package siblings")
 
-    index_models: dict[str, Any] = {}
-    for model_id, model in sorted(catalog.items()):
-        expected_variants = {
-            item["id"] for item in model["compile_variants"] if item.get("status", "supported") == "supported"
-        }
-        if model_id in current_by_model:
-            built = current_by_model[model_id]
-            found_variants = {item["variant_id"] for item in built}
-            if found_variants != expected_variants:
-                raise ValidationError(
-                    f"{model_id}: compiled variants {sorted(found_variants)} "
-                    f"do not match catalog {sorted(expected_variants)}"
-                )
-            built_at_values = [str(item["built_at"] or "") for item in built]
-            if any(not value for value in built_at_values):
-                raise ValidationError(f"{model_id}: compile result is missing built_at")
-            index_models[model_id] = {
-                "display_name": model["display_name"], "description": model["description"],
-                "latest_tag": version, "artifact_branch": branch, "built_at": max(built_at_values),
-                "build_fingerprint": built[0]["provenance"]["build_fingerprint"],
-                "variants": {
-                    item["variant_id"]: {
-                        "target": item["target"], "mpk": item["mpk"], "sha256": item["sha256"],
-                        "size_bytes": item["size_bytes"],
-                        "compiler_version": item["provenance"].get("compiler_version", ""),
-                        "compiler_label": item["provenance"].get("compiler_label", ""),
-                        "source_sha256": item["provenance"].get("source_sha256", ""),
-                    } for item in built
-                },
+        archive_name = result.get("archive")
+        if not isinstance(archive_name, str) or not archive_name:
+            raise ValidationError(f"{result_dir}: compile result archive must be a non-empty string")
+        component_archive = result_dir / archive_name
+        if component_archive.parent != result_dir or not component_archive.is_file():
+            raise ValidationError(f"{result_dir}: component archive is missing")
+        digest, size = sha256_file(component_archive)
+        if digest != result.get("sha256") or size != result.get("size_bytes"):
+            raise ValidationError(f"{result_dir}: component archive does not match compile-result.json")
+        package_path = f"components/{component_id}/{archive_name}"
+        component_files.append((package_path, component_archive))
+        publication_path = result_dir / "registry-publication.json"
+        compile_run_id = None
+        if publication_path.is_file():
+            publication = _load_json(publication_path, "registry publication")
+            runs = publication.get("runs", [])
+            if isinstance(runs, list) and len(runs) == 1 and isinstance(runs[0], dict):
+                compile_run_id = runs[0].get("run_id")
+        component_entries.append(
+            {
+                "id": component_id,
+                "role": components[component_id]["role"],
+                "path": package_path,
+                "sha256": digest,
+                "size_bytes": size,
+                "source_sha256": expected["source_sha256"],
+                "compile_run_id": compile_run_id,
             }
+        )
+
+    composition = compositions[package["composition"]]
+    composition_files: list[tuple[str, bytes]] = []
+    if composition["type"] == "single":
+        packaged_composition = composition
+    else:
+        composition_path = "composition/composition.yaml"
+        composition_bytes = yaml.safe_dump(composition_document(composition), sort_keys=False).encode()
+        composition_files.append((composition_path, composition_bytes))
+        packaged_composition = {
+            "id": composition["id"],
+            "type": composition["type"],
+            "schema_version": composition["schema_version"],
+            "path": composition_path,
+        }
+
+    fetcher = Fetcher(resource_cache_dir)
+    resource_entries: list[dict[str, Any]] = []
+    resource_files: list[tuple[str, Path]] = []
+    occupied_paths = {name for name, _ in (*component_files, *composition_files)} | {"manifest.json"}
+    for resource_id in sorted(package["resources"]):
+        resource = resources[resource_id]
+        source = resource["source"]
+        path, _, digest, size = fetcher.fetch_source(source)
+        install_path = PurePosixPath(resource["install_path"]).as_posix()
+        paths: list[str] = []
+        if source["type"] == "file":
+            paths.append(install_path)
+            files = [(install_path, path)]
         else:
-            entry = previous_models.get(model_id)
-            if not isinstance(entry, dict):
-                raise ValidationError(f"{model_id}: no compiled output and no previous latest.json entry")
-            if set(entry.get("variants", {})) != expected_variants:
-                raise ValidationError(
-                    f"{model_id}: previous variants do not match the current catalog; rebuild the model"
-                )
-            index_models[model_id] = entry
+            source_root = path
+            for _ in PurePosixPath(source["entrypoint"]).parts:
+                source_root = source_root.parent
+            files = []
+            for member in source["files"]:
+                package_path = (PurePosixPath(install_path) / member["path"]).as_posix()
+                paths.append(package_path)
+                files.append((package_path, source_root / member["path"]))
+        for package_path, resource_path in files:
+            if package_path in occupied_paths:
+                raise ValidationError(f"package path is declared more than once: {package_path}")
+            occupied_paths.add(package_path)
+            resource_files.append((package_path, resource_path))
+        resource_entry = {
+            "id": resource_id,
+            "paths": paths,
+            "source_sha256": digest,
+            "size_bytes": size,
+        }
+        if "license" in resource:
+            resource_entry["license"] = resource["license"]
+        resource_entries.append(resource_entry)
 
-    packaged_models: list[dict[str, Any]] = []
-    root_selectables: list[dict[str, str]] = []
-    for model_id, entry in sorted(index_models.items()):
-        for variant_id, variant in sorted(entry["variants"].items()):
-            url = artifact_url(environment, entry["artifact_branch"], entry["latest_tag"], variant["mpk"])
-            packaged_models.append({
-                "id": model_id, "display_name": entry["display_name"], "variant_id": variant_id,
-                "target": variant["target"], "mpk": variant["mpk"], "artifact_url": url,
-                "sha256": variant["sha256"], "size_bytes": variant["size_bytes"],
-                "compiled_git_sha": entry["latest_tag"], "artifact_branch": entry["artifact_branch"],
-                "built_at": entry["built_at"],
-            })
-            root_selectables.append({"name": f"{entry['display_name']} ({variant_id})", "url": "",
-                                     "resource": url, "checksum": variant["sha256"]})
-
-    for model_id, built in current_by_model.items():
-        model_dir = output / model_id
-        resources = [Path(item["mpk"]).relative_to(model_id).as_posix() for item in built]
-        checksums = {resource: sha256_file(model_dir / resource)[0] for resource in resources}
-        size_bytes = sum((model_dir / resource).stat().st_size for resource in resources)
-        _write_json(model_dir / "metadata.json", _metadata(
-            name=f"gh:sima-neat/models/{model_id}", version=version,
-            description=catalog[model_id]["description"], resources=resources, checksums=checksums,
-            selectables=[], size_bytes=size_bytes))
-
-    latest_index = {
-        "schema_version": 1, "repository": "sima-neat/models", "branch": branch,
-        "catalog_tag": version, "updated_at": datetime.now(timezone.utc).isoformat(), "models": index_models,
+    installed_files = sorted(
+        [
+            *(
+                {"path": name, "sha256": sha256_file(path)[0], "size_bytes": path.stat().st_size}
+                for name, path in (*component_files, *resource_files)
+            ),
+            *(
+                {"path": name, "sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
+                for name, payload in composition_files
+            ),
+        ],
+        key=lambda item: item["path"],
+    )
+    manifest = {
+        "schema_version": 1,
+        "model_id": model_id,
+        "display_name": model["display_name"],
+        "package_id": package_id,
+        "build_profile_id": build_profile_id,
+        "composition": packaged_composition,
+        "target": profiles[build_profile_id]["target"],
+        "provenance": provenance_identity or {},
+        "components": component_entries,
+        "resources": resource_entries,
+        "files": installed_files,
+        "license": model["license"],
     }
-    _write_json(output / "latest.json", latest_index)
-    catalog_document = {
-        "schema_version": 1, "repository": "sima-neat/models", "commit": git_sha,
-        "commit_folder": version, "models": packaged_models,
+    package_schema = _load_json(root / "schemas" / "package-manifest-v1.schema.json", "package schema")
+    errors = sorted(
+        Draft202012Validator(package_schema).iter_errors(manifest),
+        key=lambda error: tuple(str(part) for part in error.absolute_path),
+    )
+    if errors:
+        first = errors[0]
+        location = ".".join(str(part) for part in first.absolute_path) or "manifest"
+        raise ValidationError(f"package manifest {location}: {first.message}")
+    manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    package_dir = output_root / model_id / build_profile_id / "packages" / package_id
+    package_dir.mkdir(parents=True, exist_ok=True)
+    bundle_name = f"{model_id}_{build_profile_id}_{package_id}.zip"
+    bundle_path = package_dir / bundle_name
+    temporary = package_dir / f".{bundle_name}.partial"
+    prefix = f"{model_id}/"
+    try:
+        with zipfile.ZipFile(temporary, "w", allowZip64=True, compression=zipfile.ZIP_STORED) as archive:
+            _add_bytes(archive, f"{prefix}manifest.json", manifest_bytes)
+            for name, path in sorted((*component_files, *resource_files)):
+                _add_file(archive, f"{prefix}{name}", path)
+            for name, payload in composition_files:
+                _add_bytes(archive, f"{prefix}{name}", payload)
+        temporary.replace(bundle_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    digest, size = sha256_file(bundle_path)
+    result = {
+        "schema_version": 1,
+        "status": "success",
+        "model_id": model_id,
+        "package_id": package_id,
+        "build_profile_id": build_profile_id,
+        "archive": bundle_name,
+        "sha256": digest,
+        "size_bytes": size,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "manifest": manifest,
     }
-    _write_json(output / "catalog.json", catalog_document)
-    catalog_digest, catalog_size = sha256_file(output / "catalog.json")
-    _write_json(output / "metadata.json", _metadata(
-        name="gh:sima-neat/models", version=version, description="SiMa Neat compiled model MPK catalog",
-        resources=["catalog.json"], checksums={"catalog.json": catalog_digest}, selectables=root_selectables,
-        size_bytes=catalog_size + sum(item["size_bytes"] for item in packaged_models)))
-    return catalog_document
+    (package_dir / "package-result.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return result
+
+
+def assemble_available_packages(
+    *,
+    repository: str | Path,
+    compiled_dir: str | Path,
+    output_dir: str | Path,
+    resource_cache_dir: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    root = Path(repository).expanduser().resolve()
+    results: list[dict[str, Any]] = []
+    for model_file in sorted((root / "models").glob("*/model.yaml")):
+        model = load_and_validate_model(model_file.parent, root / "schemas" / "model.schema.json")
+        for package in sorted(model["packages"], key=lambda item: item["id"]):
+            for profile_id in sorted(package["build_profiles"]):
+                required = [
+                    Path(compiled_dir).expanduser().resolve()
+                    / model["id"]
+                    / profile_id
+                    / component_id
+                    / "compile-result.json"
+                    for component_id in package["components"]
+                ]
+                if required and all(path.is_file() for path in required):
+                    results.append(
+                        assemble_package(
+                            repository=root,
+                            compiled_dir=compiled_dir,
+                            output_dir=output_dir,
+                            model_id=model["id"],
+                            build_profile_id=profile_id,
+                            package_id=package["id"],
+                            resource_cache_dir=resource_cache_dir,
+                        )
+                    )
+    return results

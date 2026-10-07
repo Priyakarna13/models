@@ -1,163 +1,231 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import io
 import json
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
-from jsonschema import Draft202012Validator, FormatChecker
-from model_registry.artifact import verify_mpk
-from model_registry.catalog import discover_catalog, model_build_fingerprint
+import yaml
+from model_registry import package as package_module
 from model_registry.errors import ValidationError
-from model_registry.package import package_compiled_models
+from model_registry.package import assemble_available_packages, assemble_package
 
 ROOT = Path(__file__).resolve().parents[2]
-GIT_SHA = "a" * 40
+SOURCE_SHA = "de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50"
 
 
-def _compiled_fixture(root: Path, *, git_sha: str = GIT_SHA) -> Path:
-    for model_id, model in discover_catalog(ROOT).items():
-        for variant in model["compile_variants"]:
-            if variant.get("status", "supported") == "unsupported":
-                continue
-            variant_id = variant["id"]
-            output = root / model_id / variant_id
-            output.mkdir(parents=True)
-            archive = output / f"{model_id}_{variant_id}_mpk.tar.gz"
-            with tarfile.open(archive, "w:gz") as stream:
-                for name in (f"{model_id}/model.elf", f"{model_id}/{model_id}_mpk.json"):
-                    content = b"fixture"
-                    info = tarfile.TarInfo(name)
-                    info.size = len(content)
-                    stream.addfile(info, io.BytesIO(content))
-            verify_mpk(
-                output,
-                write_manifest=True,
-                provenance={
-                    "model_id": model_id,
-                    "variant_id": variant_id,
-                    "git_sha": git_sha,
-                    "target": variant["target"],
-                    "environment": "staging",
-                    "compiler_version": "2.1.3",
-                    "compiler_label": "model-compiler-2.1.3",
-                    "source_sha256": "c" * 64,
-                    "build_fingerprint": model_build_fingerprint(ROOT, model_id, "2.1.3"),
-                },
-            )
-    return root / "resnet_50"
+def _compiled_component(tmp_path: Path) -> Path:
+    output = tmp_path / "compiled" / "resnet_50" / "modalix_bf16" / "model"
+    output.mkdir(parents=True)
+    archive = output / "resnet_50_mpk.tar.gz"
+    with tarfile.open(archive, "w:gz") as stream:
+        payload = b"compiled model"
+        info = tarfile.TarInfo("model.elf")
+        info.size = len(payload)
+        stream.addfile(info, io.BytesIO(payload))
+    result = {
+        "archive": archive.name,
+        "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "size_bytes": archive.stat().st_size,
+        "provenance": {
+            "model_id": "resnet_50",
+            "build_profile_id": "modalix_bf16",
+            "component_id": "model",
+            "target": "modalix",
+            "source_sha256": SOURCE_SHA,
+            "git_sha": "a" * 40,
+            "environment": "staging",
+            "compiler_version": "2.1.3",
+            "compiler_label": "model-compiler-2.1.3",
+        },
+    }
+    (output / "compile-result.json").write_text(json.dumps(result), encoding="utf-8")
+    return tmp_path / "compiled"
 
 
-def test_package_builds_root_and_per_model_sima_cli_metadata(tmp_path: Path) -> None:
-    compiled = tmp_path / "compiled"
-    _compiled_fixture(compiled)
-    destination = tmp_path / "dist"
-
-    result = package_compiled_models(ROOT, compiled, destination, GIT_SHA, branch="develop")
-
-    assert result["commit_folder"] == GIT_SHA[:12]
-    root_metadata = json.loads((destination / "metadata.json").read_text(encoding="utf-8"))
-    assert root_metadata["name"] == "gh:sima-neat/models"
-    assert root_metadata["resources"] == ["catalog.json"]
-    assert root_metadata["selectable-resources"][0]["resource"].endswith("_mpk.tar.gz")
-    assert len(root_metadata["selectable-resources"][0]["checksum"]) == 64
-    assert root_metadata["selectable-resources"][0]["resource"].startswith(
-        "https://artifacts.stg.neat.sima.ai/models/develop/aaaaaaaaaaaa/"
+def _model_with_resource(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, install_path: str
+) -> tuple[dict, dict]:
+    model = copy.deepcopy(
+        package_module.load_and_validate_model(
+            ROOT / "models" / "resnet_50", ROOT / "schemas" / "model.schema.json"
+        )
     )
+    payload = tmp_path / "resource.json"
+    payload.write_bytes(b'{"fixture":true}\n')
+    resource_license = {
+        "spdx": "LicenseRef-Fixture-Resource",
+        "redistribution": "restricted",
+        "attribution": "Fixture resource attribution.",
+    }
+    resource = {
+        "id": "runtime_config",
+        "source": {
+            "type": "file",
+            "uri": "https://example.invalid/resource.json",
+            "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+            "size_bytes": payload.stat().st_size,
+        },
+        "install_path": install_path,
+        "license": resource_license,
+    }
+    model["resources"] = [resource]
+    model["packages"][0]["resources"] = [resource["id"]]
 
-    latest = json.loads((destination / "latest.json").read_text(encoding="utf-8"))
-    latest_schema = json.loads((ROOT / "schemas" / "latest-index-v1.schema.json").read_text(encoding="utf-8"))
-    Draft202012Validator(latest_schema, format_checker=FormatChecker()).validate(latest)
-    assert latest["catalog_tag"] == GIT_SHA[:12]
-    assert latest["models"]["resnet_50"]["latest_tag"] == GIT_SHA[:12]
-    assert latest["models"]["resnet_50"]["artifact_branch"] == "develop"
-    assert latest["models"]["resnet_50"]["built_at"]
-    assert len(latest["models"]["resnet_50"]["build_fingerprint"]) == 64
+    class FakeFetcher:
+        def __init__(self, _cache_dir: str | Path | None) -> None:
+            pass
 
-    model_metadata = json.loads((destination / "resnet_50" / "metadata.json").read_text(encoding="utf-8"))
-    assert model_metadata["name"] == "gh:sima-neat/models/resnet_50"
-    assert model_metadata["resources"] == [
-        "modalix_bf16/resnet_50_modalix_bf16_mpk.tar.gz",
-        "modalix_int8/resnet_50_modalix_int8_mpk.tar.gz",
+        def fetch_source(self, _source: dict) -> tuple[Path, str, str, int]:
+            return (
+                payload,
+                resource["source"]["uri"],
+                resource["source"]["sha256"],
+                payload.stat().st_size,
+            )
+
+    monkeypatch.setattr(package_module, "load_and_validate_model", lambda *_args: model)
+    monkeypatch.setattr(package_module, "Fetcher", FakeFetcher)
+    return model, resource_license
+
+
+def test_assembles_deterministic_retrieval_bundle_with_intact_component_mpk(tmp_path: Path) -> None:
+    compiled = _compiled_component(tmp_path)
+    first = assemble_package(
+        repository=ROOT,
+        compiled_dir=compiled,
+        output_dir=tmp_path / "packages-a",
+        model_id="resnet_50",
+        build_profile_id="modalix_bf16",
+        package_id="default",
+    )
+    second = assemble_package(
+        repository=ROOT,
+        compiled_dir=compiled,
+        output_dir=tmp_path / "packages-b",
+        model_id="resnet_50",
+        build_profile_id="modalix_bf16",
+        package_id="default",
+    )
+    assert first["sha256"] == second["sha256"]
+    bundle = tmp_path / "packages-a" / "resnet_50" / "modalix_bf16" / "packages" / "default" / first["archive"]
+    with zipfile.ZipFile(bundle) as stream:
+        assert stream.namelist() == [
+            "resnet_50/manifest.json",
+            "resnet_50/components/model/resnet_50_mpk.tar.gz",
+        ]
+        manifest = json.loads(stream.read("resnet_50/manifest.json"))
+    assert manifest["components"][0]["id"] == "model"
+    assert manifest["composition"] == {
+        "id": "default",
+        "type": "single",
+        "component": "model",
+        "entrypoint": "default",
+    }
+    assert manifest["files"] == [{
+        "path": "components/model/resnet_50_mpk.tar.gz",
+        "sha256": hashlib.sha256(
+            (compiled / "resnet_50/modalix_bf16/model/resnet_50_mpk.tar.gz").read_bytes()
+        ).hexdigest(),
+        "size_bytes": (compiled / "resnet_50/modalix_bf16/model/resnet_50_mpk.tar.gz").stat().st_size,
+    }]
+
+
+def test_assemble_available_packages_skips_incomplete_builds(tmp_path: Path) -> None:
+    compiled = _compiled_component(tmp_path)
+    results = assemble_available_packages(
+        repository=ROOT,
+        compiled_dir=compiled,
+        output_dir=tmp_path / "packages",
+    )
+    assert [(item["model_id"], item["build_profile_id"]) for item in results] == [
+        ("resnet_50", "modalix_bf16")
     ]
-    assert set(model_metadata["resources"]) == set(model_metadata["resources-checksum"])
-    assert (destination / "resnet_50" / "modalix_bf16" / "compile-result.json").is_file()
-    assert (destination / "resnet_50" / "modalix_bf16" / "SHA256SUMS").is_file()
-    assert (destination / "resnet_50" / "modalix_int8" / "compile-result.json").is_file()
-    assert (destination / "resnet_50" / "modalix_int8" / "SHA256SUMS").is_file()
 
 
-def test_package_rejects_mismatched_compile_provenance(tmp_path: Path) -> None:
-    compiled = tmp_path / "compiled"
-    _compiled_fixture(compiled, git_sha="b" * 40)
-    with pytest.raises(ValidationError, match="provenance git_sha"):
-        package_compiled_models(ROOT, compiled, tmp_path / "dist", GIT_SHA)
-
-
-def test_package_rejects_existing_output_directory(tmp_path: Path) -> None:
-    compiled = tmp_path / "compiled"
-    _compiled_fixture(compiled)
-    destination = tmp_path / "dist"
-    destination.mkdir()
-    with pytest.raises(ValidationError, match="already exists"):
-        package_compiled_models(ROOT, compiled, destination, GIT_SHA)
-
-
-def test_package_rejects_unsupported_compiled_variant_with_evidence(
+def test_package_manifest_preserves_resource_specific_license(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    catalog = discover_catalog(ROOT)
-    variant = next(
-        item for item in catalog["ssd_mobilenet_v3"]["compile_variants"] if item["id"] == "modalix_int8_tess_mla"
+    _, resource_license = _model_with_resource(monkeypatch, tmp_path, "resources/runtime.json")
+    result = assemble_package(
+        repository=ROOT,
+        compiled_dir=_compiled_component(tmp_path),
+        output_dir=tmp_path / "packages",
+        model_id="resnet_50",
+        build_profile_id="modalix_bf16",
+        package_id="default",
     )
-    variant["status"] = "unsupported"
-    variant["reason"] = "fixture compiler evidence"
-    monkeypatch.setattr("model_registry.package.discover_catalog", lambda _root: catalog)
-    result = tmp_path / "compiled" / "ssd_mobilenet_v3" / "modalix_int8_tess_mla" / "compile-result.json"
-    result.parent.mkdir(parents=True)
-    result.write_text("{}\n", encoding="utf-8")
+
+    assert result["manifest"]["resources"][0]["license"] == resource_license
+
+
+def _declarative_composition() -> dict:
+    return {
+        "id": "default",
+        "type": "declarative",
+        "schema_version": 1,
+        "components": [{"id": "only", "component": "model", "entrypoint": "default"}],
+        "connections": [],
+        "inputs": [{"name": "input", "to": {"component": "only", "input": "input"}}],
+        "outputs": [{"name": "output", "from": {"component": "only", "output": "output"}}],
+    }
+
+
+def test_package_ships_inline_declarative_composition_as_a_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = copy.deepcopy(
+        package_module.load_and_validate_model(ROOT / "models" / "resnet_50", ROOT / "schemas" / "model.schema.json")
+    )
+    model["compositions"] = [_declarative_composition()]
+    monkeypatch.setattr(package_module, "load_and_validate_model", lambda *args: model)
+
+    result = assemble_package(
+        repository=ROOT,
+        compiled_dir=_compiled_component(tmp_path),
+        output_dir=tmp_path / "packages",
+        model_id="resnet_50",
+        build_profile_id="modalix_bf16",
+        package_id="default",
+    )
+
+    bundle = tmp_path / "packages" / "resnet_50" / "modalix_bf16" / "packages" / "default" / result["archive"]
+    with zipfile.ZipFile(bundle) as stream:
+        payload = stream.read("resnet_50/composition/composition.yaml")
+    expected = {key: value for key, value in _declarative_composition().items() if key not in {"id", "type"}}
+    assert yaml.safe_load(payload) == expected
+    assert result["manifest"]["composition"] == {
+        "id": "default",
+        "type": "declarative",
+        "schema_version": 1,
+        "path": "composition/composition.yaml",
+    }
+    assert {
+        "path": "composition/composition.yaml",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    } in result["manifest"]["files"]
+
+
+def test_package_rejects_resource_path_that_collides_with_declarative_composition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model, _ = _model_with_resource(monkeypatch, tmp_path, "composition/composition.yaml")
+    model["compositions"] = [_declarative_composition()]
+
     with pytest.raises(
         ValidationError,
-        match="compiled output references unsupported variant.*fixture compiler evidence",
+        match="package path is declared more than once: composition/composition.yaml",
     ):
-        package_compiled_models(ROOT, tmp_path / "compiled", tmp_path / "dist", GIT_SHA)
-
-
-def test_package_carries_forward_pointers_without_copying_unchanged_mpk(tmp_path: Path) -> None:
-    first_compiled = tmp_path / "first-compiled"
-    _compiled_fixture(first_compiled)
-    previous = tmp_path / "previous"
-    package_compiled_models(ROOT, first_compiled, previous, GIT_SHA, branch="main")
-
-    no_changes = tmp_path / "no-changes"
-    no_changes.mkdir()
-    next_sha = "b" * 40
-    destination = tmp_path / "next"
-    result = package_compiled_models(
-        ROOT,
-        no_changes,
-        destination,
-        next_sha,
-        branch="feature/catalog",
-        previous_index=previous / "latest.json",
-    )
-
-    assert result["commit"] == next_sha
-    assert result["models"][0]["compiled_git_sha"] == GIT_SHA[:12]
-    assert result["models"][0]["artifact_branch"] == "main"
-    assert not (destination / result["models"][0]["mpk"]).exists()
-    assert not (destination / "resnet_50" / "metadata.json").exists()
-    latest = json.loads((destination / "latest.json").read_text(encoding="utf-8"))
-    assert latest["catalog_tag"] == next_sha[:12]
-    assert latest["models"]["resnet_50"]["latest_tag"] == GIT_SHA[:12]
-    assert latest["models"]["resnet_50"]["artifact_branch"] == "main"
-    metadata = json.loads((destination / "metadata.json").read_text(encoding="utf-8"))
-    assert "/models/main/aaaaaaaaaaaa/resnet_50/" in metadata["selectable-resources"][0]["resource"]
-
-
-def test_first_package_requires_every_catalog_model(tmp_path: Path) -> None:
-    compiled = tmp_path / "compiled"
-    compiled.mkdir()
-    with pytest.raises(ValidationError, match="no compiled output and no previous"):
-        package_compiled_models(ROOT, compiled, tmp_path / "dist", GIT_SHA)
+        assemble_package(
+            repository=ROOT,
+            compiled_dir=_compiled_component(tmp_path),
+            output_dir=tmp_path / "packages",
+            model_id="resnet_50",
+            build_profile_id="modalix_bf16",
+            package_id="default",
+        )
