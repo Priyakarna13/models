@@ -732,6 +732,11 @@ def publish_catalog(
     if bucket is not None:
         if not environment:
             raise ValidationError("environment is required when publishing model documentation")
+        # The registry rejects model metadata changes within a revision, and each
+        # workflow run creates new documentation run IDs, so a re-dispatch on a
+        # cataloged commit keeps the receipts already in that revision's catalog.
+        documentation_receipts = _revision_documentation_receipts(read, read_base_url, branch, git_sha)
+    if bucket is not None and documentation_receipts is None:
         documentation_receipts = publish_model_documentation(
             repository=repository,
             api_url=api_url,
@@ -796,6 +801,28 @@ def publish_catalog(
         f"models-catalog-{branch}-{git_sha.lower()}-{(previous_snapshot or 'initial')[:16]}-{snapshot_identity}",
     )
     return {"catalog": document, "registry": result}
+
+
+def _revision_documentation_receipts(
+    read: ReadRequest, read_base_url: str, branch: str, git_sha: str
+) -> dict[str, JsonObject] | None:
+    try:
+        current = read(
+            f"{read_base_url}/v1/repositories/sima-neat/models/catalogs/current?"
+            f"git_ref={quote(f'refs/heads/{branch}', safe='')}"
+        )
+    except RegistryPublicationError as exc:
+        if "HTTP 404 catalog_not_found" not in str(exc):
+            raise
+        return None
+    catalog = current.get("catalog")
+    if not isinstance(catalog, dict) or catalog.get("catalog_revision") != git_sha.lower():
+        return None
+    document = catalog.get("document") if isinstance(catalog.get("document"), dict) else catalog
+    receipts = {model.get("id"): model.get("documentation") for model in document.get("models", [])}
+    if not receipts or not all(isinstance(receipt, dict) for receipt in receipts.values()):
+        return None
+    return receipts
 
 
 def _public_registry_json(url: str) -> JsonObject:
