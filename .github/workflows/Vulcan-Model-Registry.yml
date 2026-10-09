@@ -118,7 +118,9 @@ jobs:
             tests/unit/test_rf_detr_nano_conversion.py \
             tests/unit/test_rf_detr_nano.py \
             tests/unit/test_rf_detr_medium_conversion.py \
-            tests/unit/test_rf_detr_medium.py
+            tests/unit/test_rf_detr_medium.py \
+            tests/unit/test_rf_detr_large_conversion.py \
+            tests/unit/test_rf_detr_large.py
 
       - name: Build wheel and Vulcan metadata
         run: scripts/build_model_registry_vulcan_package.sh
