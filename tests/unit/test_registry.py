@@ -6,9 +6,11 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from model_registry.catalog import build_matrix, component_build_fingerprint, discover_catalog
+import yaml
+from model_registry.compile_matrix import build_matrix
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
+from model_registry.model import load_models
 from model_registry.package import assemble_package
 from model_registry.registry import (
     RegistryPublicationError,
@@ -24,6 +26,7 @@ from model_registry.registry import (
     publish_packages,
     stage_catalog_build,
 )
+from model_registry.stage_keys import accuracy_key, compile_key, performance_key
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPILER = resolve_model_compiler(ROOT)
@@ -74,7 +77,7 @@ def test_publish_model_documentation_creates_finalized_versioned_runs() -> None:
         artifact_store=store,
     )
 
-    assert set(receipts) == set(discover_catalog(ROOT))
+    assert set(receipts) == set(load_models(ROOT))
     assert len(store.objects) == len(receipts)
     assert len(calls) == len(receipts) * 4
     for model_id, receipt in receipts.items():
@@ -105,7 +108,7 @@ def test_publish_model_documentation_includes_an_available_optional_hero(tmp_pat
     calls: list[tuple[str, str, dict | None, str]] = []
 
     monkeypatch.setattr(
-        "model_registry.registry.discover_catalog",
+        "model_registry.registry.load_models",
         lambda _: {"fixture": {"display_name": "Fixture"}},
     )
     monkeypatch.setattr(
@@ -185,7 +188,6 @@ def _packaged_result(tmp_path: Path) -> Path:
     result = {
         "archive": archive.name,
         "built_at": "2026-08-13T00:00:00Z",
-        "schema_version": 1,
         "sha256": digest,
         "size_bytes": archive.stat().st_size,
         "status": "success",
@@ -199,16 +201,13 @@ def _packaged_result(tmp_path: Path) -> Path:
             "source_sha256": "de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50",
             "git_sha": "a" * 40,
             "environment": "staging",
-            "build_fingerprint": component_build_fingerprint(
-                ROOT, "resnet_50", "model", "modalix_bf16", COMPILER_IDENTITY
-            ),
+            "build_fingerprint": compile_key(ROOT, "resnet_50", "modalix_bf16", "model", COMPILER_IDENTITY),
         },
     }
     (output / "compile-result.json").write_text(json.dumps(result), encoding="utf-8")
     (output.parent / "compile-outputs.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
                 "model_id": "resnet_50",
                 "build_profile_id": "modalix_bf16",
                 "compile_invocation_id": "model",
@@ -223,44 +222,13 @@ def _packaged_result(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    # resnet_50 declares fidelity for every build profile, so publication requires its report.
+    _add_fidelity_result(dist)
     return dist
 
 
-def _add_accuracy_result(dist: Path) -> Path:
-    path = dist / "resnet_50" / "modalix_bf16" / "model" / "accuracy.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "report_scope": "sampled_accuracy_smoke",
-                "model": {
-                    "id": "resnet_50",
-                    "build_profile_id": "modalix_bf16",
-                    "component_id": "model",
-                    "source_sha256": "de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50",
-                },
-                "dataset": {
-                    "id": "imagenet-2012",
-                    "variant": "mini",
-                    "split": "validation",
-                    "sha256": "d" * 64,
-                    "evaluated_samples": 500,
-                    "available_samples": 5000,
-                },
-                "evaluation": {"profile": "regular", "status": "provisional"},
-                "metrics": {
-                    "candidate": {"top1_accuracy": 0.762, "top5_accuracy": 0.934},
-                    "reference": {"top1_accuracy": 0.798, "top5_accuracy": 0.95},
-                    "comparison": {"top1_agreement": 0.886, "top1_delta": -0.036, "top5_delta": -0.016},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
 def _add_fidelity_result(dist: Path) -> Path:
+    config = yaml.safe_load((ROOT / "models" / "resnet_50" / "model.yaml").read_text(encoding="utf-8"))["fidelity"][0]
     path = dist / "resnet_50" / "modalix_bf16" / "model" / "fidelity.json"
     path.write_text(
         json.dumps(
@@ -270,15 +238,10 @@ def _add_fidelity_result(dist: Path) -> Path:
                 "build_profile_id": "modalix_bf16",
                 "component_id": "model",
                 "scope": "component",
-                "status": "provisional",
-                "dataset": {"id": "imagenet-2012", "variant": "mini", "sha256": "d" * 64},
-                "selection": {
-                    "method": "seeded_random_without_replacement",
-                    "seed": 42,
-                    "offset": 0,
-                    "samples": 4,
-                },
-                "samples": 4,
+                "status": config["status"],
+                "dataset": {key: config["dataset"][key] for key in ("id", "variant", "sha256")},
+                "selection": config["selection"],
+                "samples": config["selection"]["samples"],
                 "metrics": [
                     {
                         "name": "logits",
@@ -403,6 +366,9 @@ def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatc
         "/v1/runs/00000000-0000-4000-8000-000000000001/parameters",
         "/v1/runs/00000000-0000-4000-8000-000000000001/artifacts/mpk",
         "/v1/runs/00000000-0000-4000-8000-000000000001/test-results/compile/mpk-validation",
+        "/v1/runs/00000000-0000-4000-8000-000000000001/artifacts/numerical-fidelity",
+        "/v1/runs/00000000-0000-4000-8000-000000000001/test-results/correctness/numerical-fidelity",
+        "/v1/runs/00000000-0000-4000-8000-000000000001/measurements/batch",
         "/v1/runs/00000000-0000-4000-8000-000000000001/finalize",
     ]
     create = calls[0][2]
@@ -446,10 +412,10 @@ def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatc
 
     receipt_path = dist / "resnet_50" / "modalix_bf16" / "model" / "registry-publication.json"
     receipt_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    catalog = discover_catalog(ROOT)
+    models = load_models(ROOT)
     compiler_version = resolve_model_compiler(ROOT)["identity"]
     selected = build_matrix(
-        catalog,
+        models,
         ["resnet_50"],
         ["modalix_bf16"],
         repository=ROOT,
@@ -484,70 +450,9 @@ def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatc
     }]
 
 
-def test_publish_attaches_accuracy_artifact_test_result_and_measurements(tmp_path: Path) -> None:
-    dist = _packaged_result(tmp_path)
-    accuracy_path = _add_accuracy_result(dist)
-    calls: list[tuple[str, str, dict | None, str]] = []
-
-    def request(method: str, path: str, body: dict | None, key: str) -> dict:
-        calls.append((method, path, body, key))
-        if path == "/v1/runs":
-            return {"run_id": "00000000-0000-4000-8000-000000000001"}
-        if path.endswith("/artifacts/accuracy-result"):
-            return {"artifact_id": "00000000-0000-4000-8000-000000000002"}
-        return {"ok": True}
-
-    store = FakeStore()
-    result = publish_compilations(
-        repository=ROOT,
-        dist_dir=dist,
-        api_url="https://registry.example.invalid",
-        aws_region="us-west-2",
-        bucket="artifacts",
-        kms_key_id=None,
-        environment="staging",
-        branch="develop",
-        git_sha="a" * 40,
-        github_run_id="1234",
-        github_run_attempt="1",
-        github_run_url="https://github.com/sima-neat/models/actions/runs/1234",
-        request=request,
-        artifact_store=store,
-    )
-
-    run_id = "00000000-0000-4000-8000-000000000001"
-    endpoints = [path for _, path, _, _ in calls]
-    assert f"/v1/runs/{run_id}/artifacts/accuracy-result" in endpoints
-    assert f"/v1/runs/{run_id}/test-results/accuracy/sampled_accuracy_smoke" in endpoints
-    assert f"/v1/runs/{run_id}/measurements/batch" in endpoints
-    assert endpoints.index(f"/v1/runs/{run_id}/measurements/batch") < endpoints.index(f"/v1/runs/{run_id}/finalize")
-    artifact_call = next(body for _, path, body, _ in calls if path.endswith("/artifacts/accuracy-result"))
-    assert artifact_call is not None
-    assert artifact_call["metadata"]["evaluated_samples"] == 500
-    assert artifact_call["metadata"]["candidate_top1_accuracy"] == 0.762
-    test_call = next(body for _, path, body, _ in calls if "/test-results/accuracy/" in path)
-    assert test_call is not None
-    assert test_call["report_artifact_id"] == "00000000-0000-4000-8000-000000000002"
-    measurement_call = next(body for _, path, body, _ in calls if path.endswith("/measurements/batch"))
-    assert measurement_call is not None
-    assert {item["name"] for item in measurement_call["measurements"]} == {
-        "model.accuracy.candidate.top1",
-        "model.accuracy.candidate.top5",
-        "model.accuracy.reference.top1",
-        "model.accuracy.reference.top5",
-        "model.accuracy.top1_agreement",
-        "model.accuracy.top1_delta",
-        "model.accuracy.top5_delta",
-    }
-    assert all(item["sample_count"] == 500 for item in measurement_call["measurements"])
-    assert result["runs"][0]["accuracy"]["evaluated_samples"] == 500
-    assert store.objects[1][0] == accuracy_path
-    assert store.objects[1][3] == "application/json"
-
-
 def test_publish_attaches_numerical_fidelity_result(tmp_path: Path) -> None:
     dist = _packaged_result(tmp_path)
-    fidelity_path = _add_fidelity_result(dist)
+    fidelity_path = dist / "resnet_50" / "modalix_bf16" / "model" / "fidelity.json"
     calls: list[tuple[str, str, dict | None, str]] = []
 
     def request(method: str, path: str, body: dict | None, key: str) -> dict:
@@ -593,14 +498,14 @@ def test_publish_attaches_numerical_fidelity_result(tmp_path: Path) -> None:
         measurement for measurement in measurements if measurement["name"] == "model.fidelity.max_absolute_error"
     )
     assert maximum["aggregation"] == "max"
-    assert result["runs"][0]["fidelity"]["samples"] == 4
+    assert result["runs"][0]["fidelity"]["samples"] == 50
     assert store.objects[1][0] == fidelity_path
     assert store.objects[1][3] == "application/json"
 
 
 def test_publish_preflights_all_evidence_before_external_writes(tmp_path: Path) -> None:
     dist = _packaged_result(tmp_path)
-    fidelity_path = _add_fidelity_result(dist)
+    fidelity_path = dist / "resnet_50" / "modalix_bf16" / "model" / "fidelity.json"
     fidelity = json.loads(fidelity_path.read_text(encoding="utf-8"))
     fidelity["unexpected"] = True
     fidelity_path.write_text(json.dumps(fidelity), encoding="utf-8")
@@ -721,7 +626,7 @@ def test_publish_retry_reuses_idempotency_keys_across_run_attempts(tmp_path: Pat
 
 
 def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
-    catalog = discover_catalog(ROOT)
+    models = load_models(ROOT)
     compiler_version = resolve_model_compiler(ROOT)["identity"]
     first = build_catalog_snapshot(
         repository=ROOT,
@@ -741,7 +646,7 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
                             "run_id": f"00000000-0000-4000-8000-{index:012d}",
                         }
                         for entry in build_matrix(
-                            catalog,
+                            models,
                             [model_id],
                             repository=ROOT,
                             compiler_version=compiler_version,
@@ -749,7 +654,7 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
                         for component_id in entry["component_ids"]
                     ],
                 }
-                for index, model_id in enumerate(catalog, 1)
+                for index, model_id in enumerate(models, 1)
             ]
         },
     )
@@ -760,11 +665,55 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
     assert all("taxonomy_version" not in model["categories"] for model in first["models"])
 
 
+def test_catalog_builds_record_stage_keys_bound_to_their_compile_runs() -> None:
+    models = load_models(ROOT)
+    model = models["resnet_50"]
+    matrix = build_matrix(
+        models, sorted(models), repository=ROOT, compiler_version=COMPILER_IDENTITY,
+    )["include"]
+
+    def snapshot(run_prefix: str) -> dict:
+        previous = {"models": [{"id": model_id, "builds": [
+            {
+                "build_profile_id": entry["build_profile_id"],
+                "component_id": component_id,
+                "compile_fingerprint": entry["build_fingerprint"],
+                "artifact_sha256": "e" * 64,
+                "run_id": f"{run_prefix}-{index:012d}",
+            }
+            for index, entry in enumerate(matrix, 1)
+            if entry["model_id"] == model_id
+            for component_id in entry["component_ids"]
+        ]} for model_id in models]}
+        document = build_catalog_snapshot(repository=ROOT, branch="develop", git_sha="a" * 40, previous=previous)
+        resnet = next(item for item in document["models"] if item["id"] == "resnet_50")
+        return {build["build_profile_id"]: build for build in resnet["builds"]}
+
+    builds = snapshot("00000000-0000-4000-8000")
+    for profile_id, build in builds.items():
+        assert build["benchmark_fingerprint"] == performance_key(
+            ROOT, model, profile_id, "model", compile_run_id=build["run_id"], artifact_sha256="e" * 64,
+        )
+    # Only the profile with DevKit accuracy records an accuracy key, on its result component.
+    assert builds["modalix_bf16"]["validation_fingerprint"] is None
+    assert builds["modalix_int8"]["validation_fingerprint"] == accuracy_key(
+        ROOT, model, "modalix_int8", {"model": builds["modalix_int8"]},
+    )
+    assert builds["modalix_int8"]["validation_fingerprint"] != builds["modalix_int8"]["benchmark_fingerprint"]
+
+    # A new compile run of identical inputs still needs its own board measurements.
+    rebuilt = snapshot("00000000-0000-4000-9000")
+    for profile_id in builds:
+        assert rebuilt[profile_id]["compile_fingerprint"] == builds[profile_id]["compile_fingerprint"]
+        assert rebuilt[profile_id]["benchmark_fingerprint"] != builds[profile_id]["benchmark_fingerprint"]
+    assert rebuilt["modalix_int8"]["validation_fingerprint"] != builds["modalix_int8"]["validation_fingerprint"]
+
+
 def test_incremental_catalog_keeps_prior_builds_for_missing_changed_invocations(monkeypatch) -> None:
-    catalog = discover_catalog(ROOT)
+    models = load_models(ROOT)
     compiler_version = resolve_model_compiler(ROOT)["identity"]
     invocation = build_matrix(
-        catalog, ["resnet_50"], ["modalix_bf16"], repository=ROOT, compiler_version=compiler_version,
+        models, ["resnet_50"], ["modalix_bf16"], repository=ROOT, compiler_version=compiler_version,
     )["include"][0]
     changed = dict(invocation, build_fingerprint="f" * 64)
     monkeypatch.setattr("model_registry.registry.build_matrix", lambda *args, **kwargs: {"include": [changed]})
@@ -801,10 +750,10 @@ def test_incremental_catalog_keeps_prior_builds_for_missing_changed_invocations(
 def test_selected_same_fingerprint_rebuild_replaces_package_after_component_publication(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    catalog = discover_catalog(ROOT)
+    models = load_models(ROOT)
     compiler_version = resolve_model_compiler(ROOT)["version"]
     invocation = build_matrix(
-        catalog, ["resnet_50"], ["modalix_bf16"], repository=ROOT, compiler_version=compiler_version,
+        models, ["resnet_50"], ["modalix_bf16"], repository=ROOT, compiler_version=compiler_version,
     )["include"][0]
     monkeypatch.setattr("model_registry.registry.build_matrix", lambda *args, **kwargs: {"include": [invocation]})
     old_run_id = "00000000-0000-4000-8000-000000000001"
@@ -1120,7 +1069,18 @@ def test_stage_catalog_build_restores_and_verifies_durable_mpk(tmp_path: Path) -
     profile = tmp_path / "staged" / "resnet_50" / "modalix_bf16"
     assert (profile / "registry-staged.json").is_file()
     assert (profile / "model" / "registry-publication.json").is_file()
-    build_catalog_snapshot,
+    # Restored builds carry the manifest a fresh compile writes, so later stages read both alike.
+    staged = next((profile / "model").glob("*_mpk.tar.gz"))
+    assert json.loads((profile / "compile-outputs.json").read_text(encoding="utf-8")) == {
+        "model_id": "resnet_50",
+        "build_profile_id": "modalix_bf16",
+        "compile_invocation_id": "model",
+        "outputs": [{
+            "component_id": "model",
+            "mpk_path": f"model/{staged.name}",
+            "mpk_sha256": hashlib.sha256(payload).hexdigest(),
+        }],
+    }
 
 
 @pytest.mark.parametrize("timing", [

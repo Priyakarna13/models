@@ -257,6 +257,27 @@ async function api(path) {
   return payload;
 }
 
+// DevKit accuracy is its own registry run, keyed by the accuracy key the catalog records on the
+// build that reports the result.
+async function devkitAccuracy(accuracyKey) {
+  if (!accuracyKey) return null;
+  const repo = state.repository;
+  const query = new URLSearchParams({ run_type: "model_accuracy", fingerprint: accuracyKey, fingerprint_version: "1" });
+  try {
+    const { run } = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/resolve?${query}`);
+    return await api(`/v1/runs/${run.id}/accuracy/latest`);
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+}
+
+// History mode lists runs without a catalog, so the key comes from the catalog at the run's revision.
+async function accuracyKeyForRun(run) {
+  const model = state.catalogMode === "runs" ? await loadHistoricalCatalogModel(run) : catalogModelForRun(run);
+  return model?.builds?.find((build) => build.run_id === run.id)?.validation_fingerprint;
+}
+
 async function apiText(path) {
   const response = await fetch(`${state.apiBase}${path}`, {
     headers: { Accept: "text/markdown" },
@@ -992,11 +1013,14 @@ async function selectRun(runId, { updateUrl = true } = {}) {
         }),
         packageRun ? api(`/v1/runs/${packageRun.run_id}`).catch(() => null) : Promise.resolve(null),
       ]);
-      // DevKit accuracy is published on the benchmark run, beside the measurements it was taken with.
-      const benchmarkTests = benchmark?.benchmark_run?.id
-        ? await api(`/v1/runs/${benchmark.benchmark_run.id}/test-results`).catch(() => null)
-        : null;
-      detail = { summary, provenance, tests, metrics, benchmark, benchmarkTests, accuracy, packageSummary };
+      const [benchmarkTests, devkit] = await Promise.all([
+        // Builds measured before accuracy became its own run carry it on the benchmark run.
+        benchmark?.benchmark_run?.id
+          ? api(`/v1/runs/${benchmark.benchmark_run.id}/test-results`).catch(() => null)
+          : null,
+        accuracyKeyForRun(summary.run).then(devkitAccuracy),
+      ]);
+      detail = { summary, provenance, tests, metrics, benchmark, benchmarkTests, accuracy, devkit, packageSummary };
       state.detailCache.set(runId, detail);
     }
     const currentPackage = fullPackageForRun(detail.summary.run);
@@ -1184,10 +1208,10 @@ const ACCURACY_METRIC_LABELS = {
   coco_ap75: "AP75",
 };
 
-function accuracyPanel(payload, tests = [], benchmarkTests = []) {
+function accuracyPanel(payload, tests = [], benchmarkTests = [], devkitPayload = null) {
   const fallback = tests.find((item) => item.suite === "accuracy" && item.summary?.schema_version === 1);
-  const devkit = benchmarkTests.find((item) => item.suite === "accuracy" && item.summary?.schema_version === 2);
-  const report = payload?.result || fallback?.summary || devkit?.summary;
+  const legacyDevkit = benchmarkTests.find((item) => item.suite === "accuracy" && item.summary?.schema_version === 2);
+  const report = devkitPayload?.result || legacyDevkit?.summary || payload?.result || fallback?.summary;
   if (report?.schema_version === 2) return accuracySection(report, accuracyMetricTiles(report), accuracyContextV2(report));
   if (!report || report.schema_version !== 1) return "";
   const candidate = report.metrics?.candidate || {};
@@ -1458,7 +1482,7 @@ function renderDetail(detail) {
   const sourceUrl = githubModelUrl(run, model);
   const sourceLabel = `View ${model} source on GitHub at commit ${shortSha(run.commit_sha)}`;
   const benchmarkMarkup = benchmarkPanel(detail.benchmark);
-  const accuracyMarkup = accuracyPanel(detail.accuracy, tests, detail.benchmarkTests?.test_results || []);
+  const accuracyMarkup = accuracyPanel(detail.accuracy, tests, detail.benchmarkTests?.test_results || [], detail.devkit);
   const fidelityMarkup = fidelityPanel(tests, run.id);
   const hasBenchmark = Boolean(detail.benchmark && benchmarkMarkup);
   const primaryArtifact = artifacts[0];

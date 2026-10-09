@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 
 import yaml
-from jsonschema import Draft202012Validator, FormatChecker
 
 ROOT = Path(__file__).resolve().parents[2]
 BROWSER = ROOT / "artifact-browser"
@@ -423,7 +422,7 @@ def test_branch_filter_defaults_to_develop_and_persists_user_selection() -> None
 
 def test_branch_filter_uses_an_independent_cached_registry_catalog() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
     assert "/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/branches" in script
     assert "branchCatalogCacheKey" in script
@@ -559,7 +558,7 @@ def test_smart_search_uses_names_and_taxonomy_labels_on_client_and_server() -> N
 
 def test_browser_formats_v1_and_v2_build_identities_without_a_false_default() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
     assert "function buildIdentity(run)" in script
     assert "metadata.build_profile_id || metadata.variant_id" in script
@@ -667,7 +666,7 @@ def test_only_model_packs_are_presented_as_artifacts() -> None:
 def test_source_input_links_to_the_original_hugging_face_model_card() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
     assert "function trustedHuggingFaceUrl" in script
     assert 'url.hostname !== "huggingface.co"' in script
@@ -718,10 +717,12 @@ def test_benchmark_rendering_is_schema_versioned_and_charted() -> None:
 def test_accuracy_result_is_rendered_with_scope_and_reference_comparison() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
     assert 'api(`/v1/runs/${runId}/accuracy/latest`)' in script
     assert 'payload?.result || fallback?.summary' in script
+    # The DevKit run wins over the legacy benchmark-run result, which wins over compile-run accuracy.
+    assert "devkitPayload?.result || legacyDevkit?.summary || payload?.result" in script
     assert 'item.suite === "accuracy"' in script
     assert 'id="accuracy-section"' in script
     assert "Candidate top-1" in script
@@ -747,10 +748,19 @@ def test_accuracy_result_is_rendered_with_scope_and_reference_comparison() -> No
     assert 'parts[3:] == ["accuracy", "latest"]' in preview
 
 
-def test_devkit_accuracy_is_read_from_the_benchmark_run_and_rendered_per_metric() -> None:
+def test_devkit_accuracy_is_resolved_from_the_catalog_accuracy_key_and_rendered_per_metric() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
+    assert "accuracyKeyForRun(summary.run).then(devkitAccuracy)" in script
+    # History mode has no catalog loaded, so the key comes from the catalog at the run's own revision.
+    assert (
+        'state.catalogMode === "runs" ? await loadHistoricalCatalogModel(run) : catalogModelForRun(run)'
+        in script
+    )
+    assert "model?.builds?.find((build) => build.run_id === run.id)?.validation_fingerprint" in script
+    assert 'run_type: "model_accuracy", fingerprint: accuracyKey, fingerprint_version: "1"' in script
+    assert "return await api(`/v1/runs/${run.id}/accuracy/latest`)" in script
     assert "api(`/v1/runs/${benchmark.benchmark_run.id}/test-results`)" in script
     assert "item.summary?.schema_version === 2" in script
     assert "Object.entries(report.metrics || {})" in script
@@ -765,7 +775,7 @@ def test_devkit_accuracy_is_read_from_the_benchmark_run_and_rendered_per_metric(
 def test_numerical_fidelity_is_rendered_from_correctness_results() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
     assert 'item.name === "numerical-fidelity"' in script
     assert "fidelityPanel(tests, run.id)" in script
@@ -824,7 +834,7 @@ def test_models_can_be_selected_and_compared_in_an_accessible_dialog() -> None:
 def test_model_catalog_uses_clean_model_navigation_and_detail_build_switching() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
     assert "models: []" in script
     assert "function profileGroups(model)" in script
@@ -904,7 +914,7 @@ def test_model_metadata_tags_use_semantic_icons() -> None:
 def test_model_license_metadata_is_rendered_with_redistribution_and_attribution() -> None:
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
-    preview = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    preview = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
 
     assert "const license = run.metadata?.license" in script
     assert "function licensePanel(license)" in script
@@ -919,18 +929,12 @@ def test_model_license_metadata_is_rendered_with_redistribution_and_attribution(
 
 
 def test_local_preview_fixture_is_extensible_schema_v4_and_server_is_same_origin() -> None:
+    # The registry still serves published schema-4 results, so the browser keeps a fixture of that shape.
     fixture_path = BROWSER / "fixtures" / "performance-result-v4.json"
-    schema_path = ROOT / "schemas" / "performance-result-v4.schema.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    server = (ROOT / "scripts" / "preview_artifact_browser.py").read_text(encoding="utf-8")
+    server = (ROOT / "artifact-browser" / "preview.py").read_text(encoding="utf-8")
     script = (BROWSER / "app.js").read_text(encoding="utf-8")
 
-    Draft202012Validator(schema, format_checker=FormatChecker()).validate(fixture)
-    prior_v4 = json.loads(json.dumps(fixture))
-    prior_v4["metrics"].pop("model_load_ms")
-    prior_v4["metrics"].pop("time_to_first_inference_ms")
-    Draft202012Validator(schema, format_checker=FormatChecker()).validate(prior_v4)
     assert fixture["schema_version"] == 4
     assert fixture["metrics"]["mla_memory_peak_delta_mib"]["value"] == 136.5
     assert fixture["metrics"]["time_to_first_inference_ms"]["value"] == 348.7
@@ -963,7 +967,8 @@ const old = [run('old-backbone', 'rf_detr_small', 'backbone', 'workflow-1', '2.1
              run('old-transformer', 'rf_detr_small', 'transformer', 'workflow-1', '2.1', '2026-09-01T12:00:00Z')];
 const catalog = [{model_id: 'rf_detr_small', display_name: 'RF-DETR', builds: [
   {run_id: 'stale-backbone', build_profile_id: 'modalix_int8_bf16', component_id: 'backbone', artifact_suffix: 'backbone_int8'},
-  {run_id: 'stale-transformer', build_profile_id: 'modalix_int8_bf16', component_id: 'transformer', artifact_suffix: 'transformer_bf16'},
+  {run_id: 'stale-transformer', build_profile_id: 'modalix_int8_bf16', component_id: 'transformer', artifact_suffix: 'transformer_bf16',
+   validation_fingerprint: 'stale-accuracy-key'},
 ]},
                  {model_id: 'ssd_mobilenet', display_name: 'SSD', builds: [{run_id: 'inherited'}]}];
 const packageRun = (id, components) => ({id, run_type: 'model_package', status: 'completed',
@@ -977,6 +982,12 @@ assert.deepEqual(models.map(model => model.model_id), ['rf_detr_small']);
 assert.deepEqual(models[0].builds.map(build => build.run_id), ['backbone', 'transformer']);
 assert.deepEqual(models[0].builds.map(build => build.artifact_suffix), ['backbone_int8', 'transformer_bf16']);
 assert.equal(models[0].builds[0].run.git_ref, 'refs/heads/perf/rfdetr-attention-layout');
+// A profile/component fallback supplies static metadata, never another build's accuracy key.
+assert.deepEqual(models[0].builds.map(build => build.validation_fingerprint), [undefined, undefined]);
+const matched = [{...catalog[0], builds: [{run_id: 'transformer', build_profile_id: 'modalix_int8_bf16',
+  component_id: 'transformer', validation_fingerprint: 'accuracy-key'}]}];
+assert.deepEqual(branchModels(current, [], matched)[0].builds.map(build => build.validation_fingerprint),
+                 [undefined, 'accuracy-key']);
 assert.deepEqual(models[0].packages.map(item => item.run_id), ['good']);
 assert.deepEqual(branchModels([...old, ...current], packages, catalog, '2.1')[0].builds.map(build => build.run_id),
                  ['old-backbone', 'old-transformer']);

@@ -8,7 +8,8 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
-from .accuracy_config import DEVKIT_ACCURACY_ENGINE, validate_accuracy_model_contract
+from .accuracy_config import DEVKIT_ACCURACY_ENGINE
+from .artifact_metadata import validate_artifact_metadata
 from .errors import SourcePolicyError, ValidationError
 from .source import SourceSpec, source_identity
 from .taxonomy import find_taxonomy, load_taxonomy, validate_model_categorization
@@ -18,12 +19,14 @@ SCHEMA_RELATIVE_PATH = Path("schemas/model.schema.json")
 SCRIPTS_DIR = "scripts"
 # A model folder holds its manifest, its documentation, and model-owned code in scripts/.
 MODEL_FOLDER_ENTRIES = {MODEL_FILE, "README.md", "hero.png", SCRIPTS_DIR}
-STAGES = ("validation", "benchmark")
+STAGES = ("fidelity", "accuracy", "benchmark")
 # Vulcan-Model-Convert.yml runs these files for a model that declares `conversion`.
 CONVERSION_FILES = (f"{SCRIPTS_DIR}/convert.py", f"{SCRIPTS_DIR}/requirements-convert.txt")
-# A devkit_script validation entry runs this script on the DevKit after the benchmark.
+# A devkit_script accuracy entry runs this script on the DevKit.
 ACCURACY_SCRIPT = f"{SCRIPTS_DIR}/accuracy.py"
 ACCURACY_REQUIREMENTS = f"{SCRIPTS_DIR}/requirements-accuracy.txt"
+# A benchmark entry runs this script on the DevKit.
+PERFORMANCE_SCRIPT = f"{SCRIPTS_DIR}/performance.py"
 
 
 def _by_id(items: list[dict[str, Any]], kind: str) -> dict[str, dict[str, Any]]:
@@ -173,7 +176,7 @@ def _load_declarative_composition(
     path = f"{directory}: composition {declaration['id']!r}"
     document = composition_document(declaration)
     try:
-        schema = json.loads((schema_directory / "composition-v1.schema.json").read_text(encoding="utf-8"))
+        schema = json.loads((schema_directory / "composition.schema.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValidationError(f"{path}: could not load the composition schema: {exc}") from exc
     errors = sorted(
@@ -469,25 +472,11 @@ def validate_model(
 
         for invocation_id, invocation in invocations.items():
             grouped_components = [components[component_id] for component_id in invocation["components"]]
-            recipes = {component["recipe"] for component in grouped_components}
-            if len(recipes) != 1:
-                raise ValidationError(
-                    f"{directory}: build profile {profile_id!r} compile invocation {invocation_id!r} "
-                    "components must share one recipe"
-                )
             source_identities = {source_identity(component["source"]) for component in grouped_components}
             if len(source_identities) != 1:
                 raise ValidationError(
                     f"{directory}: build profile {profile_id!r} compile invocation {invocation_id!r} "
                     "components must share one source content identity"
-                )
-            source = grouped_components[0]["source"]
-            source_paths = {path for path, _ in source_members(source)}
-            package_paths = {package["path"] for package in invocation.get("python_packages", ())}
-            if package_paths - source_paths:
-                raise ValidationError(
-                    f"{directory}: build profile {profile_id!r} compile invocation {invocation_id!r} "
-                    "python packages must be declared members of the shared source"
                 )
             runner_classes = {
                 effective_runner_class(profile, bindings[component_id])
@@ -568,6 +557,15 @@ def validate_model(
                     f"{directory}: package {package_id!r} is incomplete for build profile {profile_id!r}: "
                     f"{', '.join(unavailable)}"
                 )
+            # Each compile invocation publishes the packages it completes.
+            if not any(
+                set(package["components"]) <= set(invocation["components"])
+                for invocation in compile_invocations_for(profiles[profile_id])
+            ):
+                raise ValidationError(
+                    f"{directory}: package {package_id!r} must compile {', '.join(package['components'])} "
+                    f"in one compile invocation of build profile {profile_id!r}"
+                )
 
     _check_folder_layout(directory)
     referenced_paths = [component["recipe"] for component in model["components"]]
@@ -578,7 +576,7 @@ def validate_model(
     )
     if model.get("conversion"):
         referenced_paths.extend(CONVERSION_FILES)
-    if any(entry.get("engine") == DEVKIT_ACCURACY_ENGINE for entry in model["validation"]):
+    if any(entry.get("engine") == DEVKIT_ACCURACY_ENGINE for entry in model["accuracy"]):
         referenced_paths.append(ACCURACY_SCRIPT)
     for relative in referenced_paths:
         candidate = (directory / relative).resolve()
@@ -587,7 +585,6 @@ def validate_model(
 
     for stage in STAGES:
         _by_id(model[stage], f"{stage} entry")
-        # Validation engines measure different evidence, so each may cover the same scope once.
         coverage_seen: set[tuple[str | None, str, str, str]] = set()
         for entry in model[stage]:
             scope = entry["scope"]
@@ -627,18 +624,10 @@ def validate_model(
                         f"outside its build profiles"
                     )
 
-    devkit_profiles: set[str] = set()
-    for entry in model["validation"]:
-        engine = entry.get("engine")
-        if engine == "model_registry":
-            validate_accuracy_model_contract(model, entry, directory)
-        if engine == DEVKIT_ACCURACY_ENGINE:
-            _validate_devkit_accuracy(entry, packages, profiles, model["benchmark"], directory, devkit_profiles)
-        if engine != "model_recipe":
-            continue
-        label = f"{directory}: validation {entry['id']!r}"
+    for entry in model["fidelity"]:
+        label = f"{directory}: fidelity {entry['id']!r}"
         if entry["scope"]["type"] != "package":
-            raise ValidationError(f"{label}: model_recipe validation requires package scope")
+            raise ValidationError(f"{label}: fidelity requires package scope")
         package = packages[entry["scope"]["package"]]
         result_component = entry["result_component"]
         if result_component not in package["components"]:
@@ -655,6 +644,11 @@ def validate_model(
                 f"{', '.join(sorted(unknown_outputs))}"
             )
 
+    devkit_profiles: set[str] = set()
+    for entry in model["accuracy"]:
+        if entry.get("engine") == DEVKIT_ACCURACY_ENGINE:
+            _validate_devkit_accuracy(entry, packages, profiles, directory, devkit_profiles)
+
     for entry in model["benchmark"]:
         metric_names = {metric if isinstance(metric, str) else metric["name"] for metric in entry["metrics"]}
         missing = set(entry.get("required_metrics", ())) - metric_names
@@ -669,44 +663,24 @@ def _validate_devkit_accuracy(
     entry: dict[str, Any],
     packages: dict[str, dict[str, Any]],
     profiles: dict[str, dict[str, Any]],
-    benchmarks: list[dict[str, Any]],
     directory: Path,
     seen_profiles: set[str],
 ) -> None:
-    label = f"{directory}: validation {entry['id']!r}"
+    label = f"{directory}: accuracy {entry['id']!r}"
     scope = entry["scope"]
     scoped = packages[scope["package"]]["components"] if scope["type"] == "package" else [scope["component"]]
     if entry["result_component"] not in scoped:
         raise ValidationError(f"{label}: result_component {entry['result_component']!r} is not in its scope")
-    # The accuracy step runs the MPKs the benchmark job just measured, so each one must be benchmarked.
-    benchmarked = {
-        (benchmark["scope"].get("component"), profile_id)
-        for benchmark in benchmarks
-        for profile_id in benchmark["build_profiles"]
-    }
-    unbenchmarked = sorted(
-        f"{component_id}/{profile_id}"
-        for component_id in scoped
-        for profile_id in entry["build_profiles"]
-        if (component_id, profile_id) not in benchmarked
-    )
-    if unbenchmarked:
-        raise ValidationError(f"{label}: needs a component benchmark entry for {', '.join(unbenchmarked)}")
-    # CI benchmarks each compile invocation in its own job, and every job of the profile runs the accuracy step.
+    # The accuracy stage runs with the MPKs of one compile invocation.
     for profile_id in entry["build_profiles"]:
-        for invocation in compile_invocations_for(profiles[profile_id]):
-            members = set(invocation["components"])
-            benchmarked_here = any((component_id, profile_id) in benchmarked for component_id in members)
-            if benchmarked_here and not set(scoped) <= members:
-                raise ValidationError(
-                    f"{label}: compile invocation {invocation['id']!r} in build profile {profile_id!r} is "
-                    f"benchmarked without all of {', '.join(scoped)}; DevKit accuracy needs its components "
-                    "compiled in one invocation and benchmarked by no other"
-                )
+        if not any(set(scoped) <= set(item["components"]) for item in compile_invocations_for(profiles[profile_id])):
+            raise ValidationError(
+                f"{label}: build profile {profile_id!r} must compile {', '.join(scoped)} in one compile invocation"
+            )
     missing = set(entry.get("required_metrics", ())) - set(entry["metrics"])
     if missing:
         raise ValidationError(f"{label}: required_metrics are not declared in metrics: {', '.join(sorted(missing))}")
-    # The benchmark job runs scripts/accuracy.py once per build profile.
+    # The accuracy stage runs scripts/accuracy.py once per build profile.
     repeated = seen_profiles & set(entry["build_profiles"])
     if repeated:
         raise ValidationError(
@@ -742,3 +716,21 @@ def load_and_validate_model(
     model = load_model(model_dir)
     validate_model(model_dir, model, schema_path, taxonomy_path)
     return model
+
+
+def load_models(repository: str | Path) -> dict[str, dict[str, Any]]:
+    """Load and validate every models/<id>/model.yaml, keyed by model ID."""
+    root = Path(repository).expanduser().resolve()
+    model_root = root / "models"
+    discovered: dict[str, dict[str, Any]] = {}
+    if not model_root.is_dir():
+        raise ValidationError(f"models directory not found: {model_root}")
+
+    for definition in sorted(model_root.glob("*/model.yaml")):
+        model = load_and_validate_model(definition.parent, root / "schemas" / "model.schema.json")
+        validate_artifact_metadata(model)
+        model_id = str(model["id"])
+        if model_id in discovered:
+            raise ValidationError(f"duplicate model id {model_id!r}: {definition}")
+        discovered[model_id] = model
+    return discovered

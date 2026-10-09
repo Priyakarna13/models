@@ -58,8 +58,8 @@ def test_validate_json_output(capsys) -> None:
     assert '"valid": true' in output
 
 
-def test_validate_catalog_checks_every_manifest(capsys) -> None:
-    result = main(["validate-catalog", "--repository", str(ROOT), "--json"])
+def test_validate_models_checks_every_manifest(capsys) -> None:
+    result = main(["validate-models", "--repository", str(ROOT), "--json"])
     assert result == 0
     output = capsys.readouterr().out
     assert '"model_count": 9' in output
@@ -67,7 +67,7 @@ def test_validate_catalog_checks_every_manifest(capsys) -> None:
     assert '"valid": true' in output
 
 
-@pytest.mark.parametrize("command", ["validate", "validate-catalog"])
+@pytest.mark.parametrize("command", ["validate", "validate-models"])
 @pytest.mark.parametrize("filename_length", [255, 256])
 def test_validation_checks_complete_filename_length(command, filename_length, tmp_path: Path, capsys) -> None:
     model_dir = tmp_path / "models" / "fixture_model"
@@ -79,7 +79,7 @@ def test_validation_checks_complete_filename_length(command, filename_length, tm
     suffix_length = filename_length - len(f"{model['id']}__mpk.tar.gz")
     model["build_profiles"][0]["components"][0]["artifact_suffix"] = "a" * suffix_length
     manifest.write_text(yaml.safe_dump(model), encoding="utf-8")
-    if command == "validate-catalog":
+    if command == "validate-models":
         overview = " ".join(f"word{index}" for index in range(50))
         sections = [
             ("Overview", overview), ("Usage", "Usage."), ("Model interface", "Interface."),
@@ -169,19 +169,29 @@ def test_fetch_calibration_skips_variant_that_does_not_require_it(monkeypatch, c
     assert '"kind": "none"' in capsys.readouterr().out
 
 
-def test_fetch_accuracy_dataset_resolves_for_scoped_int8_variant(monkeypatch, tmp_path: Path, capsys) -> None:
-    dataset = tmp_path / "imagenet-mini.tgz"
+@pytest.mark.parametrize(
+    ("model_id", "profile", "component"),
+    [
+        ("resnet_50", "modalix_int8", "model"),
+        ("resnet_50", "modalix_bf16", "model"),
+        ("rf_detr_small", "modalix_int8_bf16", "backbone"),
+    ],
+)
+def test_fetch_fidelity_dataset_resolves_declared_fidelity(
+    monkeypatch, tmp_path: Path, capsys, model_id: str, profile: str, component: str
+) -> None:
+    dataset = tmp_path / "dataset.tgz"
     dataset.write_bytes(b"dataset")
     monkeypatch.setattr("model_registry.cli.resolve_dataset", lambda *args, **kwargs: dataset)
 
     result = main(
         [
-            "fetch-accuracy-dataset",
-            str(ROOT / "models" / "resnet_50"),
+            "fetch-fidelity-dataset",
+            str(ROOT / "models" / model_id),
             "--build-profile",
-            "modalix_int8",
+            profile,
             "--component",
-            "model",
+            component,
             "--json",
         ]
     )
@@ -192,58 +202,15 @@ def test_fetch_accuracy_dataset_resolves_for_scoped_int8_variant(monkeypatch, tm
     assert f'"path": "{dataset}"' in output
 
 
-def test_fetch_accuracy_dataset_resolves_model_recipe_correctness(monkeypatch, tmp_path: Path, capsys) -> None:
-    dataset = tmp_path / "imagenet-mini.tgz"
-    dataset.write_bytes(b"dataset")
-    monkeypatch.setattr("model_registry.cli.resolve_dataset", lambda *args, **kwargs: dataset)
-
-    result = main(
-        [
-            "fetch-accuracy-dataset",
-            str(ROOT / "models" / "rf_detr_small"),
-            "--build-profile",
-            "modalix_int8_bf16",
-            "--component",
-            "backbone",
-            "--json",
-        ]
-    )
-
-    assert result == 0
-    assert f'"path": "{dataset}"' in capsys.readouterr().out
-
-
-def test_fetch_accuracy_dataset_skips_bf16_outside_accuracy_scope(monkeypatch, capsys) -> None:
+def test_fetch_fidelity_dataset_skips_model_without_fidelity(monkeypatch, capsys) -> None:
     def unexpected_resolve(*args, **kwargs):
-        raise AssertionError("BF16 must not resolve an accuracy dataset")
+        raise AssertionError("a model without fidelity entries must not resolve a dataset")
 
     monkeypatch.setattr("model_registry.cli.resolve_dataset", unexpected_resolve)
 
     result = main(
         [
-            "fetch-accuracy-dataset",
-            str(ROOT / "models" / "resnet_50"),
-            "--build-profile",
-            "modalix_bf16",
-            "--component",
-            "model",
-            "--json",
-        ]
-    )
-
-    assert result == 0
-    assert '"kind": "none"' in capsys.readouterr().out
-
-
-def test_fetch_accuracy_dataset_skips_legacy_correctness_declaration(monkeypatch, capsys) -> None:
-    def unexpected_resolve(*args, **kwargs):
-        raise AssertionError("legacy correctness declarations must not resolve an accuracy dataset")
-
-    monkeypatch.setattr("model_registry.cli.resolve_dataset", unexpected_resolve)
-
-    result = main(
-        [
-            "fetch-accuracy-dataset",
+            "fetch-fidelity-dataset",
             str(ROOT / "models" / "ssd_mobilenet_v1"),
             "--build-profile",
             "modalix_bf16",
@@ -264,11 +231,11 @@ def test_invalid_model_has_nonzero_exit(capsys) -> None:
 
 
 def test_matrix_emits_workflow_json(capsys) -> None:
-    result = main(["matrix", "--repository", str(ROOT), "--changed-path", "models/resnet_50/README.md"])
+    result = main(["matrix", "--repository", str(ROOT), "--models", "resnet_50", "--compiler-version", "fixture"])
     assert result == 0
-    output = capsys.readouterr().out
-    assert '"model_id":"resnet_50"' in output
-    assert '"recipe":"scripts/compile.py"' in output
+    entries = json.loads(capsys.readouterr().out)["include"]
+    assert {entry["model_id"] for entry in entries} == {"resnet_50"}
+    assert all(len(entry["build_fingerprint"]) == 64 for entry in entries)
 
 
 def test_matrix_rejects_unknown_manual_model(capsys) -> None:
