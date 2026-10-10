@@ -7,9 +7,11 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
+import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 BROWSER = ROOT / "artifact-browser"
@@ -302,7 +304,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         runs = _runs()
-        if path == "/config.js":
+        if re.fullmatch(r"/config(\.[0-9a-f]+)?\.js", path):
             body = (
                 b"window.MODEL_REGISTRY_CONFIG = Object.freeze({"
                 b'apiBase: location.origin, environment: "Local preview", '
@@ -508,6 +510,14 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def translate_path(self, path: str) -> str:
+        # The fixtures stay in artifact-browser/ when --root serves an assembled portal. Normalizing
+        # first resolves "..", so a path that leaves the fixtures is served from the root, or not at all.
+        request = posixpath.normpath(unquote(urlparse(path).path))
+        if request.startswith("/fixtures/"):
+            return str(BROWSER / request.lstrip("/"))
+        return super().translate_path(path)
+
     def log_message(self, message: str, *args: object) -> None:
         print(f"preview: {message % args}")
 
@@ -516,8 +526,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--root", type=Path, default=BROWSER, help="directory to serve, such as website/portal-build")
     args = parser.parse_args()
-    os.chdir(BROWSER)
+    os.chdir(args.root)
     server = ThreadingHTTPServer((args.host, args.port), PreviewHandler)
     print(f"Model browser preview: http://{args.host}:{args.port}/?run={RUN_ID}", flush=True)
     server.serve_forever()

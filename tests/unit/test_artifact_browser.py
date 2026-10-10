@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
@@ -100,6 +101,51 @@ def test_staging_deployment_publishes_models_to_docs_origin() -> None:
     assert any(step.get("run") == "npm run build:portal" for step in build["steps"])
 
 
+def test_staging_deployment_smoke_tests_the_portal_before_publishing_it() -> None:
+    workflow = yaml.load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["build"]["steps"]
+    position = {step.get("run") or step.get("uses", "").split("@")[0]: index for index, step in enumerate(steps)}
+
+    assert position["npm run build:portal"] < position["npm run smoke:portal"] < position["actions/upload-artifact"]
+    assert position["npx playwright install --with-deps chromium"] < position["npm run smoke:portal"]
+
+
+def test_preview_serves_fixture_paths_only_inside_the_fixtures(tmp_path: Path) -> None:
+    (tmp_path / "index.html").write_text("portal", encoding="utf-8")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = subprocess.Popen(
+        ["python3", str(BROWSER / "preview.py"), "--root", str(tmp_path), "--port", str(port)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        server.stdout.readline()
+        base = f"http://127.0.0.1:{port}"
+        status = {}
+        for request in (
+            "/fixtures/performance-result-v4.json",
+            "/fixtures/../../README.md",
+            "/fixtures/%2e%2e/%2e%2e/README.md",
+            "/fixtures/../../../../../../etc/hosts",
+        ):
+            # Raw request lines keep the ".." that an HTTP client would normalize away.
+            response = subprocess.run(
+                ["curl", "-s", "--path-as-is", "-o", os.devnull, "-w", "%{http_code}", f"{base}{request}"],
+                capture_output=True, text=True, check=True,
+            )
+            status[request] = response.stdout
+    finally:
+        server.kill()
+
+    assert status == {
+        "/fixtures/performance-result-v4.json": "200",
+        "/fixtures/../../README.md": "404",
+        "/fixtures/%2e%2e/%2e%2e/README.md": "404",
+        "/fixtures/../../../../../../etc/hosts": "404",
+    }
+
+
 def test_combined_portal_fingerprints_mutable_browser_assets() -> None:
     assemble = PORTAL_ASSEMBLER.read_text(encoding="utf-8")
 
@@ -110,26 +156,42 @@ def test_combined_portal_fingerprints_mutable_browser_assets() -> None:
     assert "fingerprintedAssets" in assemble
 
 
-def test_assembled_portal_modules_import_only_deployed_files(tmp_path: Path) -> None:
-    shutil.copytree(BROWSER, tmp_path / "artifact-browser")
-    (tmp_path / "website" / "scripts").mkdir(parents=True)
-    (tmp_path / "website" / "build").mkdir()
-    shutil.copy(PORTAL_ASSEMBLER, tmp_path / "website" / "scripts" / PORTAL_ASSEMBLER.name)
-
-    subprocess.run(
-        ["node", str(tmp_path / "website" / "scripts" / PORTAL_ASSEMBLER.name)],
-        check=True,
+def assemble_portal(root: Path) -> subprocess.CompletedProcess[str]:
+    (root / "website" / "scripts").mkdir(parents=True)
+    (root / "website" / "build").mkdir()
+    shutil.copy(PORTAL_ASSEMBLER, root / "website" / "scripts" / PORTAL_ASSEMBLER.name)
+    return subprocess.run(
+        ["node", str(root / "website" / "scripts" / PORTAL_ASSEMBLER.name)],
         capture_output=True,
+        text=True,
         env={**os.environ, "GITHUB_SHA": "a" * 40},
     )
+
+
+def test_assembled_portal_modules_import_only_deployed_files(tmp_path: Path) -> None:
+    shutil.copytree(BROWSER, tmp_path / "artifact-browser")
+    assert assemble_portal(tmp_path).returncode == 0
 
     portal = tmp_path / "website" / "portal-build"
     modules = sorted(portal.glob("*.aaaaaaaaaaaa.js"))
     assert {path.name.split(".")[0] for path in modules} >= {"app", "downloads", "branch-builds"}
     for module in modules:
-        for specifier in re.findall(r"[\"'](\./[\w.-]+\.js)[\"']", module.read_text(encoding="utf-8")):
+        for specifier in re.findall(r"[\"'](\.\.?/[^\"'\s]*\.js)[\"']", module.read_text(encoding="utf-8")):
             assert ".aaaaaaaaaaaa.js" in specifier, f"{module.name} imports {specifier}"
             assert (portal / specifier).is_file(), f"{module.name} imports missing {specifier}"
+
+
+def test_portal_assembly_rejects_relative_imports_it_does_not_deploy(tmp_path: Path) -> None:
+    for specifier in ("./helpers/util.js", "../shared.js", "./unlisted.js"):
+        root = tmp_path / specifier.strip("./").replace("/", "-")
+        shutil.copytree(BROWSER, root / "artifact-browser")
+        downloads = root / "artifact-browser" / "downloads.js"
+        downloads.write_text(f'import "{specifier}";\n' + downloads.read_text(encoding="utf-8"), encoding="utf-8")
+
+        result = assemble_portal(root)
+
+        assert result.returncode != 0
+        assert f"downloads.js imports {specifier}" in result.stderr
 
 
 def test_model_cards_use_lazy_integrity_checked_progressive_disclosure() -> None:
@@ -263,6 +325,16 @@ def test_developer_docs_workflow_only_validates_the_combined_portal() -> None:
         "DOCS_BASE_URL": "/models/",
     }
     assert not any("pages" in step.get("uses", "") for step in build["steps"])
+
+
+def test_developer_docs_workflow_runs_browser_tests_and_smoke_tests_the_portal() -> None:
+    workflow = yaml.load(DOCS_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    runs = [step.get("run") for step in workflow["jobs"]["build"]["steps"]]
+
+    assert "tests/browser/**" in workflow["on"]["pull_request"]["paths"]
+    assert "node --test tests/browser/*.test.mjs" in runs
+    assert runs.index("npm run smoke:portal") > runs.index("npm run build:portal")
+    assert "npx playwright install --with-deps chromium" in runs
 
 
 def test_combined_portal_shares_theme_storage_and_section_navigation() -> None:
