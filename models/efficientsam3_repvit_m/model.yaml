@@ -1,0 +1,270 @@
+id: efficientsam3_repvit_m
+display_name: EfficientSAM3 RepViT-M
+description: Text-prompted EfficientSAM3 detector and segmenter with a RepViT-M image encoder.
+model_type: vision
+tasks:
+- instance_segmentation
+- object_detection
+modalities:
+  inputs:
+  - image
+  - text
+  outputs:
+  - bounding_boxes
+  - masks
+  - class_scores
+architecture:
+  id: efficientsam3
+  variant: stage1_repvit_m1_1_1008x1008
+owners:
+- '@sima-neat/models'
+license:
+  spdx: Apache-2.0 AND LicenseRef-SAM-License
+  redistribution: restricted
+  attribution: EfficientSAM3 is published on Hugging Face by Simon7108528 under Apache-2.0. Its text encoder, fusion
+    encoder, decoder, and heads are Meta's SAM 3 weights, distributed only under the SAM License.
+upstream:
+  repository: https://huggingface.co/Simon7108528/EfficientSAM3
+  revision: 85b05896928f974e308f889d7ccb2eefc069de98
+  model_card: https://huggingface.co/Simon7108528/EfficientSAM3
+  derived_from: https://github.com/SimonZeng7108/efficientsam3/tree/bd0936c788fed8d51fa799437f05abd97b401b06
+conversion:
+  default:
+    source:
+      type: file_set
+      entrypoint: efficient_sam3_repvit_m.pt
+      files:
+      - path: efficient_sam3_repvit_m.pt
+        uri: hf://models/Simon7108528/EfficientSAM3@85b05896928f974e308f889d7ccb2eefc069de98/stage1_all_converted/efficient_sam3_repvit_m.pt
+        sha256: 2694a10ca7d4e470d7fd79b9c7fb0d97a902133fdb900615e1de5aff682704d0
+        size_bytes: 1727097589
+      - path: sam3-0.1.4-py3-none-any.whl
+        uri: https://files.pythonhosted.org/packages/f3/73/16864549e382f23b9c0bc738b8bca5270770bbc88552e9fdaf9a95cee867/sam3-0.1.4-py3-none-any.whl
+        sha256: dc2089fccbcd183896df8cf9b3bf53da9f6a23f17e49f5b643ade993322d2949
+        size_bytes: 506751
+      - path: vocab.json
+        uri: hf://models/openai/clip-vit-base-patch32@3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268/vocab.json
+        sha256: 5047b556ce86ccaf6aa22b3ffccfc52d391ea4accdab9c2f2407da5b742d4363
+        size_bytes: 862328
+      - path: merges.txt
+        uri: hf://models/openai/clip-vit-base-patch32@3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268/merges.txt
+        sha256: f526393189112391ce6f9795d4695f704121ce452c3aad1f5335cc41337eba85
+        size_bytes: 524657
+components:
+- id: text_encoder
+  role: text_encoder
+  source: &source
+    type: file
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
+    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
+    size_bytes: 9917015
+    media_type: application/onnx
+  interface:
+    format: onnx
+    opset: 17
+    entrypoints:
+    - id: default
+      inputs:
+      - name: token_one_hot
+        dtype: float32
+        shape: [1, 16, 49408]
+        layout: NLC
+        description: One-hot CLIP BPE token IDs of the prompt, start and end tokens included; padding rows are zero.
+      outputs:
+      - name: text_features
+        dtype: float32
+        shape: [1, 16, 256]
+        layout: NLC
+        description: Feature of each token position.
+    shape_profiles: []
+  preprocessing:
+    pipeline: []
+  postprocessing:
+    pipeline: []
+  surgery:
+    type: python
+    entrypoint: scripts/surgery.py:prepare_model
+    parameters: {}
+  recipe: scripts/compile.py
+- id: image_model
+  role: detection_head
+  source: *source
+  interface:
+    format: onnx
+    opset: 17
+    entrypoints:
+    - id: default
+      inputs:
+      - name: pixel_values
+        dtype: float32
+        shape: [1, 3, 1008, 1008]
+        layout: NCHW
+        description: RGB image stretched to 1008x1008 and scaled to [-1, 1].
+      - name: text
+        dtype: float32
+        shape: [1, 17, 256]
+        layout: NLC
+        description: Rows 0-15 hold the text features; row 16 holds 1 for each prompt token in its first 16 columns.
+      outputs:
+      - name: detections
+        dtype: float32
+        shape: [1, 200, 6]
+        layout: NLC
+        description: Per query x1, y1, x2, y2 in 1008x1008 input pixels, score, and 0.
+      - name: mask_logits
+        dtype: float32
+        shape: [1, 200, 192, 192]
+        layout: NCHW
+        description: Mask logits of each query over the whole input; resize to the original image.
+    shape_profiles: []
+  preprocessing:
+    pipeline:
+    - op: decode_image
+      parameters: {color_space: RGB}
+    - op: resize
+      parameters: {height: 1008, width: 1008, preserve_aspect_ratio: false, resample: bilinear}
+    - op: rescale
+      parameters: {factor: 0.00392156862745098}
+    - op: normalize
+      parameters:
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]
+    - op: transpose
+      parameters: {from: HWC, to: CHW}
+  postprocessing:
+    pipeline: []
+  surgery:
+    type: python
+    entrypoint: scripts/surgery.py:prepare_model
+    parameters: {}
+  recipe: scripts/compile.py
+  depends_on:
+  - text_encoder
+resources:
+- id: tokenizer
+  source:
+    type: file_set
+    entrypoint: vocab.json
+    files:
+    - path: vocab.json
+      uri: hf://models/openai/clip-vit-base-patch32@3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268/vocab.json
+      sha256: 5047b556ce86ccaf6aa22b3ffccfc52d391ea4accdab9c2f2407da5b742d4363
+      size_bytes: 862328
+      media_type: application/json
+    - path: merges.txt
+      uri: hf://models/openai/clip-vit-base-patch32@3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268/merges.txt
+      sha256: f526393189112391ce6f9795d4695f704121ce452c3aad1f5335cc41337eba85
+      size_bytes: 524657
+      media_type: text/plain
+  install_path: resources/tokenizer
+  license:
+    spdx: MIT
+    redistribution: allowed
+    attribution: The CLIP BPE vocabulary is OpenAI's, released with the openai/CLIP repository under the MIT License.
+calibrations:
+- id: coco_images
+  status: ready
+  dataset:
+    id: coco-2017
+    variant: mini
+    sha256: abb616d0eaf3d55d98d44ed092e05e2df6f87264d7f8426550d62402ef222e78
+    size_bytes: 462182592
+build_profiles:
+- id: modalix_bf16
+  target: modalix
+  components:
+  - id: text_encoder
+    artifact_suffix: text_encoder_bf16
+    calibration: coco_images
+    parameters:
+      precision: bf16
+      calibration_bins: 2048
+      calibration_samples: 16
+  - id: image_model
+    artifact_suffix: image_model_bf16
+    parameters:
+      precision: bf16
+      calibration_bins: 2048
+      calibration_samples: 16
+  compile_invocations:
+  - id: efficientsam3
+    components: [text_encoder, image_model]
+compositions:
+- id: default
+  type: declarative
+  components:
+  - {id: text_encoder, component: text_encoder, entrypoint: default}
+  - {id: image_model, component: image_model, entrypoint: default}
+  connections: []
+  inputs:
+  - name: token_one_hot
+    to: {component: text_encoder, input: token_one_hot}
+  - name: pixel_values
+    to: {component: image_model, input: pixel_values}
+  - name: text
+    to: {component: image_model, input: text}
+  outputs:
+  - name: text_features
+    from: {component: text_encoder, output: text_features}
+  - name: detections
+    from: {component: image_model, output: detections}
+  - name: mask_logits
+    from: {component: image_model, output: mask_logits}
+packages:
+- id: default
+  default: true
+  components: [text_encoder, image_model]
+  resources: [tokenizer]
+  build_profiles: [modalix_bf16]
+  composition: default
+  maturity: experimental
+fidelity:
+- id: full_pipeline_fidelity
+  scope: {type: package, package: default}
+  build_profiles: [modalix_bf16]
+  status: diagnostic
+  result_component: image_model
+  dataset:
+    id: coco-2017
+    variant: mini
+    sha256: abb616d0eaf3d55d98d44ed092e05e2df6f87264d7f8426550d62402ef222e78
+    size_bytes: 462182592
+  selection:
+    method: seeded_random_without_replacement
+    seed: 0
+    offset: 16
+    samples: 4
+  outputs: [detections, mask_logits]
+accuracy:
+- id: coco_accuracy
+  scope: {type: package, package: default}
+  build_profiles: [modalix_bf16]
+  engine: devkit_script
+  status: ready
+  result_component: image_model
+  dataset:
+    id: coco-2017
+    variant: mini
+    sha256: abb616d0eaf3d55d98d44ed092e05e2df6f87264d7f8426550d62402ef222e78
+    size_bytes: 462182592
+  metrics: [coco_map, coco_mask_map, coco_ap50, coco_ap75, coco_ap_small, coco_ap_medium, coco_ap_large,
+    coco_ar1, coco_ar10, coco_ar100, coco_ar_small, coco_ar_medium, coco_ar_large]
+  required_metrics: [coco_map, coco_mask_map]
+benchmark:
+- id: text_encoder_modalix
+  scope: {type: component, component: text_encoder}
+  build_profiles: [modalix_bf16]
+  status: pending
+  target: modalix
+  reason: Establish a Core API baseline for the default MPK workload.
+  metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_joules, energy_per_inference_joules]
+  required_metrics: [avg_power_watts, energy_per_inference_joules]
+- id: image_model_modalix
+  scope: {type: component, component: image_model}
+  build_profiles: [modalix_bf16]
+  status: pending
+  target: modalix
+  reason: Establish a Core API baseline for the default MPK workload.
+  metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_joules, energy_per_inference_joules]
+  required_metrics: [avg_power_watts, energy_per_inference_joules]
+maturity: experimental
