@@ -47,9 +47,9 @@ components:
   role: inference
   source:
     type: file
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
-    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
-    size_bytes: 9917015
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/depth_anything_3_metric_large_280x504/5aaa75525fc6ea13fb470cccc1cb0b24520bf5812ff54a8e942a9d089326724b/38183029365-1/model.onnx
+    sha256: 5aaa75525fc6ea13fb470cccc1cb0b24520bf5812ff54a8e942a9d089326724b
+    size_bytes: 1334284096
     media_type: application/onnx
   interface:
     format: onnx
