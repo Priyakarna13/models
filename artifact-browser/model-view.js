@@ -323,6 +323,7 @@ const ACCURACY_METRIC_LABELS = {
   top1_accuracy: "Top-1",
   top5_accuracy: "Top-5",
   coco_map: "mAP 50–95",
+  coco_mask_map: "Mask mAP 50–95",
   coco_ap50: "AP50",
   coco_ap75: "AP75",
   coco_ap_small: "AP small",

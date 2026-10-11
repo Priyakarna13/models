@@ -1071,6 +1071,24 @@ def test_pose_accuracy_metrics_lead_with_keypoint_map() -> None:
     assert 'coco_keypoint_map: "Keypoint mAP 50–95"' in script
 
 
+def test_segmentation_accuracy_tiles_show_box_and_mask_map() -> None:
+    script = _browser_source("model-view.js")
+    start = script.index("const ACCURACY_METRIC_LABELS = {")
+    end = script.index("function accuracyPanel(")
+    metrics = ["coco_ap75", "coco_mask_map", "coco_ap50", "coco_map", "coco_ap_small"]
+    report = {"metrics": {name: {"value": 0.5} for name in metrics}}
+    order = f"console.log(JSON.stringify(orderedAccuracyMetrics({json.dumps(report)}).map(([name]) => name)));"
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script[start:end] + order],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(result.stdout) == ["coco_map", "coco_mask_map", "coco_ap50", "coco_ap75", "coco_ap_small"]
+    assert 'coco_mask_map: "Mask mAP 50–95"' in script
+
+
 def test_numerical_fidelity_is_rendered_from_correctness_results() -> None:
     script = _browser_source("model-view.js")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
