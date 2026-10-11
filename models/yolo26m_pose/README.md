@@ -1,5 +1,7 @@
 # YOLO26m-pose
 
+![YOLO26m-pose model hero](hero.png)
+
 ## Overview
 
 YOLO26m-pose is the Medium edition of Ultralytics' YOLO26 pose estimator. It
