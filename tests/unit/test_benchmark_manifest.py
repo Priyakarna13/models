@@ -34,7 +34,6 @@ def test_dispatch_validates_complete_compile_but_benchmarks_only_declared_subset
     fidelity = output_root / "transformer" / "fidelity.json"
     fidelity.write_text("{}")
     manifest = {
-        "schema_version": 2,
         "model_id": "rf_detr_small",
         "build_profile_id": "modalix_int8_bf16",
         "compile_invocation_id": "rf_detr",
@@ -52,7 +51,9 @@ def test_dispatch_validates_complete_compile_but_benchmarks_only_declared_subset
     args = (ROOT, tmp_path, "rf_detr_small", "modalix_int8_bf16", "rf_detr")
 
     validate_benchmark_components(*args, ["backbone"])
-    for components in (["transformer"], ["backbone", "transformer"], ["backbone", "backbone"], []):
+    # An accuracy-only dispatch measures no component's performance.
+    validate_benchmark_components(*args, [])
+    for components in (["transformer"], ["backbone", "transformer"], ["backbone", "backbone"]):
         with pytest.raises(ValidationError, match="declared benchmark entries"):
             validate_benchmark_components(*args, components)
     (output_root / "transformer" / "transformer_mpk.tar.gz").unlink()
@@ -125,7 +126,7 @@ def test_generates_direct_devkit_manifest_for_compiled_model(
     assert manifest["model"]["path"].endswith(f"/{model_id}/{build_profile_id}/{component_id}/{model_id}_mpk.tar.gz")
     assert manifest["model"]["uri"] == "vulcan://runs/00000000-0000-4000-8000-000000000001/artifacts/mpk"
     assert manifest["provenance"]["execution_provider"] == "github-actions-devkit-runner"
-    assert manifest["script"] == str(ROOT / "models" / model_id / "scripts" / "benchmark.py")
+    assert manifest["script"] == str(ROOT / "models" / model_id / "scripts" / "performance.py")
     assert "build" not in manifest["runtime"]["devkit"]
     assert "benchmark" not in manifest
     assert "model_options" not in manifest

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github" / "workflows" / "Vulcan-Model-Registry.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "vulcan-model-registry.yml"
 
 
 def test_model_registry_workflow_is_change_scoped_and_publishes_subpackage() -> None:
@@ -12,15 +12,18 @@ def test_model_registry_workflow_is_change_scoped_and_publishes_subpackage() -> 
     for path in (
         "tools/model_registry/**",
         "packaging/model-registry/**",
-        "scripts/build_model_registry_vulcan_package.sh",
         "tests/unit/**",
+        "scripts/**",
+        ".github/workflows/**",
         "models/**",
         "deps/manifest.json",
         "schemas/**",
         "taxonomies/**",
     ):
         assert f'      - "{path}"' in text
-    assert "scripts/build_model_registry_vulcan_package.sh" in text
+    assert '      - "website/**"' in text.split("  push:")[0]
+    assert '      - "website/**"' not in text.split("  push:")[1]
+    assert "packaging/model-registry/build.sh" in text
     assert "artifact_folder: model-registry" in text
     assert text.count("artifact_namespace: models-utils") == 2
     assert "artifact_pattern: model-registry-dist" in text
@@ -37,14 +40,9 @@ def test_model_registry_pushes_default_to_staging() -> None:
     assert "vars.VULCAN_ENV" not in text
 
 
-def test_ci_runs_grouped_build_and_recipe_regressions() -> None:
+def test_ci_runs_every_unit_test() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
-    for name in (
-        "rf_detr_small", "ssd_mobilenet_v3", "compile_workflow", "catalog",
-        "artifact", "registry", "fidelity_config", "artifact_browser",
-        "benchmark_manifest", "benchmark_publication", "benchmark_workflow",
-    ):
-        assert f"tests/unit/test_{name}.py" in text
+    assert "python -m pytest tests/unit\n" in text
 
 
 def test_model_registry_workflow_smoke_tests_the_author_command_surface() -> None:

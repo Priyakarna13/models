@@ -48,7 +48,8 @@ Every compiler run executes the floating and quantized raw-head models on 32
 held-out, category-balanced COCO samples. The audit records per-head cosine
 similarity, normalized RMSE, mean absolute error, and maximum absolute error;
 the calibration and validation image IDs are disjoint. Precision-specific
-acceptance thresholds in the `validation` entry of `model.yaml` gate compilation.
+acceptance thresholds in the `coco_val2017_quantization` accuracy entry of
+`model.yaml` gate compilation.
 
 Independent structural checks verify all 47 MLA convolutions, the expected
 INT8 or BF16 compute representation, one MLA ELF, no shared objects or A65
@@ -94,8 +95,13 @@ python models/ssd_mobilenet_v1/scripts/calibration.py \
 
 ### Compilation and validation
 
-Dispatch **Vulcan Model Compile** in staging with model
+Dispatch **Vulcan Model Orchestrator** in staging with model
 `ssd_mobilenet_v1`. Leaving the profile selection empty builds both declared
 profiles; select one profile only for focused compiler diagnosis. Compilation,
 raw-head quality validation, structural graph inspection, MPK inspection, and
 artifact publication must all succeed before a build is usable.
+
+The workflow compiles a build only when the catalog has no build with its
+current compile key; set `force_rebuild_all` to recompile anyway. A dispatch
+that selects profiles or components publishes those compile runs but does not
+assemble packages or update the catalog.

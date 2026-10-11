@@ -44,13 +44,13 @@ if [[ "${help_text}" != "${module_help_text}" ]]; then
   echo "Author console and module command surfaces do not match" >&2
   exit 1
 fi
-for command in validate validate-catalog fetch fetch-calibration fetch-accuracy-dataset matrix resolve-compiler verify-mpk; do
+for command in validate validate-models fetch fetch-calibration fetch-fidelity-dataset matrix resolve-compiler verify-mpk; do
   grep -q "${command}" <<< "${help_text}" || {
     echo "Installed author CLI is missing command: ${command}" >&2
     exit 1
   }
 done
-for command in package publish publish-benchmark publish-catalog stage-registry-build; do
+for command in package publish publish-benchmark publish-accuracy publish-catalog stage-registry-build; do
   if "${MODEL_REGISTRY_BIN}" "${command}" --help >/dev/null 2>&1; then
     echo "Installed author CLI unexpectedly exposes CI command: ${command}" >&2
     exit 1

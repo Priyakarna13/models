@@ -36,11 +36,24 @@ npm run serve:portal --prefix website
 Open <http://localhost:4173> for the catalog and
 <http://localhost:4173/docs> for the developer guide.
 
+The deployed catalog is the assembled `website/portal-build/`, where every
+module is renamed with the revision. `preview.py` serves the unrenamed sources,
+so check the assembled build before a pull request. CI runs the same check:
+
+```bash
+npx --prefix website playwright install chromium
+npm run smoke:portal --prefix website
+```
+
+It serves `portal-build/` against the preview API fixture in Chromium and fails
+when a module or stylesheet does not load, the page throws or logs an error, or
+the model list or a variant page does not render.
+
 To preview the complete ResNet-50 accuracy and schema-v4 benchmark UI without a
 registry or DevKit connection, run:
 
 ```bash
-python3 scripts/preview_artifact_browser.py
+python3 artifact-browser/preview.py
 ```
 
 Open the URL printed by the script. The local server provides a realistic model
@@ -84,11 +97,18 @@ publisher traffic and rejects direct public reads.
 
 The initial view loads the repository branch catalog independently from build
 runs and caches both so repeat visits can render immediately while refreshing.
-The selected branch's model cards come from completed compile runs with that
-exact `git_ref`; the model catalog supplies names and categories, not build
-membership. Components are grouped only within the same workflow build, and a
-full package appears only when its recorded component run IDs match the group.
-Build history continues to show chronological runs. If branch discovery is
+The selected branch's model cards show what the branch delivers: the builds in
+its catalog, including builds it inherits from its base branch. A completed
+build compiled on the branch that is newer than the catalog's build of the same
+model and build profile replaces it, so a build the catalog has not recorded
+still shows. Each build keeps the provenance of its own compile run, so an
+inherited build names the branch that compiled it. A branch without a catalog
+shows an empty state until its first push completes. Components are grouped
+only within the same workflow build, and a full package appears only when its
+recorded component run IDs match the shown build.
+Build history lists one entry per variant build, newest first, naming its
+components; an entry gains components as **Load more builds** brings in the rest of its
+build. If branch discovery is
 temporarily unavailable, the browser keeps saved branches and can infer
 additional branches from returned runs. Full
 provenance, validation, and metric views load only after a build is selected.
@@ -98,12 +118,28 @@ compiler, type, task, architecture, paradigm, and input facets are collapsed by
 default and display an active-filter count when used.
 The branch filter defaults to `develop`. A branch selected by the user is saved per
 registry and repository in browser storage. Shared links include `branch` and
-`run`; URL state takes precedence over that preference. Legacy links containing
-only `run` resolve the run's actual branch. The dedicated branch catalog, not a
+`model` and `variant` (the build profile), which open the latest build of that
+variant on the branch. Links from build history also carry `run`, one component
+run of the pinned build. URL state takes precedence over that preference. Links
+containing only `run` resolve the run's actual branch and open that run's
+variant build with its component row expanded, so every component's link opens
+the same page. The dedicated branch catalog, not a
 limited runs page, determines whether a saved branch falls back to `develop` (or all
 branches when `develop` is unavailable). Build-history pagination remains
 branch-aware; the model view fetches all pages needed to group the latest
 completed builds.
+
+## Variant pages
+
+A page shows one variant build: the component runs of one model and build
+profile compiled by one workflow. Build-level facts appear once: the model card,
+full package, provenance, source inputs (one per distinct digest), license, and
+DevKit accuracy. The **Components** section has one row per component with its
+MPK size, latency, throughput, and power; expanding a row shows its checksum,
+run identity, benchmark detail, numerical fidelity, and compile parameters.
+Components are measured on their own, so their latencies do not add up to
+end-to-end latency. Comparison selects whole variant builds and lists each
+component under its variant without combining measurements.
 
 ## Downloading model variants
 
@@ -129,7 +165,7 @@ python3 -m http.server 4174 --bind 127.0.0.1 --directory artifact-browser
 Open <http://127.0.0.1:4174/?run=53bfaa91-8b75-4bdb-afc2-83019a61f514>
 and click the model download icon to review the RF-DETR component dialog.
 
-Run download behavior checks with `node --test tests/browser/downloads.test.mjs`
+Run the download and variant-build checks with `node --test tests/browser/*.test.mjs`
 and the existing UI checks with `python -m pytest tests/unit/test_artifact_browser.py`.
 When a catalog build declares `artifact_suffix`, the dialog and download use
 `<model_id>_<artifact_suffix>_mpk.tar.gz`. The browser sends `download_filename` to

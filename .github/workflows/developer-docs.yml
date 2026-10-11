@@ -1,28 +1,12 @@
 name: Developer Docs Validation
 
+# The orchestrator calls this on every push, before planning compilations; a manual run checks one ref.
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/developer-docs.yml"
-      - "artifact-browser/**"
-      - "docs/**"
-      - "website/**"
-  push:
-    branches:
-      - develop
-    paths:
-      - ".github/workflows/developer-docs.yml"
-      - "artifact-browser/**"
-      - "docs/**"
-      - "website/**"
+  workflow_call: {}
   workflow_dispatch: {}
 
 permissions:
   contents: read
-
-concurrency:
-  group: developer-docs-validation-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -56,3 +40,14 @@ jobs:
           DOCS_SITE_URL: https://developer-stg.sima.ai
           DOCS_BASE_URL: /models/
         run: npm run build:portal
+
+      - name: Test browser modules
+        run: node --test tests/browser/*.test.mjs
+
+      - name: Install Chromium
+        working-directory: website
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke-test the assembled portal in Chromium
+        working-directory: website
+        run: npm run smoke:portal

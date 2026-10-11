@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import multiprocessing
 import os
 import shutil
@@ -20,7 +21,7 @@ import onnxruntime as ort
 import yaml
 from afe.apis.defines import (
     BiasCorrectionType,
-    CalibrationMethod,
+    HistogramMSEMethod,
     InputName,
     RequantizationMode,
     bfloat16_scheme,
@@ -43,7 +44,20 @@ from calibration import (
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from sima_utils.data.data_generator import DataGenerator
-from surgery import BOXES, FEATURES, INPUT, OUTPUTS, PROPOSALS, SCORES, prepare_model, validate_float_split
+from surgery import (
+    BOUNDARY_SHAPES,
+    BOXES,
+    FEATURES,
+    INPUT,
+    INPUT_SHAPE,
+    OUTPUT_SHAPES,
+    OUTPUTS,
+    PROPOSALS,
+    SCORES,
+    graph_paths,
+    prepare_model,
+    validate_float_split,
+)
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "rf_detr_small"
@@ -51,23 +65,30 @@ INVOCATION_ID = "rf_detr"
 PROFILE_ID = "modalix_int8_bf16"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 
+
+def _float32_bytes(shape: list[int]) -> int:
+    return math.prod(shape) * 4
+
+
+# MPK manifests record each public tensor's size in bytes.
 COMPONENT_INTERFACES = {
     "backbone": {
-        "inputs": {INPUT: 1 * 3 * 512 * 512 * 4},
-        "outputs": [1 * 256 * 32 * 32 * 4, 1 * 1024 * 4, 1 * 1024 * 4 * 4],
+        "inputs": {INPUT: _float32_bytes(INPUT_SHAPE)},
+        "outputs": [_float32_bytes(BOUNDARY_SHAPES[name]) for name in (FEATURES, SCORES, BOXES)],
     },
     "transformer": {
-        "inputs": {FEATURES: 1 * 256 * 32 * 32 * 4, PROPOSALS: 1 * 300 * 4 * 4},
-        "outputs": [1 * 300 * 4 * 4, 1 * 300 * 91 * 4],
+        "inputs": {name: _float32_bytes(BOUNDARY_SHAPES[name]) for name in (FEATURES, PROPOSALS)},
+        "outputs": [_float32_bytes(OUTPUT_SHAPES[name]) for name in OUTPUTS],
     },
 }
+
 
 def _profile() -> dict[str, Any]:
     model = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
     return next(profile for profile in model["build_profiles"] if profile["id"] == PROFILE_ID)
 
 
-def _quantization(precision: str) -> Any:
+def _quantization(precision: str, calibration_bins: int) -> Any:
     if precision == "int8":
         activation = quantization_scheme(asymmetric=True, per_channel=False, bits=8)
         weights = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
@@ -79,8 +100,9 @@ def _quantization(precision: str) -> Any:
         default_quantization.with_activation_quantization(activation)
         .with_weight_quantization(weights)
         .with_requantization_mode(RequantizationMode.sima)
-        .with_calibration(CalibrationMethod.from_str("mse"))
-        .with_bias_correction(BiasCorrectionType.NONE)
+        .with_calibration(HistogramMSEMethod(calibration_bins))
+        # INT8 bias correction measured +0.1 COCO mAP on the RF-DETR Small backbone; BF16 needs none.
+        .with_bias_correction(BiasCorrectionType.REGULAR if precision == "int8" else BiasCorrectionType.NONE)
         .with_channel_equalization(False)
         .with_smooth_quant(False)
         .with_prefer_int8_udf(True)
@@ -93,6 +115,7 @@ def _quantize_component(
     temporary_dir: Path,
     name: str,
     precision: str,
+    calibration_bins: int,
     inputs: dict[str, np.ndarray],
     input_shapes: dict[str, tuple[int, ...]],
     output_names: list[str],
@@ -106,7 +129,7 @@ def _quantize_component(
     )
     quantized = loaded.quantize(
         calibration_data=data,
-        quantization_config=_quantization(precision),
+        quantization_config=_quantization(precision, calibration_bins),
         model_name=name,
         log_level=logging.INFO,
     )
@@ -304,6 +327,7 @@ def _compile_backbone(
     evaluation_names: tuple[str, ...],
     temporary_dir: Path,
     precision: str,
+    calibration_bins: int,
 ) -> None:
     calibration_images = load_images(dataset, calibration_names)
     backbone, build_dir = _quantize_component(
@@ -311,8 +335,9 @@ def _compile_backbone(
         temporary_dir,
         f"{MODEL_ID}_backbone_{PROFILE_ID}",
         precision,
+        calibration_bins,
         {INPUT: calibration_images},
-        {INPUT: (1, 3, 512, 512)},
+        {INPUT: tuple(INPUT_SHAPE)},
         [FEATURES, SCORES, BOXES],
     )
     _compile_component(backbone, build_dir, "backbone", precision)
@@ -333,6 +358,7 @@ def _compile_transformer(
     graph: Path,
     temporary_dir: Path,
     precision: str,
+    calibration_bins: int,
     fidelity_config: dict[str, Any],
 ) -> None:
     with np.load(temporary_dir / "backbone_outputs.npz") as boundaries:
@@ -347,8 +373,9 @@ def _compile_transformer(
             temporary_dir,
             f"{MODEL_ID}_transformer_{PROFILE_ID}",
             precision,
+            calibration_bins,
             {FEATURES: calibration_features, PROPOSALS: calibration_proposals},
-            {FEATURES: (1, 256, 32, 32), PROPOSALS: (1, 300, 4)},
+            {name: tuple(BOUNDARY_SHAPES[name]) for name in (FEATURES, PROPOSALS)},
             OUTPUTS,
         )
         _compile_component(transformer, build_dir, "transformer", precision)
@@ -397,7 +424,7 @@ def _component_archive(temporary_dir: Path, component_id: str) -> Path:
 def compile_model(
     source: Path,
     calibration_dataset: Path,
-    correctness_dataset: Path,
+    fidelity_dataset: Path,
     output_dir: Path,
 ) -> dict[str, Path]:
     profile = _profile()
@@ -405,13 +432,13 @@ def compile_model(
     calibration_samples = int(bindings["backbone"]["calibration_samples"])
     transformer_samples = int(bindings["transformer"]["calibration_samples"])
     metadata = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
-    fidelity_config = next(entry for entry in metadata["validation"] if entry["id"] == "full_pipeline_fidelity")
+    fidelity_config = next(entry for entry in metadata["fidelity"] if entry["id"] == "full_pipeline_fidelity")
     selection = fidelity_config["selection"]
     if transformer_samples != calibration_samples:
         raise ValueError("backbone and transformer must use the same calibration sample count")
     if int(selection["offset"]) != calibration_samples:
         raise ValueError("fidelity selection must begin after the calibration partition")
-    if calibration_dataset.resolve() != correctness_dataset.resolve():
+    if calibration_dataset.resolve() != fidelity_dataset.resolve():
         raise ValueError("RF-DETR calibration and fidelity must use the same verified dataset")
     calibration_names, evaluation_names = select_images(
         calibration_dataset,
@@ -422,16 +449,14 @@ def compile_model(
     if output_dir.exists():
         raise FileExistsError(f"output directory already exists: {output_dir}")
     temporary_root = os.environ.get("RUNNER_TEMP")
-    with tempfile.TemporaryDirectory(prefix="rf-detr-small-", dir=temporary_root) as temporary:
+    with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=temporary_root) as temporary:
         temporary_dir = Path(temporary)
-        graphs_dir = temporary_dir / "graphs"
-        backbone_graph = graphs_dir / "rf_detr_small_backbone.onnx"
-        transformer_graph = graphs_dir / "rf_detr_small_transformer.onnx"
+        _, backbone_graph, transformer_graph = graph_paths(temporary_dir / "graphs")
         _run_phase(
             "RF-DETR graph preparation",
             _prepare_graphs_and_reference,
             source,
-            correctness_dataset,
+            fidelity_dataset,
             evaluation_names,
             temporary_dir,
         )
@@ -448,6 +473,7 @@ def compile_model(
             evaluation_names,
             temporary_dir,
             str(bindings["backbone"]["precision"]),
+            int(bindings["backbone"]["calibration_bins"]),
         )
         _run_phase(
             "RF-DETR transformer compilation and fidelity",
@@ -455,6 +481,7 @@ def compile_model(
             transformer_graph,
             temporary_dir,
             str(bindings["transformer"]["precision"]),
+            int(bindings["transformer"]["calibration_bins"]),
             fidelity_config,
         )
         backbone_archive_source = _component_archive(temporary_dir, "backbone")
@@ -476,7 +503,6 @@ def compile_model(
         fidelity_path = output_dir / fidelity_component / "fidelity.json"
         shutil.copyfile(temporary_dir / "fidelity.json", fidelity_path)
         manifest = {
-            "schema_version": 2,
             "model_id": MODEL_ID,
             "build_profile_id": PROFILE_ID,
             "compile_invocation_id": INVOCATION_ID,
@@ -509,7 +535,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--correctness-dataset", type=Path, required=True)
+    parser.add_argument("--fidelity-dataset", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-profile", required=True)
     parser.add_argument("--compile-invocation", required=True)
@@ -520,20 +546,20 @@ def main() -> int:
         parser.error(f"unsupported compile invocation: {args.compile_invocation}")
     source = args.model.expanduser().resolve()
     dataset = args.dataset.expanduser().resolve()
-    correctness_dataset = args.correctness_dataset.expanduser().resolve()
+    fidelity_dataset = args.fidelity_dataset.expanduser().resolve()
     if source.suffix != ".onnx":
         parser.error("--model must be the verified ONNX from the manual conversion workflow")
     if not source.is_file():
         parser.error(f"source does not exist: {source}")
     if not dataset.exists():
         parser.error(f"dataset does not exist: {dataset}")
-    if not correctness_dataset.exists():
-        parser.error(f"correctness dataset does not exist: {correctness_dataset}")
+    if not fidelity_dataset.exists():
+        parser.error(f"fidelity dataset does not exist: {fidelity_dataset}")
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     outputs = compile_model(
         source,
         dataset,
-        correctness_dataset,
+        fidelity_dataset,
         args.output_dir.expanduser().resolve(),
     )
     for component_id, archive in outputs.items():

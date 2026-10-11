@@ -39,7 +39,7 @@ def test_developer_sidebar_includes_every_article() -> None:
 def test_contributor_docs_distinguish_pr_checks_from_trusted_automation() -> None:
     overview = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     contributing = (ROOT / "docs" / "contributing.md").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github" / "workflows" / "Vulcan-Model-Compile.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "vulcan-model-orchestrator.yml").read_text(encoding="utf-8")
     contributing_words = " ".join(contributing.split())
 
     assert "Pull requests do **not** run recipe or surgery code" in overview
@@ -127,9 +127,6 @@ def test_local_guide_passes_scoped_calibration_to_the_recipe() -> None:
     assert "fetch-calibration \\" in text
     assert "models/<model-id> --build-profile <profile-id> --component <component-id> --json" in text
     assert 'recipe_args=(--dataset "$calibration_path")' in text
-    assert 'source)' in text
-    assert 'export CALIBRATION_PATH="$calibration_path"' in text
-    assert "Source-based recipes read the" in text
     assert '"${recipe_args[@]}"' in text
     assert "## Measure declared accuracy locally" in text
 
@@ -141,7 +138,7 @@ def test_local_guide_uses_supported_validation_commands() -> None:
     assert "python -m pip install -e" not in text
     for command in (
         "model-registry validate ",
-        "model-registry validate-catalog ",
+        "model-registry validate-models ",
         "model-registry fetch ",
         "model-registry fetch-calibration ",
         "model-registry matrix ",
@@ -160,7 +157,7 @@ def test_local_guide_covers_the_complete_local_qualification_loop() -> None:
         "compile.py --model <verified-entrypoint>",
         "model-registry verify-mpk",
         "Benchmark locally on a Modalix DevKit",
-        "python models/resnet_50/scripts/benchmark.py",
+        "python models/resnet_50/scripts/performance.py",
         "core-benchmark.json",
         "Finish the local review",
     ):

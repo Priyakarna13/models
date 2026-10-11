@@ -1,4 +1,3 @@
-schema_version: 2
 id: ssd_mobilenet_v3
 display_name: SSD-MobileNet V3 Large 320x320
 description: TorchVision COCO SSDLite-MobileNetV3 Large raw box and class predictor heads for Neat-owned decode and NMS.
@@ -268,7 +267,8 @@ packages:
   - modalix_int8
   - modalix_bf16
   composition: default
-validation:
+fidelity: []
+accuracy:
 - id: coco_val2017_quantization
   scope:
     type: component

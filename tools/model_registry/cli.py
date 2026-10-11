@@ -7,37 +7,31 @@ from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from .accuracy import evaluate_accuracy, resolve_dataset
-from .accuracy_config import find_accuracy_config
-from .artifact import validate_compile_outputs, verify_mpk
+from .accuracy_config import accuracy_components, find_devkit_accuracy_config
+from .artifact import record_compile_outputs, validate_compile_outputs, verify_mpk
 from .artifact_metadata import validate_artifact_metadata
-from .catalog import (
-    build_matrix,
-    discover_catalog,
-    resolve_base_branch,
-    select_model_ids,
-    semantic_change_plan,
-)
+from .compile_matrix import build_matrix
 from .dependencies import resolve_benchmark_runtime, resolve_model_compiler
 from .documentation import load_model_documentation
 from .errors import ModelRegistryError
-from .fetch import Fetcher
-from .fidelity_config import find_recipe_fidelity_config
-from .model import component_for, load_and_validate_model, profile_component_for
+from .fetch import Fetcher, resolve_dataset
+from .fidelity_config import find_fidelity_config
+from .model import component_for, load_and_validate_model, load_models, profile_component_for
 from .runner_approval import authorize_runner_matrix
+from .stage_plan import plan_stages, resolve_base_branch
 
 AUTHOR_COMMANDS = frozenset(
     {
         "fetch",
         "fetch-calibration",
-        "fetch-accuracy-dataset",
-        "evaluate",
+        "fetch-fidelity-dataset",
         "matrix",
+        "record-compile-outputs",
         "authorize-runner-matrix",
         "assemble-package",
         "resolve-compiler",
         "validate",
-        "validate-catalog",
+        "validate-models",
         "validate-compile-outputs",
         "verify-mpk",
     }
@@ -56,16 +50,16 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {tool_version()}")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
-    validate = subcommands.add_parser("validate", help="validate a model directory against its schema version")
+    validate = subcommands.add_parser("validate", help="validate a model directory against the model schema")
     validate.add_argument("model_dir", type=Path)
     validate.add_argument("--schema", type=Path)
     validate.add_argument("--json", action="store_true", dest="json_output")
 
-    validate_catalog = subcommands.add_parser(
-        "validate-catalog", help="validate every model manifest and its taxonomy categorization"
+    validate_models = subcommands.add_parser(
+        "validate-models", help="validate every model manifest and its taxonomy categorization"
     )
-    validate_catalog.add_argument("--repository", type=Path, default=Path.cwd())
-    validate_catalog.add_argument("--json", action="store_true", dest="json_output")
+    validate_models.add_argument("--repository", type=Path, default=Path.cwd())
+    validate_models.add_argument("--json", action="store_true", dest="json_output")
 
     fetch = subcommands.add_parser("fetch", help="download and verify a model's immutable source")
     fetch.add_argument("model_dir", type=Path)
@@ -84,47 +78,36 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     calibration.add_argument("--component", required=True, help="component within the selected build profile")
     calibration.add_argument("--json", action="store_true", dest="json_output")
 
-    accuracy_dataset = subcommands.add_parser(
-        "fetch-accuracy-dataset", help="download and verify a model's immutable correctness dataset"
+    fidelity_dataset = subcommands.add_parser(
+        "fetch-fidelity-dataset", help="download and verify the dataset a build's fidelity entry compares on"
     )
-    accuracy_dataset.add_argument("model_dir", type=Path)
-    accuracy_dataset.add_argument("--schema", type=Path)
-    accuracy_dataset.add_argument("--cache-dir", type=Path)
-    accuracy_dataset.add_argument(
-        "--build-profile", required=True, help="resolve accuracy only when its config applies"
-    )
-    accuracy_dataset.add_argument(
-        "--component", required=True, help="component evaluated by the selected build profile"
-    )
-    accuracy_dataset.add_argument("--json", action="store_true", dest="json_output")
+    fidelity_dataset.add_argument("model_dir", type=Path)
+    fidelity_dataset.add_argument("--schema", type=Path)
+    fidelity_dataset.add_argument("--cache-dir", type=Path)
+    fidelity_dataset.add_argument("--build-profile", required=True)
+    fidelity_dataset.add_argument("--component", required=True, help="component within the selected build profile")
+    fidelity_dataset.add_argument("--json", action="store_true", dest="json_output")
 
-    evaluate = subcommands.add_parser("evaluate", help="run a declarative model accuracy evaluation")
-    evaluate.add_argument("model_dir", type=Path)
-    evaluate.add_argument("--build-profile", required=True)
-    evaluate.add_argument("--component", required=True)
-    evaluate.add_argument("--candidate-model", type=Path, required=True, help="saved candidate .sima graph")
-    evaluate.add_argument("--reference-model", type=Path, help="verified ONNX source; fetched when omitted")
-    evaluate.add_argument("--dataset", type=Path, help="verified dataset archive; resolved when omitted")
-    evaluate.add_argument("--dataset-cache-dir", type=Path)
-    evaluate.add_argument("--model-cache-dir", type=Path)
-    evaluate.add_argument("--test-id")
-    evaluate.add_argument("--profile", default="regular")
-    evaluate.add_argument("--samples", type=int)
-    evaluate.add_argument("--workers", type=int)
-    evaluate.add_argument("--output", type=Path, required=True)
-    evaluate.add_argument("--json", action="store_true", dest="json_output")
-
-    matrix = subcommands.add_parser("matrix", help="emit a deterministic changed-model compilation matrix")
+    matrix = subcommands.add_parser("matrix", help="emit the deterministic compile invocation matrix")
     matrix.add_argument("--repository", type=Path, default=Path.cwd())
-    matrix.add_argument("--all", action="store_true", dest="all_models")
-    matrix.add_argument("--models", help="comma-separated model IDs")
+    matrix.add_argument("--models", help="comma-separated model IDs; every model when omitted")
     matrix.add_argument("--profiles", help="comma-separated build profile IDs within the selected models")
     matrix.add_argument("--components", help="comma-separated component IDs within the selected models")
-    matrix.add_argument("--changed-path", action="append", default=[])
-    matrix.add_argument("--base")
-    matrix.add_argument("--head")
-    matrix.add_argument("--compiler-version")
-    matrix.add_argument("--force-rebuild-all", action="store_true")
+    matrix.add_argument("--compiler-version", help="also emit each invocation's compile key")
+
+    stages = subcommands.add_parser(
+        "plan-stages", help="select changed compile invocations and the board stages reused builds still need"
+    )
+    stages.add_argument("--repository", type=Path, default=Path.cwd())
+    stages.add_argument("--compiler-version", required=True)
+    stages.add_argument("--branch", required=True)
+    stages.add_argument("--base-branch", help="read this branch's catalog when the branch has none")
+    stages.add_argument("--read-api-url", help="public artifact-registry API; omit with --offline")
+    stages.add_argument("--offline", action="store_true", help="read no registry state; select every invocation")
+    stages.add_argument("--models", help="comma-separated model IDs; every model when omitted")
+    stages.add_argument("--profiles", help="comma-separated build profile IDs within the selected models")
+    stages.add_argument("--components", help="comma-separated component IDs within the selected models")
+    stages.add_argument("--force-rebuild-all", action="store_true")
 
     authorize = subcommands.add_parser(
         "authorize-runner-matrix",
@@ -157,6 +140,27 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     core_report.add_argument("--report", type=Path, required=True)
     core_report.add_argument("--output", type=Path, required=True)
     core_report.add_argument("--schema", type=Path, required=True)
+
+    devkit_accuracy = subcommands.add_parser(
+        "resolve-devkit-accuracy", help="resolve a build profile's DevKit accuracy entry and its cached dataset"
+    )
+    devkit_accuracy.add_argument("model_dir", type=Path)
+    devkit_accuracy.add_argument("--schema", type=Path)
+    devkit_accuracy.add_argument("--cache-dir", type=Path)
+    devkit_accuracy.add_argument("--build-profile", required=True)
+
+    accuracy_import = subcommands.add_parser(
+        "import-accuracy", help="attach model, dataset and MPK identity to scripts/accuracy.py output"
+    )
+    accuracy_import.add_argument("--repository", type=Path, default=Path.cwd())
+    accuracy_import.add_argument("--model-id", required=True)
+    accuracy_import.add_argument("--build-profile-id", required=True)
+    accuracy_import.add_argument("--script-output", type=Path, required=True)
+    accuracy_import.add_argument(
+        "--compiled-dir", type=Path, required=True, help="root holding <model>/<profile>/compile-outputs.json"
+    )
+    accuracy_import.add_argument("--git-sha", required=True, help="models revision the accuracy script came from")
+    accuracy_import.add_argument("--output", type=Path, required=True)
 
     benchmark_manifest = subcommands.add_parser(
         "make-benchmark-manifest", help="generate a direct-DevKit benchmark manifest for one compiled model"
@@ -201,6 +205,15 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     compile_outputs.add_argument("--compile-invocation-id", required=True)
     compile_outputs.add_argument("--components", required=True, help="comma-separated component IDs")
     compile_outputs.add_argument("--json", action="store_true", dest="json_output")
+
+    record_outputs = subcommands.add_parser(
+        "record-compile-outputs", help="write compile-outputs.json for a recipe that wrote only component MPKs"
+    )
+    record_outputs.add_argument("output_root", type=Path)
+    record_outputs.add_argument("--model-id", required=True)
+    record_outputs.add_argument("--build-profile-id", required=True)
+    record_outputs.add_argument("--compile-invocation-id", required=True)
+    record_outputs.add_argument("--components", required=True, help="comma-separated component IDs")
 
     package = subcommands.add_parser(
         "assemble-package", help="assemble deterministic package bundles from verified component MPKs"
@@ -262,7 +275,31 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     publish_benchmark.add_argument("--git-sha", required=True)
     publish_benchmark.add_argument("--github-run-url")
     publish_benchmark.add_argument("--compile-run-id")
+    publish_benchmark.add_argument(
+        "--repository", type=Path, required=True, help="models checkout at the measured revision"
+    )
     publish_benchmark.add_argument("--json", action="store_true", dest="json_output")
+
+    publish_accuracy = subcommands.add_parser(
+        "publish-accuracy", help="publish a DevKit accuracy run linked to its Vulcan model compilation run"
+    )
+    publish_accuracy.add_argument(
+        "--repository", type=Path, required=True, help="models checkout at the measured revision"
+    )
+    publish_accuracy.add_argument(
+        "--compiled-dir", type=Path, required=True, help="registered compilation the accuracy script measured"
+    )
+    publish_accuracy.add_argument("--result", type=Path, required=True)
+    publish_accuracy.add_argument("--log", type=Path)
+    publish_accuracy.add_argument("--api-url", required=True)
+    publish_accuracy.add_argument("--aws-region", default="us-west-2")
+    publish_accuracy.add_argument("--bucket", required=True)
+    publish_accuracy.add_argument("--kms-key-id")
+    publish_accuracy.add_argument("--environment", choices=("staging", "production"), required=True)
+    publish_accuracy.add_argument("--branch", required=True)
+    publish_accuracy.add_argument("--git-sha", required=True)
+    publish_accuracy.add_argument("--github-run-url")
+    publish_accuracy.add_argument("--json", action="store_true", dest="json_output")
 
     benchmark_set = subcommands.add_parser(
         "validate-benchmark-set", help="validate a complete benchmark result set before publication"
@@ -329,17 +366,17 @@ def _validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _validate_catalog(args: argparse.Namespace) -> int:
+def _validate_models(args: argparse.Namespace) -> int:
     repository = args.repository.expanduser().resolve()
-    catalog = discover_catalog(repository)
-    for model_id, model in sorted(catalog.items()):
+    models = load_models(repository)
+    for model_id, model in sorted(models.items()):
         load_model_documentation(
             repository / "models" / model_id,
             model["display_name"],
             repository=repository,
         )
-    result = {"model_count": len(catalog), "model_ids": sorted(catalog), "valid": True}
-    print(json.dumps(result, sort_keys=True) if args.json_output else f"Valid model catalog: {len(catalog)} models")
+    result = {"model_count": len(models), "model_ids": sorted(models), "valid": True}
+    print(json.dumps(result, sort_keys=True) if args.json_output else f"Valid models: {len(models)}")
     return 0
 
 
@@ -414,7 +451,7 @@ def _fetch_calibration(args: argparse.Namespace) -> int:
         }
     elif "dataset" in calibration:
         dataset = calibration["dataset"]
-        path = resolve_dataset(dataset, None, args.cache_dir)
+        path = resolve_dataset(dataset, args.cache_dir)
         result = {
             "kind": "dataset",
             "model_id": model["id"],
@@ -445,141 +482,82 @@ def _fetch_calibration(args: argparse.Namespace) -> int:
     return 0
 
 
-def _fetch_accuracy_dataset(args: argparse.Namespace) -> int:
+def _fetch_fidelity_dataset(args: argparse.Namespace) -> int:
     model = load_and_validate_model(args.model_dir, args.schema)
     profile_component_for(model, args.build_profile, args.component)
-    selected = find_accuracy_config(
+    selected = find_fidelity_config(
         args.model_dir,
         model,
         build_profile_id=args.build_profile,
         component_id=args.component,
     )
-    if selected is None:
-        selected = find_recipe_fidelity_config(
-            args.model_dir,
-            model,
-            build_profile_id=args.build_profile,
-            component_id=args.component,
-        )
-    if selected is None:
-        result = {
-            "kind": "none",
-            "model_id": model["id"],
-            "component_id": args.component,
-            "build_profile_id": args.build_profile,
-            "path": "",
-            "sha256": "",
-            "size_bytes": 0,
-        }
-    else:
+    result = {
+        "kind": "none",
+        "model_id": model["id"],
+        "component_id": args.component,
+        "build_profile_id": args.build_profile,
+        "path": "",
+        "sha256": "",
+        "size_bytes": 0,
+    }
+    if selected is not None:
         dataset = selected["dataset"]
-        path = resolve_dataset(dataset, None, args.cache_dir)
-        result = {
-            "kind": "dataset",
-            "model_id": model["id"],
-            "component_id": args.component,
-            "build_profile_id": args.build_profile,
-            "path": str(path),
-            "sha256": dataset["sha256"],
-            "size_bytes": dataset["size_bytes"],
-        }
+        result.update(
+            kind="dataset",
+            path=str(resolve_dataset(dataset, args.cache_dir)),
+            sha256=dataset["sha256"],
+            size_bytes=dataset["size_bytes"],
+        )
     if args.json_output:
         print(json.dumps(result, sort_keys=True))
     elif result["path"]:
-        print(f"Verified accuracy dataset: {result['path']}")
+        print(f"Verified fidelity dataset: {result['path']}")
     else:
-        print(f"No applicable executable accuracy dataset configured: {result['model_id']}")
+        print(f"No fidelity entry applies: {result['model_id']}")
     return 0
 
 
-def _evaluate(args: argparse.Namespace) -> int:
-    report = evaluate_accuracy(
-        args.model_dir,
-        args.build_profile,
-        args.component,
-        args.candidate_model,
-        reference_model=args.reference_model,
-        dataset_path=args.dataset,
-        dataset_cache_dir=args.dataset_cache_dir,
-        model_cache_dir=args.model_cache_dir,
-        test_id=args.test_id,
-        profile_name=args.profile,
-        sample_count=args.samples,
-        workers=args.workers,
-    )
-    output = args.output.expanduser().resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if args.json_output:
-        print(json.dumps(report, sort_keys=True))
-    else:
-        samples = report["dataset"]
-        candidate = report["metrics"]["candidate"]
-        print(
-            f"Accuracy {report['model']['id']}/{report['model']['build_profile_id']}/"
-            f"{report['model']['component_id']}: "
-            f"samples={samples['evaluated_samples']}/{samples['available_samples']} "
-            f"top1={candidate['top1_accuracy']:.4f} output={output}"
-        )
-    return 0
+def _id_list(value: str | None, option: str) -> list[str] | None:
+    if value is None:
+        return None
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise ModelRegistryError(f"{option} must contain at least one ID")
+    return items
 
 
 def _matrix(args: argparse.Namespace) -> int:
-    catalog = discover_catalog(args.repository)
-    selection_modes = (
-        int(args.all_models) + int(args.models is not None) + int(bool(args.changed_path or args.base or args.head))
+    models = load_models(args.repository)
+    result = build_matrix(
+        models,
+        _id_list(args.models, "--models") or sorted(models),
+        _id_list(args.profiles, "--profiles"),
+        _id_list(args.components, "--components"),
+        repository=args.repository if args.compiler_version is not None else None,
+        compiler_version=args.compiler_version,
     )
-    if selection_modes != 1:
-        raise ModelRegistryError("select exactly one of --all, --models, or changed paths/--base and --head")
-    if args.all_models:
-        model_ids = sorted(catalog)
-    elif args.models is not None:
-        model_ids = [item.strip() for item in args.models.split(",") if item.strip()]
-        if not model_ids:
-            raise ModelRegistryError("--models must contain at least one model ID")
-    elif args.base or args.head:
-        if not args.base or not args.head:
-            raise ModelRegistryError("--base and --head must be supplied together")
-        if args.profiles is not None or args.components is not None:
-            raise ModelRegistryError("--profiles and --components are not supported for semantic revision comparison")
-        if args.compiler_version is None:
-            raise ModelRegistryError("--compiler-version is required for semantic revision comparison")
-        result = semantic_change_plan(
-            args.repository,
-            args.base,
-            args.head,
-            compiler_version=args.compiler_version,
-            force_rebuild_all=args.force_rebuild_all,
-        )
-        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
-        return 0
-    else:
-        paths = list(args.changed_path)
-        model_ids = select_model_ids(catalog, paths)
-    profile_ids = None
-    if args.profiles is not None:
-        profile_ids = [item.strip() for item in args.profiles.split(",") if item.strip()]
-        if not profile_ids:
-            raise ModelRegistryError("--profiles must contain at least one build profile ID")
-    component_ids = None
-    if args.components is not None:
-        component_ids = [item.strip() for item in args.components.split(",") if item.strip()]
-        if not component_ids:
-            raise ModelRegistryError("--components must contain at least one component ID")
-    print(
-        json.dumps(
-            build_matrix(
-                catalog,
-                model_ids,
-                profile_ids,
-                component_ids,
-                repository=args.repository if args.compiler_version is not None else None,
-                compiler_version=args.compiler_version,
-            ),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+def _plan_stages(args: argparse.Namespace) -> int:
+    from .registry import _public_registry_json
+
+    if args.offline == bool(args.read_api_url):
+        raise ModelRegistryError("pass exactly one of --read-api-url or --offline")
+    result = plan_stages(
+        args.repository,
+        compiler_version=args.compiler_version,
+        read=None if args.offline else _public_registry_json,
+        read_api_url=args.read_api_url,
+        branch=args.branch,
+        base_branch=args.base_branch,
+        model_ids=_id_list(args.models, "--models"),
+        profile_ids=_id_list(args.profiles, "--profiles"),
+        component_ids=_id_list(args.components, "--components"),
+        force_rebuild_all=args.force_rebuild_all,
     )
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 
 
@@ -771,11 +749,39 @@ def _publish_benchmark(args: argparse.Namespace) -> int:
         git_sha=args.git_sha,
         github_run_url=args.github_run_url,
         compile_run_id=args.compile_run_id,
+        repository=args.repository,
     )
     message = (
         json.dumps(result, sort_keys=True)
         if args.json_output
         else f"Published benchmark {result['result_fingerprint']} for "
+        f"{result['model_id']}/{result['build_profile_id']}/{result['component_id']}"
+    )
+    print(message)
+    return 0
+
+
+def _publish_accuracy(args: argparse.Namespace) -> int:
+    from .benchmark_publication import publish_accuracy_run
+
+    result = publish_accuracy_run(
+        repository=args.repository,
+        compiled_dir=args.compiled_dir,
+        result_path=args.result,
+        log_path=args.log,
+        api_url=args.api_url,
+        aws_region=args.aws_region,
+        bucket=args.bucket,
+        kms_key_id=args.kms_key_id,
+        environment=args.environment,
+        branch=args.branch,
+        git_sha=args.git_sha,
+        github_run_url=args.github_run_url,
+    )
+    message = (
+        json.dumps(result, sort_keys=True)
+        if args.json_output
+        else f"Published accuracy {result['accuracy_key']} for "
         f"{result['model_id']}/{result['build_profile_id']}/{result['component_id']}"
     )
     print(message)
@@ -795,6 +801,45 @@ def _validate_benchmark_set(args: argparse.Namespace) -> int:
         git_sha=args.git_sha,
     )
     print(json.dumps(result, sort_keys=True) if args.json_output else f"Valid benchmark set: {result['count']}")
+    return 0
+
+
+def _resolve_devkit_accuracy(args: argparse.Namespace) -> int:
+    model = load_and_validate_model(args.model_dir, args.schema)
+    entry = find_devkit_accuracy_config(model, args.build_profile)
+    if entry is None:
+        result = {"kind": "none", "model_id": model["id"], "build_profile_id": args.build_profile}
+    else:
+        result = {
+            "kind": "dataset",
+            "model_id": model["id"],
+            "build_profile_id": args.build_profile,
+            "accuracy_id": entry["id"],
+            "result_component": entry["result_component"],
+            "components": accuracy_components(model, entry),
+            "path": str(resolve_dataset(entry["dataset"], args.cache_dir)),
+            "sha256": entry["dataset"]["sha256"],
+            "size_bytes": entry["dataset"]["size_bytes"],
+        }
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+def _import_accuracy(args: argparse.Namespace) -> int:
+    from .accuracy_result import ACCURACY_RESULT_SCHEMA, build_accuracy_result, load_accuracy_result
+
+    result = build_accuracy_result(
+        repository=args.repository,
+        model_id=args.model_id,
+        build_profile_id=args.build_profile_id,
+        script_output=args.script_output,
+        compiled_dir=args.compiled_dir,
+        git_sha=args.git_sha,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    load_accuracy_result(args.output, Path(args.repository).expanduser().resolve() / ACCURACY_RESULT_SCHEMA)
+    print(json.dumps({"output": str(args.output), "metrics": sorted(result["metrics"])}, sort_keys=True))
     return 0
 
 
@@ -849,20 +894,29 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
     try:
         if args.command == "validate":
             return _validate(args)
-        if args.command == "validate-catalog":
-            return _validate_catalog(args)
+        if args.command == "validate-models":
+            return _validate_models(args)
         if args.command == "validate-compile-outputs":
             return _validate_compile_outputs(args)
+        if args.command == "record-compile-outputs":
+            print(record_compile_outputs(
+                args.output_root,
+                model_id=args.model_id,
+                build_profile_id=args.build_profile_id,
+                compile_invocation_id=args.compile_invocation_id,
+                component_ids=_id_list(args.components, "--components"),
+            ))
+            return 0
         if args.command == "fetch":
             return _fetch(args)
         if args.command == "fetch-calibration":
             return _fetch_calibration(args)
-        if args.command == "fetch-accuracy-dataset":
-            return _fetch_accuracy_dataset(args)
-        if args.command == "evaluate":
-            return _evaluate(args)
+        if args.command == "fetch-fidelity-dataset":
+            return _fetch_fidelity_dataset(args)
         if args.command == "matrix":
             return _matrix(args)
+        if args.command == "plan-stages":
+            return _plan_stages(args)
         if args.command == "authorize-runner-matrix":
             return _authorize_runner_matrix(args)
         if args.command == "resolve-base":
@@ -877,6 +931,10 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
             result = import_core_benchmark(args.manifest, args.report, args.output, schema_path=args.schema)
             print(json.dumps(result, sort_keys=True))
             return 0
+        if args.command == "resolve-devkit-accuracy":
+            return _resolve_devkit_accuracy(args)
+        if args.command == "import-accuracy":
+            return _import_accuracy(args)
         if args.command == "make-benchmark-manifest":
             return _make_benchmark_manifest(args)
         if args.command == "verify-mpk":
@@ -887,6 +945,8 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
             return _publish(args)
         if args.command == "publish-package":
             return _publish_package(args)
+        if args.command == "publish-accuracy":
+            return _publish_accuracy(args)
         if args.command == "publish-benchmark":
             return _publish_benchmark(args)
         if args.command == "validate-benchmark-set":

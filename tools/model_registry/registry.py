@@ -19,22 +19,18 @@ from urllib.request import urlopen
 
 from jsonschema import Draft202012Validator
 
+from .accuracy_config import find_devkit_accuracy_config
 from .artifact import validate_compile_outputs, verify_mpk
-from .catalog import (
-    benchmark_fingerprint,
-    build_matrix,
-    compile_invocation_fingerprint,
-    component_build_fingerprint,
-    discover_catalog,
-    validation_fingerprint,
-)
+from .compile_matrix import build_matrix
 from .dependencies import resolve_model_compiler
 from .documentation import load_model_documentation
 from .errors import ModelRegistryError, ValidationError
 from .fetch import sha256_file
-from .fidelity_config import find_recipe_fidelity_config, validate_recipe_fidelity_result
-from .model import compile_invocations_for, load_and_validate_model, profile_component_for
+from .fidelity_config import find_fidelity_config, validate_fidelity_result
+from .model import compile_invocations_for, load_and_validate_model, load_models, profile_component_for
 from .source import source_identity
+from .stage_keys import accuracy_key, compile_key, performance_key
+from .stage_plan import read_current_catalog
 from .taxonomy import (
     TAXONOMY_RELATIVE_PATH,
     canonical_taxonomy_document,
@@ -318,13 +314,13 @@ def build_catalog_snapshot(
         raise ValidationError("git SHA must contain exactly 40 hexadecimal characters")
     if not branch.strip():
         raise ValidationError("branch must not be empty")
-    catalog = discover_catalog(root)
+    models = load_models(root)
     taxonomy = canonical_taxonomy_document(load_taxonomy(root / TAXONOMY_RELATIVE_PATH))
     taxonomy_digest = taxonomy_sha256(taxonomy)
     compiler_version = resolve_model_compiler(root)["identity"]
     matrix = build_matrix(
-        catalog,
-        sorted(catalog),
+        models,
+        sorted(models),
         repository=root,
         compiler_version=compiler_version,
     )["include"]
@@ -365,8 +361,8 @@ def build_catalog_snapshot(
             if all(isinstance(value, str) for value in key):
                 previous_packages[key] = package
     expected_keys: set[tuple[str, str, str]] = set()
-    builds_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in catalog}
-    packages_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in catalog}
+    builds_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in models}
+    packages_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in models}
     pending_builds: list[JsonObject] = []
     for invocation in matrix:
         keys = [
@@ -411,6 +407,8 @@ def build_catalog_snapshot(
                 if prior is not None:
                     builds_by_model[key[0]].append(prior)
             continue
+        model = models[invocation["model_id"]]
+        invocation_builds: list[JsonObject] = []
         for component_id in invocation["component_ids"]:
             key = (invocation["model_id"], invocation["build_profile_id"], component_id)
             receipt = receipts.get(key)
@@ -437,10 +435,10 @@ def build_catalog_snapshot(
                 raise ValidationError(
                     f"no immutable MPK checksum matches {key[0]}/{key[1]}/{key[2]}"
                 )
-            _, binding = profile_component_for(catalog[key[0]], key[1], key[2])
+            _, binding = profile_component_for(model, key[1], key[2])
             if "artifact_suffix" in binding and len(f"{key[0]}_{binding['artifact_suffix']}_mpk.tar.gz") > 255:
                 raise ValidationError(f"artifact_suffix for {key[0]}/{key[1]}/{key[2]} exceeds the filename limit")
-            builds_by_model[key[0]].append(
+            invocation_builds.append(
                 {
                     "build_profile_id": key[1],
                     "compile_invocation_id": invocation["compile_invocation_id"],
@@ -448,23 +446,25 @@ def build_catalog_snapshot(
                     **({"artifact_suffix": binding["artifact_suffix"]} if "artifact_suffix" in binding else {}),
                     "compile_fingerprint": invocation["build_fingerprint"],
                     "artifact_sha256": artifact_sha256,
-                    "validation_fingerprint": (
-                        validation_fingerprint(
-                            root, key[0], key[2], key[1], compiler_version,
-                            compile_fingerprint=invocation["build_fingerprint"],
-                            artifact_sha256=artifact_sha256,
-                        ) if key[2] in invocation["validation_fingerprints"] else None
-                    ),
+                    "validation_fingerprint": None,
                     "benchmark_fingerprint": (
-                        benchmark_fingerprint(
-                            root, key[0], key[2], key[1], compiler_version,
-                            compile_fingerprint=invocation["build_fingerprint"],
-                            artifact_sha256=artifact_sha256,
-                        ) if key[2] in invocation["benchmark_fingerprints"] else None
+                        performance_key(
+                            root, model, key[1], key[2], compile_run_id=run_id, artifact_sha256=artifact_sha256
+                        )
+                        if key[2] in invocation["benchmark_component_ids"]
+                        else None
                     ),
                     "run_id": run_id,
                 }
             )
+        if invocation["accuracy_id"]:
+            # The accuracy key lives on the build that reports the result; the field name predates it.
+            by_component = {build["component_id"]: build for build in invocation_builds}
+            result_component = find_devkit_accuracy_config(model, invocation["build_profile_id"])["result_component"]
+            by_component[result_component]["validation_fingerprint"] = accuracy_key(
+                root, model, invocation["build_profile_id"], by_component
+            )
+        builds_by_model[invocation["model_id"]].extend(invocation_builds)
     unexpected = sorted(set(receipts) - expected_keys)
     if unexpected:
         model_id, profile_id, component_id = unexpected[0]
@@ -472,7 +472,7 @@ def build_catalog_snapshot(
             f"publication receipt references removed build unit: {model_id}/{profile_id}/{component_id}"
         )
 
-    for model_id, model in sorted(catalog.items()):
+    for model_id, model in sorted(models.items()):
         for declaration in model["packages"]:
             for profile_id in declaration["build_profiles"]:
                 key = (model_id, profile_id, declaration["id"])
@@ -509,8 +509,8 @@ def build_catalog_snapshot(
                     "component_run_ids": component_runs,
                 })
 
-    models = []
-    for model_id, model in sorted(catalog.items()):
+    model_entries = []
+    for model_id, model in sorted(models.items()):
         entry = {
             "id": model_id,
             "display_name": model["display_name"],
@@ -531,7 +531,7 @@ def build_catalog_snapshot(
             if not isinstance(documentation, dict):
                 raise ValidationError(f"model documentation receipt is missing: {model_id}")
             entry["documentation"] = documentation
-        models.append(entry)
+        model_entries.append(entry)
     document: JsonObject = {
         "schema_version": 2 if incremental else 1,
         "repository": "sima-neat/models",
@@ -539,7 +539,7 @@ def build_catalog_snapshot(
         "catalog_revision": git_sha.lower(),
         "taxonomy_sha256": taxonomy_digest,
         "taxonomy": taxonomy,
-        "models": models,
+        "models": model_entries,
     }
     if incremental:
         document["pending_builds"] = pending_builds
@@ -565,13 +565,13 @@ def publish_model_documentation(
         raise ValidationError("git SHA must contain exactly 40 hexadecimal characters")
     if not branch.strip() or not environment.strip():
         raise ValidationError("branch and environment must not be empty")
-    catalog = discover_catalog(root)
+    models = load_models(root)
     client = SigV4RegistryClient(api_url, aws_region, request=request)
     store = artifact_store or S3ArtifactStore(bucket, kms_key_id=kms_key_id)
     branch_key = quote(branch, safe="")
     branch_identity = hashlib.sha256(branch.encode()).hexdigest()[:16]
     receipts: dict[str, JsonObject] = {}
-    for model_id, model in sorted(catalog.items()):
+    for model_id, model in sorted(models.items()):
         documentation = load_model_documentation(root / "models" / model_id, model["display_name"], repository=root)
         digest = documentation["readme_sha256"]
         stored = store.ensure_native_sha256(
@@ -726,11 +726,15 @@ def publish_catalog(
 ) -> JsonObject:
     client = SigV4RegistryClient(api_url, aws_region, request=request)
     read = read_request or _public_registry_json
-    read_base_url = read_api_url.rstrip("/")
     documentation_receipts = None
     if bucket is not None:
         if not environment:
             raise ValidationError("environment is required when publishing model documentation")
+        # The registry rejects model metadata changes within a revision, and each
+        # workflow run creates new documentation run IDs, so a re-dispatch on a
+        # cataloged commit keeps the receipts already in that revision's catalog.
+        documentation_receipts = _revision_documentation_receipts(read, read_api_url, branch, git_sha)
+    if bucket is not None and documentation_receipts is None:
         documentation_receipts = publish_model_documentation(
             repository=repository,
             api_url=api_url,
@@ -746,26 +750,7 @@ def publish_catalog(
         )
     # Read the catalog last so another publisher has the least time to replace it
     # before the compare-and-swap POST below.
-    previous: JsonObject | None = None
-    target_catalog: JsonObject | None = None
-    for source_branch in [branch, *( [base_branch] if base_branch and base_branch != branch else [])]:
-        try:
-            current = read(
-                f"{read_base_url}/v1/repositories/sima-neat/models/catalogs/current?"
-                f"git_ref={quote(f'refs/heads/{source_branch}', safe='')}"
-            )
-            candidate = current.get("catalog")
-            if isinstance(candidate, dict):
-                document = candidate.get("document") if isinstance(candidate.get("document"), dict) else candidate
-                if isinstance(document, dict):
-                    previous = document
-                if source_branch == branch:
-                    target_catalog = candidate
-                if previous is not None:
-                    break
-        except RegistryPublicationError as exc:
-            if "HTTP 404 catalog_not_found" not in str(exc):
-                raise
+    target_catalog, previous = read_current_catalog(read, read_api_url, branch, base_branch)
     document = build_catalog_snapshot(
         repository=repository,
         branch=branch,
@@ -795,6 +780,18 @@ def publish_catalog(
         f"models-catalog-{branch}-{git_sha.lower()}-{(previous_snapshot or 'initial')[:16]}-{snapshot_identity}",
     )
     return {"catalog": document, "registry": result}
+
+
+def _revision_documentation_receipts(
+    read: ReadRequest, read_api_url: str, branch: str, git_sha: str
+) -> dict[str, JsonObject] | None:
+    record, document = read_current_catalog(read, read_api_url, branch)
+    if record is None or document is None or record.get("catalog_revision") != git_sha.lower():
+        return None
+    receipts = {model.get("id"): model.get("documentation") for model in document.get("models", [])}
+    if not receipts or not all(isinstance(receipt, dict) for receipt in receipts.values()):
+        return None
+    return receipts
 
 
 def _public_registry_json(url: str) -> JsonObject:
@@ -913,7 +910,6 @@ def stage_catalog_build(
         compiler_version = run.get("toolchain_version") if isinstance(run, dict) else None
         compile_result = {
             "archive": archive_name,
-            "schema_version": 1,
             "sha256": digest,
             "size_bytes": len(payload),
             "status": "success",
@@ -940,9 +936,20 @@ def stage_catalog_build(
             }
         )
     profile_dir = output / model_id / build_profile_id
+    # The same manifest a compile writes, so later stages read restored and fresh builds alike.
+    (profile_dir / "compile-outputs.json").write_text(
+        json.dumps({
+            "model_id": model_id,
+            "build_profile_id": build_profile_id,
+            "compile_invocation_id": compile_invocation_id,
+            "outputs": [
+                {key: item[key] for key in ("component_id", "mpk_path", "mpk_sha256")} for item in staged_outputs
+            ],
+        }, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     (profile_dir / "registry-staged.json").write_text(
         json.dumps({
-            "schema_version": 1,
             "model_id": model_id,
             "build_profile_id": build_profile_id,
             "compile_invocation_id": compile_invocation_id,
@@ -971,105 +978,6 @@ def _component_source_media_type(source: JsonObject) -> str:
     if isinstance(declared, str) and declared:
         return declared
     return "application/onnx" if source.get("type") == "file" else "application/vnd.sima.source-file-set+json"
-
-
-def _accuracy_result(
-    path: Path, *, model_id: str, build_profile_id: str, component_id: str, source_sha256: str
-) -> JsonObject:
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValidationError(f"{path}: could not read accuracy result: {exc}") from exc
-    if not isinstance(report, dict) or report.get("schema_version") != 1:
-        raise ValidationError(f"{path}: accuracy result schema_version must be 1")
-    model = report.get("model")
-    if not isinstance(model, dict):
-        raise ValidationError(f"{path}: accuracy result model must be an object")
-    expected_model = {
-        "id": model_id,
-        "build_profile_id": build_profile_id,
-        "component_id": component_id,
-        "source_sha256": source_sha256,
-    }
-    for field, expected in expected_model.items():
-        if model.get(field) != expected:
-            raise ValidationError(f"{path}: accuracy result model.{field} must be {expected!r}")
-
-    dataset = report.get("dataset")
-    if not isinstance(dataset, dict):
-        raise ValidationError(f"{path}: accuracy result dataset must be an object")
-    evaluated = dataset.get("evaluated_samples")
-    available = dataset.get("available_samples")
-    if not isinstance(evaluated, int) or not isinstance(available, int) or not 0 < evaluated <= available:
-        raise ValidationError(f"{path}: accuracy sample counts must satisfy 0 < evaluated_samples <= available_samples")
-    _require_sha256(dataset.get("sha256"), "accuracy dataset sha256")
-
-    evaluation = report.get("evaluation")
-    if not isinstance(evaluation, dict) or evaluation.get("status") not in {"provisional", "ready"}:
-        raise ValidationError(f"{path}: publishable accuracy evaluation status must be provisional or ready")
-    if not isinstance(evaluation.get("profile"), str) or not evaluation["profile"].strip():
-        raise ValidationError(f"{path}: accuracy evaluation profile must be a non-empty string")
-    if not isinstance(report.get("report_scope"), str) or not report["report_scope"].strip():
-        raise ValidationError(f"{path}: accuracy report_scope must be a non-empty string")
-
-    metrics = report.get("metrics")
-    if not isinstance(metrics, dict):
-        raise ValidationError(f"{path}: accuracy metrics must be an object")
-    ratio_fields = {
-        "candidate": ("top1_accuracy", "top5_accuracy"),
-        "reference": ("top1_accuracy", "top5_accuracy"),
-        "comparison": ("top1_agreement",),
-    }
-    for group, fields in ratio_fields.items():
-        values = metrics.get(group)
-        if not isinstance(values, dict):
-            raise ValidationError(f"{path}: accuracy metrics.{group} must be an object")
-        for field in fields:
-            value = values.get(field)
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
-                raise ValidationError(f"{path}: accuracy metrics.{group}.{field} must be a ratio in 0..1")
-    for field in ("top1_delta", "top5_delta"):
-        value = metrics["comparison"].get(field)
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or not -1 <= value <= 1:
-            raise ValidationError(f"{path}: accuracy metrics.comparison.{field} must be a ratio in -1..1")
-    return report
-
-
-def _accuracy_measurements(report: JsonObject, fingerprint: str) -> list[JsonObject]:
-    metric_fields = (
-        ("candidate", "top1_accuracy", "model.accuracy.candidate.top1", "higher"),
-        ("candidate", "top5_accuracy", "model.accuracy.candidate.top5", "higher"),
-        ("reference", "top1_accuracy", "model.accuracy.reference.top1", "higher"),
-        ("reference", "top5_accuracy", "model.accuracy.reference.top5", "higher"),
-        ("comparison", "top1_agreement", "model.accuracy.top1_agreement", "higher"),
-        ("comparison", "top1_delta", "model.accuracy.top1_delta", "higher"),
-        ("comparison", "top5_delta", "model.accuracy.top5_delta", "higher"),
-    )
-    dataset = report["dataset"]
-    dimensions = {
-        "model_id": report["model"]["id"],
-        "build_profile_id": report["model"]["build_profile_id"],
-        "component_id": report["model"]["component_id"],
-        "dataset_id": dataset["id"],
-        "dataset_variant": dataset["variant"],
-        "dataset_split": dataset["split"],
-        "evaluation_profile": report["evaluation"]["profile"],
-        "report_scope": report["report_scope"],
-        "evaluation_status": report["evaluation"]["status"],
-    }
-    return [
-        {
-            "measurement_key": f"{fingerprint}-{group}-{field}",
-            "name": name,
-            "unit": "ratio",
-            "value": report["metrics"][group][field],
-            "direction": direction,
-            "sample_count": dataset["evaluated_samples"],
-            "aggregation": "mean",
-            "dimensions": dimensions,
-        }
-        for group, field, name, direction in metric_fields
-    ]
 
 
 def _fidelity_result(
@@ -1125,7 +1033,7 @@ def _fidelity_result(
             if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
                 raise ValidationError(f"{path}: numerical fidelity {field} must be non-negative")
     if config is not None:
-        validate_recipe_fidelity_result(config, report, path)
+        validate_fidelity_result(config, report, path)
     return report
 
 
@@ -1178,7 +1086,7 @@ def _compile_timing(path: Path) -> JsonObject | None:
 def _preflight_compilations(
     root: Path,
     dist: Path,
-    catalog: dict[str, JsonObject],
+    models: dict[str, JsonObject],
     *,
     environment: str,
     git_sha: str,
@@ -1190,9 +1098,9 @@ def _preflight_compilations(
     manifests = sorted(dist.glob("*/*/compile-outputs.json"))
     for manifest_path in manifests:
         model_id, build_profile_id = manifest_path.relative_to(dist).parts[:2]
-        if model_id not in catalog:
+        if model_id not in models:
             raise ValidationError(f"compile outputs reference unknown model: {model_id}")
-        model = catalog[model_id]
+        model = models[model_id]
         profiles = {item["id"]: item for item in model["build_profiles"]}
         if build_profile_id not in profiles:
             raise ValidationError(f"compile outputs reference unknown build profile: {model_id}/{build_profile_id}")
@@ -1225,7 +1133,7 @@ def _preflight_compilations(
     prepared = []
     for result_path in sorted(actual_results):
         model_id, build_profile_id, component_id = result_path.relative_to(dist).parts[:3]
-        model = catalog[model_id]
+        model = models[model_id]
         profiles = {item["id"]: item for item in model["build_profiles"]}
         components = {item["id"]: item for item in model["components"]}
         profile = profiles[build_profile_id]
@@ -1281,27 +1189,13 @@ def _preflight_compilations(
         if source_sha != source_identity(component["source"]):
             raise ValidationError(f"{result_path}: source_sha256 does not match the component source contract")
         build_fingerprint = _require_sha256(provenance.get("build_fingerprint"), "build_fingerprint")
-        if "compile_invocations" in profile:
-            expected_build_fingerprint = compile_invocation_fingerprint(
-                root,
-                model_id,
-                invocation_by_result[result_path],
-                build_profile_id,
-                compiler_identity,
-            )
-        else:
-            expected_build_fingerprint = component_build_fingerprint(
-                root,
-                model_id,
-                component_id,
-                build_profile_id,
-                compiler_identity,
-            )
+        expected_build_fingerprint = compile_key(
+            root, model_id, build_profile_id, invocation_by_result[result_path], compiler_identity
+        )
         if build_fingerprint != expected_build_fingerprint:
             raise ValidationError(f"{result_path}: build_fingerprint does not match semantic compile inputs")
-        accuracy_path = result_path.parent / "accuracy.json"
         fidelity_path = result_path.parent / "fidelity.json"
-        configured_fidelity = find_recipe_fidelity_config(
+        configured_fidelity = find_fidelity_config(
             root / "models" / model_id,
             model,
             build_profile_id=build_profile_id,
@@ -1314,25 +1208,11 @@ def _preflight_compilations(
                 raise ValidationError(
                     f"{result_path.parent}: configured numerical fidelity {expectation} fidelity.json"
                 )
-        accuracy_evidence = None
-        if accuracy_path.is_file():
-            accuracy = _accuracy_result(
-                accuracy_path,
-                model_id=model_id,
-                build_profile_id=build_profile_id,
-                component_id=component_id,
-                source_sha256=source_sha,
-            )
-            accuracy_evidence = {
-                "path": accuracy_path,
-                "document": accuracy,
-                "sha256": sha256_file(accuracy_path)[0],
-            }
         fidelity_evidence = None
         if fidelity_path.is_file():
             fidelity = _fidelity_result(
                 fidelity_path,
-                root / "schemas" / "numerical-fidelity-v1.schema.json",
+                root / "schemas" / "numerical-fidelity.schema.json",
                 model_id=model_id,
                 build_profile_id=build_profile_id,
                 component_id=component_id,
@@ -1362,7 +1242,6 @@ def _preflight_compilations(
                 "target": target,
                 "source_sha": source_sha,
                 "build_fingerprint": build_fingerprint,
-                "accuracy": accuracy_evidence,
                 "fidelity": fidelity_evidence,
             }
         )
@@ -1395,11 +1274,11 @@ def publish_compilations(
     if not branch.strip() or not github_run_id.strip() or not github_run_attempt.strip():
         raise ValidationError("branch, GitHub run ID, and run attempt must not be empty")
 
-    catalog = discover_catalog(root)
+    models = load_models(root)
     compilations = _preflight_compilations(
         root,
         dist,
-        catalog,
+        models,
         environment=environment,
         git_sha=git_sha,
     )
@@ -1555,77 +1434,6 @@ def publish_compilations(
             },
             f"{stable_key}-validation",
         )
-        accuracy_evidence = compilation["accuracy"]
-        accuracy_publication = None
-        if accuracy_evidence is not None:
-            accuracy_path = accuracy_evidence["path"]
-            accuracy = accuracy_evidence["document"]
-            accuracy_sha = accuracy_evidence["sha256"]
-            accuracy_fingerprint = canonical_sha256(accuracy)
-            accuracy_key = (
-                f"models/{branch_key}/{commit_tag}/{model_id}/{build_profile_id}/{component_id}/accuracy/"
-                f"{accuracy_fingerprint}/accuracy-result-v{accuracy['schema_version']}.json"
-            )
-            accuracy_stored = store.ensure_native_sha256(
-                accuracy_path,
-                accuracy_key,
-                accuracy_sha,
-                media_type="application/json",
-            )
-            accuracy_artifact = client.request(
-                "PUT",
-                f"/v1/runs/{run_id}/artifacts/accuracy-result",
-                {
-                    "artifact_type": "accuracy-result",
-                    "s3_bucket": bucket,
-                    "s3_key": accuracy_stored.key,
-                    "s3_version_id": accuracy_stored.version_id,
-                    "sha256": accuracy_stored.sha256,
-                    "size_bytes": accuracy_stored.size_bytes,
-                    "media_type": "application/json",
-                    "retention_class": "branch",
-                    "metadata": {
-                        "model_id": model_id,
-                        "build_profile_id": build_profile_id,
-                        "component_id": component_id,
-                        "dataset_id": accuracy["dataset"]["id"],
-                        "dataset_variant": accuracy["dataset"]["variant"],
-                        "dataset_split": accuracy["dataset"]["split"],
-                        "evaluated_samples": accuracy["dataset"]["evaluated_samples"],
-                        "available_samples": accuracy["dataset"]["available_samples"],
-                        "evaluation_profile": accuracy["evaluation"]["profile"],
-                        "evaluation_status": accuracy["evaluation"]["status"],
-                        "report_scope": accuracy["report_scope"],
-                        "candidate_top1_accuracy": accuracy["metrics"]["candidate"]["top1_accuracy"],
-                        "candidate_top5_accuracy": accuracy["metrics"]["candidate"]["top5_accuracy"],
-                    },
-                },
-                f"{stable_key}-accuracy-artifact",
-            )
-            accuracy_test: JsonObject = {
-                "status": "passed",
-                "version": str(accuracy["schema_version"]),
-                "summary": accuracy,
-            }
-            if accuracy_artifact.get("artifact_id"):
-                accuracy_test["report_artifact_id"] = accuracy_artifact["artifact_id"]
-            client.request(
-                "PUT",
-                f"/v1/runs/{run_id}/test-results/accuracy/{accuracy['report_scope']}",
-                accuracy_test,
-                f"{stable_key}-accuracy-test-result",
-            )
-            client.request(
-                "POST",
-                f"/v1/runs/{run_id}/measurements/batch",
-                {"measurements": _accuracy_measurements(accuracy, accuracy_fingerprint)},
-                f"{stable_key}-accuracy-measurements",
-            )
-            accuracy_publication = {
-                "s3_key": accuracy_stored.key,
-                "result_fingerprint": accuracy_fingerprint,
-                "evaluated_samples": accuracy["dataset"]["evaluated_samples"],
-            }
         fidelity_evidence = compilation["fidelity"]
         fidelity_publication = None
         if fidelity_evidence is not None:
@@ -1635,7 +1443,7 @@ def publish_compilations(
             fidelity_fingerprint = canonical_sha256(fidelity)
             fidelity_key = (
                 f"models/{branch_key}/{commit_tag}/{model_id}/{build_profile_id}/{component_id}/fidelity/"
-                f"{fidelity_fingerprint}/numerical-fidelity-v{fidelity['schema_version']}.json"
+                f"{fidelity_fingerprint}/numerical-fidelity.json"
             )
             fidelity_stored = store.ensure_native_sha256(
                 fidelity_path,
@@ -1704,7 +1512,6 @@ def publish_compilations(
                 "compile_fingerprint": build_fingerprint,
                 "artifact_sha256": artifact_sha,
                 "s3_key": stored.key,
-                "accuracy": accuracy_publication,
                 "fidelity": fidelity_publication,
             }
         )
@@ -1742,7 +1549,7 @@ def publish_packages(
     if not branch.strip() or not github_run_id.strip() or not github_run_attempt.strip():
         raise ValidationError("branch, GitHub run ID, and run attempt must not be empty")
 
-    catalog = discover_catalog(root)
+    models = load_models(root)
     client = SigV4RegistryClient(api_url, aws_region, request=request)
     store = artifact_store or S3ArtifactStore(bucket, kms_key_id=kms_key_id)
     branch_key, commit_tag = quote(branch, safe=""), git_sha[:12]
@@ -1761,9 +1568,9 @@ def publish_packages(
         model_id = _require_text(result.get("model_id"), "package model_id")
         profile_id = _require_text(result.get("build_profile_id"), "package build_profile_id")
         package_id = _require_text(result.get("package_id"), "package package_id")
-        if model_id not in catalog:
+        if model_id not in models:
             raise ValidationError(f"{result_path}: package references unknown model {model_id}")
-        model = catalog[model_id]
+        model = models[model_id]
         declaration = next((item for item in model["packages"] if item["id"] == package_id), None)
         if declaration is None or profile_id not in declaration["build_profiles"]:
             raise ValidationError(f"{result_path}: package is not declared for {model_id}/{profile_id}/{package_id}")

@@ -96,8 +96,13 @@ selection and checksums without republishing the source images.
 
 ### Compilation and validation
 
-Dispatch **Vulcan Model Compile** in staging with model
+Dispatch **Vulcan Model Orchestrator** in staging with model
 `ssd_mobilenet_v3`. Leaving the profile selection empty builds both declared
 profiles; select one profile only for focused diagnosis. Compilation,
 fresh-process numerical validation, structural graph inspection, MPK
 inspection, and artifact publication must all succeed before a build is usable.
+
+The workflow compiles a build only when the catalog has no build with its
+current compile key; set `force_rebuild_all` to recompile anyway. A dispatch
+that selects profiles or components publishes those compile runs but does not
+assemble packages or update the catalog.

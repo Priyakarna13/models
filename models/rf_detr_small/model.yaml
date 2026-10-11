@@ -1,4 +1,3 @@
-schema_version: 2
 id: rf_detr_small
 display_name: RF-DETR Small 512x512
 description: RF-DETR Small object detection split into independently deployable backbone and transformer components.
@@ -21,17 +20,11 @@ license:
   redistribution: allowed
   attribution: RF-DETR Small is distributed by Roboflow under Apache-2.0.
 upstream:
-  repository: https://github.com/roboflow/rf-detr
-  revision: 9b009fa928d6218320439803d1da01869a85c072
+  repository: https://huggingface.co/Roboflow/rf-detr-small
+  revision: 3bdc465063270f99769da5a1b4c00c68bd2d439d
   model_card: https://huggingface.co/Roboflow/rf-detr-small
 conversion:
   default:
-    source:
-      type: file
-      uri: https://storage.googleapis.com/rfdetr/small_coco/checkpoint_best_regular.pth
-      sha256: d81979a9213a2109345158ce9232668df4c1ae52e9b8db3f2ec0a8cbad959b33
-      size_bytes: 386045550
-  hf:
     source:
       type: file_set
       entrypoint: model.safetensors
@@ -53,9 +46,9 @@ components:
   role: feature_extractor
   source: &source
     type: file
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/rf_detr_small/4b0e07b760f09c885075da6bd07e188f57ca3582fe7c62c84034617e8bfb9f1b/34293839302-1/model.onnx
-    sha256: 4b0e07b760f09c885075da6bd07e188f57ca3582fe7c62c84034617e8bfb9f1b
-    size_bytes: 114437682
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/rf_detr_small/065fa96c52731a25e0ca481a98be90a3d4fb28943984b724bc3eee17e475847a/37610414373-1/model.onnx
+    sha256: 065fa96c52731a25e0ca481a98be90a3d4fb28943984b724bc3eee17e475847a
+    size_bytes: 114476199
   interface:
     format: onnx
     opset: 17
@@ -84,7 +77,7 @@ components:
         layout: NLC
         description: Decoded box for each proposal.
     shape_profiles: []
-  preprocessing: &image_preprocessing
+  preprocessing:
     pipeline:
     - op: decode_image
       parameters: {color_space: RGB}
@@ -103,7 +96,7 @@ components:
   surgery:
     type: python
     entrypoint: scripts/surgery.py:prepare_model
-    parameters: {partition: backbone}
+    parameters: {}
   recipe: scripts/compile.py
 - id: transformer
   role: detection_head
@@ -129,12 +122,12 @@ components:
         dtype: float32
         shape: [1, 300, 4]
         layout: NLC
-        description: Predicted boxes.
+        description: Normalized (cx, cy, w, h) box for each query; scale by the original image size.
       - name: labels
         dtype: float32
         shape: [1, 300, 91]
         layout: NLC
-        description: COCO class scores for each predicted box.
+        description: COCO class logits for each query; apply a sigmoid to get scores.
     shape_profiles: []
   preprocessing:
     pipeline: []
@@ -143,7 +136,7 @@ components:
   surgery:
     type: python
     entrypoint: scripts/surgery.py:prepare_model
-    parameters: {partition: transformer}
+    parameters: {}
   recipe: scripts/compile.py
   depends_on:
   - backbone
@@ -161,15 +154,17 @@ build_profiles:
   target: modalix
   components:
   - id: backbone
-    artifact_suffix: backbone_int8_mse
+    artifact_suffix: backbone_int8_mse_bcr
     calibration: coco_images
     parameters:
       precision: int8
+      calibration_bins: 2048
       calibration_samples: 50
   - id: transformer
     artifact_suffix: transformer_bf16
     parameters:
       precision: bf16
+      calibration_bins: 2048
       calibration_samples: 50
   compile_invocations:
   - id: rf_detr
@@ -177,7 +172,6 @@ build_profiles:
 compositions:
 - id: default
   type: declarative
-  schema_version: 1
   components:
   - {id: backbone, component: backbone, entrypoint: default}
   - {id: transformer, component: transformer, entrypoint: default}
@@ -206,11 +200,10 @@ packages:
   build_profiles: [modalix_int8_bf16]
   composition: default
   maturity: experimental
-validation:
+fidelity:
 - id: full_pipeline_fidelity
   scope: {type: package, package: default}
   build_profiles: [modalix_int8_bf16]
-  engine: model_recipe
   status: diagnostic
   result_component: transformer
   dataset:
@@ -224,6 +217,24 @@ validation:
     offset: 50
     samples: 50
   outputs: [dets, labels]
+accuracy:
+- id: coco_accuracy
+  scope: {type: package, package: default}
+  build_profiles: [modalix_int8_bf16]
+  engine: devkit_script
+  status: ready
+  result_component: transformer
+  dataset:
+    id: coco-2017
+    variant: mini
+    sha256: abb616d0eaf3d55d98d44ed092e05e2df6f87264d7f8426550d62402ef222e78
+    size_bytes: 462182592
+  metrics: [coco_map, coco_ap50, coco_ap75, coco_ap_small, coco_ap_medium, coco_ap_large,
+    coco_ar1, coco_ar10, coco_ar100, coco_ar_small, coco_ar_medium, coco_ar_large]
+  required_metrics: [coco_map]
+  reference:
+    source: https://github.com/roboflow/rf-detr/blob/56cdbbf57fc51c090f3aca398802d2cbc6703a05/README.md
+    metrics: {coco_map: 0.530, coco_ap50: 0.721}
 benchmark:
 - id: backbone_modalix
   scope: {type: component, component: backbone}
