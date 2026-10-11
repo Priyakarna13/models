@@ -55,9 +55,9 @@ components:
   role: text_encoder
   source: &source
     type: file
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
-    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
-    size_bytes: 9917015
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/efficientsam3_repvit_m/9c6e57afae5d4a2d75cf4d7c6940cc529a00e47e76b6d1250ac0c29af2d37928/38183039908-1/model.onnx
+    sha256: 9c6e57afae5d4a2d75cf4d7c6940cc529a00e47e76b6d1250ac0c29af2d37928
+    size_bytes: 1647445423
     media_type: application/onnx
   interface:
     format: onnx
