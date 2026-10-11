@@ -1,5 +1,7 @@
 # YOLO26x-pose
 
+![YOLO26x-pose model hero](hero.png)
+
 ## Overview
 
 YOLO26x-pose is the Extra-Large edition of Ultralytics' YOLO26 pose estimator.

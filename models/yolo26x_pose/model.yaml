@@ -1,6 +1,6 @@
 id: yolo26x_pose
 display_name: YOLO26x-pose
-description: Ultralytics YOLO26 Extra-Large pose estimation of COCO persons with 17 keypoints at 640x640.
+description: The largest YOLO26 pose estimator here, for people and their 17 COCO keypoints.
 model_type: vision
 tasks:
 - pose_estimation
