@@ -346,6 +346,20 @@ const ACCURACY_METRIC_LABELS = {
   coco_keypoint_ar_large: "Keypoint AR large",
   coco_person_box_map: "Person box mAP 50–95",
   coco_person_box_ap50: "Person box AP50",
+  coco_mask_map: "Mask mAP 50–95",
+  coco_mask_ap50: "Mask AP50",
+  coco_mask_ap75: "Mask AP75",
+  coco_mask_ap_small: "Mask AP small",
+  coco_mask_ap_medium: "Mask AP medium",
+  coco_mask_ap_large: "Mask AP large",
+  coco_mask_ar1: "Mask AR@1",
+  coco_mask_ar10: "Mask AR@10",
+  coco_mask_ar100: "Mask AR@100",
+  coco_mask_ar_small: "Mask AR small",
+  coco_mask_ar_medium: "Mask AR medium",
+  coco_mask_ar_large: "Mask AR large",
+  coco_box_map: "Box mAP 50–95",
+  coco_box_ap50: "Box AP50",
 };
 // The first metrics in display order are shown as tiles; any further metrics are listed in a table.
 const ACCURACY_SUMMARY_TILES = 4;
