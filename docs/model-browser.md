@@ -39,7 +39,15 @@ Selecting a card opens the model page. The page is built to be read at a glance:
 each section shows its key facts directly, and longer detail sits in a row
 marked with › that opens in place. A model with several build profiles shows
 one tab per profile; INT8 profiles come first and the page opens on the first
-tab, whatever order `model.yaml` declares. Sections appear in this order:
+tab, whatever order `model.yaml` declares.
+
+Beside the download buttons, the page links to the original model, the page
+`upstream.model_card` declares in `model.yaml`, whatever ONNX was compiled. A
+Hugging Face page shows the Hugging Face logo and any other host shows an
+external-link icon. The GitHub icon opens the model's folder at the commit that
+built it.
+
+Sections appear in this order:
 
 1. **Overview.** The hero and the `## Overview` section of the README. The
    **Full model card** row opens the rest of the README, starting at the

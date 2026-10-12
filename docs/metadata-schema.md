@@ -45,6 +45,8 @@ sanctioned taxonomy values.
 
 `upstream` records human-reviewable provenance. Downloadable inputs belong in
 a `conversion`, component, or resource `source`, where exact bytes are pinned.
+`upstream.model_card` must be an `https://` page; the model browser links it as
+the original model.
 
 ## Conversion
 
