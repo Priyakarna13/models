@@ -1,6 +1,7 @@
 name: Developer Docs Validation
 
-# The orchestrator calls this on every push, before planning compilations; a manual run checks one ref.
+# The orchestrator calls this before planning compilations and publishes the site it uploads;
+# Target Branch Checks calls it on every pull request; a manual run checks one ref.
 on:
   workflow_call: {}
   workflow_dispatch: {}
@@ -61,3 +62,11 @@ jobs:
       - name: Smoke-test the assembled portal in Chromium
         working-directory: website
         run: npm run smoke:portal
+
+      - name: Upload the checked portal
+        uses: actions/upload-artifact@v7
+        with:
+          name: model-browser-site
+          path: website/portal-build/
+          if-no-files-found: error
+          retention-days: 1

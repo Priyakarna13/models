@@ -54,11 +54,13 @@ in the same commit.
 
 ## CI
 
-- **Pull request.** `Vulcan Model Orchestrator` validates the catalog, taxonomy, and
-  compiler pin and prints an offline stage plan. Contributor code never runs on
-  self-hosted runners for a pull request. `Model Registry Contributor Tool`
-  runs `pytest tests/unit` and builds the `model-registry` package.
-- **Push.** Every push runs `Vulcan Model Orchestrator`. Its `portal` job builds and smoke-tests the model browser (`developer-docs.yml`); `plan` waits for it, so a portal failure stops the run. The `plan` job runs `model-registry plan-stages`, which reads the
+- **Pull request.** `Target Branch Checks` is the only workflow that builds or
+  tests a pull request, on the merge result and GitHub-hosted runners:
+  `model-registry-package.yml` runs `pytest tests/unit` and builds the
+  `model-registry` package, and `developer-docs.yml` checks the model browser.
+  `PR Sanitization` checks the pull request's description. Contributor code
+  never runs on self-hosted runners for a pull request.
+- **Push.** Every push runs `Vulcan Model Orchestrator`. Its `portal` job builds and smoke-tests the model browser (`developer-docs.yml`); `plan` waits for it, so a portal failure stops the run. On `main` and `develop`, `publish-model-browser` publishes that checked portal to staging. The `plan` job runs `model-registry plan-stages`, which reads the
   branch's prior catalog (its own, merged with its base branches' on a feature
   branch; see `design-doc/model-registry-architecture.md`) and resolves each
   stage key against the registry. `compile` calls
@@ -69,6 +71,12 @@ in the same commit.
 - **Board stages.** `vulcan-model-benchmarking.yml` runs the requested
   `stages` on a DevKit and publishes performance (`model_benchmark` runs) and
   accuracy (`model_accuracy` runs) separately.
+- Workflow YAML only orchestrates: triggers, jobs, permissions, inputs, and
+  the order of steps. A step that needs more than one command calls a named,
+  executable script with a usage header: under `scripts/`, or beside the code
+  it serves, as `packaging/model-registry/build.sh` does. Registry logic
+  belongs in a `model-registry` command. A new script under `scripts/` is not
+  a stage-key input unless `stage_keys.py` lists it.
 - A newer push cancels the branch's running orchestrator; builds that
   already published stay and are reused. How branch catalogs, merges, and the
   model browser interact is in
@@ -97,8 +105,6 @@ Conventions the code relies on:
   `--fidelity-dataset`, `--mpk`); data enters only through the dataset registry
   declared in `model.yaml`. Board stage scripts run without registry
   credentials.
-- A CI step calls a named script under `scripts/` or a `model-registry`
-  command; keep workflow YAML to orchestration.
 - Schemas under `schemas/` reject unknown fields. Published results keep their
   `schema_version` (performance 5, accuracy 2, numerical fidelity 1) because
   the artifact browser and `sima-cli` choose a renderer by it. Registry
