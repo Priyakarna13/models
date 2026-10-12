@@ -203,6 +203,11 @@ shown above. The registry publishes the image as a checksum-bound Vulcan
 artifact alongside the README; do not use a placeholder, remote image URL, or
 an image outside the model directory.
 
+Create a hero for each model and keep heroes consistent across the catalog.
+Each hero shows the model's output on an input, such as labeled boxes on a
+scene, in a scene no other model uses. Models of one architecture share a
+style and accent color, and labels use the same size on every hero.
+
 When changing model behavior, interfaces, supported builds, qualification
 evidence, installation steps, or redistribution terms, update the owning
 README and the hero image in the same change. A README- or hero-only edit is
