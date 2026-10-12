@@ -30,7 +30,7 @@ from .fidelity_config import find_fidelity_config, validate_fidelity_result
 from .model import compile_invocations_for, load_and_validate_model, load_models, profile_component_for
 from .source import source_identity
 from .stage_keys import accuracy_key, compile_key, performance_key
-from .stage_plan import read_current_catalog
+from .stage_plan import merge_catalog_sources, read_catalog_sources, read_current_catalog
 from .taxonomy import (
     TAXONOMY_RELATIVE_PATH,
     canonical_taxonomy_document,
@@ -297,6 +297,12 @@ def _selected_invocation_keys(selected_matrix: Path | None) -> set[tuple[str, st
     return selected
 
 
+def _head_matrix(root: Path, models: dict[str, Any]) -> list[JsonObject]:
+    """Every compile invocation the checkout declares, with its compile key."""
+    compiler_version = resolve_model_compiler(root)["identity"]
+    return build_matrix(models, sorted(models), repository=root, compiler_version=compiler_version)["include"]
+
+
 def build_catalog_snapshot(
     *,
     repository: str | Path,
@@ -317,13 +323,7 @@ def build_catalog_snapshot(
     models = load_models(root)
     taxonomy = canonical_taxonomy_document(load_taxonomy(root / TAXONOMY_RELATIVE_PATH))
     taxonomy_digest = taxonomy_sha256(taxonomy)
-    compiler_version = resolve_model_compiler(root)["identity"]
-    matrix = build_matrix(
-        models,
-        sorted(models),
-        repository=root,
-        compiler_version=compiler_version,
-    )["include"]
+    matrix = _head_matrix(root, models)
     receipts = _publication_receipts(Path(compiled_dir).expanduser().resolve() if compiled_dir else None)
     package_receipts = _package_publication_receipts(
         Path(package_dir).expanduser().resolve() if package_dir else None
@@ -588,23 +588,21 @@ def publish_model_documentation(
             "readme_sha256": digest,
             "overview_markdown": documentation["overview_markdown"],
         }
-        hero = documentation.get("hero")
-        stored_hero = None
-        if hero is not None:
-            stored_hero = store.ensure_native_sha256(
-                hero["path"],
-                f"models/{branch_key}/{git_sha.lower()}/documentation/{model_id}/{hero['markdown_path']}",
-                hero["sha256"],
-                media_type=hero["media_type"],
-            )
-            parameters["hero"] = {
-                "source_path": hero["source_path"],
-                "markdown_path": hero["markdown_path"],
-                "alt_text": hero["alt_text"],
-                "sha256": stored_hero.sha256,
-                "size_bytes": stored_hero.size_bytes,
-                "media_type": hero["media_type"],
-            }
+        hero = documentation["hero"]
+        stored_hero = store.ensure_native_sha256(
+            hero["path"],
+            f"models/{branch_key}/{git_sha.lower()}/documentation/{model_id}/{hero['markdown_path']}",
+            hero["sha256"],
+            media_type=hero["media_type"],
+        )
+        parameters["hero"] = {
+            "source_path": hero["source_path"],
+            "markdown_path": hero["markdown_path"],
+            "alt_text": hero["alt_text"],
+            "sha256": stored_hero.sha256,
+            "size_bytes": stored_hero.size_bytes,
+            "media_type": hero["media_type"],
+        }
         run_fingerprint = canonical_sha256(parameters)
         environment_document = {
             "schema_version": 1,
@@ -632,10 +630,9 @@ def publish_model_documentation(
                 "model_id": model_id,
                 "artifact_kind": "model-readme",
                 "source_path": documentation["source_path"],
+                "hero_source_path": hero["source_path"],
             },
         }
-        if hero is not None:
-            create_body["metadata"]["hero_source_path"] = hero["source_path"]
         invocation_identity = canonical_sha256(create_body)[:16]
         stable_key = (
             f"model-documentation-{branch_identity}-{git_sha.lower()}-{model_id}-"
@@ -663,22 +660,21 @@ def publish_model_documentation(
                 "source_commit": git_sha.lower(),
             },
         }, f"{stable_key}-artifact")
-        if hero is not None and stored_hero is not None:
-            client.request("PUT", f"/v1/runs/{run_id}/artifacts/{hero['artifact_name']}", {
-                "artifact_type": "model-readme-hero",
-                "s3_bucket": bucket,
-                "s3_key": stored_hero.key,
-                "s3_version_id": stored_hero.version_id,
-                "sha256": stored_hero.sha256,
-                "size_bytes": stored_hero.size_bytes,
-                "media_type": hero["media_type"],
-                "retention_class": "branch",
-                "metadata": {
-                    "model_id": model_id,
-                    "source_path": hero["source_path"],
-                    "source_commit": git_sha.lower(),
-                },
-            }, f"{stable_key}-hero-artifact")
+        client.request("PUT", f"/v1/runs/{run_id}/artifacts/{hero['artifact_name']}", {
+            "artifact_type": "model-readme-hero",
+            "s3_bucket": bucket,
+            "s3_key": stored_hero.key,
+            "s3_version_id": stored_hero.version_id,
+            "sha256": stored_hero.sha256,
+            "size_bytes": stored_hero.size_bytes,
+            "media_type": hero["media_type"],
+            "retention_class": "branch",
+            "metadata": {
+                "model_id": model_id,
+                "source_path": hero["source_path"],
+                "source_commit": git_sha.lower(),
+            },
+        }, f"{stable_key}-hero-artifact")
         client.request("POST", f"/v1/runs/{run_id}/finalize", {"status": "completed"}, f"{stable_key}-finalize")
         receipts[model_id] = {
             "format": "markdown",
@@ -690,9 +686,7 @@ def publish_model_documentation(
             "media_type": "text/markdown; charset=utf-8",
             "source_path": documentation["source_path"],
             "source_commit": git_sha.lower(),
-        }
-        if hero is not None and stored_hero is not None:
-            receipts[model_id]["hero"] = {
+            "hero": {
                 "artifact_name": hero["artifact_name"],
                 "markdown_path": hero["markdown_path"],
                 "alt_text": hero["alt_text"],
@@ -700,7 +694,8 @@ def publish_model_documentation(
                 "size_bytes": stored_hero.size_bytes,
                 "media_type": hero["media_type"],
                 "source_path": hero["source_path"],
-            }
+            },
+        }
     return receipts
 
 
@@ -715,7 +710,7 @@ def publish_catalog(
     compiled_dir: str | Path | None = None,
     package_dir: str | Path | None = None,
     selected_matrix: str | Path | None = None,
-    base_branch: str | None = None,
+    base_branches: list[str] | None = None,
     bucket: str | None = None,
     kms_key_id: str | None = None,
     environment: str | None = None,
@@ -750,7 +745,9 @@ def publish_catalog(
         )
     # Read the catalog last so another publisher has the least time to replace it
     # before the compare-and-swap POST below.
-    target_catalog, previous = read_current_catalog(read, read_api_url, branch, base_branch)
+    root = Path(repository).expanduser().resolve()
+    target_catalog, sources = read_catalog_sources(read, read_api_url, branch, base_branches)
+    previous = merge_catalog_sources(sources, _head_matrix(root, load_models(root)))
     document = build_catalog_snapshot(
         repository=repository,
         branch=branch,

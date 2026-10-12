@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 WORKFLOW = WORKFLOWS / "vulcan-model-orchestrator.yml"
 BUILD_WORKFLOW = WORKFLOWS / "vulcan-model-compile.yml"
-BENCHMARK_WORKFLOW = WORKFLOWS / "Vulcan-Model-Benchmarking.yml"
+BENCHMARK_WORKFLOW = WORKFLOWS / "vulcan-model-benchmarking.yml"
 
 
 def load(path: Path) -> dict:
@@ -66,20 +66,6 @@ def test_every_push_runs_so_every_branch_revision_gets_a_catalog() -> None:
 
     # A push that changes no compile input still publishes its catalog; its stage keys select no work.
     assert "push" in on and not on["push"]
-    pull_request_paths = on["pull_request"]["paths"]
-    for path in (
-        ".github/workflows/vulcan-model-orchestrator.yml",
-        ".github/workflows/vulcan-model-compile.yml",
-        ".github/workflows/Vulcan-Model-Benchmarking.yml",
-        "deps/**",
-        "models/**",
-        "scripts/**",
-        "taxonomies/**",
-        "tools/model_registry/**",
-        "training/yolo26_tiny_drone/**",
-    ):
-        assert path in pull_request_paths
-    assert "tools/runtime/**" not in pull_request_paths
 
 
 def test_production_is_an_explicit_dispatch_choice() -> None:
@@ -111,6 +97,7 @@ def test_compile_workflow_has_independent_build_stages() -> None:
         "select",
         "portal",
         "resolve-vulcan-config",
+        "publish-model-browser",
         "plan",
         "authorize-runner-classes",
         "initialize-catalog",
@@ -145,25 +132,12 @@ def test_workflow_never_schedules_pull_requests_on_vulcan() -> None:
     workflow = load(WORKFLOW)
     jobs = workflow["jobs"]
 
-    assert "pull_request_target" not in workflow["on"]
+    # Pull requests run Target Branch Checks; pull-request code never starts this workflow.
+    assert set(workflow["on"]) == {"push", "workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read"}
     for name, job in jobs.items():
         if "uses" not in job:
             assert job["runs-on"] == "ubuntu-latest", name
-    # Only select runs for pull requests; it has no write or OIDC permission and reads no registry.
-    for name, job in jobs.items():
-        if name != "select":
-            assert "github.event_name != 'pull_request'" in job["if"], name
-    select = jobs["select"]
-    assert "if" not in select
-    assert "permissions" not in select
-    offline = step(select, "List the invocations this change can compile")
-    assert offline["if"] == "github.event_name == 'pull_request'"
-    assert "plan-stages" in offline["run"]
-    assert "--offline" in offline["run"]
-    assert "--read-api-url" not in offline["run"]
-    assert "${{ vars." not in yaml.safe_dump(select)
-    assert "${{ secrets." not in yaml.safe_dump(select)
 
     # The self-hosted compiler is reachable only through the build job, and only as a workflow call.
     build_workflow = load(BUILD_WORKFLOW)
@@ -188,7 +162,6 @@ def test_trusted_events_reach_the_build(event) -> None:
         "needs.initialize-catalog.result": "success",
     }
     assert evaluate(condition, values) is True
-    assert evaluate(condition, {**values, "github.event_name": "pull_request"}) is False
 
 
 # Selection and planning
@@ -240,17 +213,17 @@ def test_targeted_profile_or_component_dispatch_is_compile_only() -> None:
     assert "publishable=false" in scope["run"]
 
 
-def test_new_branches_inherit_the_resolved_base_branch_catalog() -> None:
+def test_branches_reuse_builds_from_the_resolved_base_branch_catalogs() -> None:
     jobs = load(WORKFLOW)["jobs"]
     base = next(item for item in jobs["select"]["steps"] if item.get("id") == "base")
 
     assert "model-registry resolve-base" in base["run"]
-    assert "--default-branch develop" in base["run"]
-    assert base["env"]["PREFERRED_BRANCH"] == "${{ inputs.base_branch || github.event.pull_request.base.ref }}"
+    assert ".base_branches | join(\",\")" in base["run"]
+    assert base["env"]["PREFERRED_BRANCH"] == "${{ inputs.base_branch }}"
     plan = step(jobs["plan"], "Compare stage keys with published runs")
-    assert plan["env"]["BASE_BRANCH"] == "${{ needs.select.outputs.base_branch }}"
-    assert '--base-branch "$BASE_BRANCH"' in plan["run"]
-    assert jobs["compile"]["with"]["base_branch"] == "${{ needs.select.outputs.base_branch }}"
+    assert plan["env"]["BASE_BRANCHES"] == "${{ needs.select.outputs.base_branches }}"
+    assert '--base-branches "$BASE_BRANCHES"' in plan["run"]
+    assert jobs["compile"]["with"]["base_branches"] == "${{ needs.select.outputs.base_branches }}"
 
 
 def test_a_portal_that_fails_its_check_stops_the_run_before_planning() -> None:
@@ -259,7 +232,7 @@ def test_a_portal_that_fails_its_check_stops_the_run_before_planning() -> None:
     assert jobs["portal"]["uses"] == "./.github/workflows/developer-docs.yml"
     assert "portal" in jobs["plan"]["needs"]
     # Without a status function, plan runs only when portal succeeded; every later job needs plan.
-    assert "always()" not in jobs["plan"]["if"] and "cancelled()" not in jobs["plan"]["if"]
+    assert "if" not in jobs["plan"]
 
 
 def test_plan_compares_stage_keys_with_the_environment_registry() -> None:
@@ -330,7 +303,7 @@ def test_catalog_marks_authorized_builds_pending_before_they_run() -> None:
     assert publish["env"]["SELECTED_MATRIX"] == "${{ needs.authorize-runner-classes.outputs.matrix }}"
     assert "model-registry publish-catalog" in publish["run"]
     assert '--selected-matrix "$matrix_file"' in publish["run"]
-    assert '--base-branch "$BASE_BRANCH"' in publish["run"]
+    assert '--base-branches "$BASE_BRANCHES"' in publish["run"]
 
 
 @pytest.mark.parametrize(
@@ -397,7 +370,7 @@ def test_catalog_snapshot_carries_this_revision_without_build_outputs() -> None:
     assert job["permissions"]["id-token"] == "write"
     assert "model-registry publish-catalog" in publish["run"]
     assert '--git-sha "$GITHUB_SHA"' in publish["run"]
-    assert '--base-branch "$BASE_BRANCH"' in publish["run"]
+    assert '--base-branches "$BASE_BRANCHES"' in publish["run"]
     assert '--read-api-url "$REGISTRY_READ_API_URL"' in publish["run"]
     # Each build published its own outputs; the snapshot neither downloads nor republishes them.
     assert "--compiled-dir" not in publish["run"]
@@ -415,7 +388,6 @@ def test_catalog_snapshot_carries_this_revision_without_build_outputs() -> None:
         ("push", "staging", "failure", "1", False),
         ("push", "staging", "skipped", "1", False),
         ("push", "staging", "success", "0", False),
-        ("pull_request", "staging", "success", "1", False),
     ],
 )
 def test_reused_builds_start_devkit_stages_after_the_catalog_snapshot(
@@ -445,7 +417,7 @@ def test_reused_build_stage_dispatch_matches_the_benchmark_inputs() -> None:
     assert job["permissions"] == {"actions": "write", "contents": "read"}
     assert job["strategy"]["fail-fast"] == "false"
     assert job["strategy"]["matrix"] == "${{ fromJSON(needs.plan.outputs.measure_matrix) }}"
-    assert "gh workflow run Vulcan-Model-Benchmarking.yml" in start["run"]
+    assert "gh workflow run vulcan-model-benchmarking.yml" in start["run"]
     assert dispatched_inputs(start["run"]) == set(benchmark_inputs)
     # The job has no checkout, so gh cannot infer the repository from a git remote.
     assert all(not item.get("uses", "").startswith("actions/checkout") for item in job["steps"])
@@ -471,7 +443,6 @@ def test_failed_builds_are_reported_after_the_snapshot() -> None:
 
     assert report["needs"] == ["plan", "compile", "publish-catalog"]
     assert report["if"].startswith("always() &&")
-    assert "github.event_name != 'pull_request'" in report["if"]
     assert report["permissions"] == {"actions": "read", "contents": "read"}
     # The filter matches the compile job's name, and no other job shares its prefix.
     assert jobs["compile"]["name"].startswith("Compile ")
@@ -686,7 +657,7 @@ def test_new_build_stage_dispatch_matches_the_benchmark_inputs() -> None:
 
     # A failed dispatch leaves the build published; the next run plans the missing stages.
     assert start["continue-on-error"] == "true"
-    assert "gh workflow run Vulcan-Model-Benchmarking.yml" in start["run"]
+    assert "gh workflow run vulcan-model-benchmarking.yml" in start["run"]
     assert dispatched_inputs(start["run"]) == set(benchmark_inputs)
     assert '--repo "$GITHUB_REPOSITORY"' in start["run"]
     assert '--ref "$GITHUB_REF_NAME"' in start["run"]
@@ -698,6 +669,52 @@ def test_new_build_stage_dispatch_matches_the_benchmark_inputs() -> None:
     assert start["env"]["BENCHMARK_COMPONENT_IDS"] == (
         "${{ join(fromJSON(inputs.entry).benchmark_component_ids, ',') }}"
     )
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job", "name"),
+    [
+        (WORKFLOW, "measure", "Start the stages a reused build still lacks"),
+        (BUILD_WORKFLOW, "publish", "Start the DevKit stages"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("gh_output", "link"),
+    [
+        ("https://github.com/sima-neat/models/actions/runs/123\n", "https://github.com/sima-neat/models/actions/runs/123"),
+        ("", "link unavailable"),
+    ],
+)
+def test_stage_dispatch_logs_the_devkit_run_link(
+    tmp_path: Path, workflow: Path, job: str, name: str, gh_output: str, link: str
+) -> None:
+    start = step(load(workflow)["jobs"][job], name)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(f"#!/bin/sh\nprintf '{gh_output}'\n", encoding="utf-8")
+    (bin_dir / "gh").chmod(0o755)
+    summary = tmp_path / "summary.md"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GITHUB_REPOSITORY": "sima-neat/models",
+        "GITHUB_RUN_ID": "77",
+        "GITHUB_SHA": "0" * 40,
+        "GITHUB_REF_NAME": "develop",
+        "MODEL_ID": "alpha",
+        "BUILD_PROFILE_ID": "int8",
+        "COMPILE_INVOCATION_ID": "default",
+        "STAGES": "performance,accuracy",
+        "COMPONENT_IDS": "model",
+        "BENCHMARK_COMPONENT_IDS": "model",
+    }
+
+    result = subprocess.run(["bash", "-c", start["run"]], env=env, check=True, capture_output=True, text=True)
+
+    line = f"DevKit run for alpha/int8/default (performance,accuracy): {link}\n"
+    assert result.stdout == line
+    assert summary.read_text(encoding="utf-8") == line
 
 
 def test_packages_and_catalog_update_only_for_publishable_builds() -> None:
@@ -712,7 +729,7 @@ def test_packages_and_catalog_update_only_for_publishable_builds() -> None:
     assert "model-registry publish-package" in packages["run"]
     assert catalog["if"] == "inputs.publishable"
     assert "--compiled-dir _compiled" in catalog["run"]
-    assert '--base-branch "$BASE_BRANCH"' in catalog["run"]
+    assert '--base-branches "$BASE_BRANCHES"' in catalog["run"]
 
 
 def test_concurrent_builds_retry_catalog_snapshot_conflicts() -> None:

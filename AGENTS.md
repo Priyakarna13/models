@@ -54,20 +54,29 @@ in the same commit.
 
 ## CI
 
-- **Pull request.** `Vulcan Model Orchestrator` validates the catalog, taxonomy, and
-  compiler pin and prints an offline stage plan. Contributor code never runs on
-  self-hosted runners for a pull request. `Model Registry Contributor Tool`
-  runs `pytest tests/unit` and builds the `model-registry` package.
-- **Push.** Every push runs `Vulcan Model Orchestrator`. Its `portal` job builds and smoke-tests the model browser (`developer-docs.yml`); `plan` waits for it, so a portal failure stops the run. The `plan` job runs `model-registry plan-stages`, which reads the
-  branch catalog (the base branch's when the branch has none) and resolves each
+- **Pull request.** `Target Branch Checks` is the only workflow that builds or
+  tests a pull request, on the merge result and GitHub-hosted runners:
+  `model-registry-package.yml` runs `pytest tests/unit` and builds the
+  `model-registry` package, and `developer-docs.yml` checks the model browser.
+  `PR Sanitization` checks the pull request's description. Contributor code
+  never runs on self-hosted runners for a pull request.
+- **Push.** Every push runs `Vulcan Model Orchestrator`. Its `portal` job builds and smoke-tests the model browser (`developer-docs.yml`); `plan` waits for it, so a portal failure stops the run. On `main` and `develop`, `publish-model-browser` publishes that checked portal to staging. The `plan` job runs `model-registry plan-stages`, which reads the
+  branch's prior catalog (its own, merged with its base branches' on a feature
+  branch; see `design-doc/model-registry-architecture.md`) and resolves each
   stage key against the registry. `compile` calls
   `.github/workflows/vulcan-model-compile.yml` once per build to compile,
   publish, and start the build's board stages. `publish-catalog` writes the
   final catalog snapshot, and `measure` starts the board stages a reused build
   still lacks.
-- **Board stages.** `Vulcan-Model-Benchmarking.yml` runs the requested
+- **Board stages.** `vulcan-model-benchmarking.yml` runs the requested
   `stages` on a DevKit and publishes performance (`model_benchmark` runs) and
   accuracy (`model_accuracy` runs) separately.
+- Workflow YAML only orchestrates: triggers, jobs, permissions, inputs, and
+  the order of steps. A step that needs more than one command calls a named,
+  executable script with a usage header: under `scripts/`, or beside the code
+  it serves, as `packaging/model-registry/build.sh` does. Registry logic
+  belongs in a `model-registry` command. A new script under `scripts/` is not
+  a stage-key input unless `stage_keys.py` lists it.
 - A newer push cancels the branch's running orchestrator; builds that
   already published stay and are reused. How branch catalogs, merges, and the
   model browser interact is in
@@ -96,8 +105,6 @@ Conventions the code relies on:
   `--fidelity-dataset`, `--mpk`); data enters only through the dataset registry
   declared in `model.yaml`. Board stage scripts run without registry
   credentials.
-- A CI step calls a named script under `scripts/` or a `model-registry`
-  command; keep workflow YAML to orchestration.
 - Schemas under `schemas/` reject unknown fields. Published results keep their
   `schema_version` (performance 5, accuracy 2, numerical fidelity 1) because
   the artifact browser and `sima-cli` choose a renderer by it. Registry
@@ -108,7 +115,32 @@ Conventions the code relies on:
 ## Model browser
 
 Before changing `artifact-browser/`, read its
-[design context](artifact-browser/DESIGN.md).
+[design context](artifact-browser/DESIGN.md) and
+[README](artifact-browser/README.md#how-the-page-is-built). What users see is in
+[docs/model-browser.md](docs/model-browser.md); update it with any visible
+change.
+
+- Make every expandable area a `disclosure()` row from `ui.js`. Raw
+  `<details>` elements fail `tests/unit/test_artifact_browser.py`.
+- The browser lists INT8 build profiles first and opens a model on INT8;
+  `profileGroups` in `api.js` sets this, not the `model.yaml` profile order.
+- Keep the glance-first page: key facts in the section, the rest in one row.
+  Actions are icon buttons; blue text with ↗ is only for external links.
+- Compare and show component measurements per component; never add them up
+  or mark one component best against a different component.
+- Keep rendering every published benchmark schema version, and let unknown
+  metrics fall through to Other measurements rather than hiding them.
+- Keep the preview data-driven. `preview.py` builds its catalog from
+  `models/`; never add a model, name, or README to it by hand. It needs the
+  repository installed (`python -m pip install .`) or `PYTHON` pointing at
+  such an interpreter.
+- Add a new module to `fingerprintedAssets` in
+  `website/scripts/assemble-portal.mjs`.
+- Before a push, run `python -m pytest tests/unit/test_artifact_browser.py`,
+  `node --test tests/browser/*.test.mjs`, and `npm run typecheck`,
+  `npm run build:portal`, and `npm run smoke:portal` with `--prefix website`,
+  then look at the changed pages in `preview.py` at desktop and phone width,
+  light and dark.
 
 ## Model README requirements
 
@@ -116,7 +148,7 @@ Every top-level registry entry under `models/<model_id>` must contain a
 `README.md`. The README begins with the following structure:
 
 1. `# <display name>`
-2. An optional `![<display name> model hero](hero.png)`
+2. `![<display name> model hero](hero.png)`
 3. `## Overview`
 4. `## Usage`
 5. `## Model interface`
@@ -169,7 +201,7 @@ Nested documentation such as training or QAT guides may use a structure suited
 to that workflow, but the top-level README should link to it from the relevant
 standard section.
 
-When supplied, the hero must be a regular (non-symlinked) 1200x480 PNG no
+Every model has a hero: a regular (non-symlinked) 1200x480 PNG no
 larger than 2 MiB. The registry's strict PNG profile permits `IHDR`, optional
 `PLTE`, `IDAT`, `IEND`, and optional validated `tIME` or `tRNS` ancillary
 chunks. Keep it legible in light and dark themes, avoid embedding essential
@@ -178,8 +210,13 @@ shown above. The registry publishes the image as a checksum-bound Vulcan
 artifact alongside the README; do not use a placeholder, remote image URL, or
 an image outside the model directory.
 
+Create a hero for each model and keep heroes consistent across the catalog.
+Each hero shows the model's output on an input, such as labeled boxes on a
+scene, in a scene no other model uses. Models of one architecture share a
+style and accent color, and labels use the same size on every hero.
+
 When changing model behavior, interfaces, supported builds, qualification
 evidence, installation steps, or redistribution terms, update the owning
-README and any existing hero image in the same change. A README- or hero-only edit is
+README and the hero image in the same change. A README- or hero-only edit is
 documentation or catalog metadata; it must not change compilation, validation,
 benchmark, or artifact fingerprints.

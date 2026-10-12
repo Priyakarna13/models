@@ -1,19 +1,6 @@
 name: Vulcan Model Orchestrator
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/vulcan-model-orchestrator.yml"
-      - ".github/workflows/vulcan-model-compile.yml"
-      - ".github/workflows/Vulcan-Model-Benchmarking.yml"
-      - "deps/**"
-      - "models/**"
-      - "schemas/**"
-      - "scripts/**"
-      - "training/yolo26_tiny_drone/**"
-      - "taxonomies/**"
-      - "tools/model_registry/**"
-      - "pyproject.toml"
   # Every push publishes its revision's catalog; unchanged stage keys compile and measure nothing.
   push:
   workflow_dispatch:
@@ -37,7 +24,7 @@ on:
         required: false
         type: string
       base_branch:
-        description: Optional base branch whose catalog a new branch inherits
+        description: Optional branch whose catalog this branch reuses builds from, in place of the resolved base branches
         required: false
         type: string
       force_rebuild_all:
@@ -52,7 +39,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
-# A newer push supersedes a running push or pull-request run on the same ref; the next run plans the
+# A newer push supersedes a running push run on the same ref; the next run plans the
 # builds the cancelled one left pending. Each manual dispatch runs to completion.
 concurrency:
   group: >-
@@ -70,7 +57,7 @@ jobs:
       model_compiler_version: ${{ steps.compiler.outputs.version }}
       model_compiler_label: ${{ steps.compiler.outputs.label }}
       model_compiler_identity: ${{ steps.compiler.outputs.identity }}
-      base_branch: ${{ steps.base.outputs.base_branch }}
+      base_branches: ${{ steps.base.outputs.base_branches }}
       publishable: ${{ steps.scope.outputs.publishable }}
     steps:
       - name: Check out the repository
@@ -120,12 +107,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Model Compiler dependency: \`$identity\` (\`$label\`)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Resolve the base branch a new branch inherits from
+      - name: Resolve the base branches whose catalogs builds may come from
         id: base
         env:
-          CURRENT_BRANCH: ${{ github.head_ref || github.ref_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          PREFERRED_BRANCH: ${{ inputs.base_branch || github.event.pull_request.base.ref }}
+          CURRENT_BRANCH: ${{ github.ref_name }}
+          HEAD_SHA: ${{ github.sha }}
+          PREFERRED_BRANCH: ${{ inputs.base_branch }}
         run: |
           set -euo pipefail
           preferred_args=()
@@ -136,11 +123,10 @@ jobs:
             --repository . \
             --current-branch "$CURRENT_BRANCH" \
             --head "$HEAD_SHA" \
-            --default-branch develop \
             "${preferred_args[@]}")"
-          base_branch="$(jq -er '.base_branch' <<< "$resolution")"
-          echo "base_branch=$base_branch" >> "$GITHUB_OUTPUT"
-          echo "Resolved base branch: \`$base_branch\`" >> "$GITHUB_STEP_SUMMARY"
+          base_branches="$(jq -er '.base_branches | join(",")' <<< "$resolution")"
+          echo "base_branches=$base_branches" >> "$GITHUB_OUTPUT"
+          echo "Base branches: \`${base_branches:-none}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Decide whether this run updates the catalog
         id: scope
@@ -156,31 +142,14 @@ jobs:
           fi
           echo "publishable=$publishable" >> "$GITHUB_OUTPUT"
 
-      - name: List the invocations this change can compile
-        if: github.event_name == 'pull_request'
-        env:
-          COMPILER_IDENTITY: ${{ steps.compiler.outputs.identity }}
-          BRANCH: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-          plan="$(model-registry plan-stages --repository . --offline \
-            --compiler-version "$COMPILER_IDENTITY" --branch "$BRANCH")"
-          {
-            echo "Pull requests validate metadata only; untrusted code never reaches a Vulcan self-hosted runner."
-            echo "After merge, an invocation compiles only when its compile key differs from the published build."
-            echo "Declared compile invocations: $(jq '.compile.include | length' <<< "$plan")."
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # A portal that does not build or load stops the run before anything compiles or publishes.
   portal:
     name: Check the model browser portal
-    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/developer-docs.yml
 
   resolve-vulcan-config:
     name: Resolve Vulcan publication config
     needs: select
-    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       id-token: write
@@ -189,10 +158,38 @@ jobs:
       vulcan_env: ${{ needs.select.outputs.vulcan_environment }}
     secrets: inherit
 
+  # Staging serves the model browser of main and develop: the portal this run built and checked.
+  # Both branches publish to the same prefix, and a publish deletes files missing from its site, so
+  # publishes queue in one group instead of overlapping.
+  publish-model-browser:
+    name: Publish the staging model browser
+    needs: [select, portal, resolve-vulcan-config]
+    concurrency:
+      group: ${{ github.repository }}-model-browser-staging
+      cancel-in-progress: false
+    if: >-
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
+      needs.select.outputs.vulcan_environment == 'staging'
+    permissions:
+      contents: read
+      actions: write
+      id-token: write
+    uses: sima-neat/.github/.github/workflows/vulcan-publish-static-site.yml@main
+    with:
+      environment_name: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+      site_key: DOCS
+      aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      bucket: ${{ needs.resolve-vulcan-config.outputs.docs_bucket }}
+      role_to_assume: ${{ needs.resolve-vulcan-config.outputs.docs_publisher_role_arn }}
+      sse_kms_key_id: ${{ needs.resolve-vulcan-config.outputs.docs_kms_key_id }}
+      cloudfront_distribution_id: ${{ needs.resolve-vulcan-config.outputs.sysdoc_cloudfront_distribution_id }}
+      artifact_pattern: model-browser-site
+      s3_prefix: models
+      cloudfront_paths: "/models /models/*"
+
   plan:
     name: Plan compilations and DevKit stages against the registry
     needs: [select, portal]
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: ${{ needs.select.outputs.vulcan_environment }}
     outputs:
@@ -218,7 +215,7 @@ jobs:
         env:
           REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL }}
           COMPILER_IDENTITY: ${{ needs.select.outputs.model_compiler_identity }}
-          BASE_BRANCH: ${{ needs.select.outputs.base_branch }}
+          BASE_BRANCHES: ${{ needs.select.outputs.base_branches }}
           REQUESTED_MODELS: ${{ inputs.models }}
           REQUESTED_PROFILES: ${{ inputs.profiles }}
           REQUESTED_COMPONENTS: ${{ inputs.components }}
@@ -234,7 +231,7 @@ jobs:
           plan="$(model-registry plan-stages --repository . \
             --read-api-url "$REGISTRY_READ_API_URL" \
             --compiler-version "$COMPILER_IDENTITY" \
-            --branch "$GITHUB_REF_NAME" --base-branch "$BASE_BRANCH" \
+            --branch "$GITHUB_REF_NAME" --base-branches "$BASE_BRANCHES" \
             "${scope_args[@]}")"
           compile_matrix="$(jq -c '.compile' <<< "$plan")"
           # The DevKit stages run on Modalix boards only.
@@ -256,7 +253,7 @@ jobs:
   authorize-runner-classes:
     name: Authorize compile runner classes
     needs: [select, plan, resolve-vulcan-config]
-    if: github.event_name != 'pull_request' && needs.plan.outputs.compile_count != '0'
+    if: needs.plan.outputs.compile_count != '0'
     runs-on: ubuntu-latest
     environment: ${{ needs.select.outputs.vulcan_environment }}
     permissions:
@@ -312,7 +309,6 @@ jobs:
     needs: [select, resolve-vulcan-config, authorize-runner-classes]
     if: >-
       !cancelled() &&
-      github.event_name != 'pull_request' &&
       needs.select.outputs.publishable == 'true' &&
       needs.resolve-vulcan-config.result == 'success' &&
       needs.authorize-runner-classes.result == 'success'
@@ -336,7 +332,7 @@ jobs:
           role-session-name: models-catalog-initialize-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Publish the pending invocation plan
         env:
-          BASE_BRANCH: ${{ needs.select.outputs.base_branch }}
+          BASE_BRANCHES: ${{ needs.select.outputs.base_branches }}
           SELECTED_MATRIX: ${{ needs.authorize-runner-classes.outputs.matrix }}
           REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL }}
@@ -355,14 +351,13 @@ jobs:
             --bucket "$ARTIFACT_BUCKET" --kms-key-id "$KMS_KEY_ID" \
             --environment "$VULCAN_ENVIRONMENT" \
             --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --base-branch "$BASE_BRANCH" --git-sha "$GITHUB_SHA"
+            --base-branches "$BASE_BRANCHES" --git-sha "$GITHUB_SHA"
 
   compile:
     name: Compile ${{ matrix.model_id }}/${{ matrix.compile_invocation_id }} (${{ matrix.build_profile_id }})
     needs: [select, resolve-vulcan-config, authorize-runner-classes, initialize-catalog]
     if: >-
       !cancelled() &&
-      github.event_name != 'pull_request' &&
       needs.resolve-vulcan-config.result == 'success' &&
       needs.authorize-runner-classes.result == 'success' &&
       (needs.select.outputs.publishable != 'true' || needs.initialize-catalog.result == 'success')
@@ -381,7 +376,7 @@ jobs:
       runner_environment: ${{ needs.select.outputs.runner_environment }}
       model_compiler_version: ${{ needs.select.outputs.model_compiler_version }}
       model_compiler_label: ${{ needs.select.outputs.model_compiler_label }}
-      base_branch: ${{ needs.select.outputs.base_branch }}
+      base_branches: ${{ needs.select.outputs.base_branches }}
       publishable: ${{ needs.select.outputs.publishable == 'true' }}
       aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
       artifact_bucket: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
@@ -393,7 +388,6 @@ jobs:
     needs: [select, resolve-vulcan-config, plan, initialize-catalog, compile]
     if: >-
       !cancelled() &&
-      github.event_name != 'pull_request' &&
       needs.select.outputs.publishable == 'true' &&
       needs.resolve-vulcan-config.result == 'success' &&
       needs.plan.result == 'success' &&
@@ -427,7 +421,7 @@ jobs:
       # catalog revision the reused builds' DevKit stages read.
       - name: Publish and promote the catalog snapshot
         env:
-          BASE_BRANCH: ${{ needs.select.outputs.base_branch }}
+          BASE_BRANCHES: ${{ needs.select.outputs.base_branches }}
           REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL }}
           AWS_REGION: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
@@ -448,7 +442,7 @@ jobs:
             --environment "$VULCAN_ENVIRONMENT" \
             --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --branch "$GITHUB_REF_NAME" \
-            --base-branch "$BASE_BRANCH" \
+            --base-branches "$BASE_BRANCHES" \
             --git-sha "$GITHUB_SHA"
 
   measure:
@@ -456,7 +450,6 @@ jobs:
     needs: [select, plan, publish-catalog]
     if: >-
       !cancelled() &&
-      github.event_name != 'pull_request' &&
       needs.publish-catalog.result == 'success' &&
       needs.select.outputs.vulcan_environment == 'staging' &&
       needs.plan.outputs.measure_count != '0'
@@ -478,7 +471,7 @@ jobs:
           STAGES: ${{ join(matrix.stages, ',') }}
         run: |
           set -euo pipefail
-          gh workflow run Vulcan-Model-Benchmarking.yml \
+          output="$(gh workflow run vulcan-model-benchmarking.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$GITHUB_REF_NAME" \
             -f environment=staging \
@@ -489,16 +482,16 @@ jobs:
             -f build_profile_id="$BUILD_PROFILE_ID" \
             -f compile_invocation_id="$COMPILE_INVOCATION_ID" \
             -f component_ids="$COMPONENT_IDS" \
-            -f stages="$STAGES"
-          echo "Started $STAGES for registry build $MODEL_ID/$BUILD_PROFILE_ID/$COMPILE_INVOCATION_ID." \
-            >> "$GITHUB_STEP_SUMMARY"
+            -f stages="$STAGES")"
+          run_url="$(grep -Eom1 'https://[^[:space:]]+/actions/runs/[0-9]+' <<< "$output" || true)"
+          echo "DevKit run for $MODEL_ID/$BUILD_PROFILE_ID/$COMPILE_INVOCATION_ID ($STAGES): ${run_url:-link unavailable}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
   report-partial-publication:
     name: Report failed model builds
     needs: [plan, compile, publish-catalog]
     if: >-
       always() &&
-      github.event_name != 'pull_request' &&
       needs.plan.result == 'success' &&
       needs.plan.outputs.compile_count != '0'
     runs-on: ubuntu-latest

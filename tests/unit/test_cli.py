@@ -62,7 +62,7 @@ def test_validate_models_checks_every_manifest(capsys) -> None:
     result = main(["validate-models", "--repository", str(ROOT), "--json"])
     assert result == 0
     output = capsys.readouterr().out
-    assert '"model_count": 9' in output
+    assert f'"model_count": {len(list((ROOT / "models").glob("*/model.yaml")))}' in output
     assert '"ssd_mobilenet_v3"' in output
     assert '"valid": true' in output
 
@@ -318,8 +318,11 @@ def test_tooling_supports_python_module_entrypoint() -> None:
     assert "Model Registry lifecycle tooling" in result.stdout
 
 
-@pytest.mark.parametrize("base_branch", [None, "develop"])
-def test_publish_catalog_passes_optional_base_branch(monkeypatch, base_branch) -> None:
+@pytest.mark.parametrize(
+    ("argument", "base_branches"),
+    [(None, []), ("", []), ("develop", ["develop"]), ("develop,release-1.0", ["develop", "release-1.0"])],
+)
+def test_publish_catalog_passes_optional_base_branches(monkeypatch, argument, base_branches) -> None:
     calls = []
 
     def publish(**kwargs):
@@ -333,10 +336,10 @@ def test_publish_catalog_passes_optional_base_branch(monkeypatch, base_branch) -
         "--git-sha", "a" * 40, "--bucket", "model-artifacts",
         "--environment", "staging",
     ]
-    if base_branch:
-        args.extend(["--base-branch", base_branch])
+    if argument is not None:
+        args.extend(["--base-branches", argument])
     assert main(args) == 0
-    assert calls[0]["base_branch"] == base_branch
+    assert calls[0]["base_branches"] == base_branches
     assert calls[0]["branch"] == "feat/names"
     assert calls[0]["bucket"] == "model-artifacts"
     assert calls[0]["environment"] == "staging"

@@ -36,7 +36,7 @@ snake-case identifier. A model directory may contain only these entries:
 ```text
 models/<model-id>/
   README.md
-  hero.png                      # optional
+  hero.png                      # 1200x480 catalog card image
   model.yaml                    # the model's only configuration file
   scripts/
     compile.py                  # compile stage: writes one MPK per component
@@ -236,9 +236,10 @@ performance script.
 ## 9. Know what a change reruns
 
 Each stage has a stage key, a SHA-256 of everything its result depends on. CI
-compiles a build only when the branch catalog, or the base branch's catalog for
-a new branch, records no build with its current compile key. It runs a DevKit
-stage only when no completed registry run carries that stage's current key.
+compiles a build only when neither the branch's catalog nor, on a feature
+branch, a base branch's catalog records a build with its current compile key.
+It runs a DevKit stage only when no completed registry run carries that stage's
+current key.
 
 | Stage | Key inputs |
 | --- | --- |
