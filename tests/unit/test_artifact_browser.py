@@ -821,7 +821,7 @@ def test_mpk_validation_is_a_compact_accessible_status_mark() -> None:
     assert "MPK package integrity verified: archive structure, checksum, and build provenance match." in script
     assert '<h3>Validation</h3>' not in browser
     assert ".detail-title-actions" in styles
-    compact_controls = ".model-source-link, .huggingface-source-link, .mpk-validation-mark { width: 38px; height: 38px"
+    compact_controls = ".model-source-link, .original-model-link, .mpk-validation-mark { width: 38px; height: 38px"
     assert compact_controls in styles
     assert ".detail-links > [data-tooltip]:hover::after" in styles
     # Narrow screens anchor tooltips to the links row so a hidden tooltip never widens the page.
@@ -899,25 +899,27 @@ def test_only_model_packs_are_presented_as_artifacts() -> None:
     assert '|| artifacts[0]' not in browser
 
 
-def test_source_input_links_to_the_original_hugging_face_model_card() -> None:
+def test_detail_links_to_the_original_model_whatever_was_compiled() -> None:
     script = _browser_source("ui.js", "model-view.js")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
+    original_model_link = script.split("function originalModelLink(", 1)[1].split("\n}\n", 1)[0]
 
-    assert "function trustedHuggingFaceUrl" in script
-    assert 'url.hostname !== "huggingface.co"' in script
-    assert "function huggingFaceSourceLink" in script
-    assert 'sourceReference.startsWith("hf://")' in script
-    assert "input.metadata?.model_card" in script
+    # The declared card decides the link, so converted models link to their checkpoint's page too.
+    assert 'url.protocol === "https:" && !url.username && !url.password' in script
+    assert "trustedHttpsUrl(input.metadata?.model_card) || huggingFaceRepositoryUrl(input.source_reference)" in original_model_link
+    assert "startsWith(\"hf://\")" not in original_model_link
     assert "hf:\\/\\/(models|datasets|spaces)" in script
-    assert 'class="huggingface-source-link"' in script
+    assert 'url.hostname === "huggingface.co"' in original_model_link
+    assert 'Open the original model on ${huggingFace ? "Hugging Face" : url.hostname}' in original_model_link
+    assert "originalModel.huggingFace ? icons.huggingFace : icons.external" in script
     assert 'target="_blank" rel="noreferrer"' in script
-    assert "Open source ONNX model card on Hugging Face" in script
-    assert 'data-tooltip="Open source ONNX model card on Hugging Face"' in script
+    assert 'data-tooltip="${escapeHtml(originalModel.label)}"' in script
     assert "Official no-border logo from https://huggingface.co/brand" in script
     assert 'viewBox="0 0 95 88"' in script
     assert 'fill="#FFD21E"' in script
-    assert ".huggingface-source-link:focus-visible" in styles
-    assert ".huggingface-source-link svg { width: 20px; height: 19px; }" in styles
+    assert ".original-model-link:focus-visible" in styles
+    assert ".original-model-link svg { width: 20px; height: 19px; }" in styles
+    assert ".external-model-link svg { fill: none; stroke: currentColor;" in styles
 
 
 def test_benchmark_rendering_is_schema_versioned_and_charted() -> None:

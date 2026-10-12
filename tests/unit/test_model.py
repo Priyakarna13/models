@@ -208,6 +208,25 @@ def test_unapproved_https_host_is_a_validation_error() -> None:
         validate_model(FIXTURES / "fixture_model", model, SCHEMA)
 
 
+@pytest.mark.parametrize("model_card", (
+    "https://huggingface.co/example/model",
+    "https://github.com/example/model",
+    "https://docs.example.org/model.html",
+))
+def test_model_card_accepts_any_https_page(model_card: str) -> None:
+    model = load_model(FIXTURES / "fixture_model")
+    model["upstream"]["model_card"] = model_card
+    validate_model(FIXTURES / "fixture_model", model, SCHEMA)
+
+
+@pytest.mark.parametrize("model_card", ("http://example.org/model", "javascript:alert(1)", "hf://models/a/b"))
+def test_model_card_must_be_https(model_card: str) -> None:
+    model = load_model(FIXTURES / "fixture_model")
+    model["upstream"]["model_card"] = model_card
+    with pytest.raises(ValidationError, match="upstream.model_card"):
+        validate_model(FIXTURES / "fixture_model", model, SCHEMA)
+
+
 def test_missing_compile_script_fails(tmp_path: Path) -> None:
     directory = tmp_path / "fixture_model"
     shutil.copytree(FIXTURES / "fixture_model", directory)

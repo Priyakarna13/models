@@ -33,32 +33,34 @@ function mpkValidationMark(tests = []) {
   return `<span class="mpk-validation-mark" tabindex="0" role="img" aria-label="${message}" data-tooltip="${message}">✓</span>`;
 }
 
-function trustedHuggingFaceUrl(value = "") {
+function trustedHttpsUrl(value = "") {
   try {
     const url = new URL(String(value));
-    if (url.protocol !== "https:" || url.hostname !== "huggingface.co" || url.username || url.password) return null;
-    return url.href;
+    return url.protocol === "https:" && !url.username && !url.password ? url : null;
   } catch {
     return null;
   }
 }
 
-function huggingFaceSourceLink(input = {}) {
-  const sourceReference = String(input.source_reference || "");
-  if (!sourceReference.startsWith("hf://") && !trustedHuggingFaceUrl(sourceReference)) return null;
-  const declaredModelCard = trustedHuggingFaceUrl(input.metadata?.model_card);
-  if (declaredModelCard) {
-    return { href: declaredModelCard, label: declaredModelCard.replace(/^https:\/\//, "").replace(/\/$/, "") };
-  }
-
-  const match = /^hf:\/\/(models|datasets|spaces)\/([^/@?#]+)\/([^/@?#]+)@[a-f0-9]{40}\/.+$/i.exec(
-    String(input.source_reference || ""),
-  );
+function huggingFaceRepositoryUrl(sourceReference = "") {
+  const match = /^hf:\/\/(models|datasets|spaces)\/([^/@?#]+)\/([^/@?#]+)@[a-f0-9]{40}\/.+$/i.exec(String(sourceReference));
   if (!match) return null;
   const [, repositoryType, owner, repository] = match;
   const typePrefix = repositoryType === "models" ? "" : `${repositoryType}/`;
-  const href = `https://huggingface.co/${typePrefix}${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
-  return { href, label: href.replace(/^https:\/\//, "") };
+  return new URL(`https://huggingface.co/${typePrefix}${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`);
+}
+
+// The original model is the declared `upstream.model_card`, whatever ONNX was compiled; a pinned
+// Hugging Face source without a card falls back to its repository.
+function originalModelLink(input = {}) {
+  const url = trustedHttpsUrl(input.metadata?.model_card) || huggingFaceRepositoryUrl(input.source_reference);
+  if (!url) return null;
+  const huggingFace = url.hostname === "huggingface.co";
+  return {
+    href: url.href,
+    huggingFace,
+    label: `Open the original model on ${huggingFace ? "Hugging Face" : url.hostname}`,
+  };
 }
 
 function sourceInputPanel(inputs) {
@@ -630,7 +632,7 @@ export function renderDetail(variant) {
   const validated = details.every((detail) => mpkValidationMark(detail.tests.test_results || []));
   const fullPackage = variantPackage(variant.runs);
   const packageArtifact = (variant.packageSummary?.artifacts || []).find((item) => item.artifact_type === "model-package");
-  const huggingFaceSource = inputs.map(huggingFaceSourceLink).find(Boolean);
+  const originalModel = inputs.map(originalModelLink).find(Boolean);
   const builtAt = Math.max(...variant.runs.map((item) => Date.parse(item.finished_at || item.created_at || "") || 0));
   const singleComponent = details.length === 1;
   const backLabel = elements["result-title"].textContent || "Models";
@@ -656,7 +658,7 @@ export function renderDetail(variant) {
       <div class="detail-title-actions">
         ${downloadAction}
         ${catalogModelOfVariant(variant) ? `<button class="cli-action" type="button" data-copy="${escapeHtml(cliDownloadCommand(variant))}">${icons.copy}<span>Copy CLI command</span></button>` : ""}
-        <div class="detail-links">${validated ? mpkValidationMark(allTests) : ""}${huggingFaceSource ? `<a class="huggingface-source-link" href="${escapeHtml(huggingFaceSource.href)}" target="_blank" rel="noreferrer" aria-label="Open source ONNX model card on Hugging Face" data-tooltip="Open source ONNX model card on Hugging Face">${icons.huggingFace}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div>
+        <div class="detail-links">${validated ? mpkValidationMark(allTests) : ""}${originalModel ? `<a class="original-model-link${originalModel.huggingFace ? "" : " external-model-link"}" href="${escapeHtml(originalModel.href)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(originalModel.label)}" data-tooltip="${escapeHtml(originalModel.label)}">${originalModel.huggingFace ? icons.huggingFace : icons.external}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div>
       </div>
     </header>
     ${detailBuildSwitcher(variant)}

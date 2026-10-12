@@ -86,7 +86,7 @@
       "properties": {
         "repository": {"type": "string", "format": "uri"},
         "revision": {"type": "string", "minLength": 1},
-        "model_card": {"type": "string", "format": "uri"},
+        "model_card": {"type": "string", "format": "uri", "pattern": "^https://"},
         "derived_from": {"type": "string", "format": "uri"}
       }
     },
