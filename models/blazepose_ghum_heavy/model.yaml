@@ -63,7 +63,7 @@ components:
         - 1
         - 195
         layout: NC
-        description: Thirty-nine x/y/z/visibility-logit/presence-logit image-space landmark records.
+        description: Raw image-space landmark records; 0-32 are public landmarks, 33-34 are MediaPipe ROI auxiliaries, and 35-38 are ignored.
       - name: Identity_1
         dtype: float32
         shape:
@@ -77,7 +77,7 @@ components:
         - 1
         - 117
         layout: NC
-        description: Thirty-nine x/y/z world-coordinate landmark records.
+        description: Raw world-coordinate landmark records; MediaPipe exposes only 0-32 and ignores 33-38.
     shape_profiles: []
   preprocessing:
     pipeline:

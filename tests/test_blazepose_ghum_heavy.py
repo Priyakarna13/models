@@ -102,9 +102,21 @@ def test_model_declares_exact_apps_output_contract() -> None:
         ("Identity_1", [1, 1]),
         ("Identity_4", [1, 117]),
     ]
+    descriptions = {item["name"]: item["description"] for item in outputs}
+    assert "33-34 are MediaPipe ROI auxiliaries" in descriptions["Identity"]
+    assert "35-38 are ignored" in descriptions["Identity"]
+    assert "exposes only 0-32 and ignores 33-38" in descriptions["Identity_4"]
     profile = metadata["build_profiles"][0]
     assert profile["id"] == "modalix_bf16"
     assert profile["components"][0]["parameters"]["precision"] == "bf16"
+
+
+def test_documentation_distinguishes_public_and_raw_landmark_records() -> None:
+    readme = " ".join((MODEL_DIR / "README.md").read_text(encoding="utf-8").split())
+    assert "only `Identity` records 33 and 34 as auxiliary" in readme
+    assert "records 35–38 are not part of its postprocessed landmark outputs" in readme
+    assert "discards `Identity_4` records 33–38" in readme
+    assert "The remaining six are auxiliary ROI-tracking landmarks" not in readme
 
 
 def test_mpk_audit_enforces_public_abi_and_mla_placement(tmp_path: Path) -> None:

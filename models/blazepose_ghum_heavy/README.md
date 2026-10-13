@@ -43,9 +43,14 @@ their original order:
 2. `Identity_1 [1,1]`: global pose-presence logit;
 3. `Identity_4 [1,117]`: 39 world-space x, y, z records.
 
-The first 33 records are the public BlazePose body landmarks. The remaining six
-are auxiliary ROI-tracking landmarks. Consumers apply sigmoid to visibility and
-presence logits; the model intentionally leaves them raw.
+The first 33 records of each landmark tensor are the public BlazePose body
+landmarks. MediaPipe uses only `Identity` records 33 and 34 as auxiliary
+landmarks for deriving the ROI for a subsequent frame; records 35–38 are not
+part of its postprocessed landmark outputs. MediaPipe likewise discards
+`Identity_4` records 33–38. Consumers should ignore those undocumented trailing
+records. Apply sigmoid to visibility and presence logits; the model
+intentionally leaves them raw. These boundaries follow MediaPipe's
+[pose postprocessing graph](https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/modules/pose_landmark/tensors_to_pose_landmarks_and_segmentation.pbtxt).
 
 Neither landmark output is in source-image coordinates; consumers must apply
 the transforms MediaPipe's pose landmark graph performs after inference:
