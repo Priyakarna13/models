@@ -1,0 +1,11 @@
+compile:
+  run_tests: true
+performance:
+  run_tests: true
+  expected:
+    modalix_int8:
+      model:
+        throughput_fps: 1713.2
+    modalix_bf16:
+      model:
+        throughput_fps: 575.5
