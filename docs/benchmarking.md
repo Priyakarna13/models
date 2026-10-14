@@ -61,7 +61,8 @@ args = parser.parse_args()
 
 benchmark_options = pyneat.BenchmarkOptions()
 benchmark_options.num_samples = 1000
-report = pyneat.Model(args.mpk).benchmark(benchmark_options)
+model = pyneat.Model(args.mpk)
+report = model.benchmark(benchmark_options)
 with open(args.output, "w", encoding="utf-8") as output:
     json.dump({
         "core_version": pyneat.__version__,
@@ -70,6 +71,7 @@ with open(args.output, "w", encoding="utf-8") as output:
         "avg_power_watts": report.avg_power_watts,
         "energy_joules": report.energy_joules,
         "samples": benchmark_options.num_samples,
+        "execution_plan": json.loads(model.execution_plan().to_json()),
     }, output, allow_nan=False)
 ```
 
@@ -79,6 +81,11 @@ throughput window and the 100 ms power sampling catches the board before it
 reaches full load: YOLO26n INT8 measured about 945 FPS and 8.7 W with 100
 samples, and about 1040 FPS and 11.9 W with 1000. The script reports its
 sample count because the registry divides total energy by it.
+
+The script also records the Model's execution plan: each step, the processor
+it runs on, and the tensors between steps. The plan comes from the same Model
+the script benchmarks, so it reflects that script's options, such as a box
+decoder. The model page draws it as the component's execution graph.
 
 A failed call exits unsuccessfully. Keep the log: a missing report is not a
 successful benchmark. Keep archives and results outside Git.
@@ -135,7 +142,8 @@ clocks, then handles each component:
 
 `scripts/run_model_tests.sh` then runs the model's
 `tests/measure/test_performance.py` on each component's result, which
-compares its throughput with the expected value in `tests/tests.yaml`, and
+compares its throughput with the expected value in `tests/tests.yaml`, checks
+that the result records the execution plan the model browser draws, and
 records `passed`, `failed`, or `skipped` ([set up
 `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)).
 
