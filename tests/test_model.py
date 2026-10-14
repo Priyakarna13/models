@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 from model_registry.errors import ValidationError
-from model_registry.model import load_and_validate_model, load_model, validate_model
+from model_registry.model import component_pipelines, load_and_validate_model, load_model, validate_model
 from model_registry.taxonomy import load_taxonomy, validate_model_categorization
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -198,6 +198,31 @@ def test_declarative_composition_validates_ports_and_package_contents() -> None:
 
     model["packages"][0]["components"] = ["model"]
     with pytest.raises(ValidationError, match="omits components required by composition"):
+        validate_model(FIXTURES / "fixture_model", model, SCHEMA)
+
+
+def test_pipeline_is_read_as_declared() -> None:
+    model = _two_component_model()
+    model["pipeline"] = [{"component": "model"}, {"cpu": "Top 10 boxes"}, {"component": "second_model"}]
+    validate_model(FIXTURES / "fixture_model", model, SCHEMA)
+
+    assert component_pipelines({"fixture_model": model}) == {"fixture_model": model["pipeline"]}
+    assert component_pipelines({"fixture_model": _two_component_model()}) == {}
+
+
+@pytest.mark.parametrize(
+    "pipeline",
+    [
+        [{"component": "model"}, {"cpu": "Top 10 boxes"}],
+        [{"component": "model"}, {"component": "model"}, {"component": "second_model"}],
+        [{"component": "model"}, {"component": "unknown"}],
+        [{"cpu": "Top 10 boxes"}, {"cpu": "Sort boxes"}],
+    ],
+)
+def test_pipeline_must_list_each_component_once(pipeline: list[dict]) -> None:
+    model = _two_component_model()
+    model["pipeline"] = pipeline
+    with pytest.raises(ValidationError, match="pipeline must list each component exactly once"):
         validate_model(FIXTURES / "fixture_model", model, SCHEMA)
 
 
