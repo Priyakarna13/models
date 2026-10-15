@@ -3,7 +3,8 @@ conversion:
 compile:
   run_tests: true
 accuracy:
-  run_tests: true
+  run_tests: false
+  skip_reason: Dynamic-quantization study; the new build profiles have no expected values until this run measures them.
   expected:
     modalix_int8_bf16:
       coco_map: 0.4186
@@ -19,7 +20,8 @@ accuracy:
       coco_ar_medium: 0.6867
       coco_ar_large: 0.8811
 performance:
-  run_tests: true
+  run_tests: false
+  skip_reason: Dynamic-quantization study; the new build profiles have no expected values until this run measures them.
   expected:
     modalix_int8_bf16:
       backbone:

@@ -243,10 +243,10 @@ def test_compile_recipe_uses_one_grouped_entrypoint_and_direct_afe_api() -> None
     assert "loaded.quantize(" in source
     assert "any_shape_on_mla=" not in source
     assert "automatic_layout_conversion=" not in source
-    assert "with_per_token_quant(False)" in source
+    assert "with_per_token_quant(per_token)" in source
     assert "HistogramMSEMethod(calibration_bins)" in source
     assert "flexible_batch_size=True" in source
-    assert 'layer_norm_use_fp32_intermediates=precision == "bf16"' in source
+    assert 'layer_norm_use_fp32_intermediates=precision in {"bf16", "abf16w8"}' in source
     assert "quantized.compile(" in source
     assert "compile-outputs.json" in source
     assert '"derived_graphs"' in source

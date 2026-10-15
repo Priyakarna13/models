@@ -169,6 +169,125 @@ build_profiles:
   compile_invocations:
   - id: rf_detr
     components: [backbone, transformer]
+- id: modalix_bf16
+  target: modalix
+  components:
+  - id: backbone
+    artifact_suffix: backbone_bf16
+    calibration: coco_images
+    parameters:
+      precision: bf16
+      calibration_bins: 2048
+      calibration_samples: 50
+  - id: transformer
+    artifact_suffix: transformer_bf16
+    parameters:
+      precision: bf16
+      calibration_bins: 2048
+      calibration_samples: 50
+  compile_invocations:
+  - id: rf_detr
+    components: [backbone, transformer]
+- id: modalix_abf16w8_pt
+  target: modalix
+  components:
+  - id: backbone
+    artifact_suffix: backbone_abf16w8_pt
+    calibration: coco_images
+    parameters:
+      precision: abf16w8
+      per_token: true
+      calibration_bins: 2048
+      calibration_samples: 50
+  - id: transformer
+    artifact_suffix: transformer_abf16w8_pt
+    parameters:
+      precision: abf16w8
+      per_token: true
+      calibration_bins: 2048
+      calibration_samples: 50
+  compile_invocations:
+  - id: rf_detr
+    components: [backbone, transformer]
+- id: modalix_abf16w8
+  target: modalix
+  components:
+  - id: backbone
+    artifact_suffix: backbone_abf16w8
+    calibration: coco_images
+    parameters:
+      precision: abf16w8
+      calibration_bins: 2048
+      calibration_samples: 50
+  - id: transformer
+    artifact_suffix: transformer_abf16w8
+    parameters:
+      precision: abf16w8
+      calibration_bins: 2048
+      calibration_samples: 50
+  compile_invocations:
+  - id: rf_detr
+    components: [backbone, transformer]
+- id: modalix_int8_abf16w8_pt
+  target: modalix
+  components:
+  - id: backbone
+    artifact_suffix: backbone_int8_mse_bcr
+    calibration: coco_images
+    parameters:
+      precision: int8
+      calibration_bins: 1024
+      calibration_samples: 50
+  - id: transformer
+    artifact_suffix: transformer_abf16w8_pt
+    parameters:
+      precision: abf16w8
+      per_token: true
+      calibration_bins: 2048
+      calibration_samples: 50
+  compile_invocations:
+  - id: rf_detr
+    components: [backbone, transformer]
+- id: modalix_bf16_abf16w8_pt
+  target: modalix
+  components:
+  - id: backbone
+    artifact_suffix: backbone_bf16
+    calibration: coco_images
+    parameters:
+      precision: bf16
+      calibration_bins: 2048
+      calibration_samples: 50
+  - id: transformer
+    artifact_suffix: transformer_abf16w8_pt
+    parameters:
+      precision: abf16w8
+      per_token: true
+      calibration_bins: 2048
+      calibration_samples: 50
+  compile_invocations:
+  - id: rf_detr
+    components: [backbone, transformer]
+- id: modalix_abf16w8_pt_bf16
+  target: modalix
+  components:
+  - id: backbone
+    artifact_suffix: backbone_abf16w8_pt
+    calibration: coco_images
+    parameters:
+      precision: abf16w8
+      per_token: true
+      calibration_bins: 2048
+      calibration_samples: 50
+  - id: transformer
+    artifact_suffix: transformer_bf16
+    parameters:
+      precision: bf16
+      calibration_bins: 2048
+      calibration_samples: 50
+  compile_invocations:
+  - id: rf_detr
+    components: [backbone, transformer]
 compositions:
 - id: default
   type: declarative
@@ -201,13 +320,13 @@ packages:
   default: true
   components: [backbone, transformer]
   resources: []
-  build_profiles: [modalix_int8_bf16]
+  build_profiles: [modalix_int8_bf16, modalix_bf16, modalix_abf16w8_pt, modalix_abf16w8, modalix_int8_abf16w8_pt, modalix_bf16_abf16w8_pt, modalix_abf16w8_pt_bf16]
   composition: default
   maturity: experimental
 fidelity:
 - id: full_pipeline_fidelity
   scope: {type: package, package: default}
-  build_profiles: [modalix_int8_bf16]
+  build_profiles: [modalix_int8_bf16, modalix_bf16, modalix_abf16w8_pt, modalix_abf16w8, modalix_int8_abf16w8_pt, modalix_bf16_abf16w8_pt, modalix_abf16w8_pt_bf16]
   # Reordered queries can lower numerical similarity for equivalent detections,
   # so fidelity does not gate publication.
   status: diagnostic
@@ -226,7 +345,7 @@ fidelity:
 accuracy:
 - id: coco_accuracy
   scope: {type: package, package: default}
-  build_profiles: [modalix_int8_bf16]
+  build_profiles: [modalix_int8_bf16, modalix_bf16, modalix_abf16w8_pt, modalix_abf16w8, modalix_int8_abf16w8_pt, modalix_bf16_abf16w8_pt, modalix_abf16w8_pt_bf16]
   engine: devkit_script
   status: ready
   result_component: transformer
@@ -244,7 +363,7 @@ accuracy:
 benchmark:
 - id: backbone_modalix
   scope: {type: component, component: backbone}
-  build_profiles: [modalix_int8_bf16]
+  build_profiles: [modalix_int8_bf16, modalix_bf16, modalix_abf16w8_pt, modalix_abf16w8, modalix_int8_abf16w8_pt, modalix_bf16_abf16w8_pt, modalix_abf16w8_pt_bf16]
   status: pending
   target: modalix
   reason: Establish a Core API baseline for the default MPK workload.
@@ -252,7 +371,7 @@ benchmark:
   required_metrics: [avg_power_watts, energy_per_inference_joules]
 - id: transformer_modalix
   scope: {type: component, component: transformer}
-  build_profiles: [modalix_int8_bf16]
+  build_profiles: [modalix_int8_bf16, modalix_bf16, modalix_abf16w8_pt, modalix_abf16w8, modalix_int8_abf16w8_pt, modalix_bf16_abf16w8_pt, modalix_abf16w8_pt_bf16]
   status: pending
   target: modalix
   reason: Establish a Core API baseline for the default MPK workload.
