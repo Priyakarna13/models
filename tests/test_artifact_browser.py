@@ -349,6 +349,29 @@ def test_int8_variants_are_listed_first() -> None:
     assert json.loads(result.stdout) == ["modalix_int8", "modalix_int8_bf16", "a_fp32", "modalix_bf16"]
 
 
+def test_catalog_view_prefers_the_current_catalog_over_cached_history() -> None:
+    script = _browser_source("api.js")
+    start = script.index("export function catalogModelForRun(")
+    helper = script[start:script.index("\n}\n", start) + 3]
+    run = {"id": "reused", "git_ref": "refs/heads/develop", "commit_sha": "old", "metadata": {"model_id": "yolo26n"}}
+    probe = f"""
+const state = {{
+  models: [{{model_id: "yolo26n", family: "yolo", builds: [{{run_id: "reused"}}]}}],
+  historicalCatalogModels: new Map([["refs/heads/develop:old:yolo26n", {{model_id: "yolo26n", family: "yolo_26"}}]]),
+}};
+const families = ["models", "runs"].map((mode) => {{
+  state.catalogMode = mode;
+  return catalogModelForRun({json.dumps(run)}).family;
+}});
+console.log(JSON.stringify(families));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", helper + probe],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    assert json.loads(result.stdout) == ["yolo", "yolo_26"]
+
+
 def test_every_expandable_area_is_the_shared_disclosure_row() -> None:
     browser = _browser_source()
     html = (BROWSER / "index.html").read_text(encoding="utf-8")
@@ -739,7 +762,7 @@ def test_browser_uses_refined_search_first_layout() -> None:
     assert "Roboto:wght@400;500;600;700" in html
     assert "IBM+Plex+Mono" in html
     assert '<h1 class="sr-only">Model Registry</h1>' in html
-    assert "Search models, tasks, or architectures" in html
+    assert "Search models, tasks, or families" in html
     assert 'class="page-header"' not in html
     assert "Trace every" not in html
     assert '<header class="catalog-intro">' in html
@@ -809,6 +832,20 @@ def test_browser_loads_taxonomy_from_the_current_catalog_and_exposes_category_fa
     assert '"architecture-filter": "architecture_id"' in script
     assert "setCategoryFiltersDisabled(true)" in script
     assert "Category filters are temporarily unavailable" in script
+
+
+def test_filters_list_only_used_values_and_hide_without_a_choice() -> None:
+    html = (BROWSER / "index.html").read_text(encoding="utf-8")
+    script = _browser_source("catalog-view.js")
+
+    assert '<span>Model family</span><select id="architecture-filter">' in html
+    assert '<span>Architecture</span><select id="paradigm-filter">' in html
+    assert "state.runs.flatMap((run) => run[field] ?? [])" in script
+    assert "if (build.run) return { ...build.run, ...catalogCategories(model) };" in _browser_source("api.js")
+    model_view = _browser_source("model-view.js")
+    assert "const categories = catalogModel?.categories || run.model_categories || {};" in model_view
+    assert 'element.closest("label").hidden = element.options.length < 3 && !element.value' in script
+    assert 'hideFilterWithoutChoice(elements["compiler-filter"])' in script
 
 
 def test_category_filters_are_server_side_and_shareable() -> None:
