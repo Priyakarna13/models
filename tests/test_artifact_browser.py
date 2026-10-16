@@ -1445,7 +1445,7 @@ const catalog = [{model_id: 'rf_detr_small', display_name: 'RF-DETR', builds: [
   {run_id: 'stale-transformer', build_profile_id: 'w8a8_w16a16', component_id: 'transformer',
    validation_fingerprint: 'stale-accuracy-key'},
 ]},
-                 {model_id: 'ssd_mobilenet', display_name: 'SSD', builds: [{run_id: 'inherited'}]}];
+                 {model_id: 'ssd_mobilenet', display_name: 'SSD', builds: [{run_id: 'inherited', build_profile_id: 'w8a8_w16a16'}]}];
 const packageRun = (id, components) => ({id, run_type: 'model_package', status: 'completed',
   git_ref: 'refs/heads/perf/rfdetr-attention-layout', commit_sha: 'workflow-2', metadata: {
   model_id: 'rf_detr_small', build_profile_id: 'w8a8_w16a16', component_run_ids: components,
