@@ -191,7 +191,7 @@ jobs:
     name: Plan compilations and DevKit stages against the registry
     needs: [select, portal]
     runs-on: ubuntu-latest
-    environment: ${{ needs.select.outputs.vulcan_environment }}
+    environment: ${{ (needs.select.outputs.vulcan_environment) == 'production' && 'prod' || (needs.select.outputs.vulcan_environment) }}
     outputs:
       compile_count: ${{ steps.plan.outputs.compile_count }}
       compile_matrix: ${{ steps.plan.outputs.compile_matrix }}
@@ -255,7 +255,7 @@ jobs:
     needs: [select, plan, resolve-vulcan-config]
     if: needs.plan.outputs.compile_count != '0'
     runs-on: ubuntu-latest
-    environment: ${{ needs.select.outputs.vulcan_environment }}
+    environment: ${{ (needs.select.outputs.vulcan_environment) == 'production' && 'prod' || (needs.select.outputs.vulcan_environment) }}
     permissions:
       contents: read
       id-token: write
@@ -313,7 +313,7 @@ jobs:
       needs.resolve-vulcan-config.result == 'success' &&
       needs.authorize-runner-classes.result == 'success'
     runs-on: ubuntu-latest
-    environment: ${{ needs.select.outputs.vulcan_environment }}
+    environment: ${{ (needs.select.outputs.vulcan_environment) == 'production' && 'prod' || (needs.select.outputs.vulcan_environment) }}
     permissions:
       contents: read
       id-token: write
@@ -393,7 +393,7 @@ jobs:
       needs.plan.result == 'success' &&
       (needs.plan.outputs.compile_count == '0' || needs.initialize-catalog.result == 'success')
     runs-on: ubuntu-latest
-    environment: ${{ needs.select.outputs.vulcan_environment }}
+    environment: ${{ (needs.select.outputs.vulcan_environment) == 'production' && 'prod' || (needs.select.outputs.vulcan_environment) }}
     permissions:
       contents: read
       id-token: write

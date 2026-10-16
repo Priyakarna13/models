@@ -47,7 +47,7 @@ permissions:
 jobs:
   compile:
     name: Compile
-    environment: ${{ inputs.vulcan_environment }}
+    environment: ${{ (inputs.vulcan_environment) == 'production' && 'prod' || (inputs.vulcan_environment) }}
     permissions:
       contents: read
     runs-on:
@@ -249,7 +249,7 @@ jobs:
     name: Publish
     needs: compile
     runs-on: ubuntu-latest
-    environment: ${{ inputs.vulcan_environment }}
+    environment: ${{ (inputs.vulcan_environment) == 'production' && 'prod' || (inputs.vulcan_environment) }}
     permissions:
       actions: write
       contents: read

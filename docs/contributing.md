@@ -212,3 +212,11 @@ If trusted compilation exposes a model-specific failure, update the recipe or
 manifest with reproducible evidence and tests. Use `status: unsupported` only
 after a combination is proven unusable, not as a shortcut around an unresolved
 failure.
+
+## Production GitHub environment
+
+Production jobs authenticate through the GitHub environment `prod`. The workflow
+input and registry/runtime environment may still be `production`; only the job
+environment is normalized. Keep production environment configuration on `prod`.
+Staging jobs and model stage keys are unchanged. The coordinated migration is
+tracked in [Vulcan #259](https://github.com/sima-neat/vulcan/issues/259).

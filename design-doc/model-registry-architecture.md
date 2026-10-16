@@ -213,3 +213,11 @@ browser and `sima-cli models` commands consume those APIs directly.
 Branch deletion cancels the branch's unfinished workflow runs and calls the
 registry purge endpoint; branch creation calls the restore endpoint. Retention
 operates on registered runs and exact S3 object versions.
+
+## Production GitHub environment
+
+Production jobs authenticate through the GitHub environment `prod`. The workflow
+input and registry/runtime environment may still be `production`; only the job
+environment is normalized. Keep production environment configuration on `prod`.
+Staging jobs and model stage keys are unchanged. The coordinated migration is
+tracked in [Vulcan #259](https://github.com/sima-neat/vulcan/issues/259).

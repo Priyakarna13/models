@@ -67,7 +67,7 @@ jobs:
       inputs.model_id != '' && inputs.build_profile_id != '' &&
       inputs.compile_invocation_id != '' && inputs.stages != ''
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ (inputs.environment) == 'production' && 'prod' || (inputs.environment) }}
     permissions:
       actions: read
       contents: read
@@ -283,7 +283,7 @@ jobs:
     name: Benchmark ${{ inputs.model_id }}/${{ inputs.compile_invocation_id }} (${{ inputs.build_profile_id }}) on DevKit
     needs: [stage-dispatched-benchmark, resolve-dispatched-benchmark-runner, resolve-dispatched-benchmark-config]
     if: inputs.source_branch == github.ref_name && inputs.environment == 'staging'
-    environment: ${{ inputs.environment }}
+    environment: ${{ (inputs.environment) == 'production' && 'prod' || (inputs.environment) }}
     runs-on:
       group: ${{ needs.resolve-dispatched-benchmark-runner.outputs.modalix_runner_group }}
       labels: [self-hosted, Linux, ARM64, modalix, model-registry, "vulcan-${{ inputs.environment }}"]
@@ -466,7 +466,7 @@ jobs:
       (needs.benchmark-dispatched-model.outputs.performance == 'success' ||
       needs.benchmark-dispatched-model.outputs.accuracy == 'success')
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ (inputs.environment) == 'production' && 'prod' || (inputs.environment) }}
     permissions:
       actions: read
       contents: read
