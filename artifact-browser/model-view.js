@@ -3,7 +3,7 @@ import { accuracyMetricLabel, orderedMetricNames, publishedScores } from "./accu
 import { selectLayers, layerTimeScale, layerFamily, LAYER_FAMILIES } from "./layer-stats.js";
 import { adaptBenchmarkResult } from "./benchmark-adapters.js";
 import { renderMarkdown, resolveDocumentationLink } from "./markdown.js";
-import { state, elements, catalogMode, currentVariant, showView, taxonomyLabel } from "./state.js";
+import { config, state, elements, catalogMode, currentVariant, showView, taxonomyLabel } from "./state.js";
 import { icons, escapeHtml, branchName, shortSha, profileLabel, variantLabel, precisionLabel, showToast, disclosure } from "./ui.js";
 import {
   metricDefinition, metricDisplay, formatDate, formatDuration,
@@ -13,7 +13,7 @@ import {
   apiText, profileGroups, variantPackage, modelPackArtifacts, catalogModelForRun,
   compilerFilteredBuilds, documentationHeroUrl,
 } from "./api.js";
-import { packageFormat, modelDownloadCommand } from "./downloads.js";
+import { packageFormat, modelDownloadCommand, artifactDelivery, deploymentSize, huggingFaceLocation } from "./downloads.js";
 
 function githubModelUrl(run, modelId, sourceCommit = run.commit_sha) {
   const organization = String(state.repository.organization || "");
@@ -44,10 +44,11 @@ function measurementSource(run, modelId) {
   return ` · Commit ${commitMarkup}${workflow}`;
 }
 
-function mpkValidationMark(tests = []) {
-  const passed = tests.some((test) => test.name === "mpk-validation" && test.status === "passed");
+function artifactValidationMark(tests = []) {
+  const passed = tests.some((test) => ["mpk-validation", "deployment-validation"].includes(test.name) && test.status === "passed");
   if (!passed) return "";
-  const message = "MPK package integrity verified: archive structure, checksum, and build provenance match.";
+  const label = tests.some((test) => test.name === "deployment-validation") ? "Model deployment" : "MPK package";
+  const message = `${label} integrity verified: file structure, checksum, and build provenance match.`;
   return `<span class="mpk-validation-mark" tabindex="0" role="img" aria-label="${message}" data-tooltip="${message}">✓</span>`;
 }
 
@@ -546,11 +547,11 @@ function componentRow(detail, single) {
   const artifacts = modelPackArtifacts(detail.summary.artifacts);
   const tests = detail.tests.test_results || [];
   const parameters = detail.provenance.parameters?.parameters?.compile_parameters || {};
-  const mpkBytes = artifacts.reduce((total, artifact) => total + (Number.isFinite(artifact.size_bytes) ? artifact.size_bytes : 0), 0);
+  const mpkBytes = artifacts.reduce((total, artifact) => total + (Number.isFinite(deploymentSize(artifact)) ? deploymentSize(artifact) : 0), 0);
   const artifactRows = artifacts.length
-    ? artifacts.map((artifact) => keyValue("SHA-256", artifact.sha256, { copy: true, mono: true })).join("")
+    ? artifacts.map((artifact) => keyValue(artifactDelivery(artifact) === "archive" ? "SHA-256" : "Manifest SHA-256", artifact.sha256, { copy: true, mono: true })).join("")
     : keyValue("SHA-256", "No artifact metadata was registered for this run.");
-  const meta = [mpkBytes ? `MPK ${formatBytes(mpkBytes)}` : "", parameters.precision && precisionLabel(parameters.precision)]
+  const meta = [mpkBytes ? `${run.metadata?.artifact_kind === "llima" ? "Model" : "MPK"} ${formatBytes(mpkBytes)}` : "", parameters.precision && precisionLabel(parameters.precision)]
     .filter(Boolean).join(" · ");
   const body = `<dl class="key-grid">
       ${artifactRows}
@@ -854,7 +855,8 @@ function targetName(run) {
 }
 
 function cliDownloadCommand(variant) {
-  return modelDownloadCommand(variant.modelId, variant.profile, elements["branch-filter"].value || branchName(variant.anchor.git_ref), state.apiBase.includes(".stg."));
+  return modelDownloadCommand(variant.modelId, variant.profile,
+    elements["branch-filter"].value || branchName(variant.anchor.git_ref), config.environment?.toLowerCase() === "staging");
 }
 
 function sectionNavigation(sections) {
@@ -867,13 +869,15 @@ function sectionNavigation(sections) {
 // A single-component package is that component's MPK, so only multi-component builds offer components.
 function packageCard(variant, fullPackage, packageArtifact, hasArtifacts, singleComponent) {
   const run = variant.anchor;
+  const folder = packageArtifact && artifactDelivery(packageArtifact) !== "archive";
+  const location = packageArtifact && huggingFaceLocation(packageArtifact);
   const components = hasArtifacts && !(fullPackage && singleComponent)
     ? `<button class="action-button" type="button" data-download-variant="${escapeHtml(run.id)}" data-run-id="${escapeHtml(run.id)}">${icons.download}<span>Download components</span></button>`
     : "";
   if (!fullPackage) return components ? `<div class="package-actions">${components}</div>` : "";
   return `<div class="package-card">
-    <div class="package-card-copy"><strong>Full package</strong><span>${packageFormat(packageArtifact) === "Folder" ? "Download the model folder with sima-cli using its verified manifest." : packageFormat(packageArtifact) === "MPK" ? "The compiled model in one verified MPK." : "All components and declared runtime resources in one verified ZIP."}</span></div>
-    ${packageArtifact ? `<dl class="package-facts"><div><dt>Size</dt><dd>${escapeHtml(formatBytes(packageArtifact.metadata?.deployment_size_bytes ?? packageArtifact.size_bytes))}</dd></div><div><dt>SHA-256</dt><dd class="artifact-hash"><code>${escapeHtml(packageArtifact.sha256)}</code><button type="button" class="copy-button" data-copy="${escapeHtml(packageArtifact.sha256)}" aria-label="Copy package checksum">${icons.copy}</button></dd></div></dl>` : ""}
+    <div class="package-card-copy"><strong>Full package</strong><span>${folder ? "Download the model folder with sima-cli using its verified manifest." : packageFormat(packageArtifact) === "MPK" ? "The compiled model in one verified MPK." : "All components and declared runtime resources in one verified ZIP."}</span>${location ? `<a href="${escapeHtml(location.url)}" target="_blank" rel="noreferrer">Deployment on Hugging Face ↗</a>` : ""}</div>
+    ${packageArtifact ? `<dl class="package-facts"><div><dt>Size</dt><dd>${escapeHtml(formatBytes(deploymentSize(packageArtifact)))}</dd></div><div><dt>${folder ? "Manifest SHA-256" : "SHA-256"}</dt><dd class="artifact-hash"><code>${escapeHtml(packageArtifact.sha256)}</code><button type="button" class="copy-button" data-copy="${escapeHtml(packageArtifact.sha256)}" aria-label="Copy package checksum">${icons.copy}</button></dd></div></dl>` : ""}
     <div class="package-actions"><button class="action-button" type="button" data-download="package" data-run-id="${escapeHtml(fullPackage.run_id)}">${icons.download}<span>Download package</span></button>${components}</div>
   </div>`;
 }
@@ -891,6 +895,14 @@ export function renderDetail(variant) {
     .filter(Boolean), (precision) => precision);
   // A reused build keeps the categories it was compiled with; the catalog has the current ones.
   const categories = catalogModel?.categories || run.model_categories || {};
+  const compilation = details[0]?.provenance.parameters?.parameters || {};
+  const parameters = { ...compilation.compile_parameters, ...compilation.compiled_parameters };
+  const hasImageResolution = [parameters.input_height, parameters.input_width].every((value) => Number.isInteger(value) && value > 0);
+  const compiledLimits = ["llm", "vlm"].includes(categories.model_type) ? [
+    Number.isInteger(parameters.max_num_tokens) && parameters.max_num_tokens > 0
+      ? keyValue("Maximum context", `${parameters.max_num_tokens.toLocaleString("en-US")} tokens (input + output)`) : "",
+    hasImageResolution ? keyValue("Image input resolution", `${parameters.input_height} × ${parameters.input_width} pixels`) : "",
+  ].join("") : "";
   const license = run.metadata?.license;
   // CI reuses a build until its compile inputs change, so the build's commit can predate the scripts
   // that measured it. The source link opens the commit the model card comes from; Build provenance
@@ -902,9 +914,11 @@ export function renderDetail(variant) {
   const overviewMarkup = overviewSection(catalogModel);
   const hasArtifacts = details.some((detail) => modelPackArtifacts(detail.summary.artifacts).length);
   // Every component's MPK must pass validation for the build to carry the mark.
-  const validated = details.every((detail) => mpkValidationMark(detail.tests.test_results || []));
+  const validated = details.every((detail) => artifactValidationMark(detail.tests.test_results || []));
   const fullPackage = variantPackage(variant.runs);
   const packageArtifact = (variant.packageSummary?.artifacts || []).find((item) => item.artifact_type === "model-package");
+  const downloadArtifact = packageArtifact || details.flatMap((detail) => modelPackArtifacts(detail.summary.artifacts))[0];
+  const downloadLabel = downloadArtifact && artifactDelivery(downloadArtifact) !== "archive" ? "Download folder" : "Download";
   const originalModel = inputs.map(originalModelLink).find(Boolean);
   const builtAt = Math.max(...variant.runs.map((item) => Date.parse(item.finished_at || item.created_at || "") || 0));
   const singleComponent = details.length === 1;
@@ -914,8 +928,8 @@ export function renderDetail(variant) {
     : details;
   const backLabel = elements["result-title"].textContent || "Models";
   const downloadAction = fullPackage
-    ? `<button class="download-action" type="button" data-download="package" data-run-id="${escapeHtml(fullPackage.run_id)}">${icons.download}<span>Download</span>${packageArtifact ? `<small>${escapeHtml(formatBytes(packageArtifact.metadata?.deployment_size_bytes ?? packageArtifact.size_bytes))}</small>` : ""}</button>`
-    : hasArtifacts ? `<button class="download-action" type="button" data-download-variant="${escapeHtml(run.id)}" data-run-id="${escapeHtml(run.id)}">${icons.download}<span>Download</span></button>` : "";
+    ? `<button class="download-action" type="button" data-download="package" data-run-id="${escapeHtml(fullPackage.run_id)}">${icons.download}<span>${downloadLabel}</span>${packageArtifact ? `<small>${escapeHtml(formatBytes(deploymentSize(packageArtifact)))}</small>` : ""}</button>`
+    : hasArtifacts ? `<button class="download-action" type="button" data-download-variant="${escapeHtml(run.id)}" data-run-id="${escapeHtml(run.id)}">${icons.download}<span>${downloadLabel}</span></button>` : "";
   const sections = [
     overviewMarkup && ["overview-section", "Overview"],
     ["components-section", "Performance"],
@@ -935,10 +949,11 @@ export function renderDetail(variant) {
       <div class="detail-title-actions">
         ${downloadAction}
         ${catalogModelOfVariant(variant) ? `<button class="cli-action" type="button" data-copy="${escapeHtml(cliDownloadCommand(variant))}">${icons.copy}<span>Copy CLI command</span></button>` : ""}
-        <div class="detail-links">${validated ? mpkValidationMark(allTests) : ""}${originalModel ? `<a class="original-model-link${originalModel.huggingFace ? "" : " external-model-link"}" href="${escapeHtml(originalModel.href)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(originalModel.label)}" data-tooltip="${escapeHtml(originalModel.label)}">${originalModel.huggingFace ? icons.huggingFace : icons.external}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div>
+        <div class="detail-links">${validated ? artifactValidationMark(allTests) : ""}${originalModel ? `<a class="original-model-link${originalModel.huggingFace ? "" : " external-model-link"}" href="${escapeHtml(originalModel.href)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(originalModel.label)}" data-tooltip="${escapeHtml(originalModel.label)}">${originalModel.huggingFace ? icons.huggingFace : icons.external}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div>
       </div>
     </header>
     ${detailBuildSwitcher(variant)}
+    ${compiledLimits ? `<dl class="key-grid">${compiledLimits}</dl>` : ""}
     ${sectionNavigation(sections)}
 
     ${overviewMarkup}

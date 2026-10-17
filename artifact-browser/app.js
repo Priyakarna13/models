@@ -1,4 +1,4 @@
-import { variantDownloads, prepareDownloads, startDownloads, packageFormat, modelDownloadCommand } from "./downloads.js";
+import { variantDownloads, prepareDownloads, startDownloads, packageFormat, artifactDelivery, deploymentSize, huggingFaceLocation, modelDownloadCommand } from "./downloads.js";
 import {
   allPages, branchModels, catalogBuildRuns, runProfile, variantBuildKey, variantBuilds,
 } from "./branch-builds.js";
@@ -142,30 +142,43 @@ function resetDownloadDialog({ title, description, confirmLabel }) {
   elements["download-dialog"].querySelector(".download-note").hidden = true;
   elements["download-status"].textContent = "";
   elements["download-confirm"].disabled = true;
+  elements["download-confirm"].hidden = false;
   elements["download-confirm"].textContent = confirmLabel;
 }
 
-function showFolderDownload(run, artifact) {
+function showFolderDownload(run, downloads) {
   const dialog = elements["download-dialog"];
-  pendingCommand = modelDownloadCommand(run.metadata.model_id, run.metadata.build_profile_id,
-    elements["branch-filter"].value || branchName(run.git_ref), state.apiBase.includes(".stg."));
+  const current = state.models.some((model) => model.model_id === run.metadata?.model_id
+    && (model.builds?.some((build) => build.run_id === run.id)
+      || model.packages?.some((item) => item.run_id === run.id)));
+  pendingCommand = current ? modelDownloadCommand(run.metadata.model_id, runProfile(run),
+    elements["branch-filter"].value || branchName(run.git_ref), config.environment?.toLowerCase() === "staging") : null;
   elements["download-title"].textContent = "Download model folder";
   elements["download-description"].textContent = "LLM and VLM models are provided as individual files rather than a ZIP archive. Use sima-cli 2.1.19 or later to download the files in parallel and assemble the model folder.";
   elements["download-list"].hidden = true;
   elements["download-package-info"].hidden = false;
-  elements["download-package-info"].innerHTML = `
-    <dt>Command</dt><dd><code>${escapeHtml(pendingCommand)}</code></dd>
-    <dt>Files</dt><dd>${escapeHtml(artifact.metadata.file_count ?? "Not recorded")}</dd>
-    <dt>Download size</dt><dd>${escapeHtml(formatBytes(artifact.metadata.deployment_size_bytes))}</dd>`;
+  elements["download-package-info"].innerHTML = downloads.map((item) => {
+    const location = item.delivery === "huggingface" ? huggingFaceLocation(item.artifact) : null;
+    return `<dt>Deployment</dt><dd>${escapeHtml(item.component)}</dd>
+      <dt>Files</dt><dd>${escapeHtml(item.artifact.metadata?.file_count ?? "Not recorded")}</dd>
+      <dt>Download size</dt><dd>${escapeHtml(formatBytes(item.size))}</dd>
+      <dt>Storage</dt><dd>${item.delivery === "huggingface" ? "Hugging Face" : item.delivery === "archive" ? "Archive" : "Registry folder"}</dd>
+      ${location ? `<dt>Repository</dt><dd><a href="${escapeHtml(location.url)}" target="_blank" rel="noreferrer">${escapeHtml(location.repo_id)} ↗</a></dd><dt>Revision</dt><dd><code>${escapeHtml(location.revision)}</code></dd>${location.subdirectory ? `<dt>Folder</dt><dd>${escapeHtml(location.subdirectory)}</dd>` : ""}` : item.delivery === "huggingface" ? `<dt>Repository</dt><dd>Pinned repository location unavailable. Refresh the catalog to retry.</dd>` : ""}`;
+  }).join("") + (pendingCommand ? `<dt>Command</dt><dd><code>${escapeHtml(pendingCommand)}</code></dd>`
+    : `<dt>Command</dt><dd>Open the current catalog variant for its verified CLI download command.</dd>`);
   const note = dialog.querySelector(".download-note");
   note.hidden = false;
-  note.textContent = "The CLI uses the manifest to preserve the folder structure and verify each file’s checksum. This command downloads the selected branch’s current deployment.";
+  note.textContent = downloads.some((item) => item.delivery === "huggingface")
+    ? "The repository link opens the compiled deployment at its pinned revision. Use that revision and folder when downloading from Hugging Face."
+    : "The CLI uses the manifest to preserve the folder structure and verify each file’s checksum.";
   elements["download-confirm"].textContent = "Copy command";
+  elements["download-confirm"].hidden = !pendingCommand;
   elements["download-confirm"].disabled = false;
 }
 
 async function downloadVariant(runId) {
   const request = ++downloadRequest;
+  const catalogModels = elements["history-filter"].checked ? [] : state.models;
   const dialog = elements["download-dialog"];
   resetDownloadDialog({
     title: "Download components",
@@ -175,14 +188,13 @@ async function downloadVariant(runId) {
   dialog.showModal();
   try {
     const summary = await api(`/v1/runs/${encodeURIComponent(runId)}`);
-    const folder = (summary.artifacts || []).find(item => item.artifact_type === "model-pack" && packageFormat(item) === "Folder");
-    if (folder) {
-      if (request !== downloadRequest || !dialog.open) return;
-      showFolderDownload(summary.run, folder);
+    const model = catalogModels.find((model) => model.model_id === summary.run.metadata?.model_id);
+    const downloads = await prepareDownloads(await variantDownloads(summary.run, api, model), api);
+    if (request !== downloadRequest || !dialog.open) return;
+    if (downloads.some((item) => item.delivery !== "archive" && item.delivery)) {
+      showFolderDownload(summary.run, downloads);
       return;
     }
-    const downloads = await prepareDownloads(await variantDownloads(summary.run, api), api);
-    if (request !== downloadRequest || !dialog.open) return;
     pendingDownloads = downloads;
     const profile = summary.run.metadata?.build_profile_id || summary.run.metadata?.variant_id
       ? profileLabel(summary.run) : "Selected variant";
@@ -215,24 +227,22 @@ async function downloadPackage(runId) {
     if (!run || !artifact) throw new Error("No complete package is available for this build.");
     const metadata = run.metadata || {};
     const packageId = metadata.package_id || artifact.metadata?.package_id || "default";
-    const modelId = metadata.model_id || "model";
     const profile = metadata.build_profile_id ? variantLabel(metadata.build_profile_id) : "This build";
     const components = Object.keys(metadata.component_run_ids || artifact.metadata?.component_run_ids || {});
-    if (packageFormat(artifact) === "Folder") {
-      if (request !== downloadRequest || !dialog.open) return;
-      showFolderDownload(run, artifact);
-      return;
-    }
     // The registry serves the package under its published filename: the MPK itself, or a ZIP.
     const downloads = await prepareDownloads([{
       runId: run.id,
       component: "Full package",
       name: artifact.name,
-      size: artifact.size_bytes,
+      size: deploymentSize(artifact), artifact, delivery: artifactDelivery(artifact),
     }], api);
     const filename = downloads[0].filename;
     const format = packageFormat(artifact, filename);
     if (request !== downloadRequest || !dialog.open) return;
+    if (downloads.some((item) => item.delivery !== "archive" && item.delivery)) {
+      showFolderDownload(run, downloads);
+      return;
+    }
     pendingDownloads = downloads;
     const license = metadata.license || {};
     const redistribution = license.redistribution
@@ -555,7 +565,8 @@ elements["branch-filter"].addEventListener("change", async () => {
 elements["compiler-filter"].addEventListener("change", async () => {
   updateFilterDisclosure();
   if (branchSnapshotMode() && catalogMode()) {
-    state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions, elements["compiler-filter"].value);
+    state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,
+      elements["compiler-filter"].value, elements["branch-filter"].value);
     state.runs = state.models.flatMap((model) => model.builds.map((build) => runFromCatalogBuild(model, build)));
     renderRuns();
     writeCachedCatalog();

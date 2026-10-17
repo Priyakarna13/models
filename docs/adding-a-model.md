@@ -58,7 +58,7 @@ models/<model-id>/
 Put every model-specific setting in `model.yaml`, not in separate
 configuration files. [Step 11](#11-write-the-readme) describes the README.
 
-Keep board-only code inside `performance.py` or `accuracy.py`. Any other
+Keep board-only code inside `performance.py` or `accuracy.py`. For ONNX, any other
 `.py` or `.sh` file under `scripts/` is a compile input, so a helper that
 `accuracy.py` imports recompiles the model when it changes. See [step
 9](#9-know-what-a-change-reruns).
@@ -111,11 +111,11 @@ Declare one `components` entry for each independently compiled unit. A
 component owns:
 
 - its role and immutable source;
-- one or more named ONNX entrypoints;
+- named ONNX tensor entrypoints or a Hugging Face generation entrypoint;
 - tensor, state, streaming, and concrete shape-profile contracts;
 - preprocessing and postprocessing pipelines;
 - optional model-specific surgery;
-- its `recipe`, `scripts/compile.py`;
+- its `recipe`, `scripts/compile.py` or `scripts/compile.sh`;
 - optional dependencies on other components.
 
 Names and tensor details must match the pinned inputs. Inspect the ONNX files;
@@ -177,7 +177,8 @@ accuracy entry must each compile all their components in one invocation.
 A binding proven incompatible may stay as `status: unsupported` with a reason.
 Do not use it for untested work.
 
-Every recipe has one interface, for single and grouped invocations alike:
+ONNX recipes use the following interface for single and grouped invocations.
+For Hugging Face checkpoints, use the [LLiMa recipe](#llima-language-and-vision-language-models) instead:
 
 ```text
 scripts/compile.py --model <verified-source> --output-dir <new-directory> \
@@ -264,11 +265,13 @@ Each stage has a stage key, a SHA-256 of everything its result depends on. CI
 compiles a build only when neither the branch's catalog nor, on a feature
 branch, a base branch's catalog records a build with its current compile key.
 It runs a DevKit stage only when no completed registry run carries that stage's
-current key.
+current key. Models with `build-on-demand: true` require an explicit manual
+selection before either stage can run; see [on-demand builds](#on-demand-builds).
 
 | Stage | Key inputs |
 | --- | --- |
-| compile | the invocation's components and bindings in `model.yaml` (source, interface, surgery, recipe, dependencies, parameters, shape profile, calibration), the build profile's target and compatibility, the `fidelity` entries for the profile, every `.py` and `.sh` file in `scripts/` except `performance.py`, `accuracy.py`, `requirements-accuracy.txt`, `convert.py`, and `requirements-convert.txt`, declared training code, the shared `scripts/run_model_compilation.sh`, and the Model Compiler version |
+| compile (ONNX) | the invocation's components and bindings in `model.yaml` (source, interface, surgery, recipe, dependencies, parameters, shape profile, calibration), the build profile's target and compatibility, the `fidelity` entries for the profile, every `.py` and `.sh` file in `scripts/` except `performance.py`, `accuracy.py`, `requirements-accuracy.txt`, `convert.py`, and `requirements-convert.txt`, declared training code, the Model Compiler version, and `scripts/run_model_compilation.sh` |
+| compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
 | performance | the compile run and MPK digest, the component's `benchmark` entries, `performance.py`, the shared performance tooling, and the DevKit runtime pin |
 | accuracy | the compile runs and MPK digests of its components, the `accuracy` entry, `accuracy.py` and `requirements-accuracy.txt`, the shared accuracy tooling, and the DevKit runtime pin |
 
@@ -278,12 +281,16 @@ recompiled build is always remeasured.
 | Change | Reruns |
 | --- | --- |
 | README, display metadata, `published_metrics`, `convert.py`, registry tooling outside a stage's tooling | nothing |
+| `build-on-demand` | nothing; changes scheduling and catalog metadata only |
 | a model's tests under `tests/`, or `scripts/run_model_tests.sh` | nothing; a changed test applies the next time its stage runs |
 | `performance.py` or a `benchmark` entry | that model's performance |
 | `accuracy.py`, its requirements, or the `accuracy` entry | that model's accuracy |
 | the DevKit runtime pin, the benchmarking workflow, or `benchmark_publication.py` | every performance and accuracy stage |
-| a compile input of a model | that model's affected builds, then their DevKit stages |
-| the Model Compiler pin or `scripts/run_model_compilation.sh` | every build, then every DevKit stage |
+| a source model or graph parameter | that model's affected builds, then their DevKit stages |
+| an ONNX compile script or other ONNX compile input | that model's affected builds, then their DevKit stages |
+| the Model Compiler pin | every build, then every DevKit stage |
+| `scripts/run_model_compilation.sh` | ONNX builds, then their DevKit stages |
+| LLiMa scripts, registry helpers, checkpoint repository name, job count, logging or runner class | no LLiMa compilation |
 
 The keys are computed by `compile_key`, `performance_key` and `accuracy_key`
 in `tools/model_registry/stage_keys.py`.
@@ -466,3 +473,87 @@ model-registry validate-models --repository .
 These checks establish that the contract is coherent, not that it compiles or
 runs. Continue with [Qualify locally](local-development.md) and complete the
 full loop for every build before submitting.
+
+
+## On-demand builds
+
+Set top-level `build-on-demand: true` for any model whose expensive builds
+should run only on request. The default is `false`; existing automatic ONNX
+builds keep their scheduling. Pushes validate on-demand models and publish
+their metadata, but never compile or measure them, even when inputs change.
+This flag is not part of the compile fingerprint.
+
+To build Qwen3.5-0.8B, dispatch **Vulcan Model Orchestrator** with
+`models=qwen3_5_0_8b` and `profiles=w4a16`. Both selections are
+required for an on-demand build. Use staging; production candidate publication
+is not enabled. Direct `plan-stages` calls must also pass `--include-on-demand`.
+The workflow publishes all invocations and packages as one retained candidate.
+Its summary shows the candidate ID, immutable digest, source and protection;
+on a feature branch it also selects the finalized deployment for that branch's
+website and CLI downloads. This does not approve it for Develop or Main.
+Retry failed jobs within the seven-day assembly deadline; after expiry start a
+new workflow run. See the [architecture contract](https://github.com/sima-neat/models/blob/develop/design-doc/model-registry-architecture.md#on-demand-builds)
+for retention and the separate promotion workflow.
+
+## LLiMa language and vision-language models
+
+Declare a complete language model as one component, with `interface.format: huggingface`,
+`recipe: scripts/compile.sh`, and a pinned Hugging Face `file_set` whose entrypoint is
+`config.json`. Include weights, tokenizer files, processor settings and the chat template;
+each file retains its revision, byte size and SHA-256. The existing verified downloader
+assembles the checkpoint directory. Do not list LLiMa's generated layers as components.
+
+A build profile names one compiled configuration. Start with one profile per
+model and set `max_num_tokens: 4096` explicitly in its component `parameters`,
+alongside `language_group_size`. Add `input_height` and `input_width` only for
+VLMs needing a resolution override. Omit both for text-only LLMs and VLMs whose
+native resolution is fixed. Declare a VLM's actual resolution in its image
+interface even when no override is needed.
+
+The shared runner forwards these parameters as compiler options after the
+checkpoint and output arguments; `compile.sh` must pass them to `llima-compile`.
+Keep these values in `model.yaml` rather than duplicating them in the recipe.
+
+The executable recipe takes two positional paths followed by compiler options.
+After compilation, it writes a standalone `compile.sh` into its output folder,
+recording the complete arguments it executed. The Qwen recipe shows this pattern.
+
+Run it through the LLiMa runner, with Model Compiler and LLiMa activated. The
+runner passes the selected profile to the recipe as `BUILD_PROFILE_ID`:
+
+```bash
+scripts/run_llima_compilation.sh models/qwen3_5_0_8b w4a16 model /path/to/output
+```
+
+The runner downloads the pinned files and passes the recipe a temporary symlink
+named after `upstream.repository`, preserving the verified cache and giving
+generated files the checkpoint's name. It then runs
+`llima-deploy` into `<output-root>/<model>/<profile>/<component>/deployment/`.
+This folder contains `devkit/`, `elf_files/`, any `npy_files/`, and the standalone
+`compile.sh` with the selected context, image dimensions and other flags. Run
+`model-registry verify-artifact <component-output> --write-manifest` to check
+the deployment and write `deployment-manifest.json` beside it. The verifier
+rejects incomplete configurations, missing executables, unsafe paths, and links.
+
+`compile-outputs.json` uses `artifact_path: model/deployment-manifest.json`
+for Qwen's `model` component and `artifact_sha256` for that index file's hash.
+ONNX outputs retain their MPK fields. Publication registers the deployment's
+files individually, with a JSON index named `llima`. A native full package is
+the deployment folder with `manifest.json` at its root; its component uses
+`format: llima`, `path: .`. Retrieval preserves the folder and verifies each
+file. See the [manifest and metadata contract](metadata-schema.md#llima-checkpoint-and-deployment-formats).
+No native stage creates a deployment ZIP.
+
+The native compile key covers checkpoint content, the target, graph parameters
+and the pinned compiler identity. Declare graph-changing options in component
+`parameters`, including precision, group size, context length and image dimensions.
+Script edits, logging, job counts and runner selection do not invalidate it.
+ONNX builds retain their existing compile keys. README and hero changes remain
+outside compile identities.
+
+Leave `calibrations`, `fidelity`, `accuracy`, and `benchmark` empty when no corresponding
+stage is implemented. A manual Qwen build compiles and publishes only; performance
+and accuracy are separate follow-ups [#294](https://github.com/sima-neat/models/issues/294)
+and [#295](https://github.com/sima-neat/models/issues/295). The default Qwen profile
+requests the expensive runner with twelve compile jobs, 4096 tokens, 448×448 input,
+and language group size 128.

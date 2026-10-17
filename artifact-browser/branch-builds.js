@@ -94,8 +94,11 @@ export function deploymentCatalog(model) {
       builds.push({ ...original, ...root, build_profile_id: profile });
     }
     for (const root of roots.filter(root => root.package_id && root.run_id)) {
+      const ids = model.build_requirements?.[profile]?.packages
+        ?.find(item => item.id === root.package_id)?.component_ids || [];
       packages.push({ ...root, build_profile_id: profile,
-        component_run_ids: Object.fromEntries(components.map(item => [item.component_id, item.run_id])) });
+        component_run_ids: Object.fromEntries(components.filter(item => ids.includes(item.component_id))
+          .map(item => [item.component_id, item.run_id])) });
     }
   }
   return { ...model, builds, packages };
@@ -151,9 +154,9 @@ export function branchModels(compileRuns, packageRuns, catalogModels, compiler =
     new Set([...(model.builds || []), ...(model.pending_builds || [])].map((build) => build.build_profile_id))]));
   for (const group of variantBuilds(runs)) {
     if (declaredProfiles.get(group.modelId)?.has(group.profile) === false) continue;
-    const selection = definitions.get(group.modelId)?.branch_deployments?.[group.profile]
-      || definitions.get(group.modelId)?.approved_deployments?.[group.profile];
-    if (selection) continue; // Keep the explicitly selected deployment, even if newer runs exist.
+    const definition = definitions.get(group.modelId);
+    if (definition?.build_on_demand || definition?.branch_deployments?.[group.profile]
+      || definition?.approved_deployments?.[group.profile]) continue;
     const key = variantKey(group.modelId, group.profile);
     const previous = latest.get(key);
     // A build holding every run the catalog names is the catalog's build, with all its components.
@@ -173,6 +176,7 @@ export function branchModels(compileRuns, packageRuns, catalogModels, compiler =
       const exactBuild = definition.builds?.find((build) => build.run_id === run.id
         && build.build_profile_id === group.profile && build.component_id === component);
       model.builds.push({
+        ...exactBuild,
         run_id: run.id,
         run,
         build_profile_id: group.profile,
@@ -191,7 +195,8 @@ export function branchModels(compileRuns, packageRuns, catalogModels, compiler =
   for (const model of models.values()) {
     // A package belongs to the shown build when it bundles exactly that build's component runs.
     const candidates = [
-      ...packageRuns.filter((run) => run.status === "completed" && run.run_type === "model_package"
+      ...packageRuns.filter((run) => !model.build_on_demand
+        && run.status === "completed" && run.run_type === "model_package"
         && run.metadata?.model_id === model.model_id
         && !model.branch_deployments?.[run.metadata.build_profile_id]
         && !model.approved_deployments?.[run.metadata.build_profile_id])
@@ -204,7 +209,7 @@ export function branchModels(compileRuns, packageRuns, catalogModels, compiler =
       if (!builds.length || Object.keys(components).length !== builds.length
         || !builds.every((build) => components[build.component_id] === build.run_id)
         || model.packages.some((known) => known.run_id === item.run_id)) continue;
-      model.packages.push({ run_id: item.run_id, build_profile_id: item.build_profile_id, component_run_ids: components });
+      model.packages.push({ ...item, run_id: item.run_id, build_profile_id: item.build_profile_id, component_run_ids: components });
     }
     model.packages.sort((a, b) => {
       const left = packageRuns.find((run) => run.id === a.run_id);

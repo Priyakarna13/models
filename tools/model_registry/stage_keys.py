@@ -24,6 +24,7 @@ from .model import (
     compile_invocations_for,
     load_and_validate_model,
 )
+from .source import source_identity
 
 MODEL_COMPILE_INPUT_PATHS = {
     "yolo26_tiny_drone": (
@@ -35,7 +36,7 @@ MODEL_COMPILE_INPUT_PATHS = {
     ),
 }
 
-# Shared code on the compile path; a change to it recompiles every model.
+# The runner used by ONNX builds.
 COMPILE_TOOLING = ("scripts/run_model_compilation.sh",)
 
 _IGNORED_BUILD_PARTS = {".git", "__pycache__"}
@@ -206,6 +207,19 @@ def compile_key(
         ) from exc
     components = {item["id"]: item for item in model["components"]}
     bindings = {item["id"]: item for item in profile["components"]}
+    if any(components[item]["interface"]["format"] == "huggingface" for item in invocation["components"]):
+        # LLiMa recipes orchestrate a pinned compiler; graph options belong in parameters.
+        return _key({
+            "compiler_version": compiler,
+            "target": profile["target"],
+            "components": [
+                {
+                    "source_sha256": source_identity(components[component_id]["source"]),
+                    "parameters": bindings[component_id]["parameters"],
+                }
+                for component_id in invocation["components"]
+            ],
+        })
     identity = {
         "model_id": model_id,
         "compile_invocation": {

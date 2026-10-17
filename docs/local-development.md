@@ -357,3 +357,33 @@ When this checklist passes, continue to [Submit for review](contributing.md).
 | `accuracy.expected.<profile> lacks` or `performance.expected.<profile>.<component> lacks` | Add the build's latest published value under `expected` ([set up `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). |
 | Build missing from the matrix | Check the component binding `status`, the requested IDs, and the build profile's `compile_invocations`. |
 | Unexpected MPK count | Start from an empty output directory. An invocation writes exactly one MPK per component. |
+
+
+## Compile an LLM or VLM with LLiMa
+
+For a Hugging Face language or vision-language model, use the LLiMa runner:
+
+```bash
+scripts/run_llima_compilation.sh models/<model-id> <profile-id> <invocation-id> /path/to/output
+model-registry verify-artifact /path/to/output/<model-id>/<profile-id>/<component-id> --write-manifest
+```
+
+Activate the matching LLiMa and pinned Model Compiler tools first. The recipe
+calls `llima-compile` and saves its complete arguments in a standalone `compile.sh`.
+The runner verifies the pinned checkpoint download,
+calls that recipe, and runs `llima-deploy`. It writes
+`<model-id>/<profile-id>/<component-id>/deployment/` with `devkit/`, `elf_files/`,
+any `npy_files/`, and that script. Verification writes `deployment-manifest.json` beside
+the folder. `compile-outputs.json` points to `<component-id>/deployment-manifest.json`
+and hashes that index; it does not point to an archive.
+
+A profile is a named compilation configuration in `model.yaml`. Its component
+parameters explicitly set `max_num_tokens: 4096` and `language_group_size`.
+Add `input_height` and `input_width` only for VLMs needing a resolution override;
+omit them for LLMs and fixed-resolution VLMs. The runner forwards declared
+settings to the recipe. Additional compiled configurations use separate profiles.
+
+See [on-demand builds](adding-a-model.md#on-demand-builds)
+for manual build and publication instructions.
+See [LLiMa model definitions](adding-a-model.md#llima-language-and-vision-language-models)
+for the source and package contracts.

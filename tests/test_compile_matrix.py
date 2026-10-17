@@ -615,3 +615,84 @@ def test_compile_key_ignores_benchmark_and_accuracy_declarations(model_repositor
     )
 
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
+
+
+@pytest.mark.parametrize(
+    ("relative", "onnx_changed"),
+    [
+        ("scripts/run_llima_compilation.sh", False),
+        ("tools/model_registry/artifact.py", False),
+        ("tools/model_registry/cli.py", False),
+        ("tools/model_registry/model.py", False),
+        ("tools/model_registry/compile_matrix.py", False),
+        ("models/qwen3_5_0_8b/scripts/compile.sh", False),
+        ("scripts/run_model_compilation.sh", True),
+    ],
+)
+def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
+    native_id = "qwen3_5_0_8b"
+    native = load_and_validate_model(ROOT / "models" / native_id)
+    entry = build_matrix({native_id: native}, [native_id])["include"][0]
+    assert entry["runner_script"] == "scripts/run_llima_compilation.sh"
+    assert entry["benchmark_component_ids"] == [] and entry["accuracy_id"] is None
+    repository = tmp_path / "repository"
+    for folder in ("schemas", "taxonomies", "deps", "scripts", "tools"):
+        shutil.copytree(ROOT / folder, repository / folder, ignore=shutil.ignore_patterns("__pycache__"))
+    for name in (native_id, "resnet_50"):
+        shutil.copytree(ROOT / "models" / name, repository / "models" / name)
+
+    def keys():
+        return [
+            compile_key(repository, name, profile, "model", "compiler")
+            for name, profile in ((native_id, "w4a16"), ("resnet_50", "w16a16"))
+        ]
+
+    before = keys()
+    path = repository / relative
+    path.write_text(path.read_text() + "\n# tooling change\n")
+    after = keys()
+    assert before[0] == after[0]
+    assert (before[1] != after[1]) == onnx_changed
+
+
+@pytest.mark.parametrize(("model_id", "profile_id"), [
+    ("qwen3_5_0_8b", "w4a16"), ("resnet_50", "w16a16"),
+])
+def test_checkpoint_repository_name_does_not_change_compile_key(tmp_path, model_id, profile_id):
+    for folder in ("schemas", "taxonomies", "deps", "scripts", "tools", f"models/{model_id}"):
+        shutil.copytree(ROOT / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
+    manifest = tmp_path / "models" / model_id / "model.yaml"
+    model = yaml.safe_load(manifest.read_text())
+    before = compile_key(tmp_path, model_id, profile_id, "model", "compiler")
+    model["upstream"]["repository"] += "-renamed"
+    manifest.write_text(yaml.safe_dump(model, sort_keys=False))
+
+    assert compile_key(tmp_path, model_id, profile_id, "model", "compiler") == before
+
+
+@pytest.mark.parametrize(("setting", "value"), [
+    ("source", "a" * 64),
+    ("compiler", "3.0.0+develop.111111111111"),
+    ("precision", "a16w8"),
+    ("max_num_tokens", 8192),
+    ("language_group_size", 64),
+    ("input_height", 512),
+    ("input_width", 640),
+])
+def test_llima_compile_key_tracks_source_compiler_and_graph_settings(tmp_path, setting, value):
+    model_id = "qwen3_5_0_8b"
+    for folder in ("schemas", "taxonomies", f"models/{model_id}"):
+        shutil.copytree(ROOT / folder, tmp_path / folder)
+    manifest = tmp_path / "models" / model_id / "model.yaml"
+    model = yaml.safe_load(manifest.read_text())
+    compiler = "3.0.0+develop.000000000000"
+    before = compile_key(tmp_path, model_id, "w4a16", "model", compiler)
+    if setting == "source":
+        model["components"][0]["source"]["files"][0]["sha256"] = value
+    elif setting == "compiler":
+        compiler = value
+    else:
+        model["build_profiles"][0]["components"][0]["parameters"][setting] = value
+    manifest.write_text(yaml.safe_dump(model, sort_keys=False))
+
+    assert compile_key(tmp_path, model_id, "w4a16", "model", compiler) != before

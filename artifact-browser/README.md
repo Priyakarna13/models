@@ -2,8 +2,9 @@
 
 A client-only web interface for the public SiMa.ai Model Registry read APIs.
 The browser calls the registry directly; there is no application backend,
-credential handling, or proxy middleware. Downloads use the temporary URL
-returned by the registry directly.
+credential handling, or proxy middleware. Archive downloads use the temporary URL
+returned by the registry directly. Folder deployments show CLI retrieval
+instructions, and Hugging Face deployments link to the resolved, pinned revision.
 
 For an app-only development loop, run from the Models repository:
 
@@ -244,6 +245,35 @@ model page, and `published-metrics.<revision>.json` from each
 
 ## Downloading model variants
 
+Native LLiMa deployments use a JSON index (`model-pack`, or `model-package`
+for the complete package) with `metadata.layout: directory` and separate
+`model-file` payload artifacts. The browser shows the aggregate
+`metadata.deployment_size_bytes`, not the small index size. **Download folder**
+opens instructions for `sima-cli models download`, which preserves paths and
+checks each file. Folder downloads require sima-cli 2.1.19 or later. The command
+uses the selected branch and adds `--stg` for staging; historical builds point
+to the current catalog variant instead of offering a command for a different
+deployment. The browser never downloads a folder's JSON index as a ZIP.
+
+Delivery is determined from the backend-resolved artifact. A resolved
+`metadata.storage_backend: huggingface` has
+`metadata.huggingface: {repo_id, revision, subdirectory?}`; `revision` is an
+immutable 40-character commit. The dialog links to that exact repository
+revision and folder. This location describes the compiled deployment and is
+independent of the source checkpoint links. Storage selection and approval
+remain backend responsibilities.
+
+Selecting a feature branch shows its finalized `branch_deployments`, including
+candidates that have not been promoted. They take precedence over inherited
+`approved_deployments`. Metadata and unselected runs do not create on-demand
+cards or replace a selection. Develop and Main show approved selections.
+Completed candidates also remain in build history.
+Approved package membership comes from the profile's `build_requirements`. Only
+packages covering every shown component are offered as full-model downloads.
+
+The following confirmation flow applies to archive deployments, including
+previously published LLiMa ZIPs.
+
 The model download button includes every model-pack component from the selected
 variant's workflow build, commit, branch, target, and compiler. All
 variants show a confirmation dialog listing component names, actual archive filenames, and file sizes.
@@ -294,19 +324,3 @@ No registry API or database schema changes are required.
 The preview's layer timings are illustrative generated data, including zero-time
 entries and multiple MLA stages to exercise the analysis controls. Production
 pages use only the compiled layer timings in each published Core report.
-
-### Model folder downloads
-
-A directory package (including LLiMa models) opens a **Download model folder**
-dialog with its file count, total download size, and a copyable `sima-cli models
-download` command. The command uses the selected branch and adds `--stg` for
-the staging registry. It downloads that branch's current deployment, including
-when opened from build history. LLM and VLM models are served as individual files rather than a ZIP archive
-and require sima-cli 2.1.19 or later to download the files in parallel and
-assemble the model folder.
-The CLI verifies the manifest and each file and recreates their relative paths.
-MPK and ZIP packages keep their browser download flow.
-
-Branch views honor explicit `branch_deployments` (or `approved_deployments`)
-selections, including inherited compilation runs and their matching package.
-Newer unselected runs do not replace an explicitly selected deployment.

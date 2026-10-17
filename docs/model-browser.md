@@ -46,10 +46,16 @@ marked with › that opens in place. A model with several build profiles shows
 one tab per profile, labelled with its variant ID in uppercase, such as
 **W8A8**. Profiles with a W8A8 component come first and the page opens on the
 first tab, whatever order `model.yaml` declares. The GitHub link in the header opens
-the model's folder at the commit the README comes from. Sections appear in this
-order:
+the model's folder at the commit the README comes from. LLM and VLM pages show
+the selected build's maximum context length (input plus output tokens) and image
+input resolution directly below the variant selector. Native deployments supply
+their verified settings, including fixed image resolutions without compiler
+overrides; older builds fall back to recorded compile parameters. Sections appear
+in this order:
 
-1. **Overview.** The hero and the `## Overview` section of the README. The
+1. **Overview.** The hero and the `## Overview` section of the README, including
+   any model-specific note about changing context length or image resolution
+   during compilation. The
    **Full model card** row opens the rest of the README, its **Inputs and
    outputs** and **Building applications** sections, so the title, hero, and
    overview are never shown twice. The README follows the
@@ -152,13 +158,20 @@ from CI after merge.
 A directory package (including LLiMa models) opens a **Download model folder**
 dialog with its file count, total download size, and a copyable `sima-cli models
 download` command. The command uses the selected branch and adds `--stg` for
-the staging registry. It downloads that branch's current deployment, including
-when opened from build history. LLM and VLM models are served as individual files rather than a ZIP archive
-and require sima-cli 2.1.19 or later to download the files in parallel and
-assemble the model folder.
+the staging registry. Commands are offered for the current catalog deployment;
+historical builds point to the current variant instead. LLM and VLM models
+require sima-cli 2.1.19 or later to download the files in parallel and assemble
+the model folder.
 The CLI verifies the manifest and each file and recreates their relative paths.
-MPK and ZIP packages keep their browser download flow.
+The displayed size covers all deployment files; **Manifest SHA-256** identifies
+the index. MPK and ZIP packages keep their browser download flow.
+
+When the registry resolves a deployment to Hugging Face, the dialog links to
+its pinned repository revision and optional subdirectory. This location is
+separate from the original source checkpoint linked in the page header.
 
 Branch views honor explicit `branch_deployments` (or `approved_deployments`)
 selections, including inherited compilation runs and their matching package.
 Newer unselected runs do not replace an explicitly selected deployment.
+Feature branches show finalized on-demand candidates before promotion; metadata
+and unselected runs do not create a card. Develop and Main show approved deployments.

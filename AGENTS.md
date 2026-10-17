@@ -16,7 +16,8 @@ touches.
 
 | Stage | Venue | Model entry point | Runner script |
 |---|---|---|---|
-| compile | Model Compiler | `scripts/compile.py` | `scripts/run_model_compilation.sh` |
+| compile (ONNX) | Model Compiler | `scripts/compile.py` | `scripts/run_model_compilation.sh` |
+| compile (LLiMa) | Model Compiler | `scripts/compile.sh` | `scripts/run_llima_compilation.sh` |
 | performance | DevKit | `scripts/performance.py` | `scripts/run_model_performance.sh` |
 | accuracy | DevKit | `scripts/accuracy.py` + `requirements-accuracy.txt` | `scripts/run_model_accuracy.sh` |
 
@@ -33,6 +34,43 @@ The shared tooling is one module per job. The
 [module map](design-doc/model-registry-architecture.md#shared-tooling) says
 which module owns what; put new shared code in the module that owns its job,
 and give a new job a new module named after what it does.
+
+## LLiMa models
+
+LLMs and VLMs declare the complete model as one component, with a pinned Hugging
+Face `file_set`, `interface.format: huggingface`, and `scripts/compile.sh`. The
+recipe calls `llima-compile` and saves a standalone `compile.sh` with its complete
+arguments; `scripts/run_llima_compilation.sh` downloads,
+compiles, and runs `llima-deploy` into the component's `deployment/` folder.
+`model-registry verify-artifact --write-manifest` verifies that folder and writes
+`deployment-manifest.json` beside it. Publication preserves the folder as
+individually registered files; native builds never create a deployment ZIP.
+Do not enumerate generated layers as components or nest model archives in packages.
+Only declared performance and accuracy stages run; leave their lists empty until
+implemented. See [LLiMa model definitions](docs/adding-a-model.md#llima-language-and-vision-language-models).
+
+Start with one 4K profile per LLM/VLM. Declare `max_num_tokens: 4096` and
+`language_group_size` in its component parameters. Image dimensions are optional
+overrides for configurable VLMs; omit them for LLMs and fixed-resolution VLMs.
+Recipes forward the runner's compiler options rather than duplicating these values.
+LLiMa compile keys cover checkpoint content, the target, graph parameters and
+the pinned compiler identity. Keep graph-changing options in component
+`parameters`; script edits, job counts, logging and runner classes do not
+invalidate LLiMa builds.
+
+Any expensive model may set top-level `build-on-demand: true` (default `false`).
+Pushes still validate it and publish catalog metadata, but never compile or
+measure it. A manual **Vulcan Model Orchestrator** dispatch must select its
+`models` and `profiles`; the planner also requires `--include-on-demand`.
+The flag changes scheduling and catalog metadata only, never stage keys.
+Staging publication uses `publish-candidate` once per complete model/profile;
+it binds every required compile/package run before registering on-demand
+artifacts. Ordinary catalog documentation remains branch-retained. Publish
+target `build_requirements` using existing compile keys and consume server-owned
+`approved_deployments`. After finalization, `publish-branch-deployment` selects
+the candidate in its feature catalog; readers consume server-owned
+`branch_deployments` before inherited approvals. Never synthesize approval. See
+[on-demand builds](design-doc/model-registry-architecture.md#on-demand-builds).
 
 ## Tests
 
@@ -95,8 +133,8 @@ in the same commit.
 | When you change | Also change |
 |---|---|
 | what a stage depends on: a `model.yaml` field its key reads, or a shared file it runs | the key function or the `PERFORMANCE_TOOLING`/`ACCURACY_TOOLING` list in `stage_keys.py`, the tables in [what a change reruns](docs/adding-a-model.md#9-know-what-a-change-reruns), and a test in `tests/test_compile_matrix.py` or `tests/test_stage_plan.py` |
-| the set of model scripts a DevKit stage or conversion runs | `NON_COMPILE_SCRIPTS` in `stage_keys.py`; every other `.py`/`.sh` under `scripts/` is a compile input |
-| board-only code | keep it inside `performance.py` or `accuracy.py`; a helper module under `scripts/` is a compile input, so editing it recompiles and then remeasures the model |
+| the set of model scripts a DevKit stage or conversion runs | `NON_COMPILE_SCRIPTS` in `stage_keys.py`; every other `.py`/`.sh` under `scripts/` is an ONNX compile input |
+| board-only code | keep it inside `performance.py` or `accuracy.py`; a helper module under `scripts/` is an ONNX compile input, so editing it recompiles and then remeasures the model |
 | a new model's `performance.py` | start from the [canonical script](docs/benchmarking.md#the-performance-script): it saves the whole Core `BenchmarkReport` with `BenchmarkReport.save()`, so board telemetry and later Core fields reach the registry unchanged |
 | a Core benchmark reading the registry should publish | a row with its Vulcan measurement name in `REPORT_METRICS` or `TELEMETRY_METRICS` in `benchmark_metrics.py` and the same table in the browser's `benchmark-adapters.js`, its label in the browser's `metrics.js`, its row in `DETAIL_CARDS` in `model-view.js` when a Benchmark details card should show it, and the metric table in [benchmarking](docs/benchmarking.md#workload-and-measurements) |
 | a compile input outside `models/<id>/`, such as declared training code | `MODEL_COMPILE_INPUT_PATHS` in `stage_keys.py` |
@@ -154,8 +192,9 @@ in the same commit.
    published scores in `published_metrics`.
 2. Run `python -m pytest` and `model-registry validate models/<model_id>`.
 3. Compile each changed build in the pinned Model Compiler with
-   `scripts/run_model_compilation.sh` and check every MPK with
-   `model-registry verify-mpk` ([local development](docs/local-development.md)).
+   the backend's runner (`run_model_compilation.sh` or `run_llima_compilation.sh`)
+   and check each compiled artifact with
+   `model-registry verify-artifact` ([local development](docs/local-development.md)).
 4. On a DevKit, run each changed component's `scripts/performance.py --mpk
    --output` and, for builds that declare accuracy,
    `scripts/run_model_accuracy.sh` on the compile output.
@@ -257,9 +296,9 @@ Write the README for an application developer:
 
 Keep maintainer explanations next to what they explain: in `model.yaml`
 comments, or in the docstrings of `convert.py`, `performance.py`, and
-`accuracy.py`. Every other file under `models/<id>/scripts/` is part of the
-compile key, so a comment there recompiles the model. Procedures that apply to
-every model belong in `docs/`. Maintainer guides inside a model directory, such
+`accuracy.py`. For ONNX models, every other file under `models/<id>/scripts/`
+is part of the compile key, so a comment there recompiles the model. Procedures
+that apply to every model belong in `docs/`. Maintainer guides inside a model directory, such
 as `scripts/qat/README.md`, use whatever structure suits their workflow.
 
 Every model has a hero: a regular (non-symlinked) 1200x480 PNG no

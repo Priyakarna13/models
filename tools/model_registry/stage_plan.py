@@ -250,10 +250,12 @@ def plan_stages(
     profile_ids: list[str] | None = None,
     component_ids: list[str] | None = None,
     force_rebuild_all: bool = False,
+    include_on_demand: bool = False,
 ) -> dict[str, Any]:
     """Select compile invocations whose compile key changed, and the board stages reused builds lack.
 
-    Without a reader, nothing is known to be published, so every selected invocation compiles.
+    On-demand models require explicit model/profile selection and include_on_demand.
+    Without a reader, every selected automatic invocation compiles.
     """
     root = Path(repository).expanduser().resolve()
     models = load_models(root)
@@ -265,6 +267,18 @@ def plan_stages(
         repository=root,
         compiler_version=compiler_version,
     )["include"]
+    if include_on_demand and any(entry.get("build_on_demand", False) for entry in head) and not (
+        model_ids and profile_ids
+    ):
+        raise ValidationError("on-demand builds require explicit --models and --profiles")
+    if include_on_demand and component_ids:
+        for model_id, profile_id in {(item["model_id"], item["build_profile_id"])
+                                     for item in head if item.get("build_on_demand", False)}:
+            profile = next(item for item in models[model_id]["build_profiles"] if item["id"] == profile_id)
+            selected = {component for item in head if (item["model_id"], item["build_profile_id"])
+                        == (model_id, profile_id) for component in item["component_ids"]}
+            if selected != {item["id"] for item in profile["components"]}:
+                raise ValidationError("on-demand candidates require a complete profile; omit --components")
     document = None
     if read is not None:
         if not read_api_url:
@@ -276,6 +290,8 @@ def plan_stages(
     compile_entries: list[dict[str, Any]] = []
     measure_entries: list[dict[str, Any]] = []
     for entry in head:
+        if entry.get("build_on_demand", False) and not include_on_demand:
+            continue
         prior = {
             component_id: builds.get((entry["model_id"], entry["build_profile_id"], component_id))
             for component_id in entry["component_ids"]
@@ -317,6 +333,16 @@ def plan_stages(
             stages.append("accuracy")
         if stages:
             measure_entries.append({**entry, "benchmark_component_ids": performance, "stages": stages})
+    candidate_profiles = {(item["model_id"], item["build_profile_id"]) for item in compile_entries
+                          if item.get("build_on_demand", False)}
+    compiled_ids = {(item["model_id"], item["build_profile_id"], item["compile_invocation_id"])
+                    for item in compile_entries}
+    # A candidate cannot attach unchanged components from an older source commit.
+    for item in head:
+        if ((item["model_id"], item["build_profile_id"]) in candidate_profiles
+                and (item["model_id"], item["build_profile_id"], item["compile_invocation_id"]) not in compiled_ids):
+            compile_entries.append({**item, "stages": applicable_stages(item)})
+    measure_entries = [item for item in measure_entries if not item.get("build_on_demand", False)]
     return {
         "compile": {"include": compile_entries},
         "measure": {"include": measure_entries},

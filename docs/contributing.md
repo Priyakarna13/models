@@ -156,7 +156,8 @@ on the reviewed revision:
 3. **Authorize.** Each requested runner class is checked against the protected
    environment specification.
 4. **Compile.** On a self-hosted compiler runner with read-only repository
-   access, `scripts/run_model_compilation.sh` runs the recipe, every MPK is
+   access, the backend's runner (`run_model_compilation.sh` for ONNX or
+   `run_llima_compilation.sh` for LLiMa) runs the recipe. Each artifact is
    verified with its provenance, and the model's compile tests check the
    output. A failing test leaves the build unpublished.
 5. **Publish.** A GitHub-hosted job verifies the complete component set,
@@ -185,7 +186,14 @@ components and can force every selected build to recompile, which also
 applies a changed model test at once; otherwise a changed test applies the next
 time its stage runs. A dispatch that
 names build profiles or components compiles and publishes those builds but
-does not publish packages or update the catalog.
+skips ordinary package and catalog updates. On-demand builds publish their
+complete candidate, including packages; a feature-branch run also selects it
+in that branch's catalog after finalization. LLiMa does this in the existing
+Publish job; models with multiple invocations join them in the orchestrator's
+`publish-candidates` job before publication.
+Each complete candidate publishes independently of failures in other models
+or profiles.
+Develop and Main still require separate approval and promotion.
 
 ## Review and merge expectations
 

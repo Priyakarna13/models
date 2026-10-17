@@ -78,7 +78,8 @@ def test_publish_model_documentation_creates_finalized_versioned_runs() -> None:
         artifact_store=store,
     )
 
-    assert set(receipts) == set(load_models(ROOT))
+    models = load_models(ROOT)
+    assert set(receipts) == set(models)
     assert len(store.objects) == len(receipts) * 2
     assert len(calls) == len(receipts) * 5
     for model_id, receipt in receipts.items():

@@ -25,6 +25,8 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
     [
         "make-benchmark-manifest",
         "publish",
+        "publish-candidate",
+        "publish-branch-deployment",
         "publish-benchmark",
         "publish-catalog",
         "resolve-base",
@@ -46,6 +48,62 @@ def test_repository_cli_retains_ci_only_commands() -> None:
 
     assert {"publish", "publish-benchmark", "publish-catalog"} <= set(subcommands.choices)
     assert {"package", "fetch-previous"}.isdisjoint(subcommands.choices)
+
+
+@pytest.mark.parametrize("entrypoint", [main, cli.author_main])
+def test_verify_artifact_dispatches_to_the_generic_verifier(entrypoint, monkeypatch, tmp_path, capsys) -> None:
+    calls = []
+    result = {"manifest": "deployment-manifest.json"}
+
+    def verify(output_dir, *, write_manifest, provenance):
+        calls.append((output_dir, write_manifest, provenance))
+        return result
+
+    monkeypatch.setattr(cli, "verify_artifact", verify)
+
+    assert entrypoint([
+        "verify-artifact", str(tmp_path), "--write-manifest", "--json", "--model-id", "qwen3_5_0_8b",
+    ]) == 0
+    assert calls == [(tmp_path, True, {"model_id": "qwen3_5_0_8b"})]
+    assert json.loads(capsys.readouterr().out) == result
+
+
+def test_publish_candidate_forwards_workflow_arguments_and_writes_summary(monkeypatch, tmp_path, capsys) -> None:
+    calls = []
+    result = {
+        "deployment_id": "candidate-id", "manifest_digest": "b" * 64,
+        "git_ref": "refs/heads/feature/llima-models", "commit_sha": "a" * 40,
+        "protection": [{"reason": "latest_successful", "expires_at": None}],
+    }
+
+    def publish(**kwargs):
+        calls.append(kwargs)
+        return result
+
+    monkeypatch.setattr("model_registry.candidates.publish_candidate", publish)
+    summary = tmp_path / "summary.md"
+    expected = {
+        "repository": tmp_path, "dist_dir": tmp_path / "compiled", "output_dir": tmp_path / "candidate",
+        "model_id": "qwen3_5_0_8b", "build_profile_id": "w4a16", "api_url": "https://registry.example.invalid",
+        "aws_region": "us-west-2", "bucket": "models", "kms_key_id": "key",
+        "environment": "staging", "branch": "feature/llima-models", "git_sha": "a" * 40,
+        "github_run_id": "123", "github_run_attempt": "1", "github_run_url": "https://example.invalid/run/123",
+    }
+    assert main([
+        "publish-candidate", "--repository", str(expected["repository"]),
+        "--dist-dir", str(expected["dist_dir"]), "--output-dir", str(expected["output_dir"]),
+        "--model", expected["model_id"], "--build-profile", expected["build_profile_id"],
+        "--api-url", expected["api_url"], "--aws-region", expected["aws_region"],
+        "--bucket", expected["bucket"], "--kms-key-id", expected["kms_key_id"],
+        "--environment", expected["environment"], "--branch", expected["branch"], "--git-sha", expected["git_sha"],
+        "--github-run-id", expected["github_run_id"], "--github-run-attempt", expected["github_run_attempt"],
+        "--github-run-url", expected["github_run_url"], "--summary", str(summary), "--json",
+    ]) == 0
+    assert calls == [expected]
+    assert json.loads(capsys.readouterr().out) == result
+    text = summary.read_text()
+    assert all(value in text for value in (result["deployment_id"], result["manifest_digest"], result["commit_sha"]))
+    assert "latest_successful" in text
 
 
 def test_validate_json_output(capsys) -> None:

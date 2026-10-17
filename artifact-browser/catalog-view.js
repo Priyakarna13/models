@@ -1,5 +1,5 @@
 // Model catalog and build history: filters, search, and the result list.
-import { branchModels, variantBuilds } from "./branch-builds.js";
+import { deploymentCatalog, branchModels, variantBuilds } from "./branch-builds.js";
 import {
   DEFAULT_BRANCH, CATEGORY_QUERY_FIELDS, state, elements, categoryFilters, filters, catalogMode, taxonomyLabel,
 } from "./state.js";
@@ -37,7 +37,7 @@ export function populateCategoryFilters() {
     const element = elements[elementId];
     const selection = state.categorySelection[elementId] || "";
     const selected = Object.hasOwn(state.taxonomy[section] || {}, selection) ? selection : "";
-    const values = [...new Set([selected, ...state.runs.flatMap((run) => run[field] ?? [])])].filter(Boolean);
+    const values = [...new Set([selected, ...state.runs.flatMap((run) => run[field] ?? []), ...state.models.flatMap((model) => model[field] ?? [])])].filter(Boolean);
     element.innerHTML = filterOptions(section, values, emptyLabel);
     element.value = selected;
     state.categorySelection[elementId] = selected;
@@ -97,7 +97,7 @@ export function updateFilterDisclosure() {
 }
 
 export function applyCatalog(payload, { append = false, cache = true } = {}) {
-  const models = Array.isArray(payload.models) ? payload.models : [];
+  const models = Array.isArray(payload.models) ? payload.models.map(deploymentCatalog) : [];
   const runs = Array.isArray(payload.runs) ? payload.runs : [];
   const modelsMode = payload.mode === "models"
     || (payload.mode !== "runs" && Object.hasOwn(payload, "models"));
@@ -107,7 +107,8 @@ export function applyCatalog(payload, { append = false, cache = true } = {}) {
       state.compileRuns = payload.compileRuns;
       state.packageRuns = payload.packageRuns || [];
       state.catalogDefinitions = payload.catalogDefinitions || [];
-      state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions, elements["compiler-filter"].value);
+      state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,
+        elements["compiler-filter"].value);
     } else {
       state.models = append ? [...state.models, ...models] : models;
     }

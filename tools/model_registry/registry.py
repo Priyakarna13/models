@@ -6,8 +6,10 @@ import json
 import math
 import os
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +22,7 @@ from urllib.request import urlopen
 from jsonschema import Draft202012Validator
 
 from .accuracy_config import find_devkit_accuracy_config
-from .artifact import validate_compile_outputs, verify_mpk
+from .artifact import compile_output_fields, deployment_files, validate_compile_outputs, verify_artifact, verify_llima
 from .compile_matrix import build_matrix
 from .dependencies import resolve_model_compiler
 from .documentation import load_model_documentation
@@ -138,9 +140,22 @@ class S3Object:
 
 
 class S3ArtifactStore:
-    def __init__(self, bucket: str, *, kms_key_id: str | None = None) -> None:
+    def __init__(self, bucket: str, *, kms_key_id: str | None = None, receipt_dir: Path | None = None) -> None:
         self.bucket = bucket
         self.kms_key_id = (kms_key_id or "").strip()
+        self.receipt_dir = receipt_dir
+
+    def _record(self, stored: S3Object) -> S3Object:
+        if self.receipt_dir is not None:
+            self.receipt_dir.mkdir(parents=True, exist_ok=True)
+            path = self.receipt_dir / f"{canonical_sha256([self.bucket, stored.key])}.json"
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "s3_bucket": self.bucket, "s3_key": stored.key, "s3_version_id": stored.version_id,
+                "sha256": stored.sha256, "size_bytes": stored.size_bytes,
+            }, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(path)
+        return stored
 
     def ensure_native_sha256(
         self,
@@ -151,14 +166,25 @@ class S3ArtifactStore:
         media_type: str = "application/gzip",
     ) -> S3Object:
         expected_checksum = base64.b64encode(bytes.fromhex(sha256)).decode("ascii")
-        head = self._head(key)
+        saved = None
+        if self.receipt_dir is not None:
+            receipt = self.receipt_dir / f"{canonical_sha256([self.bucket, key])}.json"
+            if receipt.is_file():
+                saved = json.loads(receipt.read_text(encoding="utf-8"))
+                if (saved.get("sha256"), saved.get("size_bytes")) != (sha256, path.stat().st_size):
+                    raise RegistryPublicationError(f"saved upload differs from {key}; start a new candidate")
+        head = self._head(key, saved["s3_version_id"]) if saved else self._head(key)
         if (
             head.get("ChecksumSHA256") == expected_checksum
             and head.get("ContentLength") == path.stat().st_size
             and isinstance(head.get("VersionId"), str)
             and head["VersionId"]
         ):
-            return S3Object(key, str(head["VersionId"]), sha256, path.stat().st_size)
+            return self._record(S3Object(key, str(head["VersionId"]), sha256, path.stat().st_size))
+        if saved:
+            raise RegistryPublicationError(
+                f"saved S3 version is unavailable or changed for {key}; start a new candidate"
+            )
 
         if path.stat().st_size > 5 * 1024**3:
             raise RegistryPublicationError(f"registry artifact exceeds the 5 GiB single-upload limit: {path}")
@@ -201,7 +227,7 @@ class S3ArtifactStore:
             raise RegistryPublicationError(f"S3 native SHA-256 verification failed for {key}")
         if verified.get("ContentLength") != path.stat().st_size:
             raise RegistryPublicationError(f"S3 object size does not match the packaged artifact for {key}")
-        return S3Object(key, version_id, sha256, path.stat().st_size)
+        return self._record(S3Object(key, version_id, sha256, path.stat().st_size))
 
     def _head(self, key: str, version_id: str | None = None) -> JsonObject:
         command = [
@@ -227,6 +253,45 @@ class S3ArtifactStore:
         except json.JSONDecodeError as exc:
             raise RegistryPublicationError(f"S3 returned invalid metadata for {key}") from exc
         return value if isinstance(value, dict) else {}
+
+
+def _publish_deployment_files(
+    client: SigV4RegistryClient,
+    store: S3ArtifactStore,
+    *,
+    run_id: str,
+    stable_key: str,
+    bucket: str,
+    deployment: Path,
+    files: list[JsonObject],
+    metadata: JsonObject,
+    retention_class: str,
+    upload_prefix: str | None = None,
+) -> None:
+    """Register file references on this run, reusing immutable S3 payloads across runs."""
+    deployment_files({"files": files})
+
+    def publish(items: list[JsonObject]) -> None:
+        item = items[0]
+        stored = store.ensure_native_sha256(
+            deployment / item["path"],
+            f"{upload_prefix or 'models'}/files/{item['sha256']}/{Path(item['path']).name}",
+            item["sha256"],
+            media_type="application/octet-stream",
+        )
+        for item in items:
+            client.request("PUT", f"/v1/runs/{run_id}/artifacts/{item['artifact']}", {
+                "artifact_type": "model-file", "s3_bucket": bucket, "s3_key": stored.key,
+                "s3_version_id": stored.version_id, "sha256": stored.sha256, "size_bytes": stored.size_bytes,
+                "media_type": "application/octet-stream", "retention_class": retention_class,
+                "metadata": {**metadata, "path": item["path"], "storage_backend": "s3"},
+            }, "file-" + canonical_sha256([stable_key, item["artifact"]]))
+
+    payloads: dict[tuple[str, str], list[JsonObject]] = {}
+    for item in files:
+        payloads.setdefault((item["sha256"], Path(item["path"]).name), []).append(item)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(publish, sorted(payloads.values(), key=lambda items: items[0]["size_bytes"], reverse=True)))
 
 
 def _publication_receipts(compiled_dir: Path | None) -> dict[tuple[str, str, str], JsonObject]:
@@ -370,6 +435,14 @@ def build_catalog_snapshot(
             for component_id in invocation["component_ids"]
         ]
         expected_keys.update(keys)
+        if invocation.get("build_on_demand", False):
+            # A manual build publishes a candidate. Only approved catalog entries
+            # carry forward here, retaining the inputs and provenance they used.
+            for key in keys:
+                prior = previous_builds.get(key)
+                if prior is not None:
+                    builds_by_model[key[0]].append(prior)
+            continue
         invocation_receipts = [receipts.get(key) for key in keys]
         if any(receipt is not None for receipt in invocation_receipts) and not all(
             receipt is not None for receipt in invocation_receipts
@@ -472,6 +545,11 @@ def build_catalog_snapshot(
         for declaration in model["packages"]:
             for profile_id in declaration["build_profiles"]:
                 key = (model_id, profile_id, declaration["id"])
+                if model.get("build-on-demand", False):
+                    prior = previous_packages.get(key)
+                    if prior is not None:
+                        packages_by_model[model_id].append(prior)
+                    continue
                 receipt = package_receipts.get(key)
                 # A selected profile may be rebuilt even when its compile
                 # fingerprint is unchanged (for example, after changing only
@@ -522,6 +600,31 @@ def build_catalog_snapshot(
                 packages_by_model[model_id], key=lambda item: (item["build_profile_id"], item["package_id"])
             ),
         }
+        if model.get("build-on-demand", False):
+            entry["build_on_demand"] = True
+            components = {item["id"]: item for item in model["components"]}
+            requirements = {}
+            for profile in sorted(model["build_profiles"], key=lambda item: item["id"]):
+                packages = []
+                for package in sorted(model["packages"], key=lambda item: item["id"]):
+                    if profile["id"] not in package["build_profiles"]:
+                        continue
+                    native = components[package["components"][0]]["interface"]["format"] == "huggingface"
+                    packages.append({
+                        "id": package["id"], "component_ids": sorted(package["components"]),
+                        "layout": "directory" if native else "archive", "format": "llima" if native else "zip",
+                    })
+                requirements[profile["id"]] = {
+                    "version": 1, "compiler_version": resolve_model_compiler(root)["version"],
+                    "invocations": [
+                        {"id": item["compile_invocation_id"], "component_ids": sorted(item["component_ids"]),
+                         "compile_fingerprint": item["build_fingerprint"]}
+                        for item in matrix if item["model_id"] == model_id
+                        and item["build_profile_id"] == profile["id"]
+                    ],
+                    "packages": packages,
+                }
+            entry["build_requirements"] = requirements
         if documentation_receipts is not None:
             documentation = documentation_receipts.get(model_id)
             if not isinstance(documentation, dict):
@@ -569,6 +672,7 @@ def publish_model_documentation(
     receipts: dict[str, JsonObject] = {}
     for model_id, model in sorted(models.items()):
         documentation = load_model_documentation(root / "models" / model_id, model["display_name"], repository=root)
+        on_demand = model.get("build-on-demand", False)
         digest = documentation["readme_sha256"]
         stored = store.ensure_native_sha256(
             documentation["path"],
@@ -627,6 +731,7 @@ def publish_model_documentation(
                 "artifact_kind": "model-readme",
                 "source_path": documentation["source_path"],
                 "hero_source_path": hero["source_path"],
+                **({"build_on_demand": True} if on_demand else {}),
             },
         }
         invocation_identity = canonical_sha256(create_body)[:16]
@@ -812,12 +917,38 @@ def _public_registry_json(url: str) -> JsonObject:
     return value
 
 
-def _download_registry_bytes(url: str) -> bytes:
+def _download_registry_file(url: str, destination: Path, artifact: JsonObject,
+                            download: DownloadRequest | None = None) -> None:
+    """Stream into a temporary file and install only after size and checksum verification."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    size = 0
+    temporary = None
     try:
-        with urlopen(UrlRequest(url, headers={"User-Agent": "sima-neat-model-registry/0.1"}), timeout=120) as response:
-            return response.read()
+        with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as output:
+            temporary = Path(output.name)
+            if download is not None:
+                payload = download(url)
+                output.write(payload)
+                digest.update(payload)
+                size = len(payload)
+            else:
+                request = UrlRequest(url, headers={"User-Agent": "sima-neat-model-registry/0.1"})
+                with urlopen(request, timeout=120) as response:
+                    for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                        size += len(chunk)
+                        if size > artifact["size_bytes"]:
+                            raise ValidationError("downloaded artifact exceeds its declared size")
+                        output.write(chunk)
+                        digest.update(chunk)
+        if digest.hexdigest() != artifact["sha256"] or size != artifact["size_bytes"]:
+            raise ValidationError("downloaded artifact failed size or SHA-256 verification")
+        temporary.replace(destination)
     except OSError as exc:
         raise RegistryPublicationError(f"could not download registry artifact: {exc}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def stage_catalog_build(
@@ -837,7 +968,6 @@ def stage_catalog_build(
     root = Path(repository).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     read = read_request or _public_registry_json
-    download = download_request or _download_registry_bytes
     base_url = api_url.rstrip("/")
     catalog_payload = read(
         f"{base_url}/v1/repositories/sima-neat/models/catalogs/current?"
@@ -879,7 +1009,10 @@ def stage_catalog_build(
         run_id = build.get("run_id")
         if not isinstance(run_id, str) or not run_id:
             raise ValidationError(f"current catalog build has no retained compile run: {component_id}")
-        artifact_payload = read(f"{base_url}/v1/runs/{run_id}/artifacts/mpk")
+        component = next(item for item in model["components"] if item["id"] == component_id)
+        native = component["interface"]["format"] == "huggingface"
+        kind = "llima" if native else "mpk"
+        artifact_payload = read(f"{base_url}/v1/runs/{run_id}/artifacts/{kind}")
         artifact = artifact_payload.get("artifact")
         if not isinstance(artifact, dict):
             raise ValidationError(f"artifact registry returned no MPK metadata for {run_id}")
@@ -889,25 +1022,50 @@ def stage_catalog_build(
             raise ValidationError(f"artifact registry returned incomplete MPK metadata for {run_id}")
         if digest != build.get("artifact_sha256"):
             raise ValidationError(f"registry MPK checksum does not match the current catalog for {run_id}")
-        payload = download(download_url)
-        if hashlib.sha256(payload).hexdigest() != digest or len(payload) != artifact.get("size_bytes"):
-            raise ValidationError(f"downloaded MPK failed size or SHA-256 verification for {run_id}")
         component_dir = output / model_id / build_profile_id / component_id
         component_dir.mkdir(parents=True, exist_ok=True)
-        archive_name = mpk_filename(model, build_profile_id, component_id)
+        archive_name = "deployment-manifest.json" if native else mpk_filename(model, build_profile_id, component_id)
         archive = component_dir / archive_name
-        archive.write_bytes(payload)
-        verify_mpk(component_dir)
+        _download_registry_file(download_url, archive, artifact, download_request)
+        if native:
+            try:
+                manifest = json.loads(archive.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ValidationError(f"invalid deployment manifest for {run_id}: {exc}") from exc
+            if not isinstance(manifest, dict) or manifest.get("format") != "llima":
+                raise ValidationError(f"invalid LLiMa deployment manifest for {run_id}")
+            files = deployment_files(manifest)
+            deployment = component_dir / "deployment"
+            deployment.mkdir(exist_ok=True)
+
+            def fetch_file(item: JsonObject) -> None:
+                response = read(f"{base_url}/v1/runs/{run_id}/artifacts/{item['artifact']}")
+                registered = response.get("artifact", {})
+                if (registered.get("sha256") != item["sha256"]
+                        or registered.get("size_bytes") != item["size_bytes"]
+                        or not isinstance(registered.get("download_url"), str)):
+                    raise ValidationError(f"inconsistent deployment artifact: {item['path']}")
+                path = deployment / item["path"]
+                if any(parent.is_symlink() for parent in (path, *path.parents)):
+                    raise ValidationError(f"unsafe deployment output path: {path}")
+                if (path.is_file() and path.stat().st_size == item["size_bytes"]
+                        and sha256_file(path)[0] == item["sha256"]):
+                    return
+                _download_registry_file(registered["download_url"], path, registered, download_request)
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(fetch_file, sorted(files, key=lambda item: item["size_bytes"], reverse=True)))
+            declared = {item["path"] for item in files}
+            for path in deployment.rglob("*"):
+                if path.is_symlink():
+                    raise ValidationError(f"unsafe deployment output path: {path}")
+                if path.is_file() and path.relative_to(deployment).as_posix() not in declared:
+                    path.unlink()
+        verified = verify_artifact(component_dir)
         run_payload = read(f"{base_url}/v1/runs/{run_id}")
         run = run_payload.get("run", {}) if isinstance(run_payload, dict) else {}
         compiler_version = run.get("toolchain_version") if isinstance(run, dict) else None
-        compile_result = {
-            "archive": archive_name,
-            "sha256": digest,
-            "size_bytes": len(payload),
-            "status": "success",
-            "provenance": {"compiler_version": compiler_version},
-        }
+        compile_result = {**verified, "provenance": {"compiler_version": compiler_version}}
         (component_dir / "compile-result.json").write_text(
             json.dumps(compile_result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -923,8 +1081,8 @@ def stage_catalog_build(
         staged_outputs.append(
             {
                 "component_id": component_id,
-                "mpk_path": f"{component_id}/{archive_name}",
-                "mpk_sha256": digest,
+                "artifact_path" if native else "mpk_path": f"{component_id}/{archive_name}",
+                "artifact_sha256" if native else "mpk_sha256": digest,
                 "run_id": run_id,
             }
         )
@@ -936,7 +1094,7 @@ def stage_catalog_build(
             "build_profile_id": build_profile_id,
             "compile_invocation_id": compile_invocation_id,
             "outputs": [
-                {key: item[key] for key in ("component_id", "mpk_path", "mpk_sha256")} for item in staged_outputs
+                {key: item[key] for key in ("component_id", *compile_output_fields(item))} for item in staged_outputs
             ],
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -1153,23 +1311,51 @@ def _preflight_compilations(
             if provenance.get(field) != value:
                 raise ValidationError(f"{result_path}: provenance {field} must be {value!r}")
 
-        archive_name = _require_text(result.get("archive"), "archive")
-        expected_name = mpk_filename(model, build_profile_id, component_id)
-        if archive_name != expected_name:
-            raise ValidationError(f"{result_path}: compiled MPK must be named {expected_name}, found {archive_name}")
+        native = component["interface"]["format"] == "huggingface"
+        archive_name = _require_text(result.get("manifest" if native else "archive"), "compiled artifact")
+        if not native:
+            expected_name = mpk_filename(model, build_profile_id, component_id)
+            if archive_name != expected_name:
+                raise ValidationError(
+                    f"{result_path}: compiled MPK must be named {expected_name}, found {archive_name}"
+                )
         archive = result_path.parent / archive_name
         if not archive.is_file() or archive.parent != result_path.parent:
             raise ValidationError(f"{result_path}: archive is missing from the packaged output")
+        if result.get("format", "mpk") != ("llima" if native else "mpk"):
+            raise ValidationError(f"{result_path}: artifact format does not match its source interface")
         artifact_sha = _require_sha256(result.get("sha256"), "sha256")
         declared_output = output_by_result[result_path]
         if (
-            archive.resolve() != Path(declared_output["mpk_path"]).resolve()
-            or artifact_sha != declared_output["mpk_sha256"]
+            archive.resolve() != Path(declared_output[compile_output_fields(declared_output)[0]]).resolve()
+            or artifact_sha != declared_output[compile_output_fields(declared_output)[1]]
         ):
             raise ValidationError(f"{result_path}: archive does not match the compile output manifest")
         actual_sha, actual_size = sha256_file(archive)
+        files = deployment_files(json.loads(archive.read_text(encoding="utf-8"))) if native else []
+        if native:
+            actual_size = sum(item["size_bytes"] for item in files)
         if artifact_sha != actual_sha or int(result.get("size_bytes", -1)) != actual_size:
             raise ValidationError(f"{result_path}: archive checksum or size does not match")
+
+        compiled_parameters = {}
+        if native:
+            config = json.loads((archive.parent / "deployment/devkit/vlm_config.json").read_text(encoding="utf-8"))
+            compiled_parameters = {
+                name: config["pipeline_cfg"][field]
+                for name, field in (("max_num_tokens", "max_num_tokens"),
+                                    ("language_group_size", "input_token_group_size"))
+                if field in config["pipeline_cfg"]
+            }
+            image_size = (config.get("vm_cfg") or {}).get("image_size")
+            if type(image_size) is int and image_size > 0:
+                image_size = [image_size, image_size]
+            if (isinstance(image_size, list) and len(image_size) == 2
+                    and all(type(value) is int and value > 0 for value in image_size)):
+                compiled_parameters.update(input_height=image_size[0], input_width=image_size[1])
+            for name in ("max_num_tokens", "language_group_size", "input_height", "input_width"):
+                if name in binding["parameters"] and compiled_parameters.get(name) != binding["parameters"][name]:
+                    raise ValidationError(f"{result_path}: compiled {name} does not match model.yaml")
 
         compiler_version = _require_text(provenance.get("compiler_version"), "compiler_version")
         compiler_label = _require_text(provenance.get("compiler_label"), "compiler_label")
@@ -1229,10 +1415,13 @@ def _preflight_compilations(
                 "profile": profile,
                 "component": component,
                 "binding": binding,
+                "compiled_parameters": compiled_parameters,
                 "archive": archive,
+                "files": files,
                 "artifact_sha": artifact_sha,
                 "compiler_version": compiler_version,
                 "compiler_label": compiler_label,
+                "llima_version": provenance.get("llima_version"),
                 "target": target,
                 "source_sha": source_sha,
                 "build_fingerprint": build_fingerprint,
@@ -1258,6 +1447,7 @@ def publish_compilations(
     github_run_url: str,
     request: Request | None = None,
     artifact_store: S3ArtifactStore | None = None,
+    candidate: JsonObject | None = None,
 ) -> JsonObject:
     root = Path(repository).expanduser().resolve()
     dist = Path(dist_dir).expanduser().resolve()
@@ -1276,6 +1466,8 @@ def publish_compilations(
         environment=environment,
         git_sha=git_sha,
     )
+    if any(item["model"].get("build-on-demand", False) for item in compilations) and candidate is None:
+        raise ValidationError("on-demand publication requires publish-candidate")
     client = SigV4RegistryClient(api_url, aws_region, request=request)
     store = artifact_store or S3ArtifactStore(bucket, kms_key_id=kms_key_id)
     branch_key = quote(branch, safe="")
@@ -1289,6 +1481,10 @@ def publish_compilations(
         component_id = compilation["component_id"]
         model = compilation["model"]
         component = compilation["component"]
+        files = compilation["files"]
+        native = bool(files)
+        on_demand = model.get("build-on-demand", False)
+        retention_class = "on-demand" if on_demand else "branch"
         binding = compilation["binding"]
         archive = compilation["archive"]
         artifact_sha = compilation["artifact_sha"]
@@ -1310,8 +1506,10 @@ def publish_compilations(
             "build_fingerprint": build_fingerprint,
             "recipe": component["recipe"],
             "compile_parameters": binding.get("parameters", {}),
+            **({"compiled_parameters": compilation["compiled_parameters"]} if native else {}),
             "shape_profile": binding.get("shape_profile"),
             "calibration": binding.get("calibration"),
+            **({"llima_version": compilation["llima_version"]} if compilation["llima_version"] else {}),
         }
         environment_document = {
             "schema_version": 1,
@@ -1326,8 +1524,9 @@ def publish_compilations(
         # A new attempt of the same workflow run resumes the same registry
         # transaction instead of creating a duplicate record per attempt.
         key_digest = hashlib.sha256(
-            f"{github_run_id}:{environment}:{branch}:{git_sha}:{model_id}:"
-            f"{build_profile_id}:{component_id}:{run_fingerprint}".encode()
+            (f"{github_run_id}:{environment}:{branch}:{git_sha}:{model_id}:"
+             f"{build_profile_id}:{component_id}:{run_fingerprint}"
+             + (f":{candidate['deployment_id']}" if candidate else "")).encode()
         ).hexdigest()
         stable_key = f"models-{key_digest}"
         create = client.request(
@@ -1353,7 +1552,8 @@ def publish_compilations(
                     "model_id": model_id,
                     "build_profile_id": build_profile_id,
                     "component_id": component_id,
-                    "artifact_kind": "mpk",
+                    "artifact_kind": "llima" if native else "mpk",
+                    **({"build_on_demand": True} if on_demand else {}),
                     "github_run_id": github_run_id,
                     **({"compile_timing": compilation["compile_timing"]} if compilation["compile_timing"] else {}),
                     "license": model["license"],
@@ -1362,8 +1562,17 @@ def publish_compilations(
             f"{stable_key}-create",
         )
         run_id = _require_text(create.get("run_id"), "run_id")
+        if candidate is not None:
+            deployment_path = f"/v1/repositories/sima-neat/models/deployments/{candidate['deployment_id']}"
+            client.request("PUT", f"{deployment_path}/runs/{run_id}",
+                           {"role": f"compile-{component_id}"}, f"{stable_key}-bind")
         source = component["source"]
         source_metadata = {"model_id": model_id, "component_id": component_id, "source_type": source["type"]}
+        if native:
+            source_metadata.update({
+                "revision": model["upstream"]["revision"], "entrypoint": source["entrypoint"],
+                "files": source["files"],
+            })
         model_card = model.get("upstream", {}).get("model_card")
         if isinstance(model_card, str) and model_card:
             source_metadata["model_card"] = model_card
@@ -1392,12 +1601,33 @@ def publish_compilations(
             f"{stable_key}-parameters",
         )
 
+        artifact_metadata = {
+            "model_id": model_id, "build_profile_id": build_profile_id,
+            "component_id": component_id, "target": target,
+            **({"build_on_demand": True} if on_demand else {}),
+        }
+        if native:
+            _publish_deployment_files(
+                client, store, run_id=run_id, stable_key=stable_key, bucket=bucket,
+                deployment=archive.parent / "deployment", files=files,
+                metadata=artifact_metadata, retention_class=retention_class,
+                upload_prefix=candidate["upload_prefix"].rstrip("/") if candidate else None,
+            )
+            artifact_metadata.update({
+                "layout": "directory", "storage_backend": "s3", "file_count": len(files),
+                "deployment_size_bytes": sum(item["size_bytes"] for item in files),
+            })
         relative_archive = archive.relative_to(dist).as_posix()
         object_key = f"models/{branch_key}/{commit_tag}/{relative_archive}"
-        stored = store.ensure_native_sha256(archive, object_key, artifact_sha)
+        if candidate is not None:
+            object_key = f"{candidate['upload_prefix'].rstrip('/')}/{run_id}/{archive.name}"
+        stored = store.ensure_native_sha256(
+            archive, object_key, artifact_sha,
+            media_type="application/json" if native else "application/gzip",
+        )
         client.request(
             "PUT",
-            f"/v1/runs/{run_id}/artifacts/mpk",
+            f"/v1/runs/{run_id}/artifacts/{'llima' if native else 'mpk'}",
             {
                 "artifact_type": "model-pack",
                 "s3_bucket": bucket,
@@ -1406,25 +1636,22 @@ def publish_compilations(
                 "s3_version_id": stored.version_id,
                 "sha256": stored.sha256,
                 "size_bytes": stored.size_bytes,
-                "media_type": "application/gzip",
-                "retention_class": "branch",
-                "metadata": {
-                    "model_id": model_id,
-                    "build_profile_id": build_profile_id,
-                    "component_id": component_id,
-                    "target": target,
-                },
+                "media_type": "application/json" if native else "application/gzip",
+                "retention_class": retention_class,
+                "metadata": artifact_metadata,
             },
             f"{stable_key}-artifact",
         )
         # This is compiler-output validation, not a DevKit correctness or performance test.
+        validation = "deployment-validation" if native else "mpk-validation"
         client.request(
             "PUT",
-            f"/v1/runs/{run_id}/test-results/compile/mpk-validation",
+            f"/v1/runs/{run_id}/test-results/compile/{validation}",
             {
                 "status": "passed",
                 "version": "1",
-                "summary": {"archive_validated": True, "checksum_verified": True},
+                "summary": {"deployment_validated" if native else "archive_validated": True,
+                            "checksum_verified": True},
             },
             f"{stable_key}-validation",
         )
@@ -1439,6 +1666,8 @@ def publish_compilations(
                 f"models/{branch_key}/{commit_tag}/{model_id}/{build_profile_id}/{component_id}/fidelity/"
                 f"{fidelity_fingerprint}/numerical-fidelity.json"
             )
+            if candidate is not None:
+                fidelity_key = f"{candidate['upload_prefix'].rstrip('/')}/{run_id}/numerical-fidelity.json"
             fidelity_stored = store.ensure_native_sha256(
                 fidelity_path,
                 fidelity_key,
@@ -1456,7 +1685,7 @@ def publish_compilations(
                     "sha256": fidelity_stored.sha256,
                     "size_bytes": fidelity_stored.size_bytes,
                     "media_type": "application/json",
-                    "retention_class": "branch",
+                    "retention_class": retention_class,
                     "metadata": {
                         "model_id": model_id,
                         "build_profile_id": build_profile_id,
@@ -1541,6 +1770,7 @@ def publish_packages(
     github_run_url: str,
     request: Request | None = None,
     artifact_store: S3ArtifactStore | None = None,
+    candidate: JsonObject | None = None,
 ) -> JsonObject:
     """Publish already-assembled full packages; GitHub artifacts remain transport only."""
     root = Path(repository).expanduser().resolve()
@@ -1577,13 +1807,29 @@ def publish_packages(
         declaration = next((item for item in model["packages"] if item["id"] == package_id), None)
         if declaration is None or profile_id not in declaration["build_profiles"]:
             raise ValidationError(f"{result_path}: package is not declared for {model_id}/{profile_id}/{package_id}")
-        archive_name = _require_text(result.get("archive"), "package archive")
+        native = result.get("layout") == "directory"
+        expected_native = any(item["interface"]["format"] == "huggingface" for item in model["components"]
+                              if item["id"] in declaration["components"])
+        if native != expected_native:
+            raise ValidationError(f"{result_path}: package layout does not match its component interfaces")
+        on_demand = model.get("build-on-demand", False)
+        if on_demand and candidate is None:
+            raise ValidationError("on-demand publication requires publish-candidate")
+        retention_class = "on-demand" if on_demand else "branch"
+        archive_name = _require_text(result.get("manifest_path" if native else "archive"), "package artifact")
         archive = result_path.parent / archive_name
-        media_type = _package_media_type(archive_name)
-        if archive.parent != result_path.parent or media_type is None or not archive.is_file():
-            raise ValidationError(f"{result_path}: expected one local ZIP or MPK package archive")
+        media_type = "application/json" if native else _package_media_type(archive_name)
+        expected = result_path.parent / "deployment/manifest.json" if native else result_path.parent / archive.name
+        if (archive != expected or archive.is_symlink() or not archive.is_file()
+                or media_type is None):
+            raise ValidationError(f"{result_path}: package artifact is missing or unsafe")
+        files = deployment_files(manifest) if native else []
+        if native and (json.loads(archive.read_text(encoding="utf-8")) != manifest
+                       or verify_llima(archive.parent, allow_manifest=True) != files):
+            raise ValidationError(f"{result_path}: deployment files do not match the package manifest")
         artifact_sha, artifact_size = sha256_file(archive)
-        if result.get("sha256") != artifact_sha or result.get("size_bytes") != artifact_size:
+        package_size = sum(item["size_bytes"] for item in files) if native else artifact_size
+        if result.get("sha256") != artifact_sha or result.get("size_bytes") != package_size:
             raise ValidationError(f"{result_path}: package archive does not match package-result.json")
         if (
             manifest.get("model_id") != model_id
@@ -1626,7 +1872,8 @@ def publish_packages(
             "target_platform": manifest.get("target"), "packager": "model-registry",
         }
         stable_key = "model-package-" + hashlib.sha256(
-            f"{github_run_id}:{environment}:{branch}:{git_sha}:{model_id}:{profile_id}:{package_id}:{run_fingerprint}".encode()
+            (f"{github_run_id}:{environment}:{branch}:{git_sha}:{model_id}:{profile_id}:{package_id}:{run_fingerprint}"
+             + (f":{candidate['deployment_id']}" if candidate else "")).encode()
         ).hexdigest()
         create = client.request("POST", "/v1/runs", {
             "schema_version": 1, "run_type": "model_package", "commit_sha": git_sha,
@@ -1642,38 +1889,61 @@ def publish_packages(
                 "model_id": model_id, "build_profile_id": profile_id, "package_id": package_id,
                 "artifact_kind": "full-package", "github_run_id": github_run_id,
                 "license": manifest["license"], "component_run_ids": component_runs,
+                **({"build_on_demand": True} if on_demand else {}),
             },
         }, f"{stable_key}-create")
         run_id = _require_text(create.get("run_id"), "run_id")
+        if candidate is not None:
+            deployment_path = f"/v1/repositories/sima-neat/models/deployments/{candidate['deployment_id']}"
+            client.request("PUT", f"{deployment_path}/runs/{run_id}",
+                           {"role": f"package-{package_id}"}, f"{stable_key}-bind")
         for component_id, component_run_id in sorted(component_runs.items()):
             client.request("PUT", f"/v1/runs/{run_id}/inputs/component-{component_id}", {
                 "input_type": "model-pack", "source_reference": f"registry-run:{component_run_id}",
                 "sha256": next(item["sha256"] for item in components if item["id"] == component_id),
                 "size_bytes": next(item["size_bytes"] for item in components if item["id"] == component_id),
-                "media_type": "application/gzip",
+                "media_type": "application/json" if native else "application/gzip",
                 "metadata": {"component_id": component_id, "compile_run_id": component_run_id},
             }, f"{stable_key}-component-{component_id}")
         client.request("PUT", f"/v1/runs/{run_id}/parameters", {
             "parameters": parameters, "canonical_sha256": canonical_sha256(parameters), "canonicalization_version": 1,
         }, f"{stable_key}-parameters")
+        artifact_metadata = {
+            "model_id": model_id, "build_profile_id": profile_id, "package_id": package_id,
+            "manifest_sha256": manifest_sha, "component_run_ids": component_runs,
+            **({"build_on_demand": True} if on_demand else {}),
+        }
+        if native:
+            _publish_deployment_files(
+                client, store, run_id=run_id, stable_key=stable_key, bucket=bucket,
+                deployment=archive.parent, files=files, metadata=artifact_metadata,
+                retention_class=retention_class,
+                upload_prefix=candidate["upload_prefix"].rstrip("/") if candidate else None,
+            )
+            artifact_metadata.update({
+                "layout": "directory", "storage_backend": "s3", "file_count": len(files),
+                "deployment_size_bytes": package_size,
+            })
         stored = store.ensure_native_sha256(
             archive,
-            f"models/{branch_key}/{commit_tag}/{archive.relative_to(packages_root).as_posix()}",
+            (f"{candidate['upload_prefix'].rstrip('/')}/{run_id}/{archive.name}" if candidate else
+             f"models/{branch_key}/{commit_tag}/{archive.relative_to(packages_root).as_posix()}"),
             artifact_sha,
             media_type=media_type,
         )
         client.request("PUT", f"/v1/runs/{run_id}/artifacts/package", {
             "artifact_type": "model-package", "s3_bucket": bucket, "s3_key": stored.key,
             "s3_version_id": stored.version_id, "sha256": stored.sha256, "size_bytes": stored.size_bytes,
-            "media_type": media_type, "retention_class": "branch",
-            "metadata": {"model_id": model_id, "build_profile_id": profile_id, "package_id": package_id,
-                         "manifest_sha256": manifest_sha, "component_run_ids": component_runs},
+            "media_type": media_type, "retention_class": retention_class,
+            "metadata": artifact_metadata,
         }, f"{stable_key}-artifact")
         client.request("POST", f"/v1/runs/{run_id}/finalize", {"status": "completed"}, f"{stable_key}-finalize")
         published.append({
             "model_id": model_id, "build_profile_id": profile_id, "package_id": package_id, "run_id": run_id,
-            "artifact_sha256": artifact_sha, "size_bytes": artifact_size, "manifest_sha256": manifest_sha,
+            "artifact_sha256": artifact_sha, "size_bytes": package_size, "manifest_sha256": manifest_sha,
             "package_fingerprint": manifest_sha, "component_run_ids": component_runs, "s3_key": stored.key,
+            **({key: artifact_metadata[key] for key in
+                ("layout", "storage_backend", "file_count", "deployment_size_bytes")} if native else {}),
         })
     if not published:
         raise ValidationError("no assembled package results were found")
