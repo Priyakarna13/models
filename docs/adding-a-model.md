@@ -150,7 +150,7 @@ build_profiles:
     components:
       - id: model
         calibration: default
-        parameters: {precision: int8}
+        parameters: {precision: w8a8}
 ```
 
 Name the profile by its variant ID: the precision token of each component from
@@ -167,7 +167,7 @@ together in one declared invocation:
 ```yaml
     compile_invocations:
       - id: detector
-        components: [backbone, transformer]
+        components: [backbone, decoder]
 ```
 
 Grouped components must share one source, one effective runner class, and at

@@ -18,11 +18,29 @@ accuracy:
       coco_ar_small: 0.3242
       coco_ar_medium: 0.6867
       coco_ar_large: 0.8811
+    w8a16_w16a16:
+      coco_map: 0.4756
+      coco_ap50: 0.6700
+      coco_ap75: 0.5078
+      coco_ap_small: 0.2392
+      coco_ap_medium: 0.5285
+      coco_ap_large: 0.7036
+      coco_ar1: 0.3664
+      coco_ar10: 0.5946
+      coco_ar100: 0.6471
+      coco_ar_small: 0.3906
+      coco_ar_medium: 0.7246
+      coco_ar_large: 0.8908
 performance:
   run_tests: true
   expected:
     w8a8_w16a16:
       backbone:
         throughput_fps: 296.2
-      transformer:
+      decoder:
         throughput_fps: 952.5
+    w8a16_w16a16:
+      backbone:
+        throughput_fps: 165.4
+      decoder:
+        throughput_fps: 955.8

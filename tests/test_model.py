@@ -477,7 +477,7 @@ def test_devkit_accuracy_package_must_be_compiled_in_one_invocation() -> None:
     model = load_model(directory)
     # Without grouping, each component compiles in its own job, so no job holds every MPK the script needs.
     del model["build_profiles"][0]["compile_invocations"]
-    with pytest.raises(ValidationError, match="must compile backbone, transformer in one compile invocation"):
+    with pytest.raises(ValidationError, match="must compile backbone, decoder in one compile invocation"):
         validate_model(directory, model, SCHEMA)
 
 
@@ -689,8 +689,8 @@ def test_catalog_model_is_valid() -> None:
     )
     profiles = {profile["id"]: profile for profile in model["build_profiles"]}
     assert set(profiles) == {"w16a16", "w8a8"}
-    assert profiles["w16a16"]["components"][0]["parameters"]["precision"] == "bf16"
-    assert profiles["w8a8"]["components"][0]["parameters"]["precision"] == "int8"
+    assert profiles["w16a16"]["components"][0]["parameters"]["precision"] == "w16a16"
+    assert profiles["w8a8"]["components"][0]["parameters"]["precision"] == "w8a8"
     assert profiles["w8a8"]["components"][0]["parameters"]["calibration_samples"] == 500
     assert model["calibrations"][0]["dataset"] == {
         "id": "imagenet-2012",
