@@ -10,13 +10,16 @@ approver configuration and acceptance testing.
 `VULCAN_ENV` selects `staging` or `production`. GitHub's repository variable
 overrides the organization variable; Models currently sets `staging`. There is
 no implicit default. The configuration job selects that GitHub environment and
-reads its `VULCAN_ARTIFACT_REGISTRY_API_URL` (the authenticated writer origin).
-Each subsequent job uses the resolved environment and URL, with publisher roles
+reads its `VULCAN_ARTIFACT_REGISTRY_API_URL` (authenticated writer origin) and
+`VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL` (public catalog reader). Candidate and
+promotion operations use the signed writer client; catalog snapshots are fetched
+without AWS credentials from the public reader.
+Each subsequent job uses the resolved environment and URLs, with publisher roles
 from that environment and approver credentials from `<VULCAN_ENV>-promote-develop`.
-The URL is configuration, not embedded in Python. For source CLI use, export both
+Both URLs are configuration, not embedded in Python. For source CLI use, export all three
 variables explicitly. Missing/invalid configuration fails before any registry call.
 
-The request plan saves both values. A retry with a different environment or URL
+The request plan saves the environment and both URLs. A retry with a different environment or URL
 fails before a registry call; use the original configuration to finish the old
 request, or start a new dispatch in the new environment with its own candidate.
 Environment-local candidate and promotion IDs must never be moved between registries.
@@ -34,8 +37,8 @@ Before normal use, a repository administrator and Vulcan operator must:
    inspection/approval/rejection. Scope its OIDC trust to that environment.
 3. Set environment variable `VULCAN_ARTIFACT_REGISTRY_PROMOTION_ROLE_ARN` in
    the selected protected environment to the provisioned role ARN. Keep the publisher
-   role and `VULCAN_ARTIFACT_REGISTRY_API_URL` in the corresponding `staging` or
-   `production` environment. Use its authenticated writer origin, not the public reader.
+   role and both registry URL variables in the corresponding `staging` or
+   `production` environment. Set each URL to its corresponding writer or reader origin.
 4. Protect Develop and review changes to this workflow and its tooling. All jobs
    check out the workflow run's exact trusted commit, never the candidate ref.
 5. Make `.github/workflows/model-promotion.yml` available on the repository default
@@ -52,11 +55,20 @@ provision approver trust until the required environment rules are in place.
 ## Build, request, review, consume
 
 1. Run **Vulcan Model Orchestrator** with the on-demand model and profile selected.
-   Obtain the finalized candidate UUID from its summary or `candidate.json`
-   artifact. Candidates may originate on a feature branch or Develop. Compile
+   Candidates may originate on a feature branch or Develop. Compile
    success is not runtime qualification; review the relevant evidence first.
-2. Run **Promote model** from **develop**, choose `promote`, enter the candidate
-   UUID and a reason including validation evidence links. Leave promotion ID blank.
+2. Run **Promote model** from **develop**, choose `promote`, enter `model_id` and
+   `build_profile`, and a reason including validation evidence links. The model ID
+   is the folder name under `models/` (also the top-level `id` in `model.yaml`);
+   the profile is an `id` under `build_profiles` in that file. For Qwen3.5 0.8B,
+   use `qwen3_5_0_8b` and `w4a16`. Leave promotion ID blank.
+   In staging, leave `deployment_id` blank to select the newest matching candidate receipt by creation time
+   across source branches, verifies its identity and finalized state with Vulcan,
+   and pins the UUID before review. Missing or expired receipts fail with build
+   instructions; it never silently falls back to an older receipt. Check the
+   resolved source commit and candidate in the review summary. Retries restore
+   the saved plan instead of resolving a newer build. Source CLI users may still
+   supply an exact UUID with `--deployment-id`.
 3. The prepare job reads the candidate and current Develop canonical snapshot,
    creates a correlated request issue, and uploads `promotion-plan`. At this point
    the issue is only a preparation record: no pending hold is promised yet.
@@ -154,3 +166,47 @@ until a future approval replaces it; no withdrawal-first workflow is introduced.
 Tracking: [Models #315](https://github.com/sima-neat/models/issues/315), under
 [master plan #306](https://github.com/sima-neat/models/issues/306). Backend contract:
 [Vulcan integration guide](https://github.com/sima-neat/vulcan/pull/253#issuecomment-6210178603).
+
+## Approval and outcome notifications
+
+After Vulcan confirms a pending promotion, the request job adds a comment
+mentioning `@sima-neat/owners-models` to the evidence issue. It posts that comment
+once per promotion, including on retries. It then sends a Slack reminder with
+the model/profile, environment, promotion ID, evidence issue, and approval URL.
+This notification does not approve the request.
+
+Reuse `SLACK_VULCAN_EVENT_CHANNEL_ID`, the shared channel variable used by
+other Vulcan notifications. It must be available to the selected environment
+through environment, repository, or organization variables. Make
+`SLACK_BOT_TOKEN` available to the request job; the bot needs `chat:write` and
+access to the destination channel. The Slack reminder identifies the GitHub
+team by name; it does not assume a corresponding Slack user group.
+
+Only pending promote requests send reminders. Retrying the request job may send
+another Slack reminder; the GitHub team comment is deduplicated. Slack delivery
+failure is visible as a failed notification step but does not block approval.
+
+## Environment-local candidate selection
+
+Automatic model/profile discovery uses legacy build receipts, which are staging-only:
+candidate publication currently rejects other environments. Production dispatches
+must provide an exact `deployment_id` from the production registry. They fail
+before searching GitHub artifacts when that ID is omitted. The UUID is also an
+optional override in staging, allowing selection of a specific validated build.
+Find it in the build's `candidate.json` receipt, using `deployment_id`.
+
+Model ID and build profile remain required and are verified against the candidate
+returned by the selected registry. A staging UUID cannot be used to promote in
+production. This does not enable production candidate publication; that producer
+path still requires separate implementation and acceptance testing.
+
+After the approval/decision job finishes, the report job sends a second Slack
+message to the same channel. It includes the model/profile, environment, promotion
+ID, workflow and evidence links, approval-job result, and freshly read backend
+state. Only `promoted` with a result snapshot is described as completed.
+Rejected, cancelled, expired, still-pending, and unreadable backend states are
+reported explicitly. Status-only dispatches do not send outcome notifications.
+The outcome message is prepared before updating the issue, so an issue-update
+failure does not suppress Slack delivery. Reporting requires the saved plan and
+request receipt; failures before those are available cannot send this outcome.
+Retries may resend the outcome notification.
