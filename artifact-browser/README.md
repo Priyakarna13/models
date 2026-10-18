@@ -69,7 +69,12 @@ The preview's benchmark results start from
 `artifact-browser/fixtures/performance-result.json`, a ResNet-50 result
 that `import-core-benchmark` produced from a DevKit Core benchmark, so its
 board telemetry and power rails are real readings; the preview varies only
-speed, energy, and MLA memory per build, and generates illustrative layer timings. Edit it to exercise other metric
+speed, energy, and MLA memory per build, and generates illustrative layer timings
+covering all ten recognized operation families in each profiling panel. These synthetic
+layer names include fused operations, nested reshapes, segmentation helpers,
+outputs and zero-time entries. Input placeholders are omitted, matching the
+benchmark API. These names do not describe the selected model's actual graph.
+Edit it to exercise other metric
 values or availability states. Keep one fixture per benchmark adapter, not
 per schema version: a new format that needs its own adapter adds its own
 fixture and tests, and the existing fixture keeps covering the older formats.
@@ -93,6 +98,20 @@ making the browser available at <https://developer-stg.sima.ai/models>.
 A manual staging dispatch of the orchestrator on either branch republishes it. The job resolves the bucket, publisher
 role, KMS key, and CloudFront distribution from the shared staging Vulcan
 configuration; those deployment values are not hard-coded in this repository.
+
+`website/scripts/portal-config.mjs` selects the UI at build time from `GITHUB_REF`:
+Main builds the customer view of the main catalog; Develop, feature branches and
+pull requests build the developer view. Both use the same staging API and
+publication URL. The last publication wins; the catalog branch selector does not
+change the site's UI. Customer view hides contributor navigation, branch/compiler
+filters, build history and the Details section while retaining browsing, comparison,
+measurements and downloads.
+
+For a local customer build, use `MODEL_BROWSER_UI_MODE=customer` with
+`npm run build:portal --prefix website`; pass the same variable to
+`npm run smoke:portal --prefix website` or `preview.py`. The default local mode
+is `developer`. `MODEL_REGISTRY_API_URL` optionally overrides the API for local
+builds; neither mode requires production infrastructure.
 
 The default is the WAF-protected public staging registry at
 `https://models-registry.stg.neat.sima.ai`. The API must allow cross-origin
@@ -119,10 +138,9 @@ additional branches from returned runs. Full
 provenance, validation, and metric views load only after a build is selected.
 Public discovery requests completed builds only. The primary search matches
 model, build-profile, and component names together with category names. Task and
-model family filters sit beside the cards; architecture, type, input, branch, and
-compiler filters stay under **More filters**, which opens when one of them is active.
-Each filter lists only the values the loaded builds use, and a filter with fewer
-than two values is hidden unless it is set.
+model family filters sit beside the cards. Developer view also shows Branch,
+Compiler and Build history directly. Category filters list the values the loaded
+builds use and hide when fewer than two remain; developer controls stay visible.
 On narrow screens the filters move into a drawer whose button shows the
 active-filter count.
 The branch filter defaults to `develop`. A branch selected by the user is saved per
@@ -144,17 +162,20 @@ Selecting a model card opens its page in place of the catalog; the breadcrumb
 or the browser's Back button returns to the catalog at the same scroll position.
 A page shows one variant build: the component runs of one model and build
 profile compiled by one workflow. Its header carries the name, description,
-category tags, **Download**, and **Copy CLI command**. Below it, the variant
-tabs, then section links to **Overview**,
-**Performance**, **Accuracy**, **Details**, and **License**. A section without
+category tags and **Download**, with validation and source-link icons beside it.
+**Copy CLI command** is available inside the download dialog for current catalog builds.
+The model image sits beside the header content on wide screens and stacks below
+it on narrow screens. Both UI modes use this layout. Variant tabs and section
+links to **Overview**, **Performance**, **Accuracy**, **Details**, and **License**
+follow the header. A section without
 data is left out.
 
 The page is read at a glance first: each section shows its key facts, and
 everything longer sits in one expandable row.
 
-- **Overview** shows the hero and the README's `## Overview`. **Full model
-  card** loads the README on first open, checks its SHA-256 against the
-  catalog, and renders it from the section after Overview, because the title,
+- **Overview** shows the README's `## Overview`, then loads the remaining input/output
+  and application instructions inline after checking their SHA-256 against the
+  catalog. It renders the README from the section after Overview, because the title,
   hero, and Overview are already on the page.
 - **Performance** shows throughput, latency, SoM power, and energy per
   inference for each component, one number per tile. **Benchmark details** is
@@ -165,12 +186,12 @@ everything longer sits in one expandable row.
   runtime beside **Raw result** and **Download CSV** (every reading of the
   component in one table).
 - **Accuracy** shows the status, the first four metrics, and the scope.
-  **Evaluation details** explains status and coverage and lists the context
+  In the developer UI, **Evaluation details** explains status and coverage and lists the context
   and remaining metrics. **Published scores** lists each `published_metrics`
   entry of `model.yaml` with its dataset, conditions, and source; a published
   score sits beside a measured one only when both name the same dataset. A
   build without an accuracy result shows only the published scores.
-- **Details** shows the package card (size, SHA-256, **Download package**,
+- **Details**, in the developer UI only, shows the package card (size, SHA-256, **Download package**,
   and **Download components** for a multi-component build), then rows for build provenance, source models (one
   per distinct digest), and each component: checksum, run identity, numerical
   fidelity, and a nested **Compile parameters** row.
@@ -182,20 +203,18 @@ end-to-end latency.
 
 ## Compare page
 
-**Compare** in the top bar opens a page with three build pickers over one
-table. Each picker lists the variants of the selected branch's catalog and
-resolves to the build the model page would show. Opening Compare from a model
-page fills the first empty picker with that variant. The link records the picks
-as `view=compare&build=<model id>.<build profile>`, one `build` per picker, so
-a shared link reopens the same comparison.
+**Compare** explores the selected branch's model variants by task. All
+precisions appear together; measured variants appear in a scatter
+plot of accuracy against throughput in inferences/s. Accuracy plots keep dataset
+and metric identities separate. Multi-component models are excluded for now. Hovering or focusing a point
+shows the model name, variant, throughput and accuracy.
 
-The table shows task, component count, throughput, latency, SoM power,
-energy per inference, and the headline accuracy metric with its published
-score. A multi-component build lists one line per component and never adds
-them up. Bold marks the best value among single-component builds, or among the
-same component of different builds; a row with one value has no mark. Builds
-from build history and metrics outside these rows are not comparable here;
-their model pages show them.
+Select up to three points or use **Add model** to inspect exact measurements
+in a table. It includes throughput, latency, power, energy, peak MLA memory and
+accuracy. Best performance values are highlighted only within matching components.
+Models without measurements remain available in **Add model**. LLM/VLM comparisons show **TBD**.
+Links preserve the task and selected builds with `compare_task` and repeated
+`build` parameters. Build history is not compared.
 
 ## How the page is built
 
@@ -206,6 +225,7 @@ delegation.
 | Module | Owns |
 | --- | --- |
 | `app.js` | Startup, routing from URL state, and event handlers |
+| `portal-shell.js` | Load and mount the shared Developer Portal header |
 | `state.js` | Shared page state, configuration, and DOM element lookup |
 | `api.js` | Registry requests, caches, and catalog build selection |
 | `branch-builds.js` | Which builds a branch shows, and grouping by workflow |
@@ -224,7 +244,7 @@ Every expandable area is a `disclosure(key, label, body, meta)` row from
 `state.openDisclosures` by key, so a rerender keeps them open; the set is
 cleared when the page moves to another model. A link opened with `run`
 opens that component's row (`component:<run id>`). Opening the
-`model-card` row is what triggers the README fetch.
+model page loads its README instructions automatically.
 
 Buttons with an icon start actions (download, copy). Blue text with ↗ is
 reserved for links that leave the browser. Cards group related numbers only
