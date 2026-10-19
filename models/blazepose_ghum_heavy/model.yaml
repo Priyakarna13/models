@@ -1,4 +1,3 @@
-schema_version: 2
 id: blazepose_ghum_heavy
 display_name: BlazePose GHUM Heavy 3D
 description: MediaPipe BlazePose GHUM Heavy landmark model with image-space and world-space 3D pose outputs.
@@ -12,7 +11,6 @@ modalities:
   - landmarks
 architecture:
   id: blaze_pose
-  variant: ghum_heavy_3d
 owners:
 - '@sima-neat/models'
 license:
@@ -27,6 +25,9 @@ upstream:
 components:
 - id: model
   role: inference
+  # The ONNX entrypoint was converted locally from the official TFLite with TensorFlow 2.17.0,
+  # tf2onnx 1.17.0, ONNX 1.17.0, and opset 16, then pinned because tf2onnx constant names are not
+  # byte-deterministic. scripts/compile.py gates it against the TFLite (max abs error 0.005, mean 0.0005).
   source:
     type: file_set
     entrypoint: pose_landmark_heavy.onnx
@@ -107,13 +108,12 @@ components:
 resources: []
 calibrations: []
 build_profiles:
-- id: modalix_bf16
+- id: w16a16
   target: modalix
   components:
   - id: model
-    artifact_suffix: bf16_tmio
     parameters:
-      precision: bf16
+      precision: w16a16
       input_name: input_1
       input_shape:
       - 1
@@ -136,36 +136,19 @@ packages:
   - model
   resources: []
   build_profiles:
-  - modalix_bf16
+  - w16a16
   composition: default
-validation:
-- id: tflite_conversion_fidelity
-  scope:
-    type: component
-    component: model
-  build_profiles:
-  - modalix_bf16
-  status: provisional
-  reference: official_mediapipe_tflite
-  sample: deterministic_modulo_251_rgb
-  outputs:
-  - Identity
-  - Identity_1
-  - Identity_4
-  metrics:
-  - maximum_absolute_error
-  - mean_absolute_error
-  thresholds:
-    maximum_absolute_error: 0.005
-    maximum_mean_absolute_error: 0.0005
-  note: The compile recipe enforces conversion fidelity before surgery; task-level landmark accuracy remains upstream-qualified.
+# The surgery has structural checks only, and no compiled-output reference comparison or
+# dataset-backed landmark accuracy test is declared; task accuracy is in Google's model card.
+fidelity: []
+accuracy: []
 benchmark:
 - id: modalix_latency
   scope:
     type: component
     component: model
   build_profiles:
-  - modalix_bf16
+  - w16a16
   status: pending
   target: modalix
   reason: Establish a Core API baseline for the default BF16 MPK workload.

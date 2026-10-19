@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
 import sys
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -14,29 +14,8 @@ import pytest
 import yaml
 from onnx import TensorProto, helper, numpy_helper
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 MODEL_DIR = ROOT / "models" / "blazepose_ghum_heavy"
-SCRIPTS_DIR = MODEL_DIR / "scripts"
-
-
-def load_module(name: str) -> ModuleType:
-    path = SCRIPTS_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"blazepose_ghum_heavy_{name}", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    local_imports = ("surgery", "validate_conversion")
-    previous = {key: sys.modules.get(key) for key in local_imports}
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.path.remove(str(SCRIPTS_DIR))
-        for key, value in previous.items():
-            if value is None:
-                sys.modules.pop(key, None)
-            else:
-                sys.modules[key] = value
-    return module
 
 
 def channel_pad_graph(surgery: ModuleType) -> onnx.ModelProto:
@@ -67,8 +46,10 @@ def channel_pad_graph(surgery: ModuleType) -> onnx.ModelProto:
     return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 16)])
 
 
-def test_surgery_replaces_each_channel_pad_with_identity_convolution() -> None:
-    surgery = load_module("surgery")
+def test_surgery_replaces_each_channel_pad_with_identity_convolution(
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    surgery = load_script("surgery")
     model = channel_pad_graph(surgery)
     replaced = surgery._replace_channel_padding(model)
     assert len(replaced) == surgery.CHANNEL_PADDING_COUNT
@@ -80,8 +61,10 @@ def test_surgery_replaces_each_channel_pad_with_identity_convolution() -> None:
     assert all(np.count_nonzero(weight[2:]) == 0 for weight in weights)
 
 
-def test_conversion_gate_accepts_qualified_deltas_and_rejects_regression() -> None:
-    conversion = load_module("validate_conversion")
+def test_conversion_gate_accepts_qualified_deltas_and_rejects_regression(
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    conversion = load_script("validate_conversion")
     reference = {
         name: np.ones(shape, dtype=np.float32)
         for name, shape in (("Identity", (1, 195)), ("Identity_1", (1, 1)), ("Identity_4", (1, 117)))
@@ -107,8 +90,8 @@ def test_model_declares_exact_apps_output_contract() -> None:
     assert "35-38 are ignored" in descriptions["Identity"]
     assert "exposes only 0-32 and ignores 33-38" in descriptions["Identity_4"]
     profile = metadata["build_profiles"][0]
-    assert profile["id"] == "modalix_bf16"
-    assert profile["components"][0]["parameters"]["precision"] == "bf16"
+    assert profile["id"] == "w16a16"
+    assert profile["components"][0]["parameters"]["precision"] == "w16a16"
 
 
 def test_documentation_distinguishes_public_and_raw_landmark_records() -> None:
@@ -119,8 +102,47 @@ def test_documentation_distinguishes_public_and_raw_landmark_records() -> None:
     assert "The remaining six are auxiliary ROI-tracking landmarks" not in readme
 
 
-def test_mpk_audit_enforces_public_abi_and_mla_placement(tmp_path: Path) -> None:
-    recipe = load_module("compile")
+def test_compile_cli_accepts_current_invocation_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    recipe = load_script("compile")
+    source = tmp_path / "pose_landmark_heavy.onnx"
+    source.write_bytes(b"fixture")
+    output_root = tmp_path / "output"
+    calls: list[tuple[Path, Path, str]] = []
+
+    def compile_model(model: Path, output: Path, profile: str) -> Path:
+        calls.append((model, output, profile))
+        return output / recipe.COMPONENT_ID / "fixture_mpk.tar.gz"
+
+    monkeypatch.setattr(recipe, "compile_model", compile_model)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "compile.py",
+            "--model",
+            str(source),
+            "--output-dir",
+            str(output_root),
+            "--build-profile",
+            "w16a16",
+            "--compile-invocation",
+            "model",
+        ],
+    )
+
+    assert recipe.main() == 0
+    assert calls == [(source.resolve(), output_root.resolve(), "w16a16")]
+
+
+def test_mpk_audit_enforces_public_abi_and_mla_placement(
+    tmp_path: Path,
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    recipe = load_script("compile")
     manifest = json.dumps(
         {
             "model_sdk_version": recipe.COMPILER_VERSION,
@@ -168,8 +190,11 @@ def test_mpk_audit_enforces_public_abi_and_mla_placement(tmp_path: Path) -> None
     assert report["mla_plugin_count"] == 1
 
 
-def test_mpk_audit_accepts_model_sdk3_manifest_boundary(tmp_path: Path) -> None:
-    recipe = load_module("compile")
+def test_mpk_audit_accepts_model_sdk3_manifest_boundary(
+    tmp_path: Path,
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    recipe = load_script("compile")
     shape = list(recipe.INPUT_SHAPE)
     manifest = json.dumps(
         {

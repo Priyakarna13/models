@@ -21,6 +21,8 @@ from validate_conversion import deterministic_input, validate_conversion
 
 LOG = logging.getLogger("blazepose_ghum_heavy.compile")
 MODEL_DIR = Path(__file__).resolve().parents[1]
+MODEL_ID = "blazepose_ghum_heavy"
+COMPONENT_ID = "model"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 PUBLIC_INPUT_SIZE = int(np.prod(INPUT_SHAPE)) * np.dtype(np.float32).itemsize
 PUBLIC_OUTPUT_SIZES = [int(np.prod(shape)) * np.dtype(np.float32).itemsize for _, shape in OUTPUTS]
@@ -32,13 +34,13 @@ def variant_config(variant_id: str) -> dict[str, Any]:
     if len(matches) != 1:
         raise ValueError(f"expected exactly one BlazePose build profile named {variant_id!r}")
     profile = matches[0]
-    binding = next(item for item in profile["components"] if item["id"] == "model")
+    binding = next(item for item in profile["components"] if item["id"] == COMPONENT_ID)
     variant = {**profile, "parameters": binding["parameters"]}
     parameters = variant["parameters"]
     declared_outputs = tuple(parameters.get("output_names", []))
     if (
         variant["target"] != "modalix"
-        or parameters.get("precision") != "bf16"
+        or parameters.get("precision") != "w16a16"
         or parameters.get("input_name") != INPUT_NAME
         or tuple(parameters.get("input_shape", [])) != INPUT_SHAPE
         or declared_outputs != tuple(name for name, _ in OUTPUTS)
@@ -157,7 +159,7 @@ def audit_mpk(archive: Path) -> dict[str, Any]:
     }
 
 
-def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
+def compile_model(source: Path, output_root: Path, variant_id: str) -> Path:
     variant_config(variant_id)
     from afe.apis.defines import (
         CalibrationMethod,
@@ -182,7 +184,8 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
     tflite = source.with_name("pose_landmark_heavy.tflite")
     conversion_report = validate_conversion(tflite, source)
 
-    output_dir.mkdir(parents=True, exist_ok=False)
+    component_dir = output_root / COMPONENT_ID
+    component_dir.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="blazepose-ghum-heavy-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         prepared = prepare_model(source, Path(temporary) / "blazepose_ghum_heavy.onnx")
         importer = ImporterParams(
@@ -205,27 +208,27 @@ def compile_model(source: Path, output_dir: Path, variant_id: str) -> Path:
             .with_requantization_mode(RequantizationMode.sima)
             .with_calibration(CalibrationMethod.from_str("mse"))
         )
-        model_name = f"blazepose_ghum_heavy_{variant_id}"
+        model_name = f"{MODEL_ID}_{variant_id}"
         quantized = loaded.quantize(
             calibration_data=calibration_data,
             quantization_config=quantization,
             model_name=model_name,
             log_level=logging.INFO,
         )
-        quantized.save(model_name=model_name, output_directory=str(output_dir))
-        quantized.compile(output_path=str(output_dir), batch_size=1, log_level=logging.INFO)
+        quantized.save(model_name=model_name, output_directory=str(component_dir))
+        quantized.compile(output_path=str(component_dir), batch_size=1, log_level=logging.INFO)
 
-    archives = sorted(output_dir.glob("*_mpk.tar.gz"))
+    archives = sorted(component_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
         raise RuntimeError(f"expected one BlazePose MPK, found {archives}")
     report = {
         "conversion": conversion_report,
-        "model_id": "blazepose_ghum_heavy",
+        "model_id": MODEL_ID,
         "mpk": audit_mpk(archives[0]),
         "output_contract": [{"name": name, "shape": list(shape)} for name, shape in OUTPUTS],
         "variant_id": variant_id,
     }
-    (output_dir / "blazepose-ghum-heavy-audit.json").write_text(
+    (component_dir / "blazepose-ghum-heavy-audit.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return archives[0]
@@ -236,10 +239,10 @@ def main() -> int:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-profile", required=True)
-    parser.add_argument("--component", required=True)
+    parser.add_argument("--compile-invocation", required=True)
     args = parser.parse_args()
-    if args.component != "model":
-        parser.error(f"unsupported component: {args.component}")
+    if args.compile_invocation != COMPONENT_ID:
+        parser.error(f"unsupported compile invocation: {args.compile_invocation}")
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     source = args.model.expanduser().resolve()
     if not source.is_file():
