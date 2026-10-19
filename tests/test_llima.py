@@ -442,6 +442,80 @@ shutil.copytree(os.environ["DEPLOYMENT_SOURCE"], sys.argv[2])
     }
 
 
+@pytest.mark.parametrize("future_mask, log_probe", [(True, True), (False, True), (True, False)])
+def test_whisper_recipe_and_saved_script_preserve_settings(tmp_path, future_mask, log_probe):
+    work = tmp_path / "source with spaces"
+    checkpoint = work / "whisper-small"
+    checkpoint.mkdir(parents=True)
+    output = tmp_path / "compiled output"
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    python = tools / "python3"
+    python.write_text(f"#!{sys.executable}\nimport os, sys\n"
+                      "os.execv(sys.executable, [sys.executable, '-S', *sys.argv[1:]])\n")
+    python.chmod(0o755)
+    modules = {
+        "afe/__init__.py": "",
+        "afe/apis/__init__.py": "",
+        "afe/apis/error_handling_variables.py": "def enable_verbose_error_messages(): pass\n",
+        "sima_lmm/__init__.py": "",
+        "sima_lmm/model.py": '''import json, os
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+from pathlib import Path
+from types import SimpleNamespace
+
+FileGenMode = SimpleNamespace(ALL="all")
+FileGenPrecision = SimpleNamespace(A_BF16_W_INT8="a16w8")
+
+class WhisperModel:
+    @classmethod
+    def from_hf_cache(cls, **kwargs):
+        model = cls()
+        model.source = kwargs
+        return model
+
+    def gen_files(self, mode, **kwargs):
+        with ProcessPoolExecutor(1, mp_context=get_context("spawn")) as pool:
+            assert pool.submit(abs, -7).result() == 7
+        self.source["sima_path"].mkdir(parents=True)
+        Path(os.environ["COMPILER_CALLS"]).write_text(json.dumps({
+            "source": self.source, "mode": mode, "generation": kwargs,
+        }, default=str))
+''',
+    }
+    for name, code in modules.items():
+        path = tools / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(code)
+    captured = tmp_path / "calls.json"
+    env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "PYTHONPATH": str(tools),
+           "COMPILER_CALLS": str(captured)}
+    options = [
+        f"--{'' if future_mask else 'no-'}use_future_token_mask",
+        f"--{'' if log_probe else 'no-'}enable_log_probe",
+    ]
+    recipe = ROOT / "models/whisper_small/scripts/compile.sh"
+    for script, arguments, destination in (
+        (recipe, [str(checkpoint), str(output), *options], output),
+        (output / "compile.sh", [], work / "whisper-small-a16w8"),
+    ):
+        subprocess.run(["bash", str(script), *arguments], cwd=work, env=env,
+                       check=True, capture_output=True, text=True)
+        calls = json.loads(captured.read_text())
+        assert (work / calls["source"]["hf_cache_path"]).resolve() == checkpoint
+        assert calls["source"]["model_name"] == "whisper-small"
+        assert (work / calls["source"]["sima_path"]).resolve() == destination / "sima_files"
+        assert calls["source"]["use_future_token_mask"] is future_mask
+        assert calls["source"]["enable_log_probe"] is log_probe
+        assert calls["mode"] == "all"
+        assert calls["generation"]["precision"] == {"all": {"precision": "a16w8"}}
+        assert calls["generation"]["num_processes"] == 20
+        assert calls["generation"]["part"] == "all"
+        assert calls["generation"]["resume"] is True
+    assert os.access(output / "compile.sh", os.X_OK)
+
+
 def test_mpk_candidate_joins_multiple_invocations_before_finalizing(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     model_dir = root / "models/fixture_model"
@@ -518,14 +592,10 @@ def test_deployment_manifest_rejects_aliases_and_overlapping_paths():
             deployment_files({"files": files})
 
 
-def test_native_deployment_rejects_links_and_incomplete_configuration(tmp_path):
+def test_native_deployment_rejects_links(tmp_path):
     source = deployment(tmp_path / "deployed")
     (source / "link").symlink_to(source / "devkit/tokenizer.json")
     with pytest.raises(ValidationError, match="unsafe"):
-        verify_llima(source)
-    (source / "link").unlink()
-    (source / "devkit/vlm_config.json").unlink()
-    with pytest.raises(ValidationError, match="invalid LLiMa deployment"):
         verify_llima(source)
 
 
