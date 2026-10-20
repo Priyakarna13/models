@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from model_registry.benchmark_manifest import make_benchmark_manifest, validate_benchmark_components
 from model_registry.errors import ValidationError
-from model_registry.performance import DEFAULT_OPTIONS, PERFORMANCE_RUNNER, performance_script
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -126,9 +125,8 @@ def test_generates_direct_devkit_manifest_for_compiled_model(
     assert manifest["model"]["path"].endswith(f"/{model_id}/{build_profile_id}/{component_id}/{model_id}_mpk.tar.gz")
     assert manifest["model"]["uri"] == "vulcan://runs/00000000-0000-4000-8000-000000000001/artifacts/mpk"
     assert manifest["provenance"]["execution_provider"] == "github-actions-devkit-runner"
-    assert manifest["script"] == str(performance_script(ROOT / "models" / model_id))
-    assert manifest["benchmark_options"] == DEFAULT_OPTIONS
-    assert manifest["script"] == str(ROOT / PERFORMANCE_RUNNER)
+    assert manifest["script"] == str(ROOT / "models" / model_id / "scripts/performance.py")
+    assert "benchmark_options" not in manifest
     assert "build" not in manifest["runtime"]["devkit"]
     assert "benchmark" not in manifest
     assert "model_options" not in manifest

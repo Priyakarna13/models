@@ -11,8 +11,7 @@ from .compile_matrix import build_matrix
 from .dependencies import resolve_benchmark_runtime
 from .errors import ValidationError
 from .fetch import sha256_file
-from .model import benchmark_entry, load_and_validate_model
-from .performance import benchmark_options, performance_script
+from .model import SCRIPTS_DIR, benchmark_entry, load_and_validate_model
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 
@@ -114,10 +113,9 @@ def make_benchmark_manifest(
     if entry is None:
         raise ValidationError(f"no benchmark entry applies to {model_id}/{build_profile_id}/{component_id}")
     runtime = resolve_benchmark_runtime(root)
-    model_dir = root / "models" / model_id
-    script = performance_script(model_dir)
+    script = root / "models" / model_id / SCRIPTS_DIR / "performance.py"
     if not script.is_file():
-        raise ValidationError(f"performance script is missing: {script}")
+        raise ValidationError(f"model performance script is missing: {script}")
     compiled_builds = [
         _compiled_build(compiled, model_id, build_profile_id, item) for item in accuracy_components(model, entry)
     ]
@@ -143,8 +141,6 @@ def make_benchmark_manifest(
             "execution_provider": "github-actions-devkit-runner",
         },
     }
-    if script != model_dir / "scripts/performance.py":
-        manifest["benchmark_options"] = benchmark_options(entry)
     if entry["scope"]["type"] == "package":
         # A package's result names the package; its components are the builds it ran, in pipeline order.
         manifest["model"].update(

@@ -25,7 +25,6 @@ from .model import (
     compile_invocations_for,
     load_and_validate_model,
 )
-from .performance import PERFORMANCE_RUNNER, benchmark_options, performance_script
 from .source import source_identity
 
 MODEL_COMPILE_INPUT_PATHS = {
@@ -267,9 +266,6 @@ def performance_key(
     missing = [item for item in measured if item not in builds]
     if missing:
         raise ValidationError(f"benchmark {entry['id']!r} needs compiled component {missing[0]!r}")
-    model_dir = root / "models" / model_id
-    script = performance_script(model_dir)
-    shared = script == root / PERFORMANCE_RUNNER
     return _key({
         "stage": "performance",
         "model_id": model_id,
@@ -280,8 +276,7 @@ def performance_key(
             for item in measured
         },
         "benchmark": entry,
-        "options": benchmark_options(entry, custom=not shared),
-        "files": _file_digests(root, [script.relative_to(root).as_posix(), *PERFORMANCE_TOOLING]),
+        "files": _file_digests(root, [f"models/{model_id}/{PERFORMANCE_SCRIPT}", *PERFORMANCE_TOOLING]),
         "runtime": resolve_benchmark_runtime(root),
     })
 

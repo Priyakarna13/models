@@ -529,6 +529,7 @@ def _declare_benchmark(manifest: Path, note: str) -> None:
         }
     ]
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
+    (manifest.parent / "scripts/performance.py").touch()
 
 
 def test_matrix_records_fingerprints_without_catalog_carry_forward(model_repository: Path) -> None:

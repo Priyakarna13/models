@@ -75,5 +75,3 @@ published_metrics:
 benchmark:
 - id: modalix_latency
   required_metrics: [avg_power_watts, energy_per_inference_joules]
-  decoder: yolo26_pose
-  top_k: 100

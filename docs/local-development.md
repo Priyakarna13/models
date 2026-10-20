@@ -276,30 +276,30 @@ access to it before continuing; validation alone is not enough to submit.
 
 ## Benchmark locally on a Modalix DevKit
 
-The performance stage runs the shared `tools/model_registry/performance.py`,
-or a model's custom `scripts/performance.py`, once for each component listed
+The performance stage runs the model's standalone `scripts/performance.py`
+once for each component listed
 in the build's `benchmark_component_ids`. It measures the
 compiled model with Neat Core's default synthetic workload; it does not
 measure accuracy or application preprocessing and postprocessing.
 
 Complete the DevKit setup in [DevKit performance](benchmarking.md#set-up-a-devkit)
-once. Then copy the exact compiled MPK and the selected performance script
+once. Then copy the exact compiled MPK and the model's performance script
 to the DevKit and run the ordinary workload:
 
 ```bash
-~/pyneat/bin/python tools/model_registry/performance.py \
+~/pyneat/bin/python models/resnet_50/scripts/performance.py \
   --mpk /workspace/resnet_50_mpk.tar.gz --output /workspace/benchmark \
   2>&1 | tee /workspace/benchmark.log
 ```
 
-The same command with `python tools/model_registry/performance.py` works
+The same command with `python models/resnet_50/scripts/performance.py` works
 inside an activated PyNeat environment. Confirm a successful exit and check the
 saved `benchmark/benchmark-report.json` for `latency_ms`, `fps`, and the power
 fields, and `benchmark/benchmark-context.json` for `core_version`.
 For YOLO decoder settings or a custom package workload, follow
 [DevKit performance](benchmarking.md#the-performance-script).
-Keep the report and log outside Git. Run each component of a multi-component
-model separately.
+Keep the report and log outside Git. For a package benchmark, pass every
+component MPK to the model's script as described in the linked guide.
 
 `scripts/run_model_performance.sh` is the CI wrapper around this script. It
 needs the registry publication record of a published compilation, so it does

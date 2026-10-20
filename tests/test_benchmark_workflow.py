@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from model_registry.performance import PERFORMANCE_RUNNER
 from model_registry.stage_keys import ACCURACY_TOOLING, PERFORMANCE_TOOLING
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,7 +181,7 @@ def test_performance_runs_only_at_the_full_mla_clock() -> None:
     script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
     clock = script.index('MLA_DEVFREQ=/sys/class/devfreq/5000000.mla')
 
-    assert clock < script.index('"$PYNEAT_PYTHON" "$performance_script"')
+    assert clock < script.index('"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"')
     assert 'if (( $(cat "$MLA_DEVFREQ/cur_freq") < MLA_FREQUENCY_HZ )); then' in script
     assert 'sudo -n tee "$MLA_DEVFREQ/userspace/set_freq"' in script
     assert "if (( mla_frequency_hz != MLA_FREQUENCY_HZ )); then" in script
@@ -192,18 +191,16 @@ def test_performance_runs_only_at_the_full_cpu_clock() -> None:
     script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
     clock = script.index("CPU_CPUFREQ=/sys/devices/system/cpu/cpufreq/policy0")
 
-    assert clock < script.index('"$PYNEAT_PYTHON" "$performance_script"')
+    assert clock < script.index('"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"')
     assert 'if (( $(cat "$CPU_CPUFREQ/scaling_cur_freq") != CPU_FREQUENCY_KHZ )); then' in script
     assert 'sudo -n tee "$CPU_CPUFREQ/scaling_setspeed"' in script
     assert "if (( cpu_frequency_khz != CPU_FREQUENCY_KHZ )); then" in script
 
 
-def test_performance_runs_the_manifests_implementation_and_workload_options() -> None:
+def test_performance_runs_the_model_owned_script() -> None:
     script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
-    assert 'print(json.load(open(sys.argv[1]))["script"])' in script
-    assert 'if "benchmark_options" in manifest:' in script
-    assert 'json.dumps(manifest["benchmark_options"])' in script
-    assert '"${mpks[@]}" --output "$output" "${workload_options[@]}"' in script
+    assert '"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"' in script
+    assert '"${mpks[@]}" --output "$output"' in script
 
 def test_devkit_stages_run_only_when_requested() -> None:
     benchmark = load_workflow()["jobs"]["benchmark-dispatched-model"]
@@ -507,14 +504,16 @@ def test_cleanup_removes_input_and_both_evidence_artifacts() -> None:
 
 
 @pytest.mark.parametrize("relative", [
-    "tools/model_registry/benchmark_publication.py", PERFORMANCE_RUNNER, "tools/model_registry/model.py",
+    "tools/model_registry/benchmark_publication.py", "tools/model_registry/performance.py",
+    "tools/model_registry/model.py",
 ])
 def test_board_runs_require_the_measured_revisions_tooling(tmp_path, relative) -> None:
     stage = load_workflow()["jobs"]["stage-dispatched-benchmark"]
     guard = step(stage["steps"], "Require the measured revision's board-stage tooling")
     assert guard["run"] == "scripts/require_source_board_tooling.sh _source"
     source = tmp_path / "_source"
-    for item in {*PERFORMANCE_TOOLING, *ACCURACY_TOOLING, PERFORMANCE_RUNNER, "tools/model_registry/model.py"}:
+    for item in {*PERFORMANCE_TOOLING, *ACCURACY_TOOLING,
+                 "tools/model_registry/performance.py", "tools/model_registry/model.py"}:
         (source / item).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / item, source / item)
     python_bin = tmp_path / "bin"

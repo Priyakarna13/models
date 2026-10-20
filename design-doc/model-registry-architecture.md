@@ -83,7 +83,7 @@ this table. Modules marked CI only are removed from the author package by
 | `registry.py` | publishing compile runs, packages, model documentation, and the branch catalog the browser reads (CI only) |
 | `promotions.py` | pinned environment-specific Develop requests, inspection, decisions, receipts and review summaries (CI only) |
 | `candidates.py` | complete model/profile candidate contracts, run publication and binding, finalization, feature selection and retry receipts (CI only) |
-| `performance.py` | selecting the shared Core runner or custom override, effective workload settings, and ordinary single-component benchmark execution |
+| `performance.py` | validating that a declared benchmark has a model-owned runnable script |
 | `benchmark_manifest.py` | the DevKit benchmark manifest for a compiled build (CI only) |
 | `benchmark_publication.py` | publishing performance and accuracy runs (CI only) |
 | `benchmark_metrics.py` | reading registry metrics from the saved Core report |
@@ -112,7 +112,7 @@ result depends on.
 | Stage | Model script | Key | Registry record |
 | --- | --- | --- | --- |
 | compile | `compile.py` or `compile.sh` | `compile_key` in `stage_keys.py` | compile run per component, recorded in the branch catalog |
-| performance | shared runner or `scripts/performance.py` | `performance_key` in `stage_keys.py` | `model_benchmark` run under the component's compile run |
+| performance | `scripts/performance.py` | `performance_key` in `stage_keys.py` | `model_benchmark` run under the component's compile run |
 | accuracy | `accuracy.py` | `accuracy_key` in `stage_keys.py` | `model_accuracy` run under the result component's compile run |
 
 The ONNX compile key covers the invocation's `model.yaml` projection, the fidelity

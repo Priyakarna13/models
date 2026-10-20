@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,6 @@ from model_registry.benchmark_publication import load_benchmark_result
 from model_registry.core_benchmark import _require_internals_runtime, import_core_benchmark
 from model_registry.errors import ValidationError
 from model_registry.model import load_model
-from model_registry.performance import performance_script
 from model_registry.stage_keys import PERFORMANCE_FINGERPRINT_VERSION
 
 PLAN = {"schema": "sima.neat.execution_plan", "schema_version": 1, "model": {"name": "resnet_50", "batch": 4},
@@ -24,7 +24,7 @@ def component_benchmark_scripts():
     for path in ROOT.glob("models/*/model.yaml"):
         entries = load_model(path.parent)["benchmark"]
         if entries and all(entry["scope"]["type"] == "component" for entry in entries):
-            scripts.add(performance_script(path.parent))
+            scripts.add(path.parent / "scripts/performance.py")
     assert scripts
     return sorted(scripts)
 
@@ -450,9 +450,11 @@ def test_every_component_runner_requests_and_saves_layer_stats(script, monkeypat
         def save(self, path):
             Path(path).write_text(json.dumps(report))
 
+    selected = []
+
     class Model:
         def __init__(self, *args):
-            pass
+            selected.append(args)
 
         def benchmark(self, options):
             requests.append(options)
@@ -469,8 +471,19 @@ def test_every_component_runner_requests_and_saves_layer_stats(script, monkeypat
         BoxDecodeType=SimpleNamespace(YoloV26="YoloV26", YoloV26Pose="YoloV26Pose", YoloV26Seg="YoloV26Seg"),
     )
     monkeypatch.setitem(sys.modules, "pyneat", pyneat)
-    monkeypatch.setattr(sys, "argv", [str(script), "--mpk", "model.tar.gz", "--output", str(tmp_path)])
-    runpy.run_path(str(script), run_name="__main__")
+    standalone = tmp_path / "performance.py"
+    shutil.copyfile(script, standalone)
+    monkeypatch.setattr(sys, "argv", [str(standalone), "--mpk", "model.tar.gz", "--output", str(tmp_path)])
+    runpy.run_path(str(standalone), run_name="__main__")
+    model_id = script.parents[1].name
+    if model_id.startswith("yolo26") and model_id != "yolo26_tiny_drone":
+        decoder = "YoloV26Pose" if model_id.endswith("_pose") else (
+            "YoloV26Seg" if model_id.endswith("_seg") else "YoloV26"
+        )
+        assert selected[0][0] == "model.tar.gz"
+        assert vars(selected[0][1]) == {"decode_type": decoder, "top_k": 100}
+    else:
+        assert selected == [("model.tar.gz",)]
     assert len(requests) == 1
     assert requests[0].include_layer_stats is True
     assert requests[0].num_samples == 1000

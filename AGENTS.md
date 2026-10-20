@@ -18,7 +18,7 @@ touches.
 |---|---|---|---|
 | compile (ONNX) | Model Compiler | `scripts/compile.py` | `scripts/run_model_compilation.sh` |
 | compile (LLiMa) | Model Compiler | `scripts/compile.sh` | `scripts/run_llima_compilation.sh` |
-| performance | DevKit | shared Core runner, or custom `scripts/performance.py` | `scripts/run_model_performance.sh` |
+| performance | DevKit | `scripts/performance.py` | `scripts/run_model_performance.sh` |
 | accuracy | DevKit | `scripts/accuracy.py` + `requirements-accuracy.txt` | `scripts/run_model_accuracy.sh` |
 
 `compile_key`, `performance_key` and `accuracy_key` in
@@ -45,11 +45,13 @@ Preprocessing, decoding and surgery belong in executable code and the README;
 ownership belongs in `CODEOWNERS`. Do not add maturity compatibility fields to
 new authored YAML.
 
-Use `benchmark: true` only for the ordinary single-component ONNX workload
-(`modalix_latency`, 1000 samples, minimum 60000 ms, layer statistics enabled).
-Explicit workloads retain decoder choices, settings and required metrics. A
-custom `scripts/performance.py` overrides the shared runner; unsupported YAML
-measurement options fail validation rather than overriding its constants.
+`benchmark: true` schedules `modalix_latency` for a single ONNX component across
+its supported profiles. Explicit entries retain workload IDs, scope, profile
+restrictions and required metrics. Decoder selection, top-k, sample count,
+duration and layer statistics belong in each model's `scripts/performance.py`.
+Every benchmarked model must include that standalone script so customers can
+copy it and reproduce CI in the PyNeat environment, without registry imports
+or YAML configuration. Keep its `--mpk` and `--output` CLI.
 Executable accuracy keeps `engine: devkit_script` and nonempty required metrics;
 missing `engine` remains recorded-only. Returned accuracy names and regression
 expectations use `taxonomies/accuracy-metrics.yaml`. Each running profile needs
@@ -158,7 +160,7 @@ in the same commit.
 | the set of model scripts a DevKit stage or conversion runs | `NON_COMPILE_SCRIPTS` in `stage_keys.py`; every other `.py`/`.sh` under `scripts/` is an ONNX compile input |
 | board-only code | keep it inside `performance.py` or `accuracy.py`; a helper module under `scripts/` is an ONNX compile input, so editing it recompiles and then remeasures the model |
 | a custom `performance.py` | start from the [canonical script](docs/benchmarking.md#the-performance-script): save the whole Core `BenchmarkReport`, including board telemetry |
-| a shared benchmark option or implementation | hash the effective workload and selected runner in the performance key; preserve explicit decoders and required telemetry |
+| a benchmark workload or implementation | hash its declaration and model-owned script in the performance key; preserve explicit decoders and required telemetry |
 | registered accuracy vocabulary or its loader | include it in accuracy tooling dependencies and retain required-metric and regression checks |
 | a Core benchmark reading the registry should publish | a row with its Vulcan measurement name in `REPORT_METRICS` or `TELEMETRY_METRICS` in `benchmark_metrics.py` and the same table in the browser's `benchmark-adapters.js`, its label in the browser's `metrics.js`, its row in `DETAIL_CARDS` in `model-view.js` when a Benchmark details card should show it, and the metric table in [benchmarking](docs/benchmarking.md#workload-and-measurements) |
 | a field of the performance result | `performance-result.schema.json`, `import_core_benchmark` in `core_benchmark.py`, and the browser's `benchmark-adapters.js`; a package result's `components` also feed `packageBenchmark`, which the model page and catalog read |
@@ -220,7 +222,7 @@ in the same commit.
    the backend's runner (`run_model_compilation.sh` or `run_llima_compilation.sh`)
    and check each compiled artifact with
    `model-registry verify-artifact` ([local development](docs/local-development.md)).
-4. On a DevKit, run the selected shared Core workload or custom
+4. On a DevKit, run the model's standalone
    `scripts/performance.py --mpk --output`, with one `--mpk component=<archive>` per component for a
    [package benchmark](docs/benchmarking.md#package-benchmark), and, for builds that declare accuracy,
    `scripts/run_model_accuracy.sh` on the compile output.

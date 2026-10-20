@@ -221,8 +221,6 @@ def stage_repository(tmp_path: Path) -> Path:
         destination = repository / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
-    # This fixture exercises custom-script invalidation; shared workload selection has its own tests.
-    (repository / "models" / PLAN_MODEL / "scripts/performance.py").write_text("# custom benchmark\n")
     return repository
 
 

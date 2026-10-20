@@ -403,37 +403,29 @@ runs it.
 
 ### `benchmark`
 
-The shared Core runner measures a single ONNX component. `benchmark: true` means
-workload `modalix_latency`, all supported profiles, 1000 samples, minimum duration
-60000 ms, layer statistics enabled and no decoder override or additional required
-metrics. Existing throughput expectations and execution-plan checks still apply.
+A benchmark is executed by the model's standalone `scripts/performance.py`.
+`benchmark: true` schedules workload `modalix_latency` for the sole ONNX component
+over all supported profiles. Decoder selection and measurement settings are
+explicit in the script, which customers can copy and run with PyNeat.
 
-Use the explicit form for different settings or required telemetry:
-
-| Field | Meaning |
-| --- | --- |
-| `decoder` | `yolo26_boxes`, `yolo26_pose`, or `yolo26_seg`; never inferred from the task. |
-| `top_k` | Decoder limit, default 100; requires a decoder. |
-| `num_samples` | Sample count, default 1000. |
-| `min_duration_ms` | Minimum measurement duration, default 60000. |
-| `include_layer_stats` | Include component layer timings, default `true`. |
-| `required_metrics` | Measurements required for publication, independently of optional reported metrics. |
+Use the explicit form for a different workload ID, scope, profile restriction
+or required telemetry:
 
 ```yaml
 benchmark:
   - id: modalix_latency
-    decoder: yolo26_boxes
-    top_k: 100
     required_metrics: [avg_power_watts, energy_per_inference_joules]
 ```
 
-`scripts/performance.py` overrides the shared runner for a custom workload. Custom
-scripts currently accept only `--mpk` and `--output`; declaring decoder or
-measurement options for them fails validation. Their constants remain script-owned.
-Required metrics are always shared result checks. RF-DETR retains its explicit
-package-scoped `orchestration` workload, both MPKs and CPU proposal selection, one
-schema-6 package result, and component layer timings and execution plans. Its
-ordered package is never inferred from component declaration order.
+Keep top-k, decoder, sample count, duration and layer-statistics settings in
+`performance.py`, alongside the actual Core calls; YAML does not duplicate them.
+Required metrics remain shared publication checks. Existing throughput
+expectations and execution-plan checks still apply.
+
+RF-DETR retains its explicit package-scoped `orchestration` workload, both MPKs
+and CPU proposal selection, one schema-6 package result, and component layer
+timings and execution plans. Its ordered package is never inferred from component
+declaration order.
 
 See [Accuracy and fidelity](local-accuracy-development.md) and [DevKit
 performance](benchmarking.md) for the scripts and results, and [what a change

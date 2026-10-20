@@ -13,7 +13,6 @@ from types import ModuleType
 import pytest
 import yaml
 from model_registry.model import load_and_validate_model
-from model_registry.performance import DEFAULT_OPTIONS, benchmark_options
 
 ROOT = Path(__file__).resolve().parents[4]
 MODEL_DIR = ROOT / "models" / "yolo26_tiny_drone"
@@ -1014,7 +1013,6 @@ def test_registry_entry_pins_qualified_qat_and_calibration_sources() -> None:
     assert benchmark["id"] == "modalix_tracker_latency"
     assert benchmark["scope"] == {"type": "component", "component": "model"}
     assert benchmark["build_profiles"] == ["w8a8"]
-    assert benchmark_options(benchmark) == DEFAULT_OPTIONS
     assert binding["parameters"]["calibration_samples"] == 128
     assert binding["parameters"]["calibration_tensor_sha256"] == (
         "d8830d19b33fe336c5c2cec4822c3b278be4169d125ca249be476771be5b544e"

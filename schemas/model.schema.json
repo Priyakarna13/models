@@ -424,11 +424,6 @@
     "benchmarkEntry": {
       "type": "object", "additionalProperties": false, "required": ["id"],
       "properties": {
-        "decoder": {"enum": ["yolo26_boxes", "yolo26_pose", "yolo26_seg"]},
-        "top_k": {"type": "integer", "minimum": 1},
-        "num_samples": {"type": "integer", "minimum": 1},
-        "min_duration_ms": {"type": "integer", "minimum": 0},
-        "include_layer_stats": {"type": "boolean"},
         "id": {"$ref": "#/$defs/stageEntryId"}, "scope": {"$ref": "#/$defs/testScope"},
         "build_profiles": {"$ref": "#/$defs/stageBuildProfiles"},
         "status": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},

@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 from model_registry.stage_keys import ACCURACY_TOOLING, PERFORMANCE_TOOLING
-from model_registry.performance import PERFORMANCE_RUNNER
 
 source = Path(sys.argv[1])
 
@@ -32,7 +31,7 @@ def content(path: Path) -> bytes | None:
 changed = sorted(
     relative
     for relative in {*PERFORMANCE_TOOLING, *ACCURACY_TOOLING,
-                     PERFORMANCE_RUNNER, "tools/model_registry/model.py"}
+                     "tools/model_registry/performance.py", "tools/model_registry/model.py"}
     if content(Path(relative)) != content(source / relative)
 )
 if changed:

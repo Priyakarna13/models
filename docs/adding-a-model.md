@@ -39,7 +39,7 @@ models/<model-id>/
   model.yaml                    # the model's only configuration file
   scripts/
     compile.py                  # compile stage: writes one MPK per component
-    performance.py              # optional custom workload; otherwise use the shared Core runner
+    performance.py              # standalone customer benchmark, when the model declares one
     accuracy.py                 # accuracy stage, when model.yaml declares DevKit accuracy
     requirements-accuracy.txt   # optional wheels for accuracy.py
     convert.py                  # only when model.yaml declares a conversion
@@ -257,7 +257,7 @@ such as INT8-only accuracy and explicit multi-component scopes and result compon
 | `fidelity` | `compile.py`, comparing the compiled graph with the source model | compile stage |
 | `accuracy` with `engine: devkit_script` | `accuracy.py`, running the compiled MPKs | accuracy stage |
 | `accuracy` without `engine` | nothing; the entry records results measured elsewhere | no stage |
-| `benchmark` | shared Core runner, or custom `performance.py` | performance stage |
+| `benchmark` | the model's standalone `performance.py` | performance stage |
 
 Fidelity is diagnostic numerical agreement, not task accuracy. A build profile
 has at most one `devkit_script` accuracy entry. Every component with a
@@ -294,7 +294,7 @@ selection before either stage can run; see [on-demand builds](#on-demand-builds)
 | --- | --- |
 | compile (ONNX) | source identity and layout, dependencies, explicit multi-component boundary contracts, component parameters and calibration, target and compatibility, consumed fidelity settings, compile/surgery code, declared training code, the Model Compiler version, `scripts/run_model_compilation.sh`, and the shared model loader |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
-| performance | the compile run and MPK digest of every measured component in package order, the workload and effective options, the selected shared runner or custom `performance.py`, shared performance tooling, and the DevKit runtime pin |
+| performance | the compile run and MPK digest of every measured component in package order, the workload declaration and model-owned `performance.py`, shared performance tooling, and the DevKit runtime pin |
 | accuracy | the compile runs and MPK digests of its components, the `accuracy` entry, `accuracy.py` and `requirements-accuracy.txt`, shared accuracy tooling and registered metric vocabulary, and the DevKit runtime pin |
 
 ONNX compile code includes every `.py` and `.sh` under `scripts/` except
@@ -310,7 +310,7 @@ recompiled build is always remeasured.
 | README, display metadata, `published_metrics`, `convert.py`, registry tooling outside a stage's tooling | nothing |
 | `build-on-demand` | nothing; changes scheduling and catalog metadata only |
 | a model's tests under `tests/`, or `scripts/run_model_tests.sh` | nothing; a changed test applies the next time its stage runs |
-| the selected performance implementation or effective workload options | affected performance stages |
+| a model's `performance.py` or benchmark declaration | affected performance stages |
 | `accuracy.py`, its requirements, or the `accuracy` entry | that model's accuracy |
 | registered accuracy vocabulary or its loader | accuracy stages |
 | the DevKit runtime pin, the benchmarking workflow, or `benchmark_publication.py` | every performance and accuracy stage |
