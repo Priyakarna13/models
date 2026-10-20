@@ -394,8 +394,14 @@ async function checkTaskComparison(browser, base) {
         if (new URL(page.url()).searchParams.getAll('build').includes(removedKey)) throw new Error('table removal left the variant in the URL');
         if (await add.isDisabled() || !await add.locator(`option[value="${removedKey}"]`).count()) throw new Error('table removal did not restore the variant to Add model');
         if (await page.locator('[data-compare-control="component"]').count()) throw new Error('component control remains visible');
-        const available = await add.locator('option').allTextContents();
-        if (available.some(text => text.includes('RF-DETR'))) throw new Error('multi-component model remains selectable');
+        // A multi-component model competes with its package result as its one value.
+        const packagePoints = page.locator('.compare-point[data-compare-toggle^="rf_detr_"]');
+        if (!await packagePoints.count()) throw new Error('package-benchmarked model is missing from the chart');
+        const packageKey = await packagePoints.first().getAttribute('data-compare-toggle');
+        if (await add.locator(`option[value="${packageKey}"]`).count()) await add.selectOption(packageKey);
+        const columnKeys = await page.locator('.compare-table thead .compare-remove').evaluateAll(buttons => buttons.map(button => button.dataset.compareToggle));
+        const packageThroughput = await page.locator('.compare-table tbody tr', {hasText: 'Throughput'}).locator('td').nth(columnKeys.indexOf(packageKey)).innerText();
+        if (!/inferences\/s/.test(packageThroughput)) throw new Error('package-benchmarked model shows no throughput');
         if (await page.locator('[data-compare-control="axis"] option[value="latency"]').count()) throw new Error('latency remains selectable as an axis');
         const chartLabels = await page.locator('.compare-axis-title').allTextContents();
         if (chartLabels[0] !== 'Throughput (inferences/s)' || !chartLabels[1].includes('mAP')) throw new Error('accuracy/throughput axes changed');

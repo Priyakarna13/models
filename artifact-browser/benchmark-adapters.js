@@ -212,3 +212,14 @@ export function packageBenchmark(details) {
   }
   return null;
 }
+
+// The measurements that score a variant as a whole: its package result, or its only component's
+// result. A component of a larger model measures one part of it, so such a variant without a package
+// result has none.
+export function wholeModelMeasurements(details) {
+  const measuredPackage = packageBenchmark(details);
+  if (measuredPackage) return measuredPackage.result.measurements;
+  if (details.length !== 1) return {};
+  const adapted = adaptBenchmarkResult(details[0].benchmark?.result);
+  return adapted.kind === "supported" ? adapted.value.measurements : {};
+}

@@ -206,12 +206,12 @@ end-to-end latency.
 **Compare** explores the selected branch's model variants by task. All
 precisions appear together; measured variants appear in a scatter
 plot of accuracy against throughput in inferences/s. Accuracy plots keep dataset
-and metric identities separate. Multi-component models are excluded for now. Hovering or focusing a point
+and metric identities separate. A multi-component model shows its package result, measured with all its components running as one pipeline, and no measurement without one. Hovering or focusing a point
 shows the model name, variant, throughput and accuracy.
 
 Select up to three points or use **Add model** to inspect exact measurements
 in a table. It includes throughput, latency, power, energy, peak MLA memory and
-accuracy. Best performance values are highlighted only within matching components.
+accuracy. The best value in each row is highlighted.
 Models without measurements remain available in **Add model**. LLM/VLM comparisons show **TBD**.
 Links preserve the task and selected builds with `compare_task` and repeated
 `build` parameters. Build history is not compared.

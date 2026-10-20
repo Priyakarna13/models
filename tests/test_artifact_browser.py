@@ -1311,35 +1311,31 @@ def test_compare_explores_one_task_with_a_chart_and_selected_table() -> None:
     assert '.workspace:not([data-view="compare"]) .compare-pane { display: none; }' in styles
 
 
-def test_compare_bolds_a_value_only_against_the_same_component() -> None:
+def test_compare_bolds_the_best_value_across_all_models() -> None:
     metrics = _browser_source("metrics.js").replace("export ", "")
     script = _browser_source("compare-view.js")
-    # measuredText and bestValues, without the benchmark adapter between them.
-    measured = script[script.index("function measuredText("):script.index("// Each component is measured on its own")]
-    best = script[script.index("// A single-component build competes"):script.index("function performanceCell(")]
+    # measuredText and bestValue, without the benchmark adapter between them.
+    best = script[script.index("function measuredText("):script.index("function performanceCell(")]
 
-    def build(**latencies: float | None) -> dict:
-        return {"components": [
-            {"component": component, "measurements": {} if value is None else {
-                "latency_avg_ms": {"status": "measured", "value": value, "unit": "ms"},
-            }}
-            for component, value in latencies.items()
-        ]}
+    def build(latency: float | None) -> dict:
+        return {"measurements": {} if latency is None else {
+            "latency_avg_ms": {"status": "measured", "value": latency, "unit": "ms"},
+        }}
 
-    columns = [
-        build(backbone=31.6, decoder=22.7),
-        build(backbone=17.9, decoder=39.7),
-        build(model=12.9),
-        build(model=8.4),
-        build(encoder=5.0, decoder=None),
-    ]
-    probe = f"console.log(JSON.stringify(Object.fromEntries(bestValues({json.dumps(columns)}, 'latency_avg_ms'))));"
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", metrics + measured + best + probe],
-        cwd=ROOT, check=True, capture_output=True, text=True,
-    )
-    # Lower latency wins within each component; an encoder no other build has gets no mark.
-    assert json.loads(result.stdout) == {"backbone": 17.9, "decoder": 22.7, "model": 8.4}
+    def best_latency(*latencies: float | None) -> float | None:
+        columns = [build(latency) for latency in latencies]
+        probe = f"console.log(JSON.stringify(bestValue({json.dumps(columns)}, 'latency_avg_ms')));"
+        result = subprocess.run(
+            ["node", "--input-type=module", "--eval", metrics + best + probe],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+        return json.loads(result.stdout)
+
+    # A package value competes with single-component values; an unmeasured model takes no part.
+    assert best_latency(22.7, 12.9, 8.4, None) == 8.4
+    assert best_latency(5.0, 22.7) == 5.0
+    # One measured value has nothing to beat.
+    assert best_latency(12.9, None) is None
 
 
 def test_catalog_orders_a_family_from_smallest_to_largest() -> None:

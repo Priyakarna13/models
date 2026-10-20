@@ -273,10 +273,7 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .compare-table .compare-group th { padding-block: 11px; color: var(--ink-soft); background: var(--surface); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .compare-table .best { display: inline-block; padding: 3px 8px; margin-left: -8px; border-radius: 5px; color: var(--blue); background: var(--blue-soft); font-weight: 700; }
 .compare-table tr:last-child > * { border-bottom: 0; }
-.compare-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-.compare-line + .compare-line { margin-top: 8px; }
 .compare-loading { display: flex; align-items: center; gap: 10px; }
-.compare-component { color: var(--ink-soft); font: 400 11px/1.7 var(--font-mono); }
 .compare-add { margin-top: 20px; }
 .compare-add label { width: min(100%, 420px); }
 .compare-add select { width: 100%; max-width: none; }
