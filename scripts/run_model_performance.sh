@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark compiled components on the DevKit with the model's scripts/performance.py and record performance results.
+# Benchmark compiled components on the DevKit with the selected Core runner or model override.
 #
 # Usage: run_model_performance.sh <model_dir> <build_profile> <compiled_dir> <output_dir> [components]
 #
@@ -96,8 +96,19 @@ if "components" not in manifest:
     print(manifest["model"]["path"])
 ' "$output/performance-test.json")
 
-  PYTHONDONTWRITEBYTECODE=1 "$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py" \
-    "${mpks[@]}" --output "$output" 2>&1 | tee "$output/benchmark.log"
+  performance_script="$("$REGISTRY_PYTHON" -c '
+import json, sys
+print(json.load(open(sys.argv[1]))["script"])
+' "$output/performance-test.json")"
+  workload_options=()
+  while IFS= read -r option; do workload_options+=("$option"); done < <("$REGISTRY_PYTHON" -c '
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+if "benchmark_options" in manifest:
+    print("--options=" + json.dumps(manifest["benchmark_options"]))
+' "$output/performance-test.json")
+  PYTHONDONTWRITEBYTECODE=1 "$PYNEAT_PYTHON" "$performance_script" \
+    "${mpks[@]}" --output "$output" "${workload_options[@]}" 2>&1 | tee "$output/benchmark.log"
 
   # Record the workload Core benchmarked beside its saved report. A script that configures the model
   # reports its selection and postprocessing in its context; otherwise the MPK default applies. The

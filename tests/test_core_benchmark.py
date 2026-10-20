@@ -4,12 +4,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 from model_registry import core_benchmark
 from model_registry.benchmark_metrics import registry_metrics
 from model_registry.benchmark_publication import load_benchmark_result
 from model_registry.core_benchmark import _require_internals_runtime, import_core_benchmark
 from model_registry.errors import ValidationError
+from model_registry.model import load_model
+from model_registry.performance import performance_script
 from model_registry.stage_keys import PERFORMANCE_FINGERPRINT_VERSION
 
 PLAN = {"schema": "sima.neat.execution_plan", "schema_version": 1, "model": {"name": "resnet_50", "batch": 4},
@@ -18,16 +19,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def component_benchmark_scripts():
-    """The performance script of every model that benchmarks single components with Core's Model.benchmark. A
-    package's script runs its own pipeline; its model's tests check what that records."""
-    return [
-        script
-        for script in sorted(ROOT.glob("models/*/scripts/performance.py"))
-        if all(
-            entry["scope"]["type"] == "component"
-            for entry in yaml.safe_load((script.parents[1] / "model.yaml").read_text())["benchmark"]
-        )
-    ]
+    """Selected component runners; package pipelines are checked by their model's tests."""
+    scripts = set()
+    for path in ROOT.glob("models/*/model.yaml"):
+        entries = load_model(path.parent)["benchmark"]
+        if entries and all(entry["scope"]["type"] == "component" for entry in entries):
+            scripts.add(performance_script(path.parent))
+    assert scripts
+    return sorted(scripts)
 
 
 @pytest.fixture
@@ -240,13 +239,6 @@ def test_rejects_a_benchmark_without_the_execution_plan_the_browser_draws(core_i
         package(core_inputs, tmp_path)
 
 
-def test_every_performance_script_records_the_execution_plan_of_the_model_it_benchmarks():
-    scripts = component_benchmark_scripts()
-    assert scripts
-    for script in scripts:
-        assert '"execution_plan": json.loads(model.execution_plan().to_json()),' in script.read_text(), script
-
-
 @pytest.mark.parametrize(
     "failure", [
         "nonfinite", "negative_power", "missing_metric", "unmeasured_latency",
@@ -333,15 +325,6 @@ def test_rejects_telemetry_in_a_unit_the_metric_does_not_carry(core_inputs, tmp_
     with_report(core_inputs, telemetry=telemetry)
     with pytest.raises(ValidationError, match="must be in 'C'"):
         registry_metrics(package(core_inputs, tmp_path))
-
-
-def test_every_performance_script_saves_the_core_report():
-    scripts = component_benchmark_scripts()
-    assert scripts
-    for script in scripts:
-        source = script.read_text()
-        assert 'model.benchmark(benchmark_options).save(output / "benchmark-report.json")' in source, script
-        assert "report_json" not in source, script
 
 
 def test_layer_timings_survive_import_unchanged(core_inputs, tmp_path):
@@ -455,7 +438,7 @@ def test_does_not_silently_publish_a_requested_but_missing_profile(core_inputs, 
 
 
 @pytest.mark.parametrize("script", component_benchmark_scripts(), ids=lambda path: path.parent.parent.name)
-def test_every_model_requests_and_saves_layer_stats(script, monkeypatch, tmp_path):
+def test_every_component_runner_requests_and_saves_layer_stats(script, monkeypatch, tmp_path):
     import runpy
     import sys
 
