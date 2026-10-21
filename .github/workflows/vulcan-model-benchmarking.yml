@@ -225,8 +225,6 @@ jobs:
       SOURCE_BRANCH: ${{ needs.stage-dispatched-benchmark.outputs.source_branch }}
       SOURCE_SHA: ${{ inputs.source_sha }}
       SIMA_CLI_AUTO_ACCEPT_UPDATE: "1"
-      BENCHMARK_PERFORMANCE: ${{ contains(format(',{0},', inputs.stages), ',performance,') }}
-      BENCHMARK_ACCURACY: ${{ contains(format(',{0},', inputs.stages), ',accuracy,') }}
     steps:
       - name: Check out trusted tooling from the protected workflow revision
         uses: actions/checkout@v6
@@ -252,6 +250,27 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/model-registry-tools"
           "$RUNNER_TEMP/model-registry-tools/bin/python" -m pip install '.[tests]'
           echo "REGISTRY_PYTHON=$RUNNER_TEMP/model-registry-tools/bin/python" >> "$GITHUB_ENV"
+
+      # A manual dispatch requests both stages by default; a stage the profile does not declare is skipped.
+      - name: Select the requested stages the profile declares
+        id: stages
+        env:
+          STAGES: ${{ inputs.stages }}
+        run: |
+          set -euo pipefail
+          "$REGISTRY_PYTHON" - "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" "$STAGES" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          from model_registry.benchmark_declarations import BENCHMARK_STAGES, benchmarked_profiles
+          from model_registry.model import load_model
+
+          model_dir, profile, stages = sys.argv[1:]
+          model, requested = load_model(model_dir), stages.split(",")
+          for stage in BENCHMARK_STAGES:
+              declared = profile in benchmarked_profiles(model, stage)
+              if stage in requested and not declared:
+                  print(f"{profile} declares no {stage} benchmark; skipping it.", file=sys.stderr)
+              print(f"{stage}={str(stage in requested and declared).lower()}")
+          PY
 
       - name: Resolve and verify benchmark runtime
         id: runtime
@@ -281,7 +300,7 @@ jobs:
           echo "BENCHMARK_RUNTIME=$runtime" >> "$GITHUB_ENV"
 
       - name: Install trusted dataset tooling
-        if: env.BENCHMARK_ACCURACY == 'true'
+        if: steps.stages.outputs.accuracy == 'true'
         env:
           DATASET_REGISTRY_ENVIRONMENT: ${{ inputs.environment }}
         run: |
@@ -289,7 +308,7 @@ jobs:
 
       - name: Configure dataset reader credentials
         id: dataset-credentials
-        if: env.BENCHMARK_ACCURACY == 'true'
+        if: steps.stages.outputs.accuracy == 'true'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ needs.resolve-dispatched-benchmark-config.outputs.dataset_aws_region }}
@@ -300,7 +319,7 @@ jobs:
 
       - name: Cache the accuracy dataset on NVMe
         id: dataset-cache
-        if: env.BENCHMARK_ACCURACY == 'true'
+        if: steps.stages.outputs.accuracy == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ steps.dataset-credentials.outputs.aws-access-key-id }}
           AWS_SECRET_ACCESS_KEY: ${{ steps.dataset-credentials.outputs.aws-secret-access-key }}
@@ -323,7 +342,7 @@ jobs:
 
       - name: Measure performance on DevKit
         id: performance
-        if: ${{ !cancelled() && steps.core.outcome == 'success' && env.BENCHMARK_PERFORMANCE == 'true' }}
+        if: ${{ !cancelled() && steps.core.outcome == 'success' && steps.stages.outputs.performance == 'true' }}
         run: scripts/run_model_performance.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _performance
 
       # Publication sends each recorded outcome with its report and then fails the run on a failed one.
@@ -339,7 +358,7 @@ jobs:
         id: accuracy
         if: >-
           ${{ !cancelled() && steps.core.outcome == 'success' && steps.dataset-cache.outcome == 'success' &&
-          env.BENCHMARK_ACCURACY == 'true' }}
+          steps.stages.outputs.accuracy == 'true' }}
         run: scripts/run_model_accuracy.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _accuracy
 
       - name: Test the accuracy report with the model's accuracy tests
@@ -351,7 +370,7 @@ jobs:
             "$BUILD_PROFILE_ID" > _accuracy/test-status.txt || [[ "$(<_accuracy/test-status.txt)" == failed ]]
 
       - name: Retain performance evidence
-        if: always() && env.BENCHMARK_PERFORMANCE == 'true'
+        if: always() && steps.stages.outputs.performance == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: performance-${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}
@@ -360,7 +379,7 @@ jobs:
           retention-days: 14
 
       - name: Retain accuracy evidence
-        if: always() && env.BENCHMARK_ACCURACY == 'true'
+        if: always() && steps.stages.outputs.accuracy == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: accuracy-${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}

@@ -10,8 +10,6 @@ from model_registry.fingerprints import ACCURACY_TOOLING, PERFORMANCE_TOOLING
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_WORKFLOW = ROOT / ".github" / "workflows" / "vulcan-model-benchmarking.yml"
-BENCHMARK_PERFORMANCE = "${{ contains(format(',{0},', inputs.stages), ',performance,') }}"
-BENCHMARK_ACCURACY = "${{ contains(format(',{0},', inputs.stages), ',accuracy,') }}"
 PUBLISH_PERFORMANCE = "${{ !cancelled() && needs.benchmark-dispatched-model.outputs.performance == 'success' }}"
 PUBLISH_ACCURACY = "${{ !cancelled() && needs.benchmark-dispatched-model.outputs.accuracy == 'success' }}"
 # Model code from the source revision runs only through these steps' scripts.
@@ -206,35 +204,56 @@ def test_benchmarks_run_only_when_requested() -> None:
     steps = benchmark["steps"]
     artifact_suffix = "${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}"
 
-    assert benchmark["env"]["BENCHMARK_PERFORMANCE"] == BENCHMARK_PERFORMANCE
-    assert benchmark["env"]["BENCHMARK_ACCURACY"] == BENCHMARK_ACCURACY
+    assert not {"BENCHMARK_PERFORMANCE", "BENCHMARK_ACCURACY"} & set(benchmark["env"])
     performance = step(steps, "Measure performance on DevKit")
     assert performance["if"] == (
-        "${{ !cancelled() && steps.core.outcome == 'success' && env.BENCHMARK_PERFORMANCE == 'true' }}"
+        "${{ !cancelled() && steps.core.outcome == 'success' && steps.stages.outputs.performance == 'true' }}"
     )
     assert performance["run"] == (
         'scripts/run_model_performance.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _performance'
     )
     performance_evidence = step(steps, "Retain performance evidence")
-    assert performance_evidence["if"] == "always() && env.BENCHMARK_PERFORMANCE == 'true'"
+    assert performance_evidence["if"] == "always() && steps.stages.outputs.performance == 'true'"
     assert performance_evidence["with"]["name"] == f"performance-{artifact_suffix}"
     assert performance_evidence["with"]["if-no-files-found"] == "error"
 
     accuracy = step(steps, "Measure accuracy on DevKit")
     assert accuracy["if"] == (
         "${{ !cancelled() && steps.core.outcome == 'success' && steps.dataset-cache.outcome == 'success' "
-        "&& env.BENCHMARK_ACCURACY == 'true' }}"
+        "&& steps.stages.outputs.accuracy == 'true' }}"
     )
     assert accuracy["run"] == (
         'scripts/run_model_accuracy.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _accuracy'
     )
     accuracy_evidence = step(steps, "Retain accuracy evidence")
-    assert accuracy_evidence["if"] == "always() && env.BENCHMARK_ACCURACY == 'true'"
+    assert accuracy_evidence["if"] == "always() && steps.stages.outputs.accuracy == 'true'"
     assert accuracy_evidence["with"]["name"] == f"accuracy-{artifact_suffix}"
     assert accuracy_evidence["with"]["if-no-files-found"] == "error"
     for name in ("Install trusted dataset tooling", "Configure dataset reader credentials",
                  "Cache the accuracy dataset on NVMe"):
-        assert step(steps, name)["if"] == "env.BENCHMARK_ACCURACY == 'true'", name
+        assert step(steps, name)["if"] == "steps.stages.outputs.accuracy == 'true'", name
+
+
+@pytest.mark.parametrize(
+    ("profile", "stages", "selected"),
+    [
+        ("w8a8", "performance,accuracy", "performance=true\naccuracy=true\n"),
+        ("w8a8", "performance", "performance=true\naccuracy=false\n"),
+        # A manual dispatch's default stages on a profile with no accuracy qualification.
+        ("w16a16", "performance,accuracy", "performance=true\naccuracy=false\n"),
+    ],
+)
+def test_benchmarks_run_only_the_requested_stages_the_profile_declares(
+    tmp_path: Path, profile: str, stages: str, selected: str
+) -> None:
+    run = step(load_workflow()["jobs"]["benchmark-dispatched-model"]["steps"],
+               "Select the requested stages the profile declares")["run"]
+    (tmp_path / "_source").symlink_to(ROOT)
+    output = tmp_path / "github-output"
+    env = {**os.environ, "REGISTRY_PYTHON": sys.executable, "MODEL_ID": "resnet_50", "BUILD_PROFILE_ID": profile,
+           "STAGES": stages, "GITHUB_OUTPUT": str(output)}
+    subprocess.run(["bash", "-c", run], cwd=tmp_path, env=env, check=True)
+    assert output.read_text(encoding="utf-8") == selected
 
 
 def test_each_benchmark_runs_and_publishes_on_its_own_outcome() -> None:
