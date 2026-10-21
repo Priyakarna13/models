@@ -63,12 +63,24 @@ test('reads model report version 1 of the right stage and no other format', () =
   assert.equal(readAccuracy({run, parameters: {}, report}).kind, 'unsupported');
 });
 
-test('reads accuracy as ratios over the dataset the run parameters name', () => {
+test('reads accuracy per dataset, in the order the run parameters declare them', () => {
   const report = fixture('accuracy');
-  const parameters = {accuracy: {dataset: {id: 'imagenet-2012', variant: 'mini', sha256: 'abc'}}};
-  const accuracy = readAccuracy({run, parameters, report: {...report, metrics: {...report.metrics, extra: 'n/a'}}}).value;
-  assert.deepEqual(accuracy.metrics, report.metrics);
-  assert.deepEqual(accuracy.dataset, {id: 'imagenet-2012', variant: 'mini', sha256: 'abc', ...report.dataset});
-  assert.deepEqual(accuracy.details, report.details);
+  const result = report.datasets.default;
+  const coco = {split: 'val2017', evaluated_samples: 50, available_samples: 5000, metrics: {coco_map: 0.41}, details: {}};
+  const parameters = {accuracy: {datasets: {
+    validation: {id: 'coco-2017', variant: 'val', required_metrics: ['coco_map']},
+    default: {id: 'imagenet-2012', variant: 'mini', sha256: 'abc', required_metrics: ['top1_accuracy']},
+  }}};
+  const datasets = {default: {...result, metrics: {...result.metrics, extra: 'n/a'}}, validation: coco};
+  const accuracy = readAccuracy({run, parameters, report: {...report, datasets}}).value;
+  assert.deepEqual(accuracy.datasets.map(({name}) => name), ['validation', 'default']);
+  const [, imagenet] = accuracy.datasets;
+  assert.deepEqual(imagenet.metrics, result.metrics);
+  assert.deepEqual(imagenet.dataset, {
+    id: 'imagenet-2012', variant: 'mini', sha256: 'abc', required_metrics: ['top1_accuracy'],
+    split: 'val', evaluated_samples: 1000, available_samples: 1000,
+  });
+  assert.deepEqual(imagenet.details, result.details);
   assert.equal(readAccuracy({run, parameters: {}, report: {...report, stage: 'performance'}}).kind, 'unsupported');
+  assert.equal(readAccuracy({run, parameters: {}, report: {...report, datasets: null}}).kind, 'unsupported');
 });

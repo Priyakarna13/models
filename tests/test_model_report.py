@@ -120,29 +120,38 @@ def test_telemetry_in_an_unexpected_unit_is_rejected():
 
 
 def test_accuracy_report_validates_against_the_schema(tmp_path):
-    model_report.accuracy(
-        {"coco_map": 0.4, "coco_ap50": 0.55},
-        dataset={"split": "val2017", "evaluated_samples": 5000, "available_samples": 5000},
-        details={"detections": 12},
-    ).save(tmp_path)
+    coco = {"split": "val2017", "evaluated_samples": 5000, "available_samples": 5000}
+    model_report.accuracy({
+        "validation": {**coco, "metrics": {"coco_map": 0.4, "coco_ap50": 0.55}, "details": {"detections": 12}},
+        "sampled": {**coco, "evaluated_samples": 500, "metrics": {"coco_map": 0.39}},
+    }).save(tmp_path)
 
     report = saved_report(tmp_path)
-    assert report["metrics"] == {"coco_map": 0.4, "coco_ap50": 0.55}
     assert report["stage"] == "accuracy"
+    assert list(report["datasets"]) == ["validation", "sampled"]
+    assert report["datasets"]["validation"]["metrics"] == {"coco_map": 0.4, "coco_ap50": 0.55}
+    assert report["datasets"]["sampled"] == {**coco, "evaluated_samples": 500, "metrics": {"coco_map": 0.39},
+                                             "details": {}}
+
+
+SAMPLES = {"split": "val", "evaluated_samples": 1, "available_samples": 1}
 
 
 @pytest.mark.parametrize(
-    ("metrics", "dataset", "message"),
+    ("datasets", "message"),
     [
-        ({"made_up_metric": 0.1}, {"split": "val", "evaluated_samples": 1, "available_samples": 1}, "unknown"),
-        ({"latency_avg_ms": 0.1}, {"split": "val", "evaluated_samples": 1, "available_samples": 1}, "unknown"),
-        ({"coco_map": 1.5}, {"split": "val", "evaluated_samples": 1, "available_samples": 1}, "ratio"),
-        ({"coco_map": 0.5}, {"split": "val", "evaluated_samples": 2, "available_samples": 1}, "evaluated_samples"),
+        ({}, "at least one dataset"),
+        ({"validation": {**SAMPLES, "metrics": {"made_up_metric": 0.1}}}, "validation: unknown"),
+        ({"validation": {**SAMPLES, "metrics": {"latency_avg_ms": 0.1}}}, "validation: unknown"),
+        ({"validation": {**SAMPLES, "metrics": {"coco_map": 1.5}}}, "ratio"),
+        ({"validation": {**SAMPLES, "evaluated_samples": 2, "metrics": {"coco_map": 0.5}}}, "evaluated_samples"),
+        ({"validation": {"metrics": {"coco_map": 0.5}}}, "validation must give metrics, split"),
+        ({"validation": {**SAMPLES, "metrics": {"coco_map": 0.5}, "notes": "x"}}, "validation must give"),
     ],
 )
-def test_accuracy_rejects_what_the_registry_cannot_publish(metrics, dataset, message):
+def test_accuracy_rejects_what_the_registry_cannot_publish(datasets, message):
     with pytest.raises(ValueError, match=message):
-        model_report.accuracy(metrics, dataset=dataset)
+        model_report.accuracy(datasets)
 
 
 def test_every_metric_names_its_stage_unit_direction_and_measurement():

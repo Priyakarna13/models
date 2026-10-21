@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import shutil
 from pathlib import Path
@@ -168,13 +169,13 @@ def test_hugging_face_model_is_one_component_compiled_from_its_config() -> None:
 
 
 RUN_TESTS = {"run_tests": True}
-DATASET = {"id": "fixture-set", "variant": "mini", "sha256": "a" * 64, "size_bytes": 1}
+DATASET = {"id": "imagenet-2012", "variant": "mini", "sha256": "a" * 64, "size_bytes": 1}
 BENCHMARK_DECLARATIONS = {
-    "accuracy": {"status": "ready", "dataset": "fixture", "required_metrics": ["top1_accuracy"]},
+    "accuracy": {"status": "ready", "datasets": ["validation"]},
     "performance": {"required_metrics": ["latency_avg_ms", "throughput_fps"]},
 }
 EXPECTED = {
-    "accuracy": {"run_tests": True, "expected": {"fixture": {"top1_accuracy": 0.5}}},
+    "accuracy": {"run_tests": True, "expected": {"fixture": {"validation": {"top1_accuracy": 0.5}}}},
     "performance": {"run_tests": True, "expected": {"fixture": {"throughput_fps": 9.0}}},
 }
 
@@ -189,7 +190,7 @@ def _benchmarked_model(tmp_path: Path, *stages: str) -> tuple[Path, dict]:
     shutil.copytree(FIXTURE, directory)
     (directory / "tests" / "measure").mkdir()
     authored = _authored(directory)
-    authored["datasets"] = {"fixture": DATASET}
+    authored["datasets"] = {"validation": DATASET}
     tests = {"compile": RUN_TESTS}
     for stage in stages:
         (directory / "scripts" / f"{stage}.py").write_text("", encoding="utf-8")
@@ -205,7 +206,10 @@ def test_benchmarked_model_is_valid(tmp_path: Path) -> None:
 
     model = validate_model(directory, authored, SCHEMA)
 
-    assert model["accuracy"] == {**BENCHMARK_DECLARATIONS["accuracy"], "dataset": DATASET}
+    # datasets/imagenet-2012.yaml requires top-1 accuracy of image classification models.
+    assert model["accuracy"] == {
+        "status": "ready", "datasets": {"validation": {**DATASET, "required_metrics": ["top1_accuracy"]}},
+    }
     assert model["performance"] == BENCHMARK_DECLARATIONS["performance"]
 
 
@@ -220,15 +224,10 @@ def test_benchmark_declaration_requires_its_script(tmp_path: Path, stage: str) -
 @pytest.mark.parametrize(
     ("stage", "settings", "expected"),
     [
-        (
-            "accuracy", {"required_metrics": ["missing"]},
-            "accuracy requires metrics model_report does not define: missing",
-        ),
-        # A performance metric is not one the accuracy script reports.
-        ("accuracy", {"required_metrics": ["throughput_fps"]}, "does not define: throughput_fps"),
-        ("accuracy", {"required_metrics": ["Score"]}, "required_metrics.*does not match"),
+        # The dataset requirements say which accuracy metrics a model reports.
+        ("accuracy", {"required_metrics": ["top1_accuracy"]}, "'required_metrics' was unexpected"),
         ("accuracy", {"build_profiles": ["other"]}, "accuracy names unknown build profiles: other"),
-        ("accuracy", {"dataset": "missing"}, "accuracy: unknown dataset 'missing'"),
+        ("accuracy", {"datasets": ["missing"]}, "accuracy: unknown dataset 'missing'"),
         # Published scores live in the top-level reference_metrics.
         ("accuracy", {"reference": {"top1_accuracy": 0.5}}, "'reference' was unexpected"),
         ("performance", {"required_metrics": ["top1_accuracy"]}, "does not define: top1_accuracy"),
@@ -240,6 +239,80 @@ def test_benchmark_declaration_is_validated(tmp_path: Path, stage: str, settings
     authored[stage].update(settings)
     with pytest.raises(ValidationError, match=expected):
         validate_model(directory, authored, SCHEMA)
+
+
+def _repository_requiring(tmp_path: Path, requirements: dict | None) -> Path:
+    """A repository whose datasets/imagenet-2012.yaml holds ``requirements``, or that has none; returns its model
+    schema."""
+    repository = tmp_path / "repository"
+    shutil.copytree(ROOT / "schemas", repository / "schemas")
+    (repository / "datasets").mkdir()
+    if requirements is not None:
+        (repository / "datasets" / "imagenet-2012.yaml").write_text(
+            yaml.safe_dump({"required_metrics": requirements}), encoding="utf-8"
+        )
+    return repository / "schemas" / "model.schema.json"
+
+
+def test_accuracy_requires_the_union_of_what_its_datasets_require_for_the_model_tasks(tmp_path: Path) -> None:
+    directory, authored = _benchmarked_model(tmp_path, "accuracy")
+    authored["tasks"] = ["image_classification", "object_detection"]
+    schema = _repository_requiring(tmp_path, {
+        "image_classification": ["top1_accuracy", "top5_accuracy"],
+        "object_detection": ["top1_accuracy", "coco_map"],
+        "pose_estimation": ["coco_keypoint_map"],
+    })
+    expected = {"top1_accuracy": 0.5, "top5_accuracy": 0.9, "coco_map": 0.3}
+    _write_model_tests(directory, {
+        "compile": RUN_TESTS, "accuracy": {"run_tests": True, "expected": {"fixture": {"validation": expected}}},
+    })
+
+    model = validate_model(directory, authored, schema, TAXONOMY)
+
+    assert model["accuracy"]["datasets"]["validation"]["required_metrics"] == [
+        "top1_accuracy", "top5_accuracy", "coco_map",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("requirements", "expected"),
+    [
+        (None, "accuracy dataset 'validation' needs datasets/imagenet-2012.yaml"),
+        ({"object_detection": ["coco_map"]}, "requires no metrics for the tasks image_classification"),
+        ({"image_classification": ["missing"]}, "requires metrics model_report does not define: missing"),
+        # A performance metric is not one the accuracy script reports.
+        ({"image_classification": ["throughput_fps"]}, "does not define: throughput_fps"),
+        ({"image_classification": ["Score"]}, "does not match"),
+        ({"image_classification": []}, "should be non-empty"),
+    ],
+    ids=["no requirements file", "no entry for the model's tasks", "unknown metric", "performance metric",
+         "malformed metric", "no metrics"],
+)
+def test_accuracy_dataset_requirements_are_validated(tmp_path: Path, requirements: dict | None, expected: str) -> None:
+    directory, authored = _benchmarked_model(tmp_path, "accuracy")
+    schema = _repository_requiring(tmp_path, requirements)
+    with pytest.raises(ValidationError, match=expected):
+        validate_model(directory, authored, schema)
+
+
+ACCURACY_MODELS = sorted(path.parents[1].name for path in (ROOT / "models").glob("*/scripts/accuracy.py"))
+
+
+@pytest.mark.parametrize("model_id", ACCURACY_MODELS)
+def test_each_accuracy_script_takes_and_reports_the_datasets_its_model_declares(model_id: str) -> None:
+    # run_model_accuracy.sh passes --dataset <name>=<path> for each name; check-report requires a result for each.
+    declared = load_model(ROOT / "models" / model_id)["accuracy"]["datasets"]
+    tree = ast.parse((ROOT / "models" / model_id / "scripts" / "accuracy.py").read_text(encoding="utf-8"))
+    [parse] = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "parse_datasets"]
+    [accepted] = [node for node in ast.walk(parse) if isinstance(node, ast.Set)]
+    [report] = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "accuracy"
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "model_report"
+    ]  # fmt: skip
+
+    assert [ast.literal_eval(name) for name in accepted.elts] == list(declared)
+    assert [ast.literal_eval(name) for name in report.args[0].keys] == list(declared)
 
 
 def _numerical_fidelity(**settings) -> dict:
@@ -437,10 +510,12 @@ def test_model_tests_set_up_every_stage_the_model_has(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("stage", "entry", "expected"),
     [
-        ("accuracy", {**EXPECTED["accuracy"], "expected": {"other": {"top1_accuracy": 0.5}}},
+        ("accuracy", {**EXPECTED["accuracy"], "expected": {"other": {"validation": {"top1_accuracy": 0.5}}}},
          "accuracy.expected names unmeasured build profiles: other"),
-        ("accuracy", {**EXPECTED["accuracy"], "expected": {"fixture": {"top5_accuracy": 0.5}}},
-         "expected.fixture lacks top1_accuracy"),
+        ("accuracy", {**EXPECTED["accuracy"], "expected": {"fixture": {"validation": {"top5_accuracy": 0.5}}}},
+         "accuracy.expected.fixture.validation lacks top1_accuracy"),
+        ("accuracy", {**EXPECTED["accuracy"], "expected": {"fixture": {"other": {"top1_accuracy": 0.5}}}},
+         "accuracy.expected.fixture names undeclared datasets: other"),
         ("accuracy", {**EXPECTED["accuracy"], "expected": {"fixture": {}}}, "accuracy.expected.fixture"),
         ("accuracy", {"run_tests": True}, "'expected' is a required"),
         ("accuracy", {**EXPECTED["accuracy"], "allowed_drop": "50%"}, "accuracy: Unevaluated properties"),
@@ -456,6 +531,7 @@ def test_model_tests_set_up_every_stage_the_model_has(tmp_path: Path) -> None:
     ids=[
         "accuracy of an unmeasured build profile",
         "accuracy without a required metric",
+        "accuracy of an undeclared dataset",
         "accuracy without values",
         "missing expected values",
         "a model's own allowed drop",

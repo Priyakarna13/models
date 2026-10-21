@@ -196,10 +196,13 @@ in this order:
    components and CPU step running together. **Runtime Layer Analysis** and
    **Execution graph** each switch between the components, and **Download CSV**
    lists each component's layer timings.
-3. **Accuracy.** The coverage (full when the run evaluated every sample of
-   its split, sampled otherwise), the first four metrics, the evaluated sample
-   count, and the commit and GitHub workflow of the run that measured them.
-   In the developer UI, **Evaluation details** explains the coverage and lists
+3. **Accuracy.** For each dataset the run evaluated, in `model.yaml` order:
+   the coverage (full when the run evaluated every sample of its split,
+   sampled otherwise), the first four metrics, the evaluated sample count, and
+   the commit and GitHub workflow of the run that measured them. With more than
+   one dataset, each result is titled by its dataset name. The catalog table
+   and **Compare** use the first dataset.
+   In the developer UI, each dataset's **Evaluation details** explains the coverage and lists
    the remaining metrics, each with its published score when
    `reference_metrics` in `model.yaml` records one for the measured dataset.
    Its **Published scores** row lists every reference entry with its dataset,

@@ -105,12 +105,11 @@
       }
     },
     "accuracy": {
-      "description": "What scripts/accuracy.py must report for the whole model on a DevKit.",
-      "type": "object", "additionalProperties": false, "required": ["status", "dataset", "required_metrics"],
+      "description": "The datasets scripts/accuracy.py evaluates the whole model on, on a DevKit. datasets/<id>.yaml says which metrics each dataset requires for the model's tasks.",
+      "type": "object", "additionalProperties": false, "required": ["status", "datasets"],
       "properties": {
         "status": {"enum": ["ready", "provisional"]},
-        "dataset": {"$ref": "#/$defs/id"},
-        "required_metrics": {"$ref": "#/$defs/metricNames"},
+        "datasets": {"description": "Names of datasets entries.", "$ref": "#/$defs/idSet"},
         "build_profiles": {"$ref": "#/$defs/profileIds"}
       }
     },

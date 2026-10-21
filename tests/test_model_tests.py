@@ -197,33 +197,42 @@ def test_a_test_with_its_own_fixture_of_a_stage_output_name_still_runs(model_dir
 
 
 @pytest.mark.parametrize(
-    ("metrics", "shortfalls"),
+    ("datasets", "shortfalls"),
     [
-        ({"top1_accuracy": 0.80, "top5_accuracy": 0.95}, []),
-        ({"top1_accuracy": 0.7601, "top5_accuracy": 0.95}, []),
-        ({"top1_accuracy": 0.7599, "top5_accuracy": 0.95}, ["top1_accuracy 0.7599 is below 0.8 by more than 5%"]),
-        ({"top1_accuracy": 0.80}, ["top5_accuracy was not measured"]),
+        ({"imagenet": {"top1_accuracy": 0.80, "top5_accuracy": 0.95}, "coco": {"coco_map": 0.4}}, []),
+        ({"imagenet": {"top1_accuracy": 0.7601, "top5_accuracy": 0.95}, "coco": {"coco_map": 0.4}}, []),
+        (
+            {"imagenet": {"top1_accuracy": 0.7599, "top5_accuracy": 0.95}, "coco": {"coco_map": 0.3}},
+            ["imagenet: top1_accuracy 0.7599 is below 0.8 by more than 5%",
+             "coco: coco_map 0.3 is below 0.4 by more than 5%"],
+        ),
+        (
+            {"imagenet": {"top1_accuracy": 0.80}, "coco": {"coco_map": 0.4}},
+            ["imagenet: top5_accuracy was not measured"],
+        ),
+        ({"imagenet": {"top1_accuracy": 0.80, "top5_accuracy": 0.95}}, ["coco was not evaluated"]),
     ],
-    ids=["equal", "within the allowed drop", "below the allowed drop", "missing metric"],
+    ids=["equal", "within the allowed drop", "below the allowed drop", "missing metric", "missing dataset"],
 )
-def test_measured_shortfalls_compare_each_expected_value(
-    tmp_path: Path, metrics: dict[str, float], shortfalls: list[str]
+def test_measured_shortfalls_compare_each_expected_value_on_each_dataset(
+    tmp_path: Path, datasets: dict[str, dict[str, float]], shortfalls: list[str]
 ) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "tests.yaml").write_text(
         "accuracy:\n  run_tests: true\n  expected:\n    w8a8:\n"
-        "      top1_accuracy: 0.80\n      top5_accuracy: 0.95\n",
+        "      imagenet: {top1_accuracy: 0.80, top5_accuracy: 0.95}\n      coco: {coco_map: 0.4}\n",
         encoding="utf-8",
     )
+    report = {"datasets": {name: {"metrics": metrics} for name, metrics in datasets.items()}}
 
-    assert measured_shortfalls(tmp_path, "accuracy", "w8a8", metrics) == shortfalls
+    assert measured_shortfalls(tmp_path, "accuracy", "w8a8", report) == shortfalls
 
 
 def test_measured_shortfalls_need_values_expected_of_the_build_profile(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "tests.yaml").write_text(PERFORMANCE_EXPECTED, encoding="utf-8")
 
-    assert measured_shortfalls(tmp_path, "performance", "w16a16", {"throughput_fps": 100.0}) == [
+    assert measured_shortfalls(tmp_path, "performance", "w16a16", {"metrics": {"throughput_fps": 100.0}}) == [
         "tests.yaml expects no performance values of w16a16"
     ]
 
@@ -233,31 +242,52 @@ def test_measured_shortfalls_allow_performance_its_own_drop_and_rise(tmp_path: P
     expected = PERFORMANCE_EXPECTED + "      latency_avg_ms: 2.0\n"
     (tmp_path / "tests" / "tests.yaml").write_text(expected, encoding="utf-8")
 
-    assert measured_shortfalls(tmp_path, "performance", "w8a8", {"throughput_fps": 90, "latency_avg_ms": 2.19}) == []
-    assert measured_shortfalls(tmp_path, "performance", "w8a8", {"throughput_fps": 89, "latency_avg_ms": 2.21}) == [
+    def shortfalls(metrics: dict[str, float]) -> list[str]:
+        return measured_shortfalls(tmp_path, "performance", "w8a8", {"metrics": metrics})
+
+    assert shortfalls({"throughput_fps": 90, "latency_avg_ms": 2.19}) == []
+    assert shortfalls({"throughput_fps": 89, "latency_avg_ms": 2.21}) == [
         "throughput_fps 89 is below 100 by more than 10%",
         "latency_avg_ms 2.21 is above 2 by more than 10%",
     ]
 
 
-ACCURACY_MODEL = {"build_profiles": [{"id": "w8a8"}], "accuracy": {"required_metrics": ["top1_accuracy"]}}
+ACCURACY_MODEL = {
+    "build_profiles": [{"id": "w8a8"}],
+    "accuracy": {"datasets": {
+        "imagenet": {"required_metrics": ["top1_accuracy"]}, "coco": {"required_metrics": ["coco_map"]},
+    }},
+}
+COCO = {"coco": {"coco_map": 0.4}}
 
 
 @pytest.mark.parametrize(
     ("expected", "error"),
     [
-        ({"w8a8": {"top1_accuracy": 0.8, "top5_accuracy": 0.95}}, None),
-        ({}, "accuracy.expected.w8a8 lacks top1_accuracy"),
+        ({"w8a8": {"imagenet": {"top1_accuracy": 0.8, "top5_accuracy": 0.95}, **COCO}}, None),
+        ({}, "accuracy.expected.w8a8.imagenet lacks top1_accuracy"),
         ({"w8a8": {}}, "accuracy.expected.w8a8"),
-        ({"w8a8": {"top5_accuracy": 0.95}}, "lacks top1_accuracy"),
+        ({"w8a8": {"imagenet": {}, **COCO}}, "accuracy.expected.w8a8.imagenet"),
+        ({"w8a8": {"imagenet": {"top5_accuracy": 0.95}, **COCO}}, "w8a8.imagenet lacks top1_accuracy"),
+        ({"w8a8": {"imagenet": {"top1_accuracy": 0.8}}}, "accuracy.expected.w8a8.coco lacks coco_map"),
         (
-            {"w8a8": {"top1_accuracy": 0.8}, "w16a16": {"top1_accuracy": 0.8}},
+            {"w8a8": {"imagenet": {"top1_accuracy": 0.8}, "other": {"top1_accuracy": 0.8}, **COCO}},
+            "accuracy.expected.w8a8 names undeclared datasets: other",
+        ),
+        (
+            {"w8a8": {"imagenet": {"top1_accuracy": 0.8}, **COCO}, "w16a16": {"imagenet": {"top1_accuracy": 0.8}}},
             "accuracy.expected names unmeasured build profiles: w16a16",
         ),
-        ({"w8a8": {"top1_accuracy": 0.8, "unknown_metric": 0.9}}, "unknown accuracy metrics: unknown_metric"),
-        ({"w8a8": {"top1_accuracy": 0.8, "throughput_fps": 9.0}}, "unknown accuracy metrics: throughput_fps"),
-        ({"w8a8": {"top1_accuracy": float("nan")}}, "must be a finite number"),
-        ({"w8a8": {"top1_accuracy": float("inf")}}, "must be a finite number"),
+        (
+            {"w8a8": {"imagenet": {"top1_accuracy": 0.8, "unknown_metric": 0.9}, **COCO}},
+            "unknown accuracy metrics: unknown_metric",
+        ),
+        (
+            {"w8a8": {"imagenet": {"top1_accuracy": 0.8, "throughput_fps": 9.0}, **COCO}},
+            "unknown accuracy metrics: throughput_fps",
+        ),
+        ({"w8a8": {"imagenet": {"top1_accuracy": float("nan")}, **COCO}}, "must be a finite number"),
+        ({"w8a8": {"imagenet": {"top1_accuracy": float("inf")}, **COCO}}, "must be a finite number"),
     ],
 )
 def test_accuracy_expectations_give_each_measured_build_profile_its_required_metrics(

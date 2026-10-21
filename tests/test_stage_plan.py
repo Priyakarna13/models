@@ -229,7 +229,7 @@ READ_API = "https://reader.example.invalid"
 @pytest.fixture
 def stage_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
-    for relative in ("schemas", "taxonomies", f"models/{PLAN_MODEL}"):
+    for relative in ("schemas", "taxonomies", "datasets", f"models/{PLAN_MODEL}"):
         shutil.copytree(ROOT / relative, repository / relative)
     for relative in ("deps/manifest.json",
                      *COMPILE_TOOLING, *PERFORMANCE_TOOLING, *ACCURACY_TOOLING):

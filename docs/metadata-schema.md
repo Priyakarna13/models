@@ -251,22 +251,22 @@ Measured on a DevKit by `scripts/accuracy.py` in the accuracy stage:
 ```yaml
 accuracy:
   status: provisional
-  dataset: default
-  required_metrics: [top1_accuracy]
+  datasets: [default]
   build_profiles: [w8a8]
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `status` | `ready` or `provisional`. |
-| `dataset` | A `datasets` name; the stage resolves it on the DevKit. |
-| `required_metrics` | Metrics every report must hold. |
+| `datasets` | `datasets` names; the stage resolves each on the DevKit and evaluates the model on all of them in one run. |
 | `build_profiles` | Optional; the profiles measured. Omitted, every profile is measured. |
 
-Metric names come from
+The metrics each dataset's result must hold come from
+`datasets/<registry id>.yaml` for the model's `tasks`; see [Required accuracy
+metrics](datasets.md#required-accuracy-metrics). Metric names come from
 [`tools/model_report/metrics.json`](../tools/model_report/metrics.json).
-`tests/tests.yaml` supplies the expected values per build profile; a missing
-expected measurement fails.
+`tests/tests.yaml` supplies the expected values per build profile and dataset;
+a missing expected measurement fails.
 
 ### `performance`
 
@@ -277,8 +277,8 @@ performance:
   required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
 ```
 
-It takes `required_metrics` and the optional `build_profiles`, as `accuracy`
-does. Decoder selection and measurement settings stay in the script, which
+It takes `required_metrics`, the metrics every report must hold, and the
+optional `build_profiles`, as `accuracy` does. Decoder selection and measurement settings stay in the script, which
 customers can copy and run with PyNeat; YAML does not duplicate them.
 
 See [Accuracy and fidelity](local-accuracy-development.md) and [DevKit

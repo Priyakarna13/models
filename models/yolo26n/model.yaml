@@ -50,8 +50,7 @@ build_profiles:
 accuracy:
   # The reference uses padded rectangular batches; accuracy.py runs a square 640x640 input.
   status: ready
-  dataset: validation
-  required_metrics: [coco_map]
+  datasets: [validation]
 performance:
   required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
 reference_metrics:

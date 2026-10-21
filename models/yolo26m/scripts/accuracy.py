@@ -154,6 +154,13 @@ def parse_mpks(values: list[str]) -> Path:
     return Path(mpks["model"])
 
 
+def parse_datasets(values: list[str]) -> Path:
+    datasets = dict(value.split("=", 1) for value in values)
+    if set(datasets) != {"validation"}:
+        raise SystemExit("--dataset must name exactly validation=<path>")
+    return Path(datasets["validation"])
+
+
 def log(*values: object) -> None:
     print(*values, file=sys.stderr, flush=True)
 
@@ -161,14 +168,17 @@ def log(*values: object) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="model=<path>")
-    parser.add_argument("--dataset", type=Path, required=True, help="extracted coco-2017/mini directory")
+    parser.add_argument(
+        "--dataset", action="append", required=True, help="validation=<extracted coco-2017/mini directory>"
+    )
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure a seeded sample of images (local runs only)")
     args = parser.parse_args(argv)
+    dataset = parse_datasets(args.dataset)
 
     model = pyneat.Model(str(parse_mpks(args.mpk)), tensor_options())
     with contextlib.redirect_stdout(io.StringIO()):
-        ground_truth = COCO(str(args.dataset / ANNOTATIONS))
+        ground_truth = COCO(str(dataset / ANNOTATIONS))
     available = sorted(ground_truth.getImgIds())
     image_ids = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
     records = ground_truth.loadImgs(image_ids)
@@ -180,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     runner = None
     rows: list[np.ndarray] = []
     started = time.monotonic()
-    image_dir = args.dataset / IMAGES
+    image_dir = dataset / IMAGES
     images = prefetched(lambda record: preprocess_image((image_dir / record["file_name"]).read_bytes()), records)
     for count, (record, image) in enumerate(zip(records, images), start=1):
         tensor = pyneat.Tensor.from_numpy(image, copy=False)
@@ -206,17 +216,20 @@ def main(argv: list[str] | None = None) -> int:
     stats = coco_stats(scorer)
     scoring_seconds = time.monotonic() - started
 
-    report = model_report.accuracy(
-        stats,
-        dataset={"split": IMAGES, "evaluated_samples": len(image_ids), "available_samples": len(available)},
-        details={
-            "detections": len(detections),
-            "inference_seconds": round(inference_seconds, 1),
-            "scoring_seconds": round(scoring_seconds, 1),
+    report = model_report.accuracy({
+        "validation": {
+            "metrics": stats,
+            "split": IMAGES, "evaluated_samples": len(image_ids), "available_samples": len(available),
+            "details": {
+                "detections": len(detections),
+                "inference_seconds": round(inference_seconds, 1),
+                "scoring_seconds": round(scoring_seconds, 1),
+            },
         },
-    )
+    })
     report.save(args.output)
-    print(json.dumps({name: round(value, 4) for name, value in report.document["metrics"].items()}))
+    measured = report.document["datasets"]["validation"]["metrics"]
+    print(json.dumps({name: round(value, 4) for name, value in measured.items()}))
     return 0
 
 

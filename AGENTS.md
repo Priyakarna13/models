@@ -75,14 +75,18 @@ Do not add maturity compatibility fields to new authored YAML.
 
 Performance and accuracy measure each build profile's whole model: every
 component's MPK and the CPU work between them. `model.yaml` declares only
-`required_metrics` and optional `build_profiles`. Decoder selection, top-k,
+`performance.required_metrics`, `accuracy.datasets` (names from `datasets`) and
+optional `build_profiles`. The metrics an accuracy dataset requires live in
+`datasets/<registry id>.yaml`, per task; a model reports, on each dataset, the
+metrics listed for its `tasks`. Decoder selection, top-k,
 sample count, duration and layer statistics belong in each model's
 `scripts/performance.py`. Every benchmarked model must include that standalone
 script so customers can copy it and reproduce CI in the PyNeat environment,
 with `tools/model_report` on `PYTHONPATH` and without `model_registry` imports
 or YAML configuration. Keep its `--mpk` and `--output` CLI. `performance.py`
 and `accuracy.py` write `model-report.json` with `model_report.performance()`
-or `model_report.accuracy()`; `schemas/model-report.schema.json` is the report
+or `model_report.accuracy()`, the latter with one result per dataset name;
+`schemas/model-report.schema.json` is the report
 contract, and `tools/model_report/metrics.json` names every metric a report may
 hold. Each benchmarked profile needs finite `tests.yaml` expectations covering its
 required metrics (performance: `throughput_fps`); optional expectations and
@@ -145,9 +149,9 @@ models/<model_id>/tests/
 `accuracy`, `performance`), each with `run_tests: true`, or `false` with a
 `skip_reason`. A running `accuracy` or `performance` entry also sets
 `expected`: the latest published `develop` values of every measured build
-profile, flat per profile (`performance.expected.<profile>.throughput_fps`,
-`accuracy.expected.<profile>.<metric>`). Each measure test asserts
-`measured_shortfalls(model_dir, "<stage>", build_profile, report["metrics"]) == []`;
+profile (`performance.expected.<profile>.throughput_fps`,
+`accuracy.expected.<profile>.<dataset>.<metric>`). Each measure test asserts
+`measured_shortfalls(model_dir, "<stage>", build_profile, report) == []`;
 it fails when a
 value falls more than `ACCURACY_ALLOWED_DROP` (5%) or
 `PERFORMANCE_ALLOWED_DROP` (10%) in `model_tests.py` below its expected
@@ -193,6 +197,7 @@ in the same commit.
 | board-only code | keep it inside `performance.py` or `accuracy.py`; a helper module under `scripts/` is an ONNX compile input, so editing it recompiles and then remeasures the model |
 | a custom `performance.py` | start from the [canonical script](docs/benchmarking.md#the-performance-script), and for a multi-component model the [multi-component script](docs/benchmarking.md#multi-component-models): hand Core's `BenchmarkReport`, board telemetry, and each component's Model to `model_report.performance()` |
 | a metric: a Core benchmark reading or an accuracy score the registry should publish | a row in `tools/model_report/metrics.json` with its Vulcan measurement name (`registry_name`), and its entry in the browser's `metrics.js` or `accuracy-metrics.js`, and for a telemetry reading in `TELEMETRY_METRICS` in `model-report.js`, which tests keep in step; for a performance metric, its row in `DETAIL_CARDS` in `model-view.js` when a Performance details card should show it, and the metric table in [benchmarking](docs/benchmarking.md#workload-and-measurements) |
+| a `datasets/<id>.yaml` requirement | `dataset-requirements.schema.json` when its shape changes, and the `accuracy.py` and `tests.yaml` expectations of every model with that task that evaluates the dataset |
 | a field of the model report | `schemas/model-report.schema.json`, `tools/model_report/__init__.py`, the checks in `report_publication.py`, and the browser code that reads the report |
 | a compile input outside `models/<id>/`, such as declared training code | `MODEL_COMPILE_INPUT_PATHS` in `fingerprints.py` |
 | a model's category: `model_type`, `tasks`, `modalities`, or the family in `architecture.id` | pick existing IDs from `taxonomies/model-taxonomy.yaml`; when none fits, add the entry there and follow [Model categorization taxonomy](docs/model-taxonomy.md) |

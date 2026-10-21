@@ -174,4 +174,4 @@ def test_a_positive_mask_over_the_whole_frame_sets_every_image_pixel(accuracy_sc
 
 
 def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path, build_profile: str) -> None:
-    assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy["metrics"]) == []
+    assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy) == []

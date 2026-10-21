@@ -53,16 +53,18 @@ the report on the profile's package run as a `numerical-fidelity` artifact, a
 Use DevKit accuracy when a task metric needs the model's own decoding and
 scoring, such as top-1 accuracy for a classifier or COCO mAP for a detector.
 The model's `scripts/accuracy.py` runs every compiled MPK of a build profile
-on a DevKit with PyNeat:
+on a DevKit with PyNeat, on each dataset `accuracy` names:
 
 ```yaml
 accuracy:
   status: ready
-  dataset: validation
-  required_metrics: [coco_map]
+  datasets: [validation]
 ```
 
-`status` is `ready` or `provisional`, and `dataset` names a `datasets` entry.
+`status` is `ready` or `provisional`, and each `datasets` name is an entry of
+the model's `datasets`. The metrics the report must hold come from
+`datasets/<registry id>.yaml` for the model's `tasks`; see
+[Required accuracy metrics](datasets.md#required-accuracy-metrics).
 Without `build_profiles`, every build profile is measured; see
 [`accuracy`](metadata-schema.md#accuracy). Record the source model's published
 scores in the top-level [`reference_metrics`](metadata-schema.md#reference-metrics),
@@ -77,24 +79,32 @@ into a separate folder beside PyNeat's environment, never into it.
 
 - `--mpk <component>=<path>` once for each component, `model=<path>` for a
   single-component model;
-- `--dataset <directory>`, the extracted dataset archive; and
+- `--dataset <name>=<directory>` once for each dataset `accuracy` names, the
+  extracted dataset archive; and
 - `--output <directory>`.
 
-It scores the whole model and hands the scores to `tools/model_report`, which
-writes `model-report.json` into the output directory:
+It scores the whole model on each dataset and hands the scores to
+`tools/model_report`, keyed by the dataset names. `model_report` writes
+`model-report.json` into the output directory:
 
 ```python
-report = model_report.accuracy(
-    {"top1_accuracy": top1 / len(names), "top5_accuracy": top5 / len(names)},
-    dataset={"split": VALIDATION_SPLIT, "evaluated_samples": len(names), "available_samples": len(available)},
-    details={"inference_seconds": round(time.monotonic() - started, 1)},
-)
+report = model_report.accuracy({
+    "default": {
+        "metrics": {"top1_accuracy": top1 / len(names), "top5_accuracy": top5 / len(names)},
+        "split": VALIDATION_SPLIT,
+        "evaluated_samples": len(names),
+        "available_samples": len(available),
+        "details": {"inference_seconds": round(time.monotonic() - started, 1)},
+    },
+})
 report.save(args.output)
 ```
 
-Every score is a ratio from 0 to 1, named as an accuracy metric in
+How the script evaluates each dataset is up to the model. Every score is a
+ratio from 0 to 1, named as an accuracy metric in
 [`tools/model_report/metrics.json`](../tools/model_report/metrics.json), and
-every `required_metrics` entry must be present. Existing scripts also accept
+each dataset's result must hold every metric its requirements file lists for
+the model's tasks. Other known accuracy metrics are allowed. Existing scripts also accept
 `--limit <images>` to evaluate a subset for a quick local check; CI never
 passes it.
 
@@ -112,18 +122,20 @@ PYNEAT_PYTHON=~/pyneat/bin/python \
 `<compile-output-root>` holds `<model-id>/<build-profile>/compile-outputs.json`
 and the MPKs it lists. The script:
 
-1. resolves the declared dataset into `DATASET_CACHE` (default
+1. resolves each declared dataset into `DATASET_CACHE` (default
    `/media/nvme/datasets/artifacts`), holding a lock so concurrent runs share
    one download;
 2. lists each component's MPK with `model-registry model-component-mpks`;
-3. extracts the dataset under `WORK_DIR` (default `/media/nvme/neat-tests/`)
+3. extracts each dataset under `WORK_DIR` (default `/media/nvme/neat-tests/`)
    and removes that directory when it exits;
 4. installs `requirements-accuracy.txt` beside PyNeat;
-5. runs `accuracy.py` with `PYTHONPATH` including `tools`, which writes
+5. runs `accuracy.py` with `--dataset <name>=<directory>` for each dataset
+   and `PYTHONPATH` including `tools`, which writes
    `model-report.json`, and saves its output to `accuracy.log`; and
 6. runs `model-registry check-report`, which validates the report against
-   [`model-report.schema.json`](../schemas/model-report.schema.json) and the
-   `accuracy` declaration and writes the board's installation to
+   [`model-report.schema.json`](../schemas/model-report.schema.json), requires
+   a result for exactly the declared datasets, each with its required metrics,
+   and writes the board's installation to
    `environment.json`.
 
 `REGISTRY_PYTHON` needs the full Model Registry tooling from this checkout
@@ -137,7 +149,7 @@ run the script directly:
 
 ```bash
 PYTHONPATH=tools ~/pyneat/bin/python models/resnet_50/scripts/accuracy.py \
-  --mpk model=<path to MPK> --dataset <extracted dataset> \
+  --mpk model=<path to MPK> --dataset default=<extracted dataset> \
   --output /tmp/resnet50-accuracy --limit 500
 ```
 
@@ -148,25 +160,30 @@ ResNet-50's `calibration.py`, needs that file beside it.
 
 `model-report.json` follows
 [`model-report.schema.json`](../schemas/model-report.schema.json): the stage,
-the PyNeat version and build, the evaluated `dataset` split and sample counts,
-one number per metric, and free-form `details`. The model, build profile, MPK
+the PyNeat version and build, and `datasets`, which gives for each dataset name
+its evaluated split and sample counts, one number per metric, and free-form
+`details`. The model, build profile, MPK
 digests, and board are not report fields; publication records them on the run.
 
 On the DevKit, `scripts/run_model_tests.sh` runs the model's
-`tests/measure/test_accuracy.py` on the report, which compares each metric
-with the build profile's expected value in `tests/tests.yaml` ([set up
+`tests/measure/test_accuracy.py` on the report, which compares each dataset's
+metrics with the build profile's expected values for that dataset in
+`tests/tests.yaml` ([set up
 `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). CI publishes the
 report with `model-registry publish-report` as one `model_accuracy` registry
 run under the build profile's `model_package` run. Its `run_fingerprint` is the
 accuracy benchmark fingerprint, and the run carries one `compiled-model-<component>`
 input per component, the `model-report` and log artifacts, an `accuracy/model`
 test result whose summary is the whole report and whose status is the test
-outcome (`passed`, `failed`, or `skipped`), and one measurement per metric. A
+outcome (`passed`, `failed`, or `skipped`), and one measurement per dataset
+and metric, with a `dataset` dimension. A
 failed test still publishes the report, then fails the workflow run. See [CI
 and registry publication](benchmarking.md#ci-and-registry-publication) for the
-shared flow. The model browser shows the first four metrics as tiles and lists
-the rest in a table, each with its reference score when `reference_metrics`
-records one for the same dataset, and the evaluated sample count.
+shared flow. The model browser shows each dataset's result in the accuracy
+section: its first four metrics as tiles and the rest in a table, each with its
+reference score when `reference_metrics` records one for the same dataset, and
+the evaluated sample count. The catalog and the Compare page use the first
+declared dataset.
 
 ## Qualification recorded elsewhere
 

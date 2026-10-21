@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://neat.sima.ai/schemas/model-report.schema.json",
   "title": "SiMa Neat model report",
-  "description": "A model's whole-model performance or accuracy, written by tools/model_report from Neat Core's results. tools/model_report/metrics.json names each metric's unit and direction.",
+  "description": "A model's whole-model performance, or its accuracy on each dataset it evaluates, written by tools/model_report from Neat Core's results. tools/model_report/metrics.json names each metric's unit and direction.",
   "type": "object",
-  "required": ["schema", "schema_version", "stage", "runtime", "metrics"],
+  "required": ["schema", "schema_version", "stage", "runtime"],
   "properties": {
     "schema": {"const": "sima.model-report"},
     "schema_version": {"const": 1},
@@ -18,11 +18,7 @@
       },
       "additionalProperties": false
     },
-    "metrics": {
-      "type": "object",
-      "propertyNames": {"pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
-      "additionalProperties": {"type": "number"}
-    }
+    "metrics": {"$ref": "#/$defs/metrics"}
   },
   "oneOf": [
     {
@@ -46,28 +42,41 @@
           }
         }
       },
-      "required": ["workload", "telemetry", "components"],
+      "required": ["metrics", "workload", "telemetry", "components"],
       "additionalProperties": false
     },
     {
       "properties": {
         "stage": {"const": "accuracy"},
         "schema": true, "schema_version": true, "runtime": true,
-        "metrics": {"additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}},
-        "dataset": {
+        "datasets": {
+          "description": "Each dataset model.yaml's accuracy lists, by name.",
           "type": "object",
-          "required": ["split", "evaluated_samples", "available_samples"],
-          "properties": {
-            "split": {"type": "string", "minLength": 1},
-            "evaluated_samples": {"type": "integer", "minimum": 1},
-            "available_samples": {"type": "integer", "minimum": 1}
-          },
-          "additionalProperties": false
-        },
-        "details": {"type": "object"}
+          "minProperties": 1,
+          "propertyNames": {"pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+          "additionalProperties": {
+            "type": "object",
+            "required": ["split", "evaluated_samples", "available_samples", "metrics", "details"],
+            "properties": {
+              "split": {"type": "string", "minLength": 1},
+              "evaluated_samples": {"type": "integer", "minimum": 1},
+              "available_samples": {"type": "integer", "minimum": 1},
+              "metrics": {"$ref": "#/$defs/metrics", "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}},
+              "details": {"type": "object"}
+            },
+            "additionalProperties": false
+          }
+        }
       },
-      "required": ["dataset", "details"],
+      "required": ["datasets"],
       "additionalProperties": false
     }
-  ]
+  ],
+  "$defs": {
+    "metrics": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+      "additionalProperties": {"type": "number"}
+    }
+  }
 }

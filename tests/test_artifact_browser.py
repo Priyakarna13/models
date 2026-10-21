@@ -283,8 +283,8 @@ def test_preview_resolves_each_benchmark_fingerprint_to_a_model_report(tmp_path:
         assert (test["suite"], test["name"], test["status"]) == (stage, "model", "passed")
         validator.validate(test["summary"])
         assert test["summary"]["stage"] == stage
-    assert set(accuracy["tests"][0]["summary"]["metrics"]) == {"top1_accuracy", "top5_accuracy"}
-    assert accuracy["parameters"]["accuracy"]["dataset"]["id"] == "imagenet-2012"
+    assert set(accuracy["tests"][0]["summary"]["datasets"]["default"]["metrics"]) == {"top1_accuracy", "top5_accuracy"}
+    assert accuracy["parameters"]["accuracy"]["datasets"]["default"]["id"] == "imagenet-2012"
     assert list(performance["tests"][0]["summary"]["components"]) == ["model"]
     assert wrong_type == 404
 
@@ -1322,7 +1322,7 @@ def test_performance_rendering_reads_the_model_report_and_is_charted() -> None:
 def test_preview_accuracy_uses_the_regression_metrics_without_an_authored_inventory() -> None:
     preview = runpy.run_path(str(BROWSER / "preview.py"))
     report = preview["_accuracy_report"](load_models(ROOT)["resnet_50"], "w8a8")
-    assert set(report["metrics"]) == {"top1_accuracy", "top5_accuracy"}
+    assert set(report["datasets"]["default"]["metrics"]) == {"top1_accuracy", "top5_accuracy"}
 
 
 def test_accuracy_result_is_rendered_with_coverage_and_reference_comparison() -> None:
@@ -1334,11 +1334,14 @@ def test_accuracy_result_is_rendered_with_coverage_and_reference_comparison() ->
     assert 'loadBenchmarkRun("accuracy", fingerprints.accuracy)' in script
     assert 'id="accuracy-section"' in script
     assert "dataset.evaluated_samples.toLocaleString()" in script
-    # The coverage is a plain badge; its explanation sits in the Evaluation details row.
-    badge = '<span class="status-badge ${fullCoverage ? "qualification" : "provisional"}">${coverageLabel}</span>'
+    # Each dataset's coverage is a plain badge; its explanation sits in that dataset's Evaluation details row.
+    badge = '<span class="status-badge ${full ? "qualification" : "provisional"}">'
     assert badge in script
-    assert 'disclosure("accuracy", "Evaluation details", evaluation, coverageLabel)' in script
-    assert 'const coverageLabel = fullCoverage ? "Full coverage" : "Sampled coverage"' in script
+    assert 'disclosure(`accuracy:${name}`, "Evaluation details", evaluation, coverageLabel)' in script
+    assert 'const coverageLabel = full ? "Full coverage" : "Sampled coverage"' in script
+    # One section holds every dataset's result; one dataset keeps its badge beside the section title.
+    assert 'data-accuracy-dataset="${escapeHtml(name)}"' in script
+    assert "const badge = datasets.length === 1 ? coverageBadge(datasets[0].dataset) : \"\";" in script
     assert "accuracy-explainer" not in browser
     for removed in ("Qualification", "Provisional", "Candidate top-1", "validation?.status"):
         assert removed not in script
@@ -1372,8 +1375,9 @@ def test_benchmark_runs_are_resolved_from_catalog_fingerprints_and_accuracy_is_r
     assert ".slice(ACCURACY_SUMMARY_TILES)" in script
     assert "Published ${published}" in script
     assert '<th scope="col">Published</th>' in script
-    # Reference scores sit beside a measurement of the same dataset only.
-    assert "const scores = referenceScores(reference, result.value.dataset.id);" in script
+    # Reference scores sit beside a measurement of the same dataset only; the headline is the first dataset's.
+    assert "referenceScores(reference, entry.dataset.id)" in script
+    assert "const { metrics, dataset } = result.value.datasets[0];" in script
     assert "metric.reference" not in script
     assert "<strong>${escapeHtml(percentage(value))}</strong>" in script
 

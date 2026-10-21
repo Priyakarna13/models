@@ -145,7 +145,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     benchmark_runtime.add_argument("--repository", type=Path, default=Path.cwd())
 
     devkit_accuracy = subcommands.add_parser(
-        "resolve-devkit-accuracy", help="resolve a build profile's DevKit accuracy dataset into the cache"
+        "resolve-devkit-accuracy", help="resolve each DevKit accuracy dataset of a build profile into the cache"
     )
     devkit_accuracy.add_argument("model_dir", type=Path)
     devkit_accuracy.add_argument("--schema", type=Path)
@@ -761,21 +761,18 @@ def _publish_candidate(args: argparse.Namespace) -> int:
 
 
 def _resolve_devkit_accuracy(args: argparse.Namespace) -> int:
+    """Print one JSON line per dataset the profile's accuracy evaluates, in model.yaml order; none without one."""
     model = load_and_validate_model(args.model_dir, args.schema)
     if args.build_profile not in benchmarked_profiles(model, "accuracy"):
-        result = {"kind": "none", "model_id": model["id"], "build_profile_id": args.build_profile}
-    else:
-        dataset = model["accuracy"]["dataset"]
-        result = {
-            "kind": "dataset",
-            "model_id": model["id"],
-            "build_profile_id": args.build_profile,
+        return 0
+    for name, dataset in model["accuracy"]["datasets"].items():
+        print(json.dumps({
+            "name": name,
             "dataset_id": f"{dataset['id']}/{dataset['variant']}",
             "path": str(resolve_dataset(dataset, args.cache_dir)),
             "sha256": dataset["sha256"],
             "size_bytes": dataset["size_bytes"],
-        }
-    print(json.dumps(result, sort_keys=True))
+        }, sort_keys=True))
     return 0
 
 
@@ -788,7 +785,11 @@ def _check_report(args: argparse.Namespace) -> int:
     (args.output_dir / ENVIRONMENT_FILE).write_text(
         json.dumps(runner_environment(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(f"Checked the {args.stage} report: {', '.join(sorted(report['metrics']))}")
+    if args.stage == "accuracy":
+        for name, result in report["datasets"].items():
+            print(f"Checked the accuracy report on {name}: {', '.join(sorted(result['metrics']))}")
+    else:
+        print(f"Checked the {args.stage} report: {', '.join(sorted(report['metrics']))}")
     return 0
 
 

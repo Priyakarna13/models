@@ -1,11 +1,18 @@
 """A model's benchmark declarations: what scripts/performance.py and scripts/accuracy.py must report, and for
-which build profiles, plus the reference scores its authors published."""
+which build profiles, plus the reference scores its authors published.
+
+datasets/<id>.yaml says which accuracy metrics every model must report on that dataset, by the model's task, so
+model.yaml names only the datasets accuracy evaluates.
+"""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
+import yaml
+from jsonschema import Draft202012Validator
 from model_report import METRICS
 
 from .errors import ValidationError
@@ -13,6 +20,8 @@ from .errors import ValidationError
 BENCHMARK_STAGES = ("performance", "accuracy")
 SCRIPTS = {"performance": "scripts/performance.py", "accuracy": "scripts/accuracy.py"}
 ACCURACY_REQUIREMENTS = "scripts/requirements-accuracy.txt"
+DATASET_REQUIREMENTS_DIR = "datasets"
+DATASET_REQUIREMENTS_SCHEMA = "schemas/dataset-requirements.schema.json"
 
 
 def benchmarked_profiles(model: dict[str, Any], stage: str) -> list[str]:
@@ -21,6 +30,41 @@ def benchmarked_profiles(model: dict[str, Any], stage: str) -> list[str]:
     if declaration is None:
         return []
     return declaration.get("build_profiles", [profile["id"] for profile in model["build_profiles"]])
+
+
+def resolve_accuracy_requirements(model: dict[str, Any], repository: Path, directory: Path) -> None:
+    """Give each accuracy dataset the metrics its datasets/<id>.yaml requires for any of the model's tasks."""
+    for name, dataset in model.get("accuracy", {}).get("datasets", {}).items():
+        relative = f"{DATASET_REQUIREMENTS_DIR}/{dataset['id']}.yaml"
+        if not (repository / relative).is_file():
+            raise ValidationError(f"{directory}: accuracy dataset {name!r} needs {relative}")
+        by_task = _dataset_requirements(repository, relative)
+        required = [metric for task in model["tasks"] for metric in by_task.get(task, [])]
+        if not required:
+            raise ValidationError(
+                f"{directory}: {relative} requires no metrics for the tasks {', '.join(model['tasks'])}"
+            )
+        dataset["required_metrics"] = list(dict.fromkeys(required))
+
+
+def _dataset_requirements(repository: Path, relative: str) -> dict[str, list[str]]:
+    path = repository / relative
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        schema = json.loads((repository / DATASET_REQUIREMENTS_SCHEMA).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError, json.JSONDecodeError) as exc:
+        raise ValidationError(f"{path}: could not load the dataset requirements: {exc}") from exc
+    errors = sorted(Draft202012Validator(schema).iter_errors(document), key=lambda error: list(error.absolute_path))
+    if errors:
+        location = ".".join(str(part) for part in errors[0].absolute_path) or relative
+        raise ValidationError(f"{path}: {location}: {errors[0].message}")
+    unknown = sorted(
+        {name for names in document["required_metrics"].values() for name in names
+         if METRICS.get(name, {}).get("stage") != "accuracy"}
+    )
+    if unknown:
+        raise ValidationError(f"{path}: requires metrics model_report does not define: {', '.join(unknown)}")
+    return document["required_metrics"]
 
 
 def validate_benchmark_declarations(model: dict[str, Any], directory: Path) -> None:
@@ -35,7 +79,9 @@ def validate_benchmark_declarations(model: dict[str, Any], directory: Path) -> N
         if unknown_profiles:
             names = ", ".join(sorted(unknown_profiles))
             raise ValidationError(f"{directory}: {stage} names unknown build profiles: {names}")
-        unknown = [name for name in declaration["required_metrics"] if METRICS.get(name, {}).get("stage") != stage]
+        # Accuracy's required metrics come from datasets/<id>.yaml, checked as it is read.
+        required = declaration.get("required_metrics", ())
+        unknown = [name for name in required if METRICS.get(name, {}).get("stage") != stage]
         if unknown:
             names = ", ".join(unknown)
             raise ValidationError(f"{directory}: {stage} requires metrics model_report does not define: {names}")

@@ -9,7 +9,7 @@ from model_registry.model_tests import measured_shortfalls
 def test_performance_meets_its_expected_values(
     performance: dict[str, Any], model_dir: Path, build_profile: str
 ) -> None:
-    assert measured_shortfalls(model_dir, "performance", build_profile, performance["metrics"]) == []
+    assert measured_shortfalls(model_dir, "performance", build_profile, performance) == []
 
 
 def test_performance_records_the_execution_plan_the_browser_draws(performance: dict[str, Any]) -> None:

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 from model_registry.errors import ValidationError
 from model_registry.fingerprints import benchmark_fingerprint
 from model_registry.model import load_and_validate_model
@@ -35,8 +37,8 @@ class FakeStore:
         return S3Object(key=key, version_id="version-1", sha256=sha256, size_bytes=path.stat().st_size)
 
 
-def model(model_id: str) -> dict:
-    return load_and_validate_model(ROOT / "models" / model_id, ROOT / "schemas" / "model.schema.json")
+def model(model_id: str, repository: Path = ROOT) -> dict:
+    return load_and_validate_model(repository / "models" / model_id, repository / "schemas" / "model.schema.json")
 
 
 def write_json(path: Path, document: object) -> None:
@@ -76,12 +78,18 @@ def performance_report(components: list[str], **changes: object) -> dict:
     }  # fmt: skip
 
 
-def accuracy_report(**changes: object) -> dict:
+def dataset_result(**changes: object) -> dict:
+    return {
+        "split": "val", "evaluated_samples": 500, "available_samples": 50000,
+        "metrics": {"top1_accuracy": 0.77, "top5_accuracy": 0.93}, "details": {}, **changes,
+    }  # fmt: skip
+
+
+def accuracy_report(**datasets: dict) -> dict:
+    """ResNet-50's accuracy report, on its one dataset unless ``datasets`` names others."""
     return {
         "schema": "sima.model-report", "schema_version": 1, "stage": "accuracy",
-        "runtime": {"pyneat": "3.0.0", "build": {}}, "metrics": {"top1_accuracy": 0.77, "top5_accuracy": 0.93},
-        "dataset": {"split": "val", "evaluated_samples": 500, "available_samples": 50000}, "details": {},
-        **changes,
+        "runtime": {"pyneat": "3.0.0", "build": {}}, "datasets": datasets or {"default": dataset_result()},
     }  # fmt: skip
 
 
@@ -129,8 +137,14 @@ def test_registered_builds_require_the_package_to_link_the_benchmarked_builds(tm
         ("resnet_50", "w8a8", "accuracy", performance_report(["model"]), "is a performance report, not accuracy"),
         ("resnet_50", "w8a8", "performance", performance_report(["model"], metrics={**PERFORMANCE_METRICS,
          "top1_accuracy": 0.7}), "unknown performance metrics: top1_accuracy"),
-        ("resnet_50", "w8a8", "accuracy", accuracy_report(metrics={"top5_accuracy": 0.93}),
-         "required accuracy metrics were not measured: top1_accuracy"),
+        ("resnet_50", "w8a8", "accuracy", accuracy_report(default=dataset_result(metrics={"top5_accuracy": 0.93})),
+         "default: required accuracy metrics were not measured: top1_accuracy"),
+        ("resnet_50", "w8a8", "accuracy", accuracy_report(other=dataset_result()),
+         r"must give exactly the datasets \['default'\]; missing \['default'\], undeclared \['other'\]"),
+        ("resnet_50", "w8a8", "accuracy", accuracy_report(default=dataset_result(), other=dataset_result()),
+         r"missing \[\], undeclared \['other'\]"),
+        ("resnet_50", "w8a8", "accuracy", {**accuracy_report(), "metrics": {"top1_accuracy": 0.77}},
+         "is not valid under any of the given schemas"),
         ("rf_detr_nano", "w8a8_w16a16", "performance", performance_report(["decoder", "backbone"]),
          r"must describe the components \['backbone', 'decoder'\], in order"),
         # The BF16 build declares no accuracy qualification.
@@ -146,7 +160,9 @@ def test_check_report_holds_the_report_to_model_yaml(
         check_report(tmp_path / REPORT_FILE, ROOT, model_id, profile_id, stage)
 
 
-def publish(tmp_path: Path, model_id: str, profile_id: str, stage: str, report: dict) -> tuple[list, dict]:
+def publish(
+    tmp_path: Path, model_id: str, profile_id: str, stage: str, report: dict, repository: Path = ROOT
+) -> tuple[list, dict]:
     output = tmp_path / f"_{stage}"
     write_json(output / REPORT_FILE, report)
     write_json(output / "environment.json", {
@@ -163,7 +179,7 @@ def publish(tmp_path: Path, model_id: str, profile_id: str, stage: str, report: 
         return {"artifact_id": f"artifact-{len(calls)}"} if "/artifacts/" in path else {}
 
     result = publish_report(
-        output_dir=output, stage=stage, repository=ROOT, compiled_dir=tmp_path / "_compiled", model_id=model_id,
+        output_dir=output, stage=stage, repository=repository, compiled_dir=tmp_path / "_compiled", model_id=model_id,
         build_profile_id=profile_id, api_url="https://writer.example.invalid", aws_region="us-west-2",
         bucket="model-artifacts", environment="staging", branch="feat/reports", git_sha="a" * 40,
         test_status="failed", request=request, artifact_store=FakeStore(),
@@ -217,3 +233,41 @@ def test_publish_report_counts_each_evaluated_accuracy_sample(tmp_path: Path) ->
         "model.accuracy.top1_accuracy", "model.accuracy.top5_accuracy",
     ]
     assert {item["sample_count"] for item in measurements} == {500}
+
+
+def test_publish_report_measures_each_dataset_apart(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    for relative in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools", ".github/workflows",
+                     "models/resnet_50"):
+        shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
+    model_dir = repository / "models" / "resnet_50"
+    authored = yaml.safe_load((model_dir / "model.yaml").read_text(encoding="utf-8"))
+    authored["datasets"]["second"] = authored["datasets"]["default"]
+    authored["accuracy"]["datasets"].append("second")
+    (model_dir / "model.yaml").write_text(yaml.safe_dump(authored, sort_keys=False), encoding="utf-8")
+    tests = yaml.safe_load((model_dir / "tests" / "tests.yaml").read_text(encoding="utf-8"))
+    tests["accuracy"]["expected"]["w8a8"]["second"] = tests["accuracy"]["expected"]["w8a8"]["default"]
+    (model_dir / "tests" / "tests.yaml").write_text(yaml.safe_dump(tests), encoding="utf-8")
+    builds = registered_build(tmp_path / "_compiled", "resnet_50", "w8a8", ["model"])
+    report = accuracy_report(
+        default=dataset_result(), second=dataset_result(evaluated_samples=100, metrics={"top1_accuracy": 0.7}),
+    )
+
+    calls, result = publish(tmp_path, "resnet_50", "w8a8", "accuracy", report, repository)
+
+    fingerprint = benchmark_fingerprint(repository, model("resnet_50", repository), "w8a8", builds, "accuracy")
+    assert [body["run_type"] for _, path, body in calls if path == "/v1/runs"] == ["model_accuracy"]
+    assert result["benchmark_fingerprint"] == fingerprint
+    measurements = next(body for _, path, body in calls if path.endswith("/measurements/batch"))["measurements"]
+    subject = {"model_id": "resnet_50", "build_profile_id": "w8a8"}
+    assert sorted(
+        (item["measurement_key"], item["name"], item["sample_count"], tuple(sorted(item["dimensions"].items())))
+        for item in measurements
+    ) == sorted([
+        (f"{fingerprint}-default-top1_accuracy", "model.accuracy.top1_accuracy", 500,
+         tuple(sorted({**subject, "dataset": "default"}.items()))),
+        (f"{fingerprint}-default-top5_accuracy", "model.accuracy.top5_accuracy", 500,
+         tuple(sorted({**subject, "dataset": "default"}.items()))),
+        (f"{fingerprint}-second-top1_accuracy", "model.accuracy.top1_accuracy", 100,
+         tuple(sorted({**subject, "dataset": "second"}.items()))),
+    ])

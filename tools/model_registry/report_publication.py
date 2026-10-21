@@ -3,8 +3,8 @@
 scripts/performance.py and scripts/accuracy.py write model-report.json with tools/model_report. On the board,
 check_report() holds the report to model.yaml and records the board it ran on. publish_report() then publishes
 it unchanged under the profile's package run: the report, Core's evidence and the log as artifacts, the model's
-test outcome, and one measurement per metric. The run fingerprint is the stage's benchmark fingerprint, so a
-registry run with the same fingerprint means the stage need not run again.
+test outcome, and one measurement per metric, per dataset for accuracy. The run fingerprint is the stage's
+benchmark fingerprint, so a registry run with the same fingerprint means the stage need not run again.
 """
 
 from __future__ import annotations
@@ -158,16 +158,33 @@ def check_report(
         raise ValidationError(f"{report_path}: {location}: {errors[0].message}")
     if report["stage"] != stage:
         raise ValidationError(f"{report_path}: the report is a {report['stage']} report, not {stage}")
-    unknown = sorted(name for name in report["metrics"] if METRICS.get(name, {}).get("stage") != stage)
-    if unknown:
-        raise ValidationError(f"{report_path}: unknown {stage} metrics: {', '.join(unknown)}")
-    missing = [name for name in model[stage]["required_metrics"] if name not in report["metrics"]]
-    if missing:
-        raise ValidationError(f"{report_path}: required {stage} metrics were not measured: {', '.join(missing)}")
+    if stage == "accuracy":
+        datasets = model["accuracy"]["datasets"]
+        missing = [name for name in datasets if name not in report["datasets"]]
+        undeclared = sorted(set(report["datasets"]) - set(datasets))
+        if missing or undeclared:
+            raise ValidationError(
+                f"{report_path}: the report must give exactly the datasets {list(datasets)}; "
+                f"missing {missing}, undeclared {undeclared}"
+            )
+        for name, dataset in datasets.items():
+            measured = report["datasets"][name]["metrics"]
+            _check_metrics(f"{report_path}: {name}", stage, measured, dataset["required_metrics"])
+        return report
+    _check_metrics(str(report_path), stage, report["metrics"], model[stage]["required_metrics"])
     components = [component["id"] for component in model["components"]]
-    if stage == "performance" and list(report["components"]) != components:
+    if list(report["components"]) != components:
         raise ValidationError(f"{report_path}: the report must describe the components {components}, in order")
     return report
+
+
+def _check_metrics(label: str, stage: str, metrics: dict[str, float], required: list[str]) -> None:
+    unknown = sorted(name for name in metrics if METRICS.get(name, {}).get("stage") != stage)
+    if unknown:
+        raise ValidationError(f"{label}: unknown {stage} metrics: {', '.join(unknown)}")
+    missing = [name for name in required if name not in metrics]
+    if missing:
+        raise ValidationError(f"{label}: required {stage} metrics were not measured: {', '.join(missing)}")
 
 
 def _put_file(
@@ -201,6 +218,19 @@ def _put_file(
         },
         f"{stable_key}-{name}",
     )
+
+
+def _measurement(key: str, name: str, value: float, sample_count: int, dimensions: JsonObject) -> JsonObject:
+    return {
+        "measurement_key": key,
+        "name": METRICS[name]["registry_name"],
+        "unit": METRICS[name]["unit"],
+        "value": value,
+        "direction": METRICS[name]["direction"],
+        "sample_count": sample_count,
+        "aggregation": METRICS[name]["aggregation"],
+        "dimensions": dict(dimensions),
+    }
 
 
 def publish_report(
@@ -326,20 +356,19 @@ def publish_report(
     if f"{stage}-log" in artifacts:
         test_body["log_artifact_id"] = artifacts[f"{stage}-log"]["artifact_id"]
     client.request("PUT", f"/v1/runs/{run_id}/test-results/{stage}/model", test_body, f"{stable_key}-test-result")
-    sample_count = report["dataset"]["evaluated_samples"] if stage == "accuracy" else 1
-    measurements = [
-        {
-            "measurement_key": f"{fingerprint}-{name}",
-            "name": METRICS[name]["registry_name"],
-            "unit": METRICS[name]["unit"],
-            "value": value,
-            "direction": METRICS[name]["direction"],
-            "sample_count": sample_count,
-            "aggregation": METRICS[name]["aggregation"],
-            "dimensions": dict(subject),
-        }
-        for name, value in sorted(report["metrics"].items())
-    ]
+    measurements = (
+        [
+            _measurement(f"{fingerprint}-{dataset}-{name}", name, value, result["evaluated_samples"],
+                         {**subject, "dataset": dataset})
+            for dataset, result in sorted(report["datasets"].items())
+            for name, value in sorted(result["metrics"].items())
+        ]
+        if stage == "accuracy"
+        else [
+            _measurement(f"{fingerprint}-{name}", name, value, 1, subject)
+            for name, value in sorted(report["metrics"].items())
+        ]
+    )
     # check_report() requires the declared metrics, so a report always has at least one.
     client.request(
         "POST", f"/v1/runs/{run_id}/measurements/batch", {"measurements": measurements}, f"{stable_key}-measurements"

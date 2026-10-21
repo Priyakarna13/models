@@ -7,4 +7,4 @@ from model_registry.model_tests import measured_shortfalls
 
 
 def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path, build_profile: str) -> None:
-    assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy["metrics"]) == []
+    assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy) == []

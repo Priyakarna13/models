@@ -217,9 +217,12 @@ restrictions such as INT8-only accuracy.
 | `performance` | the model's standalone `performance.py` | performance stage |
 | `qualification_evidence` | nothing; records qualification done elsewhere | no stage |
 
-Fidelity is diagnostic numerical agreement, not task accuracy. `accuracy` and
-`performance` list the `required_metrics` every report must hold; decoder
-choices and measurement settings stay in the scripts. See [Quality and
+Fidelity is diagnostic numerical agreement, not task accuracy. `accuracy`
+names the datasets it evaluates, and each dataset's
+[requirements file](datasets.md#required-accuracy-metrics) lists the metrics
+its result must hold for the model's tasks. `performance` lists the
+`required_metrics` every report must hold. Decoder choices and measurement
+settings stay in the scripts. See [Quality and
 performance](metadata-schema.md#quality-and-performance).
 
 Record the scores the source model's authors published under
@@ -248,7 +251,7 @@ builds](#on-demand-builds).
 | compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, declared training code, the Model Compiler version, `scripts/run_model_compilation.sh`, and the shared model loader |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
 | performance | the compile run and MPK digest of every component, the `performance` declaration, the model's `performance.py`, the shared benchmark tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
-| accuracy | the compile run and MPK digest of every component, the `accuracy` declaration with its dataset pin, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
+| accuracy | the compile run and MPK digest of every component, each `accuracy` dataset's name, pin, and the metrics its `datasets/<id>.yaml` requires for the model's tasks, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
 
 ONNX compile code includes every `.py` and `.sh` under `scripts/` except
 `performance.py`, `accuracy.py`, `convert.py` and `requirements-convert.txt`.
@@ -267,7 +270,9 @@ is always benchmarked again.
 | `build-on-demand` | nothing; changes scheduling and catalog metadata only |
 | a model's tests under `tests/`, or `scripts/run_model_tests.sh` | nothing; a changed test applies the next time its stage runs |
 | a model's `performance.py` or `performance` declaration | that model's performance stages |
-| `accuracy.py`, its requirements, the `accuracy` declaration, or the dataset it names | that model's accuracy stages |
+| `accuracy.py`, its requirements, the `accuracy` datasets, or one of their pins | that model's accuracy stages |
+| a task's entry in `datasets/<id>.yaml` | the accuracy stages of models with that task that evaluate the dataset |
+| `accuracy.status` or `accuracy.build_profiles`, a new `datasets/` file, or an entry for a task no such model has | nothing; a newly measured profile runs because it has no run yet |
 | `scripts/run_model_performance.sh` | every performance stage |
 | `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, or `scripts/install_dataset_registry.sh` | every accuracy stage |
 | the DevKit runtime pin, the benchmarking workflow, `tools/model_report`, `schemas/model-report.schema.json`, or `report_publication.py` | every performance and accuracy stage |
@@ -324,9 +329,10 @@ example before the model has a published report to expect values from.
 A running `accuracy` or `performance` entry also states what the model must
 deliver on a DevKit in `expected`, keyed by every build profile the stage
 measures: the latest published values of that profile's whole model. For
-accuracy, supply finite values of accuracy metrics from
+accuracy, key the values by each dataset `accuracy` names, and supply finite
+values of accuracy metrics from
 [`tools/model_report/metrics.json`](../tools/model_report/metrics.json),
-covering at least its `required_metrics`. Keep optional expectations such as
+covering at least the metrics that dataset requires. Keep optional expectations such as
 top-5: a missing expected measurement fails. For performance, supply
 `throughput_fps`. Take the values from the model browser's latest `develop`
 results, rounded to 4 decimal places for accuracy and 1 for throughput.
@@ -344,8 +350,9 @@ accuracy:
   run_tests: true
   expected:
     w8a8:
-      top1_accuracy: 0.7764
-      top5_accuracy: 0.9356
+      default:
+        top1_accuracy: 0.7764
+        top5_accuracy: 0.9356
 performance:
   run_tests: true
   expected:
@@ -370,7 +377,7 @@ from model_registry.model_tests import measured_shortfalls
 def test_performance_meets_its_expected_values(
     performance: dict[str, Any], model_dir: Path, build_profile: str
 ) -> None:
-    assert measured_shortfalls(model_dir, "performance", build_profile, performance["metrics"]) == []
+    assert measured_shortfalls(model_dir, "performance", build_profile, performance) == []
 
 
 def test_performance_records_the_execution_plan_the_browser_draws(performance: dict[str, Any]) -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -141,8 +140,8 @@ def test_dataset_aliases_keep_pins_and_measured_build_profiles() -> None:
     pin = authored["datasets"]["default"]
 
     assert model["calibrations"][0] == {"id": "default", "status": "ready", "dataset": pin}
-    for stage in ("numerical_fidelity", "accuracy"):
-        assert model[stage] == {**authored[stage], "dataset": pin}
+    assert model["numerical_fidelity"] == {**authored["numerical_fidelity"], "dataset": pin}
+    assert model["accuracy"] == {**authored["accuracy"], "datasets": {"default": pin}}
     assert benchmarked_profiles(model, "accuracy") == ["w8a8"]
     assert benchmarked_profiles(model, "performance") == ["w16a16", "w8a8"]
     unmeasured = normalize_model(_authored("ssd_mobilenet_v1"), MODELS / "ssd_mobilenet_v1")
@@ -159,20 +158,6 @@ def test_hugging_face_shorthand_rejects_a_mutable_revision() -> None:
 
 def test_unknown_dataset_alias_has_an_actionable_error() -> None:
     authored = _authored("resnet_50")
-    authored["accuracy"]["dataset"] = "missing"
+    authored["accuracy"]["datasets"] = ["missing"]
     with pytest.raises(ValidationError, match="accuracy: unknown dataset 'missing'"):
         normalize_model(authored, MODELS / "resnet_50")
-
-
-def test_unregistered_required_accuracy_metric_fails_even_when_tests_are_skipped(tmp_path: Path) -> None:
-    directory = tmp_path / "resnet_50"
-    shutil.copytree(MODELS / "resnet_50", directory)
-    tests_file = directory / "tests/tests.yaml"
-    tests = yaml.safe_load(tests_file.read_text())
-    tests["accuracy"] = {"run_tests": False, "skip_reason": "No DevKit available for this fixture."}
-    tests_file.write_text(yaml.safe_dump(tests))
-    authored = _authored("resnet_50")
-    authored["accuracy"]["required_metrics"] = ["top1_acuracy"]
-
-    with pytest.raises(ValidationError, match="model_report does not define: top1_acuracy"):
-        validate_model(directory, authored, SCHEMA, ROOT / "taxonomies/model-taxonomy.yaml")

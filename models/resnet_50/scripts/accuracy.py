@@ -49,6 +49,13 @@ def parse_mpks(values: list[str]) -> Path:
     return Path(mpks["model"])
 
 
+def parse_datasets(values: list[str]) -> Path:
+    datasets = dict(value.split("=", 1) for value in values)
+    if set(datasets) != {"default"}:
+        raise SystemExit("--dataset must name exactly default=<path>")
+    return Path(datasets["default"])
+
+
 def log(*values: object) -> None:
     print(*values, file=sys.stderr, flush=True)
 
@@ -56,12 +63,15 @@ def log(*values: object) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="model=<path>")
-    parser.add_argument("--dataset", type=Path, required=True, help="extracted imagenet-2012/mini directory")
+    parser.add_argument(
+        "--dataset", action="append", required=True, help="default=<extracted imagenet-2012/mini directory>"
+    )
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure the first images only (local runs only)")
     args = parser.parse_args(argv)
+    dataset = parse_datasets(args.dataset)
 
-    available = split_names(args.dataset, VALIDATION_SPLIT)
+    available = split_names(dataset, VALIDATION_SPLIT)
     labels = validation_labels(available)
     names = available[: args.limit] if args.limit else available
 
@@ -69,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     runner = None
     top1 = top5 = 0
     started = time.monotonic()
-    images = prefetched(lambda name: preprocess_image((args.dataset / name).read_bytes()), names)
+    images = prefetched(lambda name: preprocess_image((dataset / name).read_bytes()), names)
     for count, (name, image) in enumerate(zip(names, images), start=1):
         tensor = pyneat.Tensor.from_numpy(image, copy=False)
         if runner is None:
@@ -83,16 +93,19 @@ def main(argv: list[str] | None = None) -> int:
         if count == 1 or count % 500 == 0 or count == len(names):
             log(f"{count}/{len(names)} images, {(time.monotonic() - started) / count * 1000:.0f} ms/image")
 
-    report = model_report.accuracy(
-        {
-            "top1_accuracy": top1 / len(names),
-            "top5_accuracy": top5 / len(names),
+    report = model_report.accuracy({
+        "default": {
+            "metrics": {
+                "top1_accuracy": top1 / len(names),
+                "top5_accuracy": top5 / len(names),
+            },
+            "split": VALIDATION_SPLIT, "evaluated_samples": len(names), "available_samples": len(available),
+            "details": {"inference_seconds": round(time.monotonic() - started, 1)},
         },
-        dataset={"split": VALIDATION_SPLIT, "evaluated_samples": len(names), "available_samples": len(available)},
-        details={"inference_seconds": round(time.monotonic() - started, 1)},
-    )
+    })
     report.save(args.output)
-    print(json.dumps({name: round(value, 4) for name, value in report.document["metrics"].items()}))
+    measured = report.document["datasets"]["default"]["metrics"]
+    print(json.dumps({name: round(value, 4) for name, value in measured.items()}))
     return 0
 
 

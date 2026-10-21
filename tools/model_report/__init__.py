@@ -91,29 +91,40 @@ def performance(
     )
 
 
-def accuracy(
-    metrics: dict[str, float], *, dataset: dict[str, Any], details: dict[str, Any] | None = None
-) -> Report:
-    """An accuracy report: each metric's score as a ratio from 0 to 1 over the evaluated part of a dataset.
+def accuracy(datasets: dict[str, dict[str, Any]]) -> Report:
+    """An accuracy report: per dataset, each metric's score as a ratio from 0 to 1 over its evaluated part.
 
-    ``dataset`` gives the ``split`` evaluated, ``evaluated_samples``, and ``available_samples``.
+    ``datasets`` maps each dataset name model.yaml's accuracy lists to its result: the ``metrics``, the
+    ``split`` evaluated, ``evaluated_samples``, ``available_samples``, and optional ``details``.
     """
-    unknown = sorted(name for name in metrics if METRICS.get(name, {}).get("stage") != "accuracy")
-    if unknown:
-        raise ValueError(f"unknown accuracy metrics: {', '.join(unknown)}")
-    for name, value in metrics.items():
-        if not 0 <= value <= 1:
-            raise ValueError(f"{name} must be a ratio from 0 to 1; found {value}")
-    if set(dataset) != {"split", "evaluated_samples", "available_samples"}:
-        raise ValueError("dataset must give split, evaluated_samples, and available_samples")
-    if not 0 < dataset["evaluated_samples"] <= dataset["available_samples"]:
-        raise ValueError("evaluated_samples must be positive and at most available_samples")
+    if not datasets:
+        raise ValueError("datasets must name at least one dataset")
     return Report({
         **_header("accuracy"),
-        "dataset": dataset,
-        "metrics": {name: float(value) for name, value in metrics.items()},
-        "details": details or {},
+        "datasets": {name: _dataset_result(name, result) for name, result in datasets.items()},
     })
+
+
+def _dataset_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    fields = {"metrics", "split", "evaluated_samples", "available_samples"}
+    if not fields <= set(result) <= {*fields, "details"}:
+        raise ValueError(f"{name} must give metrics, split, evaluated_samples, available_samples, and optional details")
+    metrics = result["metrics"]
+    unknown = sorted(metric for metric in metrics if METRICS.get(metric, {}).get("stage") != "accuracy")
+    if unknown:
+        raise ValueError(f"{name}: unknown accuracy metrics: {', '.join(unknown)}")
+    for metric, value in metrics.items():
+        if not 0 <= value <= 1:
+            raise ValueError(f"{name}: {metric} must be a ratio from 0 to 1; found {value}")
+    if not 0 < result["evaluated_samples"] <= result["available_samples"]:
+        raise ValueError(f"{name}: evaluated_samples must be positive and at most available_samples")
+    return {
+        "split": result["split"],
+        "evaluated_samples": result["evaluated_samples"],
+        "available_samples": result["available_samples"],
+        "metrics": {metric: float(value) for metric, value in metrics.items()},
+        "details": result.get("details") or {},
+    }
 
 
 def _header(stage: str) -> dict[str, Any]:

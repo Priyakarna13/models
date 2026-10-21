@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -62,12 +63,13 @@ DATASET = {"id": "imagenet-2012", "variant": "mini", "sha256": "d" * 64, "size_b
 @pytest.fixture
 def model_repository(tmp_path: Path) -> Path:
     (tmp_path / "schemas").mkdir()
-    for schema in (SCHEMA, MODEL_TESTS_SCHEMA):
+    for schema in (SCHEMA, MODEL_TESTS_SCHEMA, ROOT / "schemas" / "dataset-requirements.schema.json"):
         (tmp_path / "schemas" / schema.name).write_text(schema.read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "taxonomies").mkdir()
     (tmp_path / "taxonomies" / "model-taxonomy.yaml").write_text(
         TAXONOMY.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    shutil.copytree(ROOT / "datasets", tmp_path / "datasets")
     (tmp_path / "deps").mkdir()
     (tmp_path / "deps" / "manifest.json").write_text(
         (ROOT / "deps" / "manifest.json").read_text(encoding="utf-8"), encoding="utf-8"
@@ -376,12 +378,68 @@ def test_benchmark_fingerprint_requires_a_declared_stage() -> None:
         benchmark_fingerprint(ROOT, model, "w8a8", {"model": RF_DETR_BUILDS["backbone"]}, "accuracy")
 
 
+def _copy_repository(repository: Path, model_id: str) -> Path:
+    """Copy what the model's fingerprints read into ``repository``; return the copied model directory."""
+    for relative in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools", ".github/workflows",
+                     f"models/{model_id}"):
+        shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
+    return repository / "models" / model_id
+
+
+def test_accuracy_fingerprint_covers_the_model_datasets_and_their_requirements(tmp_path: Path) -> None:
+    """Accuracy reruns when what the model must report on its datasets changes, and for nothing else there."""
+    model_dir = _copy_repository(tmp_path, "rf_detr_small")
+    coco = tmp_path / "datasets" / "coco-2017.yaml"
+    manifest = model_dir / "model.yaml"
+    authored = {path: path.read_text(encoding="utf-8") for path in (coco, manifest)}
+    # The tests' expectations name the datasets; skipping them lets the model declare another one.
+    tests = model_dir / "tests" / "tests.yaml"
+    document = yaml.safe_load(tests.read_text(encoding="utf-8"))
+    document["accuracy"] = {"run_tests": False, "skip_reason": "fixture"}
+    tests.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    def fingerprint() -> str:
+        model = load_and_validate_model(model_dir, tmp_path / "schemas" / "model.schema.json")
+        return benchmark_fingerprint(tmp_path, model, "w8a8_w16a16", RF_DETR_BUILDS, "accuracy")
+
+    def edit(path: Path, change: Callable[[dict], None]) -> str:
+        for original, text in authored.items():
+            original.write_text(text, encoding="utf-8")
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        change(document)
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        return fingerprint()
+
+    def second_dataset(model: dict) -> None:
+        model["datasets"]["second"] = model["datasets"]["validation"]
+        model["accuracy"]["datasets"].append("second")
+
+    first = fingerprint()
+    rerun = {
+        "the model's task requirement": edit(
+            coco, lambda d: d["required_metrics"]["object_detection"].append("coco_ap50")
+        ),
+        "the dataset pin": edit(manifest, lambda d: d["datasets"]["validation"].update(sha256="e" * 64)),
+        "the dataset list": edit(manifest, second_dataset),
+    }
+    unchanged = {
+        "another task's requirement": edit(
+            coco, lambda d: d["required_metrics"]["pose_estimation"].append("coco_keypoint_ap50")
+        ),
+        "another dataset file": edit(tmp_path / "datasets" / "imagenet-2012.yaml",
+                                     lambda d: d["required_metrics"]["image_classification"].append("top5_accuracy")),
+        "the status": edit(manifest, lambda d: d["accuracy"].update(status="provisional")),
+        "the build profiles": edit(manifest, lambda d: d["accuracy"].update(build_profiles=["w8a8_w16a16"])),
+    }
+
+    assert [change for change, value in rerun.items() if value == first] == []
+    assert [change for change, value in unchanged.items() if value != first] == []
+
+
 def test_fingerprints_ignore_the_models_tests(tmp_path: Path) -> None:
     """A changed test applies the next time its stage runs; it reruns no stage by itself."""
     repository = tmp_path / "repository"
-    for relative in ("schemas", "taxonomies", "deps", "scripts", "tools", ".github/workflows", "models/rf_detr_small"):
-        shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
-    model_dir = repository / "models" / "rf_detr_small"
+    model_dir = _copy_repository(repository, "rf_detr_small")
 
     def fingerprints() -> list[str]:
         model = load_and_validate_model(model_dir, repository / "schemas" / "model.schema.json")
@@ -516,7 +574,7 @@ def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(model
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     model["datasets"] = {"validation": dict(DATASET)}
     model["performance"] = {"required_metrics": ["latency_avg_ms"]}
-    model["accuracy"] = {"status": "provisional", "dataset": "validation", "required_metrics": ["top1_accuracy"]}
+    model["accuracy"] = {"status": "provisional", "datasets": ["validation"]}
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     (manifest.parent / "scripts" / "performance.py").write_text("report = model.benchmark()\n", encoding="utf-8")
     (manifest.parent / "scripts" / "accuracy.py").write_text("score = 0.5\n", encoding="utf-8")
@@ -547,7 +605,7 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
     assert entry["runner_script"] == "scripts/run_llima_compilation.sh"
     assert entry["stages"] == []
     repository = tmp_path / "repository"
-    for folder in ("schemas", "taxonomies", "deps", "scripts", "tools"):
+    for folder in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools"):
         shutil.copytree(ROOT / folder, repository / folder, ignore=shutil.ignore_patterns("__pycache__"))
     for name in (native_id, "resnet_50"):
         shutil.copytree(ROOT / "models" / name, repository / "models" / name)
@@ -570,7 +628,7 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
     ("qwen3_5_0_8b", "w4a16"), ("resnet_50", "w16a16"),
 ])
 def test_checkpoint_repository_name_does_not_change_compile_fingerprint(tmp_path, model_id, profile_id):
-    for folder in ("schemas", "taxonomies", "deps", "scripts", "tools", f"models/{model_id}"):
+    for folder in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools", f"models/{model_id}"):
         shutil.copytree(ROOT / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
     manifest = tmp_path / "models" / model_id / "model.yaml"
     model = yaml.safe_load(manifest.read_text())
@@ -594,7 +652,7 @@ def test_checkpoint_repository_name_does_not_change_compile_fingerprint(tmp_path
 ])
 def test_llima_compile_fingerprint_tracks_source_compiler_and_graph_settings(tmp_path, setting, value):
     model_id = "qwen3_5_0_8b"
-    for folder in ("schemas", "taxonomies", f"models/{model_id}"):
+    for folder in ("schemas", "taxonomies", "datasets", f"models/{model_id}"):
         shutil.copytree(ROOT / folder, tmp_path / folder)
     manifest = tmp_path / "models" / model_id / "model.yaml"
     model = yaml.safe_load(manifest.read_text())

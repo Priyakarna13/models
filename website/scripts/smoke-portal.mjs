@@ -60,7 +60,7 @@ async function checkPage(browser, url, readySelector) {
   }
   if (customer && await page.locator('.detail-title').count()) {
     if (await page.locator('#details-section, [data-scroll-to="details-section"]').count()) problems.push('Customer UI exposes Details');
-    if (await page.locator('[data-disclosure="accuracy"], [data-disclosure="published-scores"]').count()) problems.push('Customer UI exposes evaluation detail rows');
+    if (await page.locator('[data-disclosure^="accuracy"], [data-disclosure="published-scores"]').count()) problems.push('Customer UI exposes evaluation detail rows');
   }
   await page.close();
   return problems;

@@ -4,8 +4,9 @@ accuracy:
   run_tests: true
   expected:
     w8a8:
-      top1_accuracy: 0.7764
-      top5_accuracy: 0.9356
+      default:
+        top1_accuracy: 0.7764
+        top5_accuracy: 0.9356
 performance:
   run_tests: true
   expected:

@@ -288,21 +288,22 @@ def test_reference_metrics_writes_each_models_published_scores(tmp_path: Path) -
     assert reference["resnet_50"][0]["metrics"] == {"top1_accuracy": 0.80382, "top5_accuracy": 0.94598}
 
 
-def test_resolve_devkit_accuracy_caches_the_profiles_accuracy_dataset(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_resolve_devkit_accuracy_caches_each_accuracy_dataset_of_the_profile(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
     dataset = tmp_path / "imagenet-mini.tgz"
     monkeypatch.setattr("model_registry.cli.resolve_dataset", lambda *args, **kwargs: dataset)
 
     assert main(["resolve-devkit-accuracy", str(ROOT / "models" / "resnet_50"), "--build-profile", "w8a8"]) == 0
 
-    assert json.loads(capsys.readouterr().out) == {
-        "kind": "dataset",
-        "model_id": "resnet_50",
-        "build_profile_id": "w8a8",
+    # One JSON line per dataset model.yaml's accuracy names.
+    assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [{
+        "name": "default",
         "dataset_id": "imagenet-2012/mini",
         "path": str(dataset),
         "sha256": "d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239",
         "size_bytes": 356052889,
-    }
+    }]
 
 
 def test_resolve_devkit_accuracy_skips_a_profile_without_accuracy(monkeypatch, capsys) -> None:
@@ -313,9 +314,7 @@ def test_resolve_devkit_accuracy_skips_a_profile_without_accuracy(monkeypatch, c
 
     assert main(["resolve-devkit-accuracy", str(ROOT / "models" / "resnet_50"), "--build-profile", "w16a16"]) == 0
 
-    assert json.loads(capsys.readouterr().out) == {
-        "kind": "none", "model_id": "resnet_50", "build_profile_id": "w16a16",
-    }  # fmt: skip
+    assert capsys.readouterr().out == ""
 
 
 def test_model_component_mpks_prints_one_component_mpk_per_line(monkeypatch, tmp_path: Path, capsys) -> None:

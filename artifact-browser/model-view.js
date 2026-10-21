@@ -650,11 +650,12 @@ function orderedAccuracyMetrics(metrics) {
   return orderedMetricNames(Object.keys(metrics)).map((name) => [name, metrics[name]]);
 }
 
-// The first accuracy metric of a build and the source model's reference score, for the Compare page.
+// The first accuracy metric of a build's first dataset and the source model's reference score, for the Compare
+// page and the catalog.
 export function accuracyHeadline(variant) {
   const result = readAccuracy(variant.accuracy);
-  if (result.kind !== "supported") return null;
-  const { metrics, dataset } = result.value;
+  if (result.kind !== "supported" || !result.value.datasets.length) return null;
+  const { metrics, dataset } = result.value.datasets[0];
   const [name, value] = orderedAccuracyMetrics(metrics)[0] || [];
   if (!name) return null;
   return {
@@ -682,8 +683,18 @@ function accuracyPanel(variant, modelId) {
       ${referenceMarkup}
     </section>`;
   }
-  const scores = referenceScores(reference, result.value.dataset.id);
-  return accuracySection(result.value, scores, measurementSource(variant.accuracy.run, modelId), referenceMarkup);
+  const { datasets, tool } = result.value;
+  const sourceMarkup = measurementSource(variant.accuracy.run, modelId);
+  // One dataset keeps its coverage beside the section title; several each title their own result.
+  const badge = datasets.length === 1 ? coverageBadge(datasets[0].dataset) : "";
+  const results = datasets.map((entry) => accuracyResult(
+    entry, tool, referenceScores(reference, entry.dataset.id), sourceMarkup, datasets.length > 1,
+  )).join("");
+  return `<section id="accuracy-section" class="accuracy-section" tabindex="-1">
+    <div class="detail-section-title"><h3>Accuracy</h3>${badge}</div>
+    ${results}
+    ${referenceMarkup}
+  </section>`;
 }
 
 // Accuracy metrics and reference scores are ratios, shown as percentages.
@@ -738,28 +749,36 @@ function referenceAccuracySection(reference) {
 }
 
 // A run that evaluated every sample of its split has full coverage; any other run evaluated a sampled subset.
-function accuracySection({ metrics, dataset, details, tool }, scores, sourceMarkup, referenceMarkup) {
-  const fullCoverage = Number.isInteger(dataset.evaluated_samples)
-    && dataset.evaluated_samples === dataset.available_samples;
-  const coverageLabel = fullCoverage ? "Full coverage" : "Sampled coverage";
-  const coverageExplanation = fullCoverage
+function fullCoverage(dataset) {
+  return Number.isInteger(dataset.evaluated_samples) && dataset.evaluated_samples === dataset.available_samples;
+}
+
+function coverageBadge(dataset) {
+  const full = fullCoverage(dataset);
+  return `<span class="status-badge ${full ? "qualification" : "provisional"}">${full ? "Full coverage" : "Sampled coverage"}</span>`;
+}
+
+// One dataset's result. With several, each is titled by its model.yaml name and shows its own coverage.
+function accuracyResult({ name, metrics, dataset, details }, tool, scores, sourceMarkup, titled) {
+  const full = fullCoverage(dataset);
+  const coverageLabel = full ? "Full coverage" : "Sampled coverage";
+  const coverageExplanation = full
     ? "Every sample in the dataset split was evaluated."
     : "A deterministic subset of the dataset split was evaluated.";
   const sampleText = Number.isInteger(dataset.evaluated_samples) && Number.isInteger(dataset.available_samples)
     ? `${dataset.evaluated_samples.toLocaleString()} of ${dataset.available_samples.toLocaleString()} samples`
     : "Sample count unavailable";
   const context = `${keyValue("Measured on", "DevKit")}${keyValue("Runtime", tool)}${Object.entries(details)
-    .map(([name, value]) => keyValue(humanize(name), typeof value === "object" ? JSON.stringify(value) : String(value))).join("")}`;
+    .map(([key, value]) => keyValue(humanize(key), typeof value === "object" ? JSON.stringify(value) : String(value))).join("")}`;
   const evaluation = `<p class="disclosure-text"><strong>${coverageLabel}.</strong> ${escapeHtml(coverageExplanation)}</p>
       <dl class="key-grid">${context}</dl>
       ${accuracyMetricTable(metrics, scores)}`;
-  return `<section id="accuracy-section" class="accuracy-section" tabindex="-1">
-    <div class="detail-section-title"><h3>Accuracy</h3><span class="status-badge ${fullCoverage ? "qualification" : "provisional"}">${coverageLabel}</span></div>
+  return `<div class="accuracy-dataset" data-accuracy-dataset="${escapeHtml(name)}">
+    ${titled ? `<div class="accuracy-dataset-title"><h4>${escapeHtml(humanize(name))}</h4>${coverageBadge(dataset)}</div>` : ""}
     <p class="accuracy-scope"><strong>${escapeHtml(sampleText)}</strong> · ${escapeHtml(dataset.id || "Dataset unavailable")} ${escapeHtml(dataset.variant || "")} / ${escapeHtml(dataset.split || "")}${sourceMarkup}</p>
     <div class="accuracy-summary">${accuracyMetricTiles(metrics, scores)}</div>
-    ${customerView ? "" : disclosure("accuracy", "Evaluation details", evaluation, coverageLabel)}
-    ${referenceMarkup}
-  </section>`;
+    ${customerView ? "" : disclosure(`accuracy:${name}`, "Evaluation details", evaluation, coverageLabel)}
+  </div>`;
 }
 
 // Numerical fidelity compares the whole model's outputs with the source model's, on the package run.

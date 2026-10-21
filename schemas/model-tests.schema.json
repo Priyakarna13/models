@@ -14,9 +14,14 @@
       "unevaluatedProperties": false,
       "properties": {
         "expected": {
-          "description": "Per build profile, the value of every metric the accuracy report gives.",
+          "description": "Per build profile and dataset name from model.yaml's accuracy, the value of every metric the accuracy report gives on that dataset.",
           "type": "object",
-          "additionalProperties": {"$ref": "#/$defs/metricValues"}
+          "additionalProperties": {
+            "type": "object",
+            "minProperties": 1,
+            "propertyNames": {"pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+            "additionalProperties": {"$ref": "#/$defs/metricValues"}
+          }
         }
       }
     },

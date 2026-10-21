@@ -400,31 +400,37 @@ def _performance_report(model: dict, profile_id: str) -> dict[str, Any]:
 
 
 def _accuracy_report(model: dict, profile_id: str) -> dict[str, Any]:
-    """A whole-model accuracy report for the metrics the model's tests expect, else the ones it requires.
+    """A whole-model accuracy report on each dataset the model declares, for the metrics its tests expect there,
+    else the ones the dataset requires.
 
     Each metric lands a little below the source model's reference score on that dataset, when there is one.
-    One profile in two evaluates a sampled subset of the split, so both coverages appear.
+    One profile in two evaluates a sampled subset of each split, so both coverages appear.
     """
-    report = copy.deepcopy(_report_template("accuracy"))
-    declaration = model["accuracy"]
-    reference = {
-        name: value
-        for entry in model.get("reference_metrics", [])
-        if entry["dataset"]["id"] == declaration["dataset"]["id"]
-        for name, value in entry["metrics"].items()
-    }
+    template = _report_template("accuracy")
+    sample = next(iter(template["datasets"].values()))
     key = (model["id"], profile_id)
     tests = load_model_tests(ROOT / "models" / model["id"])
     expected = tests.get("accuracy", {}).get("expected", {}).get(profile_id, {})
-    report["metrics"] = {
-        name: round(reference.get(name, 0.3 + _fraction("reference", *key, name) * 0.6)
-                    * (0.9 + _fraction("accuracy", *key, name) * 0.08), 4)
-        for name in expected or declaration["required_metrics"]
-    }
-    available = 500 + int(_fraction("samples", *key) * 4500)
-    evaluated = available if _fraction("coverage", *key) < 0.5 else available // 5
-    report["dataset"].update({"evaluated_samples": evaluated, "available_samples": available})
-    return report
+    datasets = {}
+    for name, dataset in model["accuracy"]["datasets"].items():
+        reference = {
+            metric: value
+            for entry in model.get("reference_metrics", [])
+            if entry["dataset"]["id"] == dataset["id"]
+            for metric, value in entry["metrics"].items()
+        }
+        available = 500 + int(_fraction("samples", *key, name) * 4500)
+        datasets[name] = {
+            **copy.deepcopy(sample),
+            "evaluated_samples": available if _fraction("coverage", *key) < 0.5 else available // 5,
+            "available_samples": available,
+            "metrics": {
+                metric: round(reference.get(metric, 0.3 + _fraction("reference", *key, metric) * 0.6)
+                              * (0.9 + _fraction("accuracy", *key, name, metric) * 0.08), 4)
+                for metric in expected.get(name) or dataset["required_metrics"]
+            },
+        }
+    return {**copy.deepcopy(template), "datasets": datasets}
 
 
 def _benchmark_parameters(model: dict, benchmark: dict) -> dict[str, Any]:

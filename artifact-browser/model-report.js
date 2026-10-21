@@ -39,9 +39,11 @@ function pyneatVersion(report) {
   return typeof report.runtime?.pyneat === "string" ? `PyNeat ${report.runtime.pyneat}` : "";
 }
 
+// A performance report holds its metrics; an accuracy report holds them per dataset.
 function supported(report, stage) {
+  const results = stage === "accuracy" ? report?.datasets : report?.metrics;
   return report?.schema === "sima.model-report" && report.schema_version === 1 && report.stage === stage
-    && report.metrics && typeof report.metrics === "object";
+    && Boolean(results) && typeof results === "object";
 }
 
 // A benchmark run of one build profile: the registry run and its report. No benchmark run reads as
@@ -114,15 +116,26 @@ export function readPerformance(benchmarkRun) {
   });
 }
 
-// An accuracy report scores the whole model as ratios over the evaluated part of the dataset the run's
-// parameters name.
+// An accuracy report scores the whole model on each dataset model.yaml names, as ratios over the evaluated part
+// of it. The run's parameters give each dataset's registry entry and model.yaml's order; the first is the headline.
 export function readAccuracy(benchmarkRun) {
-  return read(benchmarkRun, "accuracy", ({ parameters, report }) => ({
-    metrics: Object.fromEntries(Object.entries(report.metrics).filter(([, value]) => Number.isFinite(value))),
-    dataset: { ...parameters?.accuracy?.dataset, ...report.dataset },
-    details: report.details && typeof report.details === "object" ? report.details : {},
-    tool: pyneatVersion(report),
-  }));
+  return read(benchmarkRun, "accuracy", ({ parameters, report }) => {
+    const declared = parameters?.accuracy?.datasets || {};
+    const names = [...Object.keys(declared), ...Object.keys(report.datasets)]
+      .filter((name, index, all) => all.indexOf(name) === index && report.datasets[name]);
+    return {
+      datasets: names.map((name) => {
+        const { metrics, details, ...evaluated } = report.datasets[name];
+        return {
+          name,
+          metrics: Object.fromEntries(Object.entries(metrics || {}).filter(([, value]) => Number.isFinite(value))),
+          dataset: { ...declared[name], ...evaluated },
+          details: details && typeof details === "object" ? details : {},
+        };
+      }),
+      tool: pyneatVersion(report),
+    };
+  });
 }
 
 // A quantization parameter is one number, or one per channel for a per-axis tensor.

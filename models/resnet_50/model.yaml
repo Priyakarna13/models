@@ -51,8 +51,7 @@ numerical_fidelity:
   outputs: [logits]
 accuracy:
   status: provisional
-  dataset: default
-  required_metrics: [top1_accuracy]
+  datasets: [default]
   # The BF16 build checks compilation; only INT8 has an accuracy qualification.
   build_profiles: [w8a8]
 performance:

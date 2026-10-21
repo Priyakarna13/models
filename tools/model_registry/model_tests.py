@@ -70,22 +70,36 @@ def skip_reason(tests: dict[str, Any], stage: str) -> str | None:
     return None if entry.get("run_tests", True) else entry["skip_reason"]
 
 
-def measured_shortfalls(model_dir: str | Path, stage: str, profile_id: str, metrics: dict[str, float]) -> list[str]:
-    """Each value tests.yaml expects of a build profile's measured metrics that they miss by more than the
-    stage's allowed drop."""
-    drop = ACCURACY_ALLOWED_DROP if stage == "accuracy" else PERFORMANCE_ALLOWED_DROP
+def measured_shortfalls(model_dir: str | Path, stage: str, profile_id: str, report: dict[str, Any]) -> list[str]:
+    """Each value tests.yaml expects of a build profile's report that it misses by more than the stage's allowed
+    drop. Accuracy expects values per dataset, named as in model.yaml."""
     expected = load_model_tests(model_dir)[stage]["expected"].get(profile_id, {})
     if not expected:
         return [f"{TESTS_FILE} expects no {stage} values of {profile_id}"]
+    if stage == "performance":
+        return _shortfalls("", expected, report["metrics"], PERFORMANCE_ALLOWED_DROP)
+    measured = report["datasets"]
+    return [
+        shortfall
+        for dataset, values in expected.items()
+        for shortfall in (
+            _shortfalls(f"{dataset}: ", values, measured[dataset]["metrics"], ACCURACY_ALLOWED_DROP)
+            if dataset in measured
+            else [f"{dataset} was not evaluated"]
+        )
+    ]
+
+
+def _shortfalls(label: str, expected: dict[str, float], metrics: dict[str, float], drop: float) -> list[str]:
     shortfalls = []
     for name, value in expected.items():
         measured = metrics.get(name)
         if measured is None:
-            shortfalls.append(f"{name} was not measured")
+            shortfalls.append(f"{label}{name} was not measured")
         elif METRICS[name]["direction"] == "lower" and measured > value * (1 + drop):
-            shortfalls.append(f"{name} {measured:g} is above {value:g} by more than {drop:.0%}")
+            shortfalls.append(f"{label}{name} {measured:g} is above {value:g} by more than {drop:.0%}")
         elif METRICS[name]["direction"] != "lower" and measured < value * (1 - drop):
-            shortfalls.append(f"{name} {measured:g} is below {value:g} by more than {drop:.0%}")
+            shortfalls.append(f"{label}{name} {measured:g} is below {value:g} by more than {drop:.0%}")
     return shortfalls
 
 
@@ -141,9 +155,8 @@ def validate_model_tests(model_dir: str | Path, model: dict[str, Any], schema_pa
 
 
 def _require_expected_values(path: Path, stage: str, expected: dict[str, Any], model: dict[str, Any]) -> None:
-    """Every measured build profile expects its required metrics (performance: its throughput), and nothing
-    else."""
-    required = model[stage]["required_metrics"] if stage == "accuracy" else ["throughput_fps"]
+    """Every measured build profile expects its required metrics, for accuracy on each dataset (performance: its
+    throughput), and nothing else."""
     profiles = benchmarked_profiles(model, stage)
     unknown_profiles = set(expected) - set(profiles)
     if unknown_profiles:
@@ -151,13 +164,27 @@ def _require_expected_values(path: Path, stage: str, expected: dict[str, Any], m
         raise ValidationError(f"{path}: {stage}.expected names unmeasured build profiles: {names}")
     for profile in profiles:
         values = expected.get(profile, {})
-        missing = [metric for metric in required if metric not in values]
-        if missing:
-            raise ValidationError(f"{path}: {stage}.expected.{profile} lacks {', '.join(missing)}")
-        unknown = sorted(name for name in values if METRICS.get(name, {}).get("stage") != stage)
+        if stage == "performance":
+            _require_metric_values(path, stage, f"{stage}.expected.{profile}", values, ["throughput_fps"])
+            continue
+        datasets = model["accuracy"]["datasets"]
+        unknown = sorted(set(values) - set(datasets))
         if unknown:
             names = ", ".join(unknown)
-            raise ValidationError(f"{path}: {stage}.expected.{profile} has unknown {stage} metrics: {names}")
-        for metric, value in values.items():
-            if not math.isfinite(value):
-                raise ValidationError(f"{path}: {stage}.expected.{profile}.{metric} must be a finite number")
+            raise ValidationError(f"{path}: accuracy.expected.{profile} names undeclared datasets: {names}")
+        for name, dataset in datasets.items():
+            _require_metric_values(
+                path, stage, f"accuracy.expected.{profile}.{name}", values.get(name, {}), dataset["required_metrics"]
+            )
+
+
+def _require_metric_values(path: Path, stage: str, label: str, values: dict[str, Any], required: list[str]) -> None:
+    missing = [metric for metric in required if metric not in values]
+    if missing:
+        raise ValidationError(f"{path}: {label} lacks {', '.join(missing)}")
+    unknown = sorted(name for name in values if METRICS.get(name, {}).get("stage") != stage)
+    if unknown:
+        raise ValidationError(f"{path}: {label} has unknown {stage} metrics: {', '.join(unknown)}")
+    for metric, value in values.items():
+        if not math.isfinite(value):
+            raise ValidationError(f"{path}: {label}.{metric} must be a finite number")

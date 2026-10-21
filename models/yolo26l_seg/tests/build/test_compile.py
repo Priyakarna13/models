@@ -239,6 +239,6 @@ def test_model_preserves_compilation_and_quality_settings(accuracy_script: Modul
     declared = model["accuracy"]
     metric_names = {name for metrics in accuracy_script.METRICS.values() for name in metrics}
     for expected in load_model_tests(MODEL_DIR)["accuracy"]["expected"].values():
-        assert set(expected) == metric_names
-    assert declared["required_metrics"] == ["coco_mask_map"]
+        assert set(expected["validation"]) == metric_names
+    assert list(declared["datasets"]) == ["validation"]
     assert model["reference_metrics"][0]["metrics"] == {"coco_mask_map": 0.455, "coco_box_map": 0.544}

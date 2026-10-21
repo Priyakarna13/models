@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
-from .benchmark_declarations import validate_benchmark_declarations
+from .benchmark_declarations import resolve_accuracy_requirements, validate_benchmark_declarations
 from .errors import SourcePolicyError, ValidationError
 from .model_tests import TESTS_DIR, TESTS_SCHEMA, validate_model_tests
 from .source import SourceSpec
@@ -180,15 +180,26 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
             "id": DEFAULT_PACKAGE, "default": True, "components": list(component_ids), "resources": [],
             "build_profiles": [profile["id"] for profile in model["build_profiles"]], "composition": DEFAULT_PACKAGE,
         }]
-        for stage in ("numerical_fidelity", "accuracy"):
-            if stage in model:
-                name = model[stage]["dataset"]
-                if name not in datasets:
-                    raise ValidationError(f"{stage}: unknown dataset {name!r}")
-                model[stage] = {**model[stage], "dataset": deepcopy(datasets[name])}
+        if "numerical_fidelity" in model:
+            fidelity = model["numerical_fidelity"]
+            model["numerical_fidelity"] = {
+                **fidelity, "dataset": _dataset(datasets, fidelity["dataset"], "numerical_fidelity")
+            }
+        if "accuracy" in model:
+            # validate_model() adds each dataset's required_metrics from datasets/<id>.yaml.
+            names = model["accuracy"]["datasets"]
+            model["accuracy"] = {
+                **model["accuracy"], "datasets": {name: _dataset(datasets, name, "accuracy") for name in names}
+            }
         return model
     except (KeyError, TypeError, AttributeError, ValueError) as exc:
         raise ValidationError(f"{directory}: invalid model declaration: {exc}") from exc
+
+
+def _dataset(datasets: dict[str, Any], name: str, stage: str) -> dict[str, Any]:
+    if name not in datasets:
+        raise ValidationError(f"{stage}: unknown dataset {name!r}")
+    return deepcopy(datasets[name])
 
 
 def _expand_source(source: dict[str, Any]) -> dict[str, Any]:
@@ -331,6 +342,8 @@ def validate_model(
         candidate = (directory / relative).resolve()
         if not candidate.is_relative_to(directory) or not candidate.is_file():
             raise ValidationError(f"{directory}: referenced file does not exist inside model directory: {relative}")
+    # The repository that holds the schema holds the dataset requirements.
+    resolve_accuracy_requirements(model, schema_file.parent.parent, directory)
     validate_benchmark_declarations(model, directory)
     validate_model_tests(directory, model, schema_file.parent / TESTS_SCHEMA)
     return model
