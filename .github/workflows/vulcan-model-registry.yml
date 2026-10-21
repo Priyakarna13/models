@@ -19,6 +19,7 @@ on:
       - "conftest.py"
       - "packaging/model-registry/**"
       - "tools/model_registry/**"
+      - "tools/model_report/**"
       - "pyproject.toml"
   workflow_dispatch:
     inputs:

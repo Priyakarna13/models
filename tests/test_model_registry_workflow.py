@@ -22,6 +22,7 @@ def test_model_registry_workflow_is_change_scoped_and_publishes_subpackage() -> 
     assert set(workflow["on"]) == {"push", "workflow_dispatch"}
     for path in (
         "tools/model_registry/**",
+        "tools/model_report/**",
         "packaging/model-registry/**",
         "tests/**",
         "conftest.py",
