@@ -37,7 +37,7 @@ NON_COMPILE_SCRIPTS = {*SCRIPTS.values(), *CONVERSION_FILES}
 
 # Each benchmark stage's registry run type and fingerprint version. Vulcan stores a run's fingerprint version
 # from its environment and resolves version 1 by default.
-BENCHMARK_RUN_TYPES = {"performance": ("model_performance", 3), "accuracy": ("model_accuracy", 2)}
+BENCHMARK_RUN_TYPES = {"performance": ("model_performance", 1), "accuracy": ("model_accuracy", 1)}
 # The workflow runs the benchmark, model_report writes its report, and report_publication checks and publishes it.
 BOARD_STAGE_TOOLING = (
     ".github/workflows/vulcan-model-benchmarking.yml",

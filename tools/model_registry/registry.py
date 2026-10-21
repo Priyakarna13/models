@@ -1113,15 +1113,6 @@ def stage_catalog_build(
                 json.dumps({"packages": [{"model_id": model_id, **package}]}, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-    (profile_dir / "registry-staged.json").write_text(
-        json.dumps({
-            "model_id": model_id,
-            "build_profile_id": build_profile_id,
-            "compile_invocation_id": compile_invocation_id,
-            "outputs": staged_outputs,
-        }, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
     return {"count": len(staged_outputs), "outputs": staged_outputs}
 
 

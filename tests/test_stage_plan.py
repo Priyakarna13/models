@@ -379,9 +379,9 @@ def test_resolve_requests_carry_each_stage_fingerprint_version(stage_repository:
 
     # One performance lookup per profile, one accuracy lookup for the profile that declares it.
     assert sorted(registry.resolved()) == [
-        ("model_accuracy", "2"),
-        ("model_performance", "3"),
-        ("model_performance", "3"),
+        ("model_accuracy", "1"),
+        ("model_performance", "1"),
+        ("model_performance", "1"),
     ]
     # Each lookup carries the benchmark fingerprint of the profile's whole-model run over its catalog builds.
     model = load_models(stage_repository)[PLAN_MODEL]

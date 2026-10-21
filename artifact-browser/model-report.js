@@ -5,8 +5,8 @@ import { analyzeLayers } from "./layer-stats.js";
 // Each benchmark stage's registry run type and fingerprint version, as tools/model_registry/fingerprints.py
 // BENCHMARK_RUN_TYPES records them.
 export const BENCHMARK_RUN_TYPES = {
-  performance: ["model_performance", 3],
-  accuracy: ["model_accuracy", 2],
+  performance: ["model_performance", 1],
+  accuracy: ["model_accuracy", 1],
 };
 
 // The Sentinel reading behind each telemetry metric, as tools/model_report/metrics.json names it, and the

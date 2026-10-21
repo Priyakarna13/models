@@ -1062,7 +1062,6 @@ def _stage_catalog_build(tmp_path: Path, packages: list[dict]) -> Path:
 def test_stage_catalog_build_restores_and_verifies_durable_mpk(tmp_path: Path) -> None:
     profile = _stage_catalog_build(tmp_path, [])
 
-    assert (profile / "registry-staged.json").is_file()
     assert (profile / "model" / "registry-publication.json").is_file()
     # Restored builds carry the manifest a fresh compile writes, so later stages read both alike.
     staged = next((profile / "model").glob("*_mpk.tar.gz"))

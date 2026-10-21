@@ -39,6 +39,11 @@ Each stage's registry run carries its fingerprint, and CI runs a stage only
 when no completed run carries the current fingerprint. A change therefore
 reruns exactly the stages whose inputs it touches.
 
+A fingerprint version (`BENCHMARK_RUN_TYPES` in `fingerprints.py`) changes
+only when `fingerprints.py` changes what a fingerprint hashes or how. Adding
+or editing a model, or changing the report schema or its tooling, changes the
+fingerprint itself and needs no new version.
+
 | Stage | Venue | Model entry point | Runner script |
 |---|---|---|---|
 | compile (ONNX) | Model Compiler | `scripts/compile.py` | `scripts/run_model_compilation.sh` |
