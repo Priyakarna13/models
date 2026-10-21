@@ -27,13 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 BROWSER = ROOT / "artifact-browser"
 sys.path.insert(0, str(ROOT / "tools"))
 
-from model_registry.accuracy_config import accuracy_components, find_devkit_accuracy_config  # noqa: E402
+from model_registry.accuracy_config import find_devkit_accuracy_config  # noqa: E402
 from model_registry.compile_matrix import build_matrix  # noqa: E402
 from model_registry.dependencies import resolve_model_compiler  # noqa: E402
 from model_registry.documentation import load_model_documentation  # noqa: E402
 from model_registry.fidelity_config import find_fidelity_config  # noqa: E402
 from model_registry.model import (  # noqa: E402
-    benchmark_entry,
     component_pipelines,
     load_models,
     mpk_filename,
@@ -116,34 +115,38 @@ def _published_builds(models: dict, matrix: list[dict], sha: str) -> dict[str, A
     packages: dict[str, list[dict]] = {model_id: [] for model_id in models}
     for entry in matrix:
         for component_id in entry["component_ids"]:
-            builds[entry["model_id"]].append({
-                "build_profile_id": entry["build_profile_id"],
-                "component_id": component_id,
-                "compile_fingerprint": entry["build_fingerprint"],
-                "compile_invocation_id": entry["compile_invocation_id"],
-                "run_id": _id("compile", sha, entry["model_id"], entry["build_profile_id"], component_id),
-                "artifact_sha256": _sha256("mpk", sha, entry["model_id"], entry["build_profile_id"], component_id),
-            })
+            builds[entry["model_id"]].append(
+                {
+                    "build_profile_id": entry["build_profile_id"],
+                    "component_id": component_id,
+                    "compile_fingerprint": entry["build_fingerprint"],
+                    "compile_invocation_id": entry["compile_invocation_id"],
+                    "run_id": _id("compile", sha, entry["model_id"], entry["build_profile_id"], component_id),
+                    "artifact_sha256": _sha256("mpk", sha, entry["model_id"], entry["build_profile_id"], component_id),
+                }
+            )
     for model_id, model in models.items():
         for declaration in model["packages"]:
             for profile_id in declaration["build_profiles"]:
                 parts = (sha, model_id, profile_id, declaration["id"])
                 manifest = _sha256("package-manifest", *parts)
-                packages[model_id].append({
-                    "package_id": declaration["id"],
-                    "build_profile_id": profile_id,
-                    "run_id": _id("package", *parts),
-                    "artifact_sha256": _sha256("package", *parts),
-                    "size_bytes": 20_000_000 + int(_fraction("package-size", *parts) * 180_000_000),
-                    "package_fingerprint": manifest,
-                    "component_run_ids": {
-                        component_id: _id("compile", sha, model_id, profile_id, component_id)
-                        for component_id in declaration["components"]
-                    },
-                })
-    return {"models": [
-        {"id": model_id, "builds": builds[model_id], "packages": packages[model_id]} for model_id in models
-    ]}
+                packages[model_id].append(
+                    {
+                        "package_id": declaration["id"],
+                        "build_profile_id": profile_id,
+                        "run_id": _id("package", *parts),
+                        "artifact_sha256": _sha256("package", *parts),
+                        "size_bytes": 20_000_000 + int(_fraction("package-size", *parts) * 180_000_000),
+                        "package_fingerprint": manifest,
+                        "component_run_ids": {
+                            component_id: _id("compile", sha, model_id, profile_id, component_id)
+                            for component_id in declaration["components"]
+                        },
+                    }
+                )
+    return {
+        "models": [{"id": model_id, "builds": builds[model_id], "packages": packages[model_id]} for model_id in models]
+    }
 
 
 def _revision(
@@ -172,12 +175,10 @@ def _model_fields(entry: dict[str, Any]) -> dict[str, Any]:
     categories = entry["categories"]
     return {
         "model_type": categories["model_type"],
-        "architecture_id": categories["architecture"]["id"],
-        "architecture_paradigm": categories["architecture"]["paradigm"],
+        "model_family": categories["model_family"],
+        "architecture_paradigm": categories["architecture_paradigm"],
         "tasks": categories["tasks"],
-        "input_modalities": categories["modalities"]["inputs"],
-        "output_modalities": categories["modalities"]["outputs"],
-        "model_tags": categories["tags"],
+        "model_tags": categories.get("tags", []),
     }
 
 
@@ -208,24 +209,29 @@ def _compile_run(model: dict, entry: dict, build: dict, compiler: dict, day: str
     profile, _ = profile_component_for(model, build["build_profile_id"], build["component_id"])
     run = _run(entry, build["run_id"], "model_compile", compiler, day, sha, position)
     run["target_platform"] = profile["target"]
-    run["metadata"].update({
-        "build_profile_id": build["build_profile_id"],
-        "component_id": build["component_id"],
-        "compile_invocation_id": build["compile_invocation_id"],
-        "artifact_kind": "llima" if next(
-            item for item in model["components"] if item["id"] == build["component_id"]
-        )["interface"]["format"] == "huggingface" else "mpk",
-    })
+    run["metadata"].update(
+        {
+            "build_profile_id": build["build_profile_id"],
+            "component_id": build["component_id"],
+            "compile_invocation_id": build["compile_invocation_id"],
+            "artifact_kind": "llima"
+            if next(item for item in model["components"] if item["id"] == build["component_id"])["format"]
+            == "huggingface"
+            else "mpk",
+        }
+    )
     return run
 
 
 def _package_run(entry: dict, package: dict, compiler: dict, day: str, sha: str, position: int) -> dict:
     run = _run(entry, package["run_id"], "model_package", compiler, day, sha, position)
-    run["metadata"].update({
-        "build_profile_id": package["build_profile_id"],
-        "package_id": package["package_id"],
-        "component_run_ids": package["component_run_ids"],
-    })
+    run["metadata"].update(
+        {
+            "build_profile_id": package["build_profile_id"],
+            "package_id": package["package_id"],
+            "component_run_ids": package["component_run_ids"],
+        }
+    )
     return run
 
 
@@ -233,27 +239,41 @@ def _models_list(document: dict, runs: dict[str, dict], compiler: str) -> list[d
     """The registry's /models entries: catalog entries whose builds carry their compile run's fields."""
     entries = []
     for model in document["models"]:
-        builds = [{
-            **build,
-            **{key: runs[build["run_id"]][key] for key in (
-                "status", "commit_sha", "created_at", "finished_at", "toolchain_name", "toolchain_version",
-                "target_platform",
-            )},
-        } for build in model["builds"]]
+        builds = [
+            {
+                **build,
+                **{
+                    key: runs[build["run_id"]][key]
+                    for key in (
+                        "status",
+                        "commit_sha",
+                        "created_at",
+                        "finished_at",
+                        "toolchain_name",
+                        "toolchain_version",
+                        "target_platform",
+                    )
+                },
+            }
+            for build in model["builds"]
+        ]
         if compiler and not any(build["toolchain_version"] == compiler for build in builds):
             continue
-        entries.append({
-            "model_id": model["id"],
-            **{key: model[key] for key in ("display_name", "description", "maturity", "license", "categories")},
-            **_model_fields(model),
-            "documentation": model["documentation"],
-            **({"build_on_demand": True} if model.get("build_on_demand") else {}),
-            "catalog_revision": document["catalog_revision"],
-            "taxonomy_sha256": document["taxonomy_sha256"],
-            "builds": builds,
-            "pending_builds": [],
-            "packages": model["packages"],
-        })
+        entries.append(
+            {
+                "model_id": model["id"],
+                **{key: model[key] for key in ("display_name", "description", "license", "categories")},
+                **_model_fields(model),
+                "documentation": model["documentation"],
+                **({"build_on_demand": True} if model.get("build_on_demand") else {}),
+                "catalog_revision": document["catalog_revision"],
+                "taxonomy_sha256": document["taxonomy_sha256"],
+                "builds": builds,
+                "pending_builds": [],
+                "packages": model["packages"],
+                "reports": _report_summaries(model, document["catalog_revision"]),
+            }
+        )
     return entries
 
 
@@ -266,36 +286,40 @@ def _provenance(model: dict, build: dict, compiler: dict) -> dict[str, Any]:
     component = next(item for item in model["components"] if item["id"] == build["component_id"])
     source = component["source"]
     return {
-        "inputs": [{
-            "name": "source-component",
-            "input_type": source.get("media_type", "application/octet-stream").removeprefix("application/"),
-            "source_reference": source.get("uri"),
-            "sha256": source.get("sha256"),
-            "size_bytes": source.get("size_bytes"),
-            "media_type": source.get("media_type"),
-            "metadata": {
+        "inputs": [
+            {
+                "name": "source-component",
+                "input_type": source.get("media_type", "application/octet-stream").removeprefix("application/"),
+                "source_reference": source.get("uri"),
+                "sha256": source.get("sha256"),
+                "size_bytes": source.get("size_bytes"),
+                "media_type": source.get("media_type"),
+                "metadata": {
+                    "model_id": model["id"],
+                    "component_id": build["component_id"],
+                    "source_type": source.get("type"),
+                    "model_card": model["upstream"].get("model_card"),
+                },
+            }
+        ],
+        "parameters": {
+            "parameters": {
+                "schema_version": 2,
                 "model_id": model["id"],
+                "build_profile_id": build["build_profile_id"],
+                "compile_invocation_id": build["compile_invocation_id"],
                 "component_id": build["component_id"],
-                "source_type": source.get("type"),
-                "model_card": model["upstream"].get("model_card"),
-            },
-        }],
-        "parameters": {"parameters": {
-            "schema_version": 2,
-            "model_id": model["id"],
-            "build_profile_id": build["build_profile_id"],
-            "compile_invocation_id": build["compile_invocation_id"],
-            "component_id": build["component_id"],
-            "target": profile["target"],
-            "compiler_version": compiler["version"],
-            "compiler_label": compiler["label"],
-            "source_sha256": source.get("sha256"),
-            "build_fingerprint": build["compile_fingerprint"],
-            "recipe": component.get("recipe"),
-            "compile_parameters": binding.get("parameters", {}),
-            "shape_profile": binding.get("shape_profile"),
-            "calibration": binding.get("calibration"),
-        }},
+                "target": profile["target"],
+                "compiler_version": compiler["version"],
+                "compiler_label": compiler["label"],
+                "source_sha256": source.get("sha256"),
+                "build_fingerprint": build["compile_fingerprint"],
+                "recipe": component.get("recipe"),
+                "compile_parameters": binding.get("parameters", {}),
+                "shape_profile": binding.get("shape_profile"),
+                "calibration": binding.get("calibration"),
+            }
+        },
     }
 
 
@@ -336,129 +360,98 @@ _PREVIEW_LAYER_NAMES = (
 )
 
 
-def _benchmark_result(model: dict, build: dict, compiler: dict) -> dict[str, Any]:
+def _performance_result(model: dict, profile: str) -> dict[str, Any]:
+    """Illustrative whole-model values; component scores are never combined."""
     result = copy.deepcopy(_benchmark_template())
-    key = (model["id"], build["build_profile_id"], build["component_id"])
-    result["model"].update({
-        "id": model["id"], "build_profile_id": key[1], "component_id": key[2], "sha256": build["artifact_sha256"],
-    })
-    result["compatibility"]["actual_platform_version"] = compiler["version"]
-    report = result["benchmark_report"]
+    result["model"] = {"id": model["id"], "build_profile_id": profile}
+    key = (model["id"], profile)
     latency = round(2.5 + _fraction("latency", *key) * 40.0, 3)
-    scale = latency / report["latency_ms"]
-    # Pipelining makes asynchronous throughput exceed one input per mean latency; keep the template's ratio.
-    report["fps"] = round(report["fps"] / scale, 1)
-    for field in ("latency_ms", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms"):
-        report[field] = round(report[field] * scale, 3)
-    report["energy_joules"] = round(report["avg_power_watts"] * result["configuration"]["samples"] / report["fps"], 2)
-    memory = report["telemetry"]["mla_memory_mib"]
-    memory_scale = (16.0 + _fraction("memory", *key) * 240.0) / memory["maximum"]
-    memory.update({name: round(memory[name] * memory_scale, 1) for name in ("mean", "minimum", "maximum")})
-    # Illustrative compiled layers exercise filtering, no-ops and nonconsecutive MLA stage indices.
-    # Preview timings are generated, not published measurements of these model definitions.
-    report["layer_stats"] = [
-        {"name": name.format(stage=stage),
-         "stage_index": stage,
-         "total_execution_time_us": 0.0 if index in (21, 23) else round(
-             latency * 1000 * (0.065 / (1 + index / 4)) * (0.8 + _fraction("layer", *key, str(index))), 2)}
-        for stage in (0, 2) for index, name in enumerate(_PREVIEW_LAYER_NAMES)
-    ]
-    # The rest of the board telemetry keeps the template's DevKit readings.
-    return result
-
-
-def _package_result(model: dict, build: dict, builds: list[dict], compiler: dict) -> dict[str, Any] | None:
-    """The package result a build's benchmark reports when a package benchmark runs under it, else None.
-
-    ``builds`` are the model's builds in the same catalog revision. The package runs at 98% of the rate and
-    takes 2% longer than its components' preview results allow, as a measured pipeline does, names the model's
-    pipeline as its workload, and keeps each component's preview layers and the template's execution plan.
-    """
-    entry = benchmark_entry(model, build["component_id"], build["build_profile_id"])
-    if entry is None or entry["scope"]["type"] != "package":
-        return None
-    members = [
-        next(item for item in builds if item["build_profile_id"] == build["build_profile_id"]
-             and item["component_id"] == component_id)
-        for component_id in accuracy_components(model, entry)
-    ]
-    results = [_benchmark_result(model, item, compiler) for item in members]
-    result = copy.deepcopy(results[-1])
-    result.update({"benchmark_type": "model.orchestration", "execution_plan": None})
-    result["tool"]["name"] = "pyneat.ModelRunner"
-    result["configuration"]["method"] = "model_orchestration"
-    pipeline = model.get("pipeline") or [{"component": item["component_id"]} for item in members]
-    selection = ", ".join(stage.get("component") or f"{stage['cpu']} on the CPU" for stage in pipeline)
-    result["configuration"]["workload"]["selection"] = selection[:1].upper() + selection[1:]
-    result["model"].update({"component_id": None, "package_id": entry["scope"]["package"],
-                            "path": None, "sha256": None, "uri": None})
-    result["components"] = [{
-        "component_id": item["component_id"], "path": f"/tmp/{item['component_id']}.tar.gz",
-        "sha256": item["artifact_sha256"], "uri": f"vulcan://runs/{item['run_id']}/artifacts/mpk",
-        "compile_run_id": item["run_id"], "layer_stats": component["benchmark_report"]["layer_stats"],
-        "execution_plan": _benchmark_template()["execution_plan"],
-    } for item, component in zip(members, results)]
-    report = result["benchmark_report"]
-    fps = round(0.98 / sum(1 / item["benchmark_report"]["fps"] for item in results), 1)
-    latency = round(sum(item["benchmark_report"]["latency_ms"] for item in results) / 0.98, 3)
-    scale = latency / report["latency_ms"]
-    report["fps"] = fps
-    for field in ("latency_ms", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms"):
-        report[field] = round(report[field] * scale, 3)
-    report["layer_stats"] = []
-    report["throughput_samples"] = round(fps * report["throughput_duration_ms"] / 1000)
-    report["energy_joules"] = round(report["avg_power_watts"] * result["configuration"]["samples"] / fps, 2)
-    return result
-
-
-def _accuracy_result(model: dict, build: dict) -> dict[str, Any]:
-    """A DevKit accuracy result for the metrics and dataset the model's accuracy entry declares.
-
-    Each metric lands a little below the source model's published score on that dataset, when there is one.
-    """
-    config = find_devkit_accuracy_config(model, build["build_profile_id"])
-    published = {
-        name: value
-        for entry in model.get("published_metrics", [])
-        if entry["dataset"]["id"] == config["dataset"]["id"]
-        for name, value in entry["metrics"].items()
+    for metric in result["metrics"]:
+        if metric["name"] == "model.latency.avg":
+            metric["value"] = latency
+        if metric["name"] == "model.inference_rate":
+            metric["value"] = round(1200 / latency, 1)
+    component_template = next(iter(result["components"].values()))
+    result["components"] = {
+        component["id"]: {
+            "execution_plan": component_template["execution_plan"],
+            "layer_stats": [
+                {
+                    "name": name.format(stage=stage),
+                    "stage_index": stage,
+                    "total_execution_time_us": 0.0 if index in (21, 23) else round(latency * 50 / (index + 1), 2),
+                }
+                for stage in (0, 2)
+                for index, name in enumerate(_PREVIEW_LAYER_NAMES)
+            ],
+        }
+        for component in model["components"]
     }
-    key = (model["id"], build["build_profile_id"])
-    metrics = {}
-    expected_metrics = load_model_tests(ROOT / "models" / model["id"]).get("accuracy", {}).get(
-        "expected", {}).get(build["build_profile_id"], {})
-    for name in config.get("metrics", expected_metrics or config.get("required_metrics", [])):
-        expected = published.get(name, 0.3 + _fraction("reference", *key, name) * 0.6)
-        value = round(expected * (0.9 + _fraction("accuracy", *key, name) * 0.08), 4)
-        metrics[name] = {"value": value, "unit": "ratio", "direction": "higher"}
-    samples = 500 + int(_fraction("samples", *key) * 4500)
+    return result
+
+
+def _accuracy_result(model: dict, profile: str) -> dict[str, Any]:
+    config = find_devkit_accuracy_config(model, profile)
+    expected = load_model_tests(ROOT / "models" / model["id"])["accuracy"].get("expected", {}).get(profile, {})
     return {
-        "schema_version": 2,
-        "model": {
-            "id": model["id"],
-            "build_profile_id": build["build_profile_id"],
-            "component_id": build["component_id"],
-            "package_id": None,
-            "artifacts": {build["component_id"]: build["artifact_sha256"]},
+        "schema": "sima.model-report",
+        "schema_version": 1,
+        "stage": "accuracy",
+        "model": {"id": model["id"], "build_profile_id": profile},
+        "context": {
+            "core_version": "preview",
+            "validation_status": config["status"],
+            "dataset": {
+                **config["dataset"],
+                "split": "validation",
+                "evaluated_samples": 5000,
+                "available_samples": 5000,
+            },
         },
-        "validation": {"id": config["id"], "engine": config["engine"], "status": config["status"]},
-        "dataset": {
-            **{field: config["dataset"][field] for field in ("id", "variant", "sha256")},
-            "split": "validation",
-            "evaluated_samples": samples,
-            "available_samples": samples,
-        },
-        "metrics": metrics,
-        "execution": {"core_version": "3.0.0", "script_sha256": _sha256("script", config["id"]), "models_commit": ""},
+        "metrics": [
+            {"name": name, "status": "measured", "value": value, "unit": "ratio"} for name, value in expected.items()
+        ],
+        "evidence": [],
     }
+
+
+def _report_id(revision: str, model_id: str, profile: str, stage: str) -> str:
+    return _id("report", revision, model_id, profile, stage)
+
+
+def _report_summaries(model: dict, revision: str) -> dict:
+    source = _repository()["models"][model["id"]]
+    summaries = {}
+    for profile in source["build_profiles"]:
+        stages = {}
+        for stage in ("performance", "accuracy"):
+            entry = source.get(stage)
+            if not entry or profile["id"] not in entry["build_profiles"]:
+                continue
+            report = (
+                _performance_result(source, profile["id"])
+                if stage == "performance"
+                else _accuracy_result(source, profile["id"])
+            )
+            stages[stage] = {
+                "run_id": _report_id(revision, model["id"], profile["id"], stage),
+                "stage_key": _sha256(revision, model["id"], profile["id"], stage),
+                "status": "completed",
+                "test_status": "passed",
+                **{key: report[key] for key in ("schema", "schema_version", "context", "metrics")},
+            }
+        summaries[profile["id"]] = stages
+    return summaries
 
 
 def _fidelity_test(model: dict, build: dict) -> dict[str, Any] | None:
     config = find_fidelity_config(
-        ROOT / "models" / model["id"], model,
-        build_profile_id=build["build_profile_id"], component_id=build["component_id"],
+        ROOT / "models" / model["id"],
+        model,
+        build_profile_id=build["build_profile_id"],
+        component_id=build["component_id"],
     )
-    if config is None or config["result_component"] != build["component_id"]:
+    if config is None or model["components"][-1]["id"] != build["component_id"]:
         return None
     key = (model["id"], build["build_profile_id"])
     return {
@@ -477,13 +470,16 @@ def _fidelity_test(model: dict, build: dict) -> dict[str, Any] | None:
             "candidate": "Quantized AFE network (JAX execute)",
             "dataset": {field: config["dataset"][field] for field in ("id", "variant")},
             "samples": config["selection"]["samples"],
-            "metrics": [{
-                "name": output,
-                "cosine_similarity": round(0.99 + _fraction("cosine", *key, output) * 0.0099, 6),
-                "normalized_rmse": round(_fraction("rmse", *key, output) * 0.02, 5),
-                "mean_absolute_error": round(_fraction("mae", *key, output) * 0.01, 5),
-                "max_absolute_error": round(_fraction("max", *key, output) * 0.05, 5),
-            } for output in config["outputs"]],
+            "metrics": [
+                {
+                    "name": output,
+                    "cosine_similarity": round(0.99 + _fraction("cosine", *key, output) * 0.0099, 6),
+                    "normalized_rmse": round(_fraction("rmse", *key, output) * 0.02, 5),
+                    "mean_absolute_error": round(_fraction("mae", *key, output) * 0.01, 5),
+                    "max_absolute_error": round(_fraction("max", *key, output) * 0.05, 5),
+                }
+                for output in config["outputs"]
+            ],
         },
     }
 
@@ -493,7 +489,7 @@ def _index() -> dict[str, Any]:
     """Lookups from every identifier the API serves to what it describes."""
     repository = _repository()
     runs = {run["id"]: run for run in repository["runs"]}
-    builds, revision_builds, packages, documentation, accuracy = {}, {}, {}, {}, {}
+    builds, revision_builds, packages, documentation, reports = {}, {}, {}, {}, {}
     for revision in repository["revisions"]:
         for model in revision["document"]["models"]:
             source = repository["models"][model["id"]]
@@ -501,8 +497,10 @@ def _index() -> dict[str, Any]:
             for build in model["builds"]:
                 builds[build["run_id"]] = (source, build)
                 revision_builds[build["run_id"]] = model["builds"]
-                if build.get("validation_fingerprint"):
-                    accuracy[build["validation_fingerprint"]] = (source, build)
+            for profile, stages in _report_summaries(model, revision["sha"]).items():
+                for stage, summary in stages.items():
+                    build = next(item for item in model["builds"] if item["build_profile_id"] == profile)
+                    reports[summary["run_id"]] = (source, build, stage)
             for package in model["packages"]:
                 packages[package["run_id"]] = (source, package)
     return {
@@ -511,9 +509,7 @@ def _index() -> dict[str, Any]:
         "revision_builds": revision_builds,
         "packages": packages,
         "documentation": documentation,
-        "accuracy": accuracy,
-        "benchmarks": {_id("benchmark", run_id): run_id for run_id in builds},
-        "accuracy_runs": {_id("accuracy", key): key for key in accuracy},
+        "reports": reports,
     }
 
 
@@ -533,19 +529,33 @@ def _deployment_artifacts(archive: dict, run_id: str) -> list[dict]:
     """Native deployments use a small JSON index and separate path-preserving payload files."""
     paths = ["model.json", "weights/model.bin", "runtime/config.json"]
     total = archive["size_bytes"]
-    files = [{
-        "name": f"file-{hashlib.sha256(path.encode()).hexdigest()}",
-        "artifact_type": "model-file", "media_type": "application/octet-stream",
-        "sha256": _sha256("deployment-file", run_id, path),
-        "size_bytes": total // len(paths) + (total % len(paths) if index == 0 else 0),
-        "metadata": {"path": path},
-    } for index, path in enumerate(paths)]
-    return [{
-        **archive, "name": "package" if archive["artifact_type"] == "model-package" else "llima",
-        "size_bytes": 2048, "media_type": "application/json",
-        "metadata": {**archive.get("metadata", {}), "layout": "directory", "storage_backend": "s3",
-                     "file_count": len(files), "deployment_size_bytes": total},
-    }, *files]
+    files = [
+        {
+            "name": f"file-{hashlib.sha256(path.encode()).hexdigest()}",
+            "artifact_type": "model-file",
+            "media_type": "application/octet-stream",
+            "sha256": _sha256("deployment-file", run_id, path),
+            "size_bytes": total // len(paths) + (total % len(paths) if index == 0 else 0),
+            "metadata": {"path": path},
+        }
+        for index, path in enumerate(paths)
+    ]
+    return [
+        {
+            **archive,
+            "name": "package" if archive["artifact_type"] == "model-package" else "llima",
+            "size_bytes": 2048,
+            "media_type": "application/json",
+            "metadata": {
+                **archive.get("metadata", {}),
+                "layout": "directory",
+                "storage_backend": "s3",
+                "file_count": len(files),
+                "deployment_size_bytes": total,
+            },
+        },
+        *files,
+    ]
 
 
 class PreviewHandler(SimpleHTTPRequestHandler):
@@ -599,36 +609,74 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         git_ref = query.get("git_ref", [GIT_REF])[0]
         if path == "/branches":
             runs = repository["runs"]
-            self._json({"branches": [{
-                "name": BRANCH, "git_ref": GIT_REF, "latest_run_at": runs[0]["created_at"], "run_count": len(runs),
-            }]})
+            self._json(
+                {
+                    "branches": [
+                        {
+                            "name": BRANCH,
+                            "git_ref": GIT_REF,
+                            "latest_run_at": runs[0]["created_at"],
+                            "run_count": len(runs),
+                        }
+                    ]
+                }
+            )
         elif path == "/runs":
             run_type = query.get("run_type", [""])[0]
-            runs = [run for run in repository["runs"] if run["git_ref"] == git_ref and (
-                run["run_type"] == run_type if run_type else run["run_type"] == "model_compile"
-            )]
+            runs = [
+                run
+                for run in repository["runs"]
+                if run["git_ref"] == git_ref
+                and (run["run_type"] == run_type if run_type else run["run_type"] == "model_compile")
+            ]
             self._json({"runs": runs, "has_more": False, "next_cursor": None})
         elif path == "/models" and git_ref == GIT_REF:
             compiler = query.get("toolchain_version", [""])[0]
             models = _models_list(current["document"], _index()["runs"], compiler)
-            self._json({"models": models, "count": len(models), "has_more": False, "next_cursor": None})
+            for field in ("task", "model_family"):
+                value = query.get(field, [""])[0]
+                if value:
+                    models = [
+                        model
+                        for model in models
+                        if value in (model.get("tasks", []) if field == "task" else [model.get(field)])
+                    ]
+            terms = query.get("q", [""])[0].lower().replace("-", " ").split()
+            models = [
+                model
+                for model in models
+                if all(term in json.dumps(model).lower().replace("_", " ").replace("-", " ") for term in terms)
+            ]
+            start = int(query.get("cursor", ["0"])[0])
+            limit = int(query.get("limit", ["100"])[0])
+            next_cursor = str(start + limit) if start + limit < len(models) else None
+            self._json(
+                {
+                    "models": models[start : start + limit],
+                    "count": len(models),
+                    "has_more": next_cursor is not None,
+                    "next_cursor": next_cursor,
+                }
+            )
         elif path.startswith("/catalogs/") and git_ref == GIT_REF:
             revision = path.removeprefix("/catalogs/")
-            match = current if revision == "current" else next(
-                (item for item in repository["revisions"] if item["sha"] == revision), None
+            match = (
+                current
+                if revision == "current"
+                else next((item for item in repository["revisions"] if item["sha"] == revision), None)
             )
             if match is None:
                 self._not_found("catalog_not_found")
             else:
-                self._json({"catalog": {
-                    "git_ref": GIT_REF, "catalog_revision": match["sha"], "document": match["document"],
-                }})
-        elif path == "/resolve" and query.get("run_type") == ["model_accuracy"]:
-            key = query.get("fingerprint", [""])[0]
-            if key in _index()["accuracy"]:
-                self._json({"run": {"id": _id("accuracy", key), "run_type": "model_accuracy"}})
-            else:
-                self._not_found("fingerprint_not_found")
+                self._json(
+                    {
+                        "catalog": {
+                            "git_ref": GIT_REF,
+                            "catalog_revision": match["sha"],
+                            "document": match["document"],
+                        }
+                    }
+                )
         elif path in {"/models", "/resolve"} or path.startswith("/catalogs/"):
             self._not_found("catalog_not_found" if path != "/resolve" else "fingerprint_not_found")
         else:
@@ -646,24 +694,26 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             name, media_type = files[rest[1]]
             self._bytes((ROOT / "models" / model_id / name).read_bytes(), media_type)
-        elif run_id in index["benchmarks"] and not rest:
-            run = _measurement_run(run_id, "model_benchmark", index["benchmarks"][run_id])
-            self._json({"run": run, "artifacts": []})
-        elif run_id in index["accuracy_runs"] and not rest:
-            _, build = index["accuracy"][index["accuracy_runs"][run_id]]
-            self._json({"run": _measurement_run(run_id, "model_accuracy", build["run_id"]), "artifacts": []})
-        elif run_id in index["benchmarks"] and rest == ["test-results"]:
-            self._json({"run_id": run_id, "test_results": [
-                {"suite": "performance", "name": "model-synthetic", "status": "passed"},
-            ]})
-        elif run_id in index["accuracy_runs"] and rest == ["accuracy", "latest"]:
-            model, build = index["accuracy"][index["accuracy_runs"][run_id]]
-            result = _accuracy_result(model, build)
-            self._json({
-                "accuracy_test": {"name": result["validation"]["id"], "status": "passed", "attempt": 1},
-                "result": result,
-                "result_artifact_url": None,
-            })
+        elif run_id in index["reports"]:
+            model, build, stage = index["reports"][run_id]
+            if not rest:
+                self._json(
+                    {
+                        "run": _measurement_run(
+                            run_id, "model_benchmark" if stage == "performance" else "model_accuracy", build["run_id"]
+                        ),
+                        "artifacts": [],
+                    }
+                )
+            elif rest == ["model-report"]:
+                report = (
+                    _performance_result(model, build["build_profile_id"])
+                    if stage == "performance"
+                    else _accuracy_result(model, build["build_profile_id"])
+                )
+                self._json({"run_id": run_id, "report": report, "manifest": {}, "canonical_sha256": _sha256(run_id)})
+            else:
+                self._not_found("not_found")
         elif run_id in index["builds"]:
             self._compile_run_api(run_id, rest, *index["builds"][run_id], compiler)
         elif run_id in index["packages"] and not rest:
@@ -712,39 +762,51 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             self._json({"run": run, **_provenance(model, build, compiler)})
         elif rest == ["test-results"]:
             fidelity = _fidelity_test(model, build)
-            self._json({"run_id": run_id, "test_results": [
-                {"suite": "model", "name": "manifest-validation", "status": "passed", "duration_ms": 82},
-                {"suite": "model", "name": "deployment-validation" if native else "mpk-validation",
-                 "status": "passed", "duration_ms": 418},
-                *([fidelity] if fidelity else []),
-            ]})
+            self._json(
+                {
+                    "run_id": run_id,
+                    "test_results": [
+                        {"suite": "model", "name": "manifest-validation", "status": "passed", "duration_ms": 82},
+                        {
+                            "suite": "model",
+                            "name": "deployment-validation" if native else "mpk-validation",
+                            "status": "passed",
+                            "duration_ms": 418,
+                        },
+                        *([fidelity] if fidelity else []),
+                    ],
+                }
+            )
         elif rest == ["metrics"]:
-            self._json({"run_id": run_id, "measurements": [
-                {"name": "compile.duration", "numeric_value": round(180.0 + _fraction("compile", run_id) * 900.0, 1)},
-            ]})
-        elif rest == ["benchmarks", "latest"] and build.get("benchmark_fingerprint"):
-            self._json({
-                "benchmark_run": {"id": _id("benchmark", run_id)},
-                "result": (_package_result(model, build, _index()["revision_builds"][run_id], compiler)
-                           or _benchmark_result(model, build, compiler)),
-                "result_artifact_url": "/fixtures/performance-result.json",
-            })
-        elif rest == ["benchmarks", "latest"]:
-            self._not_found("benchmark_not_found")
-        elif rest == ["accuracy", "latest"]:
-            # Accuracy lives on its own model_accuracy run, resolved by the build's accuracy key.
-            self._not_found("accuracy_not_found")
+            self._json(
+                {
+                    "run_id": run_id,
+                    "measurements": [
+                        {
+                            "name": "compile.duration",
+                            "numeric_value": round(180.0 + _fraction("compile", run_id) * 900.0, 1),
+                        },
+                    ],
+                }
+            )
         elif len(rest) == 2 and rest[0] == "artifacts":
             filename = mpk_filename(model, build["build_profile_id"], build["component_id"])
-            self._download_link(f"models/develop/{model['id']}/{build['build_profile_id']}/{build['component_id']}/{filename}")
+            self._download_link(
+                f"models/develop/{model['id']}/{build['build_profile_id']}/{build['component_id']}/{filename}"
+            )
         else:
             self._not_found("not_found")
 
     def _download_link(self, s3_key: str | None = None) -> None:
-        self._json({"artifact": {
-            "download_url": "/fixtures/performance-result.json", "download_url_expires_in": 300,
-            **({"s3_key": s3_key} if s3_key else {}),
-        }})
+        self._json(
+            {
+                "artifact": {
+                    "download_url": "/fixtures/performance-result.json",
+                    "download_url_expires_in": 300,
+                    **({"s3_key": s3_key} if s3_key else {}),
+                }
+            }
+        )
 
     def translate_path(self, path: str) -> str:
         # The fixtures stay in artifact-browser/ when --root serves an assembled portal. Normalizing
@@ -760,7 +822,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
 
 def _package_file(model: dict, package: dict) -> tuple[str, str]:
     """The published path and media type of a native folder index, lone MPK, or ZIP."""
-    if any(component["interface"]["format"] == "huggingface" for component in model["components"]):
+    if any(component["format"] == "huggingface" for component in model["components"]):
         return "deployment/manifest.json", "application/json"
     declaration = next(item for item in model["packages"] if item["id"] == package["package_id"])
     if len(declaration["components"]) == 1 and not declaration["resources"]:

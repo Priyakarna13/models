@@ -12,19 +12,14 @@ database migrations. Each model declares references:
 ```yaml
 model_type: vision
 tasks: [image_classification]
-modalities:
-  inputs: [image]
-  outputs: [class_scores]
-architecture:
-  id: resnet
+model_family: resnet
 ```
 
 The facets are intentionally independent:
 
 - model type describes the broad product class, such as Vision, LLM, or VLM;
 - task describes what the model does;
-- modality describes semantic inputs and outputs;
-- `architecture.id` names the model family, the upstream model line without its
+- `model_family` names the model family, the upstream model line without its
   generation or size: `yolo`, not `yolo_26` or `yolo26n`. The model's `id` and
   `display_name` carry the generation and size. The browser labels this filter
   Model family;
@@ -70,7 +65,7 @@ snapshots, runs, and MPKs remain available under their existing retention rules.
 
 ## Search semantics
 
-The registry read API supports model type, task, architecture, architecture
-paradigm, input/output modality, and optional tag filters. Comma-separated
+The registry read API supports model type, task, model family, architecture
+paradigm, and optional tag filters. Comma-separated
 values use OR semantics within one array facet; different facets combine with
 AND semantics. Pagination cursors are bound to the complete active filter set.

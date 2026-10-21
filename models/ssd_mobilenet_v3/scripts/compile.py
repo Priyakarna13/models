@@ -1,5 +1,40 @@
 #!/usr/bin/env python3
-"""Quantize and compile one pinned SSD-MobileNet V3 Modalix variant."""
+"""Quantize and compile one pinned SSD-MobileNet V3 Modalix variant.
+
+Source qualification evidence (recorded, not a DevKit accuracy stage):
+id: coco_val2017_quantization
+scope:
+  type: component
+  component: model
+build_profiles:
+- w8a8
+- w16a16
+status: pending_hardware_qualification
+reference: onnx_precision_source_raw_heads
+dataset: coco_val2017
+calibration_samples: 128
+validation_samples: 32
+split: category_balanced_and_disjoint
+metrics:
+- raw_head_cosine_similarity
+- raw_head_normalized_root_mean_square_error
+- decoded_detection_recall_at_0_5_iou
+- decoded_detection_mean_matched_iou
+source_qat_accuracy_gate:
+  baseline: torchvision_ssdlite320_mobilenet_v3_large_coco_v1_fp32
+  training_dataset: coco_train2017_full
+  evaluation_dataset: coco_val2017_full
+  metric: bbox_ap_0_50_0_95
+  maximum_ap_drop_points: 1.5
+  observed:
+    fp32_ap: 0.21268746106494976
+    qat_ap: 0.20692254686472816
+    ap_drop_points: 0.5764914200221599
+    passed: true
+note: The QAT source is full-COCO accuracy-gated before bundling; compiled raw-head
+  quality is independently gated, while decoded accuracy and performance remain pending
+  Modalix hardware qualification.
+"""
 
 from __future__ import annotations
 

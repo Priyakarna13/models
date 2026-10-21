@@ -68,7 +68,7 @@ def test_file_set_is_verified_and_materialized_with_its_declared_layout(tmp_path
 
     source_set = {
         "type": "file_set",
-        "entrypoint": "graph/model.onnx",
+        "main_file": "graph/model.onnx",
         "files": [
             {
                 "path": "graph/model.onnx",

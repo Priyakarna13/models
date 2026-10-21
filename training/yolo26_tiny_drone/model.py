@@ -6,7 +6,7 @@ import copy
 from typing import Any
 
 import torch
-from contract import DEFAULT_CONTRACT, DeploymentContract
+from model_scripts import DEFAULT_CONTRACT, DeploymentContract
 from torch import Tensor, nn
 
 EXPECTED_ATTENTION_MATMULS = 8

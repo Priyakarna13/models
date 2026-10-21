@@ -192,11 +192,11 @@ def test_compile_reads_the_declared_build_parameters(load_script: Callable[[str]
 
 def test_model_preserves_compilation_and_quality_settings() -> None:
     model = load_metadata(MODEL_DIR)
-    assert model["components"][0]["interface"]["format"] == "onnx"
+    assert model["components"][0]["format"] == "onnx"
     assert {profile["id"] for profile in model["build_profiles"]} == {"w16a16", "w8a8"}
     assert model["license"] == {
         "spdx": "AGPL-3.0-only",
-        "redistribution": "restricted",
+        "customer_redistribution": "prohibited",
         "attribution": "YOLO26 is developed by Ultralytics and distributed under AGPL-3.0.",
     }
-    assert model["accuracy"][0]["required_metrics"] == ["coco_map"]
+    assert model["accuracy"]["required_metrics"] == ["model.accuracy.coco_map"]

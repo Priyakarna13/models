@@ -7,7 +7,7 @@ export const DEFAULT_BRANCH = customerView ? "main" : "develop";
 document.documentElement.dataset.uiMode = customerView ? "customer" : "developer";
 export const CATEGORY_QUERY_FIELDS = {
   "task-filter": "task",
-  "architecture-filter": "architecture_id",
+  "model-family-filter": "model_family",
 };
 const initialQuery = new URLSearchParams(location.search);
 
@@ -16,9 +16,6 @@ export const state = {
   repository: configuredRepository,
   models: [],
   runs: [],
-  compileRuns: [],
-  packageRuns: [],
-  catalogDefinitions: [],
   catalogMode: "runs",
   catalogLayout: "cards",
   cursor: null,
@@ -47,7 +44,7 @@ export const state = {
   activeProfileByModel: new Map(),
   taxonomy: null,
   categorySelection: Object.fromEntries(
-    Object.entries(CATEGORY_QUERY_FIELDS).map(([elementId, queryName]) => [elementId, initialQuery.get(queryName) || ""]),
+    Object.entries(CATEGORY_QUERY_FIELDS).map(([elementId, queryName]) => [elementId, initialQuery.get(queryName) || (queryName === "model_family" ? initialQuery.get("architecture_id") : "") || ""]),
   ),
 };
 
@@ -55,7 +52,7 @@ export const elements = Object.fromEntries(
   [
     "theme-toggle", "environment-name", "search", "filter-toggle",
     "filter-count", "filter-drawer", "branch-filter", "compiler-filter", "history-filter", "task-filter",
-    "architecture-filter", "clear-filters", "result-title",
+    "model-family-filter", "clear-filters", "result-title",
     "result-count", "result-list", "catalog-layout-toggle", "load-more", "detail-pane", "compare-pane", "toast-region", "workspace",
     "nav-models", "nav-compare",
     "download-dialog", "download-title", "download-description", "download-package-info",

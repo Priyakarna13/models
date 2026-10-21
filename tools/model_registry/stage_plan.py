@@ -102,8 +102,8 @@ def resolve_base_branches(
 def applicable_stages(entry: dict[str, Any]) -> list[str]:
     """Board stages a compile invocation declares, from its build-matrix entry."""
     return [
-        *(["performance"] if entry["benchmark_component_ids"] else []),
-        *(["accuracy"] if entry["accuracy_id"] else []),
+        *(["performance"] if entry["performance"] else []),
+        *(["accuracy"] if entry["accuracy"] else []),
     ]
 
 
@@ -159,9 +159,9 @@ def read_catalog_sources(
     return record, documents
 
 
-def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, list[dict[str, Any]]]]:
-    """Index a models document's builds and packages by (model, build profile)."""
-    profiles: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
+def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Index builds, packages and selected measurements by (model, build profile)."""
+    profiles: dict[tuple[str, str], dict[str, Any]] = {}
     for model in document.get("models", []):
         if not isinstance(model, dict) or not isinstance(model.get("id"), str):
             continue
@@ -172,6 +172,10 @@ def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, list[
                         (model["id"], item["build_profile_id"]), {"builds": [], "packages": []}
                     )
                     profile[kind].append(item)
+        for field in ("measurements", "branch_deployments", "approved_deployments"):
+            for profile_id, value in model.get(field, {}).items():
+                profile = profiles.setdefault((model["id"], profile_id), {"builds": [], "packages": []})
+                profile[field] = value
     return profiles
 
 
@@ -186,7 +190,9 @@ def merge_catalog_sources(documents: list[dict[str, Any]], matrix: list[dict[str
 
     Each model build profile takes its builds and packages together from the first source whose builds
     carry every compile key the head declares for that profile, else from the first source that has the
-    profile at all, so its prior builds stay visible while the replacement compiles.
+    profile at all, so its prior builds stay visible while the replacement compiles. On-demand
+    profiles retain the first server-selected deployment and its measurements, regardless of new
+    compile requirements; ordinary publication must not replace a manually selected deployment.
     """
     if not documents:
         return None
@@ -196,16 +202,25 @@ def merge_catalog_sources(documents: list[dict[str, Any]], matrix: list[dict[str
         for component_id in entry["component_ids"]:
             profile_keys[component_id] = entry["build_fingerprint"]
 
+    on_demand = {
+        (entry["model_id"], entry["build_profile_id"]) for entry in matrix if entry.get("build_on_demand", False)
+    }
     sources = [_profiles(document) for document in documents]
-    models: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    models: dict[str, dict[str, Any]] = {}
     for (model_id, profile_id), keys in sorted(head_keys.items()):
         present = [source[(model_id, profile_id)] for source in sources if (model_id, profile_id) in source]
         matching = [profile for profile in present if _carries_keys(profile["builds"], keys)]
-        chosen = matching or present
+        selected = [
+            profile for profile in present if profile.get("branch_deployments") or profile.get("approved_deployments")
+        ]
+        chosen = (selected or present) if (model_id, profile_id) in on_demand else (matching or present)
         if chosen:
             model = models.setdefault(model_id, {"builds": [], "packages": []})
             model["builds"].extend(chosen[0]["builds"])
             model["packages"].extend(chosen[0]["packages"])
+            for field in ("measurements", "branch_deployments", "approved_deployments"):
+                if field in chosen[0]:
+                    model.setdefault(field, {})[profile_id] = chosen[0][field]
     return {"models": [{"id": model_id, **entries} for model_id, entries in sorted(models.items())]}
 
 
@@ -238,6 +253,69 @@ def catalog_builds(document: dict[str, Any] | None) -> dict[tuple[str, str, str]
     return builds
 
 
+def selected_profile_builds(
+    documents: list[dict[str, Any]],
+    entry: dict[str, Any],
+    read: ReadRequest,
+    read_api_url: str,
+) -> dict[str, dict[str, Any]]:
+    """Resolve a server-selected on-demand deployment against the current compile requirements."""
+    for document in documents:
+        model = next((item for item in document.get("models", []) if item.get("id") == entry["model_id"]), None)
+        if model is None:
+            continue
+        profile = entry["build_profile_id"]
+        selection = model.get("branch_deployments", {}).get(profile) or model.get("approved_deployments", {}).get(
+            profile
+        )
+        if selection is None:
+            continue
+        component_roots = [item for item in selection.get("artifacts", []) if "component_id" in item]
+        roots = {item["component_id"]: item for item in component_roots}
+        if len(component_roots) != len(roots) or set(roots) != set(entry["component_ids"]):
+            raise ValidationError("selected deployment does not contain the complete model profile")
+        builds = {}
+        for component_id in entry["component_ids"]:
+            root = roots[component_id]
+            run_id = root["run_id"]
+            provenance = read(f"{read_api_url.rstrip('/')}/v1/runs/{run_id}/provenance")
+            run = provenance.get("run", {})
+            parameters = provenance.get("parameters", [])
+            if len(parameters) != 1:
+                raise ValidationError(f"selected compile run has no unambiguous parameters: {run_id}")
+            values = parameters[0]["parameters"]
+            expected = {"model_id": entry["model_id"], "build_profile_id": profile, "component_id": component_id}
+            if (
+                run.get("status") != "completed"
+                or run.get("run_type") != "model_compile"
+                or any(run.get("metadata", {}).get(key) != value for key, value in expected.items())
+            ):
+                raise ValidationError(f"selected compile run does not match the requested model profile: {run_id}")
+            if (
+                values.get("build_fingerprint") != entry["build_fingerprint"]
+                or values.get("compile_invocation_id") != entry["compile_invocation_id"]
+            ):
+                return {}  # An older approval remains visible but cannot satisfy a different build request.
+            artifact = read(f"{read_api_url.rstrip('/')}/v1/runs/{run_id}/artifacts/{root['artifact_name']}").get(
+                "artifact", {}
+            )
+            required = ("sha256", "size_bytes", "s3_bucket", "s3_key", "s3_version_id")
+            if any(artifact.get(key) is None for key in required):
+                raise ValidationError(f"selected compile artifact has incomplete immutable identity: {run_id}")
+            builds[component_id] = {
+                **expected,
+                "run_id": run_id,
+                "commit_sha": run["commit_sha"],
+                "compile_invocation_id": entry["compile_invocation_id"],
+                "compile_fingerprint": entry["build_fingerprint"],
+                "artifact_name": root["artifact_name"],
+                "artifact_sha256": artifact["sha256"],
+                **{key: artifact[key] for key in required if key != "sha256"},
+            }
+        return builds
+    return {}
+
+
 def plan_stages(
     repository: str | Path,
     *,
@@ -251,6 +329,7 @@ def plan_stages(
     component_ids: list[str] | None = None,
     force_rebuild_all: bool = False,
     include_on_demand: bool = False,
+    runtime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Select compile invocations whose compile key changed, and the board stages reused builds lack.
 
@@ -267,19 +346,27 @@ def plan_stages(
         repository=root,
         compiler_version=compiler_version,
     )["include"]
-    if include_on_demand and any(entry.get("build_on_demand", False) for entry in head) and not (
-        model_ids and profile_ids
+    if (
+        include_on_demand
+        and any(entry.get("build_on_demand", False) for entry in head)
+        and not (model_ids and profile_ids)
     ):
         raise ValidationError("on-demand builds require explicit --models and --profiles")
     if include_on_demand and component_ids:
-        for model_id, profile_id in {(item["model_id"], item["build_profile_id"])
-                                     for item in head if item.get("build_on_demand", False)}:
+        for model_id, profile_id in {
+            (item["model_id"], item["build_profile_id"]) for item in head if item.get("build_on_demand", False)
+        }:
             profile = next(item for item in models[model_id]["build_profiles"] if item["id"] == profile_id)
-            selected = {component for item in head if (item["model_id"], item["build_profile_id"])
-                        == (model_id, profile_id) for component in item["component_ids"]}
+            selected = {
+                component
+                for item in head
+                if (item["model_id"], item["build_profile_id"]) == (model_id, profile_id)
+                for component in item["component_ids"]
+            }
             if selected != {item["id"] for item in profile["components"]}:
                 raise ValidationError("on-demand candidates require a complete profile; omit --components")
     document = None
+    sources = []
     if read is not None:
         if not read_api_url:
             raise ValidationError("a registry read URL is required to plan against published runs")
@@ -296,46 +383,36 @@ def plan_stages(
             component_id: builds.get((entry["model_id"], entry["build_profile_id"], component_id))
             for component_id in entry["component_ids"]
         }
+        if entry.get("build_on_demand") and read is not None:
+            selected = selected_profile_builds(sources, entry, read, read_api_url)
+            prior = {component: selected.get(component) for component in entry["component_ids"]}
         if force_rebuild_all or any(
-            build is None or build.get("compile_fingerprint") != entry["build_fingerprint"]
-            for build in prior.values()
+            build is None or build.get("compile_fingerprint") != entry["build_fingerprint"] for build in prior.values()
         ):
             compile_entries.append({**entry, "stages": applicable_stages(entry)})
             continue
         model = models[entry["model_id"]]
         profile_id = entry["build_profile_id"]
-        performance = [
-            component_id
-            for component_id in entry["benchmark_component_ids"]
-            if not stage_run_exists(
-                read,
-                read_api_url,
+        stages = []
+        keys = {}
+        for stage, enabled, key_function, run_type, version in (
+            (
+                "performance",
+                entry["performance"],
+                performance_key,
                 PERFORMANCE_RUN_TYPE,
-                performance_key(root, model, profile_id, component_id, prior),
                 PERFORMANCE_FINGERPRINT_VERSION,
-            )
-        ]
-        stages = ["performance"] if performance else []
-        if entry["accuracy_id"] and not stage_run_exists(
-            read,
-            read_api_url,
-            ACCURACY_RUN_TYPE,
-            accuracy_key(root, model, profile_id, prior),
-            ACCURACY_FINGERPRINT_VERSION,
+            ),
+            ("accuracy", entry["accuracy"], accuracy_key, ACCURACY_RUN_TYPE, ACCURACY_FINGERPRINT_VERSION),
         ):
-            stages.append("accuracy")
+            if not enabled:
+                continue
+            key = key_function(root, model, profile_id, prior, runtime=runtime)
+            keys[stage] = key
+            if not stage_run_exists(read, read_api_url, run_type, key, version):
+                stages.append(stage)
         if stages:
-            measure_entries.append({**entry, "benchmark_component_ids": performance, "stages": stages})
-    candidate_profiles = {(item["model_id"], item["build_profile_id"]) for item in compile_entries
-                          if item.get("build_on_demand", False)}
-    compiled_ids = {(item["model_id"], item["build_profile_id"], item["compile_invocation_id"])
-                    for item in compile_entries}
-    # A candidate cannot attach unchanged components from an older source commit.
-    for item in head:
-        if ((item["model_id"], item["build_profile_id"]) in candidate_profiles
-                and (item["model_id"], item["build_profile_id"], item["compile_invocation_id"]) not in compiled_ids):
-            compile_entries.append({**item, "stages": applicable_stages(item)})
-    measure_entries = [item for item in measure_entries if not item.get("build_on_demand", False)]
+            measure_entries.append({**entry, "stages": stages, "stage_keys": keys, "builds": list(prior.values())})
     return {
         "compile": {"include": compile_entries},
         "measure": {"include": measure_entries},

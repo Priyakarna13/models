@@ -229,16 +229,16 @@ def accuracy_script(monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str]
 
 def test_model_preserves_compilation_and_quality_settings(accuracy_script: ModuleType) -> None:
     model = load_metadata(MODEL_DIR)
-    assert model["components"][0]["interface"]["format"] == "onnx"
+    assert model["components"][0]["format"] == "onnx"
     assert {profile["id"] for profile in model["build_profiles"]} == {"w16a16", "w8a8"}
     assert model["license"] == {
         "spdx": "AGPL-3.0-only",
-        "redistribution": "restricted",
+        "customer_redistribution": "prohibited",
         "attribution": "YOLO26 is developed by Ultralytics and distributed under AGPL-3.0.",
     }
-    declared = model["accuracy"][0]
+    declared = model["accuracy"]
     metric_names = {name for metrics in accuracy_script.METRICS.values() for name in metrics}
     for expected in load_model_tests(MODEL_DIR)["accuracy"]["expected"].values():
-        assert set(expected) == metric_names
-    assert declared["required_metrics"] == ["coco_mask_map"]
-    assert model["published_metrics"][0]["metrics"] == {"coco_mask_map": 0.339, "coco_box_map": 0.396}
+        assert set(expected) == {"model.accuracy." + name for name in metric_names}
+    assert declared["required_metrics"] == ["model.accuracy.coco_mask_map"]
+    assert model["reference_metrics"][0]["metrics"] == {"coco_mask_map": 0.339, "coco_box_map": 0.396}

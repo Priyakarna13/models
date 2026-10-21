@@ -45,13 +45,14 @@ def test_benchmark_workflow_has_a_distinct_actions_identity() -> None:
         "model_id",
         "build_profile_id",
         "compile_invocation_id",
-        "component_ids",
+        "runtime",
+        "builds",
         "stages",
     }
-    optional = {"source_run_id", "component_ids", "stages"}
+    optional = {"source_run_id", "builds", "stages"}
     assert all(inputs[name]["required"] == "false" for name in optional)
     assert all(value["required"] == "true" for name, value in inputs.items() if name not in optional)
-    assert inputs["component_ids"]["default"] == ""
+    assert inputs["builds"]["default"] == "[]"
     assert inputs["stages"]["default"] == "performance,accuracy"
     assert inputs["environment"]["options"] == ["staging"]
     assert "operation" not in inputs
@@ -64,7 +65,7 @@ def test_dispatched_benchmark_stages_only_its_compiled_artifact() -> None:
     stage = workflow["jobs"]["stage-dispatched-benchmark"]
 
     assert stage["needs"] == "resolve-dispatched-benchmark-config"
-    assert stage["environment"] == "${{ inputs.environment }}"
+    assert stage["environment"] == "staging-publish"
     assert stage["permissions"]["id-token"] == "write"
     assert stage["outputs"]["source_branch"] == "${{ steps.source.outputs.branch }}"
     assert "inputs.source_branch == github.ref_name" in stage["if"]
@@ -73,9 +74,8 @@ def test_dispatched_benchmark_stages_only_its_compiled_artifact() -> None:
     verify = step(stage["steps"], "Verify the source run and compiled artifact")
     assert verify["env"]["STAGES"] == "${{ inputs.stages }}"
     assert '[[ "$stage" == performance || "$stage" == accuracy ]]' in verify["run"]
-    # Performance needs named components; an accuracy-only dispatch may name none.
-    assert '[[ ",$STAGES," != *",performance,"* || -n "$COMPONENT_IDS" ]]' in verify["run"]
-    assert 'actions/runs/$SOURCE_RUN_ID' in verify["run"]
+    assert "COMPONENT_IDS" not in verify["run"]
+    assert "actions/runs/$SOURCE_RUN_ID" in verify["run"]
     assert ".head_sha == $sha" in verify["run"]
     assert ".head_branch == $branch" in verify["run"]
     assert '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]' in verify["run"]
@@ -113,11 +113,11 @@ def test_dispatched_benchmark_stages_only_its_compiled_artifact() -> None:
     restore = step(stage["steps"], "Restore the current immutable compilation from the registry")
     assert restore["if"] == "inputs.source_run_id == ''"
     assert "model-registry stage-registry-build" in restore["run"]
-    assert '--repository _source' in publication["run"]
-    assert '--dist-dir _compiled' in publication["run"]
+    assert "--repository _source" in publication["run"]
+    assert "--dist-dir _compiled" in publication["run"]
     assert '--github-run-id "$SOURCE_RUN_ID"' in publication["run"]
     assert '--github-run-attempt "$SOURCE_RUN_ATTEMPT"' in publication["run"]
-    upload = next(item for item in stage["steps"] if item.get("uses") == "actions/upload-artifact@v7")
+    upload = step(stage["steps"], "Retain benchmark input independently of compile-run cleanup")
     assert upload["with"]["name"] == (
         "benchmark-input-${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}"
     )
@@ -166,41 +166,39 @@ def test_dispatched_benchmark_runs_on_the_resolved_devkit() -> None:
     assert download["with"]["name"] == (
         "benchmark-input-${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}"
     )
-    runtime = step(steps, "Resolve and verify benchmark runtime")["run"]
+    runtime = (ROOT / "scripts/check_measurement_runtime.sh").read_text()
     install = step(steps, "Install selected Neat Core")["run"]
-    assert "resolve-benchmark-runtime --repository _source" in runtime
-    assert "^[[:space:]]*DISTRO_VERSION[[:space:]]*=" in runtime
-    assert "Could not read DISTRO_VERSION from /etc/buildinfo" in runtime
-    assert "DevKit platform mismatch: expected $platform_version, found $actual_platform" in runtime
+    assert "immutable Core revision" in runtime
+    assert "DISTRO_VERSION" in runtime
+    assert "_measurement/runtime.json" in install
     assert 'sima-cli neat install --env production --type minimal "$target"' in install
     assert '["neat_core"]["install_target"]' in install
     assert "kerrigan" not in BENCHMARK_WORKFLOW.read_text(encoding="utf-8").lower()
 
 
-def test_performance_runs_only_at_the_full_mla_clock() -> None:
-    script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
-    clock = script.index('MLA_DEVFREQ=/sys/class/devfreq/5000000.mla')
+def test_public_cli_owns_clock_preparation():
+    import inspect
 
-    assert clock < script.index('"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"')
-    assert 'if (( $(cat "$MLA_DEVFREQ/cur_freq") < MLA_FREQUENCY_HZ )); then' in script
-    assert 'sudo -n tee "$MLA_DEVFREQ/userspace/set_freq"' in script
-    assert "if (( mla_frequency_hz != MLA_FREQUENCY_HZ )); then" in script
+    from model_registry import measurement
 
-
-def test_performance_runs_only_at_the_full_cpu_clock() -> None:
-    script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
-    clock = script.index("CPU_CPUFREQ=/sys/devices/system/cpu/cpufreq/policy0")
-
-    assert clock < script.index('"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"')
-    assert 'if (( $(cat "$CPU_CPUFREQ/scaling_cur_freq") != CPU_FREQUENCY_KHZ )); then' in script
-    assert 'sudo -n tee "$CPU_CPUFREQ/scaling_setspeed"' in script
-    assert "if (( cpu_frequency_khz != CPU_FREQUENCY_KHZ )); then" in script
+    source = inspect.getsource(measurement.run_measurement)
+    assert source.index("prepare_clocks()") < source.index("subprocess.run(command")
 
 
-def test_performance_runs_the_model_owned_script() -> None:
-    script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
-    assert '"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"' in script
-    assert '"${mpks[@]}" --output "$output"' in script
+def test_board_uses_the_immutable_runtime_selected_before_dispatch():
+    board = load_workflow()["jobs"]["benchmark-dispatched-model"]
+    assert board["env"]["MEASUREMENT_RUNTIME"] == "_measurement/runtime.json"
+    assert "resolve-benchmark-runtime" not in yaml.safe_dump(board)
+    trusted = step(board["steps"], "Download the trusted measurement manifest")
+    assert trusted["with"]["name"] == "measurement-manifest"
+
+
+def test_performance_uses_the_public_local_cli():
+    script = (ROOT / "scripts/run_model_performance.sh").read_text()
+    assert "-m model_registry performance" in script
+    assert '--compiled-dir "$3"' in script
+    assert '--runtime "$MEASUREMENT_RUNTIME"' in script
+
 
 def test_devkit_stages_run_only_when_requested() -> None:
     benchmark = load_workflow()["jobs"]["benchmark-dispatched-model"]
@@ -214,8 +212,7 @@ def test_devkit_stages_run_only_when_requested() -> None:
         "${{ !cancelled() && steps.core.outcome == 'success' && env.MEASURE_PERFORMANCE == 'true' }}"
     )
     assert performance["run"] == (
-        'scripts/run_model_performance.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _benchmark '
-        '"$COMPONENT_IDS"'
+        'scripts/run_model_performance.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _benchmark'
     )
     performance_evidence = step(steps, "Retain benchmark evidence")
     assert performance_evidence["if"] == "always() && env.MEASURE_PERFORMANCE == 'true'"
@@ -233,8 +230,11 @@ def test_devkit_stages_run_only_when_requested() -> None:
     assert accuracy_evidence["if"] == "always() && env.MEASURE_ACCURACY == 'true'"
     assert accuracy_evidence["with"]["name"] == f"accuracy-{artifact_suffix}"
     assert accuracy_evidence["with"]["if-no-files-found"] == "error"
-    for name in ("Install trusted dataset tooling", "Configure dataset reader credentials",
-                 "Cache the accuracy dataset on NVMe"):
+    for name in (
+        "Install trusted dataset tooling",
+        "Configure dataset reader credentials",
+        "Cache the accuracy dataset on NVMe",
+    ):
         assert step(steps, name)["if"] == "env.MEASURE_ACCURACY == 'true'", name
 
 
@@ -256,34 +256,19 @@ def test_each_devkit_stage_runs_and_publishes_on_its_own_outcome() -> None:
     assert "needs.benchmark-dispatched-model.outputs.accuracy == 'success'" in publish["if"]
 
 
-def test_each_measured_result_records_its_model_test_outcome() -> None:
+def test_each_measured_result_records_its_model_test_outcome():
     steps = load_workflow()["jobs"]["benchmark-dispatched-model"]["steps"]
-    names = [item.get("name") for item in steps]
-    performance_tests = step(steps, "Test each performance result with the model's performance tests")
-    accuracy_tests = step(steps, "Test the accuracy result with the model's accuracy tests")
-
-    assert performance_tests["id"] == "performance-tests"
-    assert performance_tests["if"] == "${{ !cancelled() && steps.performance.outcome == 'success' }}"
-    assert 'scripts/run_model_tests.sh performance "_source/models/$MODEL_ID"' in performance_tests["run"]
-    assert '"_benchmark/$component/performance-result.json" > "$status"' in performance_tests["run"]
-    assert accuracy_tests["id"] == "accuracy-tests"
-    assert accuracy_tests["if"] == "${{ !cancelled() && steps.accuracy.outcome == 'success' }}"
-    assert 'scripts/run_model_tests.sh accuracy "_source/models/$MODEL_ID" _accuracy/accuracy-result.json' in (
-        accuracy_tests["run"]
-    )
-    assert "> _accuracy/test-status.txt" in accuracy_tests["run"]
-    # A failed test is an outcome to publish; only an error running the tests fails the step.
-    for item in (performance_tests, accuracy_tests):
-        assert "== failed ]]" in item["run"]
-    for first, second in (
-        ("Measure performance on DevKit", "Test each performance result with the model's performance tests"),
-        ("Test each performance result with the model's performance tests", "Retain benchmark evidence"),
-        ("Measure accuracy on DevKit", "Test the accuracy result with the model's accuracy tests"),
-        ("Test the accuracy result with the model's accuracy tests", "Retain accuracy evidence"),
+    for stage, name, directory in (
+        ("performance", "Test the whole-model performance result", "_benchmark"),
+        ("accuracy", "Test the accuracy result with the model's accuracy tests", "_accuracy"),
     ):
-        assert names.index(first) < names.index(second)
-    assert "_benchmark/*/test-status.txt" in step(steps, "Retain benchmark evidence")["with"]["path"]
-    assert step(steps, "Retain accuracy evidence")["with"]["path"] == "_accuracy/"
+        test = step(steps, name)
+        assert test["id"] == f"{stage}-tests"
+        assert f"steps.{stage}.outcome == 'success'" in test["if"]
+        assert test["run"] == f'scripts/test_measurement.sh {stage} "_source/models/$MODEL_ID" {directory}'
+    helper = (ROOT / "scripts/test_measurement.sh").read_text()
+    assert "== failed ]]" in helper
+    assert '"$3/$1-result.json"' in helper
 
 
 def test_credentialed_devkit_steps_never_run_model_code() -> None:
@@ -338,7 +323,7 @@ def test_accuracy_dataset_is_cached_on_nvme_under_a_shared_lock() -> None:
     order = [
         names.index(name)
         for name in (
-            "Resolve and verify benchmark runtime",
+            "Verify the selected runtime",
             "Install trusted dataset tooling",
             "Configure dataset reader credentials",
             "Cache the accuracy dataset on NVMe",
@@ -353,18 +338,12 @@ def test_accuracy_dataset_is_cached_on_nvme_under_a_shared_lock() -> None:
     assert "--download-only" in install_script
     assert "dataset/dataset-registry@main:latest" in install_script
     cache_script = (ROOT / "scripts" / "cache_accuracy_dataset.sh").read_text(encoding="utf-8")
-    accuracy_script = (ROOT / "scripts" / "run_model_accuracy.sh").read_text(encoding="utf-8")
-    assert 'NVME_MOUNT="${NVME_MOUNT:-/media/nvme}"' in cache_script
     assert 'mountpoint -q "$NVME_MOUNT"' in cache_script
-    assert "coco" not in cache_script.lower()
-    # Both scripts serialize resolution through the board-wide dataset lock, under a timeout.
-    assert 'DATASET_LOCK="${DATASET_LOCK:-$NVME_MOUNT/datasets/locks/prepare.lock}"' in cache_script
-    assert 'DATASET_LOCK="${DATASET_LOCK:-/media/nvme/datasets/locks/prepare.lock}"' in accuracy_script
-    for script in (cache_script, accuracy_script):
-        assert 'flock --wait "$DATASET_LOCK_SECONDS" --close "$DATASET_LOCK"' in script
-        assert 'timeout --signal=TERM --kill-after=30s "$RESOLVE_TIMEOUT_SECONDS"' in script
-    assert "/media/nvme/datasets/artifacts" in accuracy_script
-    assert "$NVME_MOUNT/datasets/artifacts" in cache_script
+    assert 'flock --wait "$DATASET_LOCK_SECONDS"' in cache_script
+    assert (
+        load_workflow()["jobs"]["benchmark-dispatched-model"]["env"]["DATASET_CACHE"]
+        == "/media/nvme/datasets/artifacts"
+    )
 
 
 def test_dispatched_benchmark_runs_only_on_its_source_branch() -> None:
@@ -401,7 +380,7 @@ def test_completed_stages_are_published_from_a_hosted_runner() -> None:
     assert credentials["with"]["output-credentials"] == "true"
     assert credentials["with"]["output-env-credentials"] == "false"
     credentialed = [item["name"] for item in steps if "steps.benchmark-publisher-credentials." in yaml.safe_dump(item)]
-    assert credentialed == ["Publish each component's performance run", "Publish the accuracy run"]
+    assert credentialed == ["Publish the whole-model performance report", "Publish the accuracy run"]
 
 
 @pytest.mark.parametrize(
@@ -409,8 +388,7 @@ def test_completed_stages_are_published_from_a_hosted_runner() -> None:
     [
         ("Download performance evidence", PUBLISH_PERFORMANCE),
         ("Download accuracy evidence", PUBLISH_ACCURACY),
-        ("Download the registered compilation the accuracy measured", PUBLISH_ACCURACY),
-        ("Publish each component's performance run", PUBLISH_PERFORMANCE),
+        ("Publish the whole-model performance report", PUBLISH_PERFORMANCE),
         ("Publish the accuracy run", PUBLISH_ACCURACY),
     ],
 )
@@ -420,56 +398,35 @@ def test_publication_steps_follow_the_requested_stages(name, condition) -> None:
     assert step(steps, name)["if"] == condition
 
 
-def test_each_component_performance_run_is_published_against_the_source_revision() -> None:
-    steps = load_workflow()["jobs"]["publish-dispatched-benchmark"]["steps"]
-    download = step(steps, "Download performance evidence")
-    publication = step(steps, "Publish each component's performance run")
-    run = publication["run"]
-
-    assert download["with"] == {
-        "name": "benchmark-${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}",
-        "path": "_benchmarks",
-    }
-    assert publication["env"]["AWS_ACCESS_KEY_ID"] == (
-        "${{ steps.benchmark-publisher-credentials.outputs.aws-access-key-id }}"
-    )
-    assert publication["env"]["COMPONENT_IDS"] == "${{ inputs.component_ids }}"
-    assert publication["env"]["SOURCE_BRANCH"] == "${{ inputs.source_branch }}"
-    assert run.index("model-registry validate-benchmark-set") < run.index('for component in "${components[@]}"')
-    assert run.index('for component in "${components[@]}"') < run.index("model-registry publish-benchmark")
-    assert run.count("--repository _source") == 2
-    assert '--result "_benchmarks/$component/performance-result.json"' in run
-    assert '--log "_benchmarks/$component/benchmark.log"' in run
-    assert "--schema schemas/performance-result.schema.json" in run
-    assert '--branch "$SOURCE_BRANCH"' in run
-    assert '--git-sha "$SOURCE_SHA"' in run
-    assert '--test-status "$(<"_benchmarks/$component/test-status.txt")"' in run
+def test_both_reports_publish_against_the_retained_hosted_manifest():
+    jobs = load_workflow()["jobs"]
+    publish = jobs["publish-dispatched-benchmark"]
+    assert publish["environment"] == "staging-publish"
+    assert jobs["benchmark-dispatched-model"]["environment"] != publish["environment"]
+    manifest = step(publish["steps"], "Download the trusted measurement manifest")
+    assert manifest["with"] == {"name": "measurement-manifest", "path": "_measurement"}
+    script = (ROOT / "scripts/publish_measurement.sh").read_text()
+    assert "publish-report --manifest _measurement/manifest.json" in script
+    assert '--result "$2/$1-result.json"' in script
+    assert "for component" not in script
 
 
-def test_accuracy_run_is_published_with_the_compilation_it_measured() -> None:
-    steps = load_workflow()["jobs"]["publish-dispatched-benchmark"]["steps"]
-    suffix = "${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}"
-    publication = step(steps, "Publish the accuracy run")["run"]
-
-    assert step(steps, "Download accuracy evidence")["with"] == {"name": f"accuracy-{suffix}", "path": "_accuracy"}
-    assert step(steps, "Download the registered compilation the accuracy measured")["with"] == {
-        "name": f"benchmark-input-{suffix}",
-        "path": "_compiled",
-    }
-    assert "model-registry publish-accuracy" in publication
-    assert "--repository _source" in publication
-    assert "--compiled-dir _compiled" in publication
-    assert "--result _accuracy/accuracy-result.json" in publication
-    assert "--log _accuracy/accuracy.log" in publication
-    assert '--git-sha "$SOURCE_SHA"' in publication
-    assert '--test-status "$(<_accuracy/test-status.txt)"' in publication
+def test_hosted_stager_binds_keys_even_for_targeted_dispatch():
+    stage = load_workflow()["jobs"]["stage-dispatched-benchmark"]
+    names = [item.get("name") for item in stage["steps"]]
+    bind = step(stage["steps"], "Bind whole-model measurement inputs and expected stage keys")
+    assert "if" not in bind
+    assert bind["run"] == "scripts/prepare_measurement.sh"
+    assert names.index(bind["name"]) < names.index("Retain the trusted measurement manifest")
+    restore = step(stage["steps"], "Restore the current immutable compilation from the registry")
+    assert "--trusted-builds _measurement/builds.json" in restore["run"]
 
 
 @pytest.mark.parametrize(
     ("statuses", "fails"),
     [
-        ({"_benchmarks/model/test-status.txt": "passed", "_accuracy/test-status.txt": "skipped"}, False),
-        ({"_benchmarks/backbone/test-status.txt": "passed", "_benchmarks/head/test-status.txt": "failed"}, True),
+        ({"_benchmarks/test-status.txt": "passed", "_accuracy/test-status.txt": "skipped"}, False),
+        ({"_benchmarks/test-status.txt": "failed"}, True),
         ({"_accuracy/test-status.txt": "failed"}, True),
         ({}, False),
     ],
@@ -503,17 +460,25 @@ def test_cleanup_removes_input_and_both_evidence_artifacts() -> None:
         assert f"{prefix}$MODEL_ID-$BUILD_PROFILE_ID-$COMPILE_INVOCATION_ID" in script
 
 
-@pytest.mark.parametrize("relative", [
-    "tools/model_registry/benchmark_publication.py", "tools/model_registry/performance.py",
-    "tools/model_registry/model.py",
-])
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "tools/model_registry/measurement.py",
+        "tools/model_registry/performance.py",
+        "tools/model_registry/model.py",
+    ],
+)
 def test_board_runs_require_the_measured_revisions_tooling(tmp_path, relative) -> None:
     stage = load_workflow()["jobs"]["stage-dispatched-benchmark"]
     guard = step(stage["steps"], "Require the measured revision's board-stage tooling")
     assert guard["run"] == "scripts/require_source_board_tooling.sh _source"
     source = tmp_path / "_source"
-    for item in {*PERFORMANCE_TOOLING, *ACCURACY_TOOLING,
-                 "tools/model_registry/performance.py", "tools/model_registry/model.py"}:
+    for item in {
+        *PERFORMANCE_TOOLING,
+        *ACCURACY_TOOLING,
+        "tools/model_registry/performance.py",
+        "tools/model_registry/model.py",
+    }:
         (source / item).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / item, source / item)
     python_bin = tmp_path / "bin"
@@ -526,7 +491,10 @@ def test_board_runs_require_the_measured_revisions_tooling(tmp_path, relative) -
     def check() -> subprocess.CompletedProcess:
         return subprocess.run(
             [ROOT / "scripts" / "require_source_board_tooling.sh", source],
-            cwd=ROOT, env=env, capture_output=True, text=True,
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
         )
 
     assert check().returncode == 0

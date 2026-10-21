@@ -15,11 +15,9 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator
 
-from .accuracy_config import DEVKIT_ACCURACY_ENGINE
 from .benchmark_metrics import registry_metrics
 from .errors import ValidationError
-from .published_metrics import load_accuracy_metrics
-from .taxonomy import find_taxonomy
+from .model_report import load_metric_catalog
 
 # How far a measured value may fall below the value tests.yaml expects and still pass, relative to that value.
 ACCURACY_ALLOWED_DROP = 0.05
@@ -47,7 +45,7 @@ def required_stages(model: dict[str, Any]) -> list[str]:
         *(["conversion"] if model.get("conversion") else []),
         "compile",
         *(["accuracy"] if _devkit_accuracy(model) else []),
-        *(["performance"] if model["benchmark"] else []),
+        *(["performance"] if model.get("performance") else []),
     ]
 
 
@@ -77,15 +75,12 @@ def measured_shortfalls(model_dir: str | Path, stage: str, result: dict[str, Any
     allowed drop."""
     drop = ACCURACY_ALLOWED_DROP if stage == "accuracy" else PERFORMANCE_ALLOWED_DROP
     build = [result["model"]["build_profile_id"]]
-    if stage == "performance":
-        # A package result is expected by its package ID, a component result by its component ID.
-        build.append(result["model"].get("package_id", result["model"]["component_id"]))
     expected = load_model_tests(model_dir)[stage]["expected"]
     for key in build:
         expected = expected.get(key, {})
     if not expected:
         return [f"{TESTS_FILE} expects no {stage} values of {'/'.join(build)}"]
-    measured_metrics = registry_metrics(result) if stage == "performance" else result["metrics"]
+    measured_metrics = registry_metrics(result)
     shortfalls = []
     for name, value in expected.items():
         metric = measured_metrics.get(name) or {}
@@ -151,22 +146,16 @@ def validate_model_tests(model_dir: str | Path, model: dict[str, Any], schema_pa
 
 
 def _devkit_accuracy(model: dict[str, Any]) -> list[dict[str, Any]]:
-    return [entry for entry in model["accuracy"] if entry.get("engine") == DEVKIT_ACCURACY_ENGINE]
+    return [model["accuracy"]] if model.get("accuracy") else []
 
 
 def _measured_builds(model: dict[str, Any], stage: str) -> dict[tuple[str, ...], list[str]]:
-    """Each measured build and its mandatory expectations: accuracy per profile, performance per scope."""
-    if stage == "accuracy":
-        return {
-            (profile,): list(entry.get("metrics", entry.get("required_metrics", ())))
-            for entry in _devkit_accuracy(model)
-            for profile in entry["build_profiles"]
-        }
-    return {
-        (profile, case["scope"][case["scope"]["type"]]): ["throughput_fps"]
-        for case in model["benchmark"]
-        for profile in case["build_profiles"]
-    }
+    """Required whole-model expectations for every measured profile."""
+    entry = model.get(stage, {})
+    metrics = (
+        entry.get("metrics", entry.get("required_metrics", [])) if stage == "accuracy" else ["model.inference_rate"]
+    )
+    return {(profile,): list(metrics) for profile in entry.get("build_profiles", [])}
 
 
 def _require_expected_values(
@@ -182,7 +171,7 @@ def _require_expected_values(
         if not values:
             raise ValidationError(f"{path}: {stage}.expected.{'.'.join(build)} must contain expected values")
     if stage == "accuracy":
-        vocabulary = load_accuracy_metrics(find_taxonomy(path).parent / "accuracy-metrics.yaml")
+        vocabulary = load_metric_catalog()
         for profile, values in expected.items():
             unknown = set(values) - set(vocabulary)
             if unknown:

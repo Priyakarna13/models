@@ -17,36 +17,44 @@ test('names the Sentinel source and window of a saved Core report', () => {
 
 test('keeps the rail breakdown on peak SoM power', () => {
   const {measurements} = adaptBenchmarkResult(fixture()).value;
-  const rails = measurements.peak_power_watts.details.breakdown;
+  const rails = measurements["board.power.peak"].details.breakdown;
   assert.ok(rails.length > 1);
   assert.ok(rails.every((rail) => rail.unit === 'W' && rail.mean <= rail.maximum));
-  assert.equal(measurements.peak_die_temperature_c.details.breakdown, undefined);
-  assert.equal(measurements.peak_die_temperature_c.unit, '°C');
+  assert.equal(measurements["board.die_temperature.peak"].details.breakdown, undefined);
+  assert.equal(measurements["board.die_temperature.peak"].unit, '°C');
 });
 
-test('reports no telemetry source when an older Core report has no telemetry', () => {
-  const result = {...fixture(), schema_version: 5, metrics: {}, core_report: {}};
+test('reports no telemetry source when optional diagnostics are absent', () => {
+  const result = fixture(); delete result.details.telemetry;
   assert.equal(adaptBenchmarkResult(result).value.telemetry, null);
 });
 
-test('leaves out what the saved Core report did not measure', () => {
+test('unavailable measurements retain availability without a fabricated zero', () => {
   const result = fixture();
-  result.benchmark_report.latency_p99_ms = 0;
-  result.benchmark_report.telemetry.cpu_usage_pct.samples = 0;
+  result.metrics = [{name: 'board.power.avg', status: 'unavailable', reason: 'No samples'}];
   const {measurements} = adaptBenchmarkResult(result).value;
-  assert.equal(measurements.latency_p99_ms, undefined);
-  assert.equal(measurements.avg_cpu_usage_pct, undefined);
-  assert.equal(measurements.throughput_fps.value, result.benchmark_report.fps);
+  assert.equal(measurements['board.power.avg'].status, 'unavailable');
+  assert.equal(measurements['board.power.avg'].value, undefined);
 });
 
-test('names the model, build, and component a result measured', () => {
+test('names the model and profile without pretending a component owns the result', () => {
   const benchmark = adaptBenchmarkResult(fixture()).value;
   assert.equal(benchmark.modelId, 'resnet_50');
   assert.equal(benchmark.buildProfileId, 'w8a8');
-  assert.equal(benchmark.componentId, 'model');
+  assert.equal(benchmark.componentId, null);
 });
 
-test('reads every published format and no unknown one', () => {
-  const kinds = [1, 2, 3, 4, 5, 6, 7].map((version) => adaptBenchmarkResult({...fixture(), schema_version: version}).kind);
-  assert.deepEqual(kinds, ['supported', 'supported', 'supported', 'supported', 'supported', 'supported', 'unsupported']);
+test('requires the named current contract and rejects old or unknown formats', () => {
+  assert.equal(adaptBenchmarkResult(fixture()).kind, 'supported');
+  for (const version of [2,3,4,5,6,7]) assert.equal(adaptBenchmarkResult({...fixture(), schema_version: version}).kind, 'unsupported');
+  assert.equal(adaptBenchmarkResult({schema_version:1,metrics:{}}).kind, 'unsupported');
+});
+
+test('all GenAI contexts remain visible, including unknown metrics', () => {
+  const result = fixture();
+  result.metrics = [16,32,64].map((tokens) => ({name:'language.decode_rate',status:'measured',value:tokens+1,unit:'tokens/s',context:{input_tokens:tokens}}));
+  const metrics = Object.values(adaptBenchmarkResult(result).value.measurements);
+  assert.equal(metrics.length, 3);
+  assert.deepEqual(metrics.map((metric) => metric.value), [17,33,65]);
+  assert.deepEqual(metrics.map((metric) => metric.context.input_tokens), [16,32,64]);
 });

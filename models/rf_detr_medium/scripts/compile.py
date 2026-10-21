@@ -56,7 +56,7 @@ from surgery import (
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "rf_detr_medium"
-INVOCATION_ID = "rf_detr"
+INVOCATION_ID = "default"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 # Precisions with BF16 activations. Their layer norms keep FP32 intermediates, as every measured build did.
 A16_PRECISIONS = ("w8a16", "w16a16")
@@ -85,20 +85,13 @@ COMPONENT_INTERFACES = {
 
 
 def _validate_boundary_contract(metadata: dict[str, Any]) -> None:
-    """Match authored connections to the graph boundaries surgery and MPK audits enforce."""
-    expected = {
-        "backbone": ({INPUT: INPUT_SHAPE}, {name: BOUNDARY_SHAPES[name] for name in (FEATURES, SCORES, BOXES)}),
-        "decoder": ({name: BOUNDARY_SHAPES[name] for name in (FEATURES, PROPOSALS)},
-                    {name: OUTPUT_SHAPES[name] for name in OUTPUTS}),
-    }
-    for component in metadata["components"]:
-        entry = next(item for item in component["interface"]["entrypoints"] if item["id"] == "default")
-        for direction, shapes in zip(("inputs", "outputs"), expected[component["id"]]):
-            actual = [(tensor["name"], tensor["dtype"], tensor["shape"]) for tensor in entry[direction]]
-            if actual != [(name, "float32", shape) for name, shape in shapes.items()]:
-                raise ValueError(
-                    f"model.yaml {component['id']} {direction} do not match the RF-DETR graph boundary: {actual}"
-                )
+    """The recipe produces the declared components in pipeline order.
+
+    Surgery validates graph tensor shapes; audit_mpk validates the compiled public boundaries.
+    """
+    declared = tuple(component["id"] for component in metadata["components"])
+    if declared != COMPONENT_IDS:
+        raise ValueError(f"compilation components must be {COMPONENT_IDS}, found {declared}")
 
 
 def _component_parameters(metadata: dict[str, Any], profile_id: str) -> dict[str, dict[str, Any]]:
@@ -378,7 +371,7 @@ def _write_fidelity(
         "schema_version": 1,
         "model_id": MODEL_ID,
         "build_profile_id": profile_id,
-        "component_id": config["result_component"],
+        "component_id": "decoder",
         "scope": "full_pipeline",
         "status": config["status"],
         "reference": "Original full ONNX (ONNX Runtime)",
@@ -591,7 +584,7 @@ def compile_model(
     metadata = load_metadata(MODEL_DIR)
     _validate_boundary_contract(metadata)
     component_parameters = _component_parameters(metadata, profile_id)
-    fidelity_config = next(entry for entry in metadata["fidelity"] if profile_id in entry["build_profiles"])
+    fidelity_config = metadata["numerical_fidelity"]
     selection = fidelity_config["selection"]
     calibration_names = _calibration_names(component_parameters, calibration_dataset, fidelity_dataset, selection)
     evaluation_names = select_images(
@@ -642,7 +635,7 @@ def compile_model(
         )
         output_dir.mkdir(parents=True)
         archives = _copy_component_archives(temporary_dir, profile_id, output_dir)
-        fidelity_component = fidelity_config["result_component"]
+        fidelity_component = "decoder"
         shutil.copyfile(temporary_dir / FIDELITY_REPORT, output_dir / fidelity_component / FIDELITY_REPORT)
         _write_compile_outputs(output_dir, profile_id, archives, graph_hashes, fidelity_component)
         return archives

@@ -4,7 +4,7 @@
 # Usage: run_model_tests.sh <stage> <model_dir> <stage_output>
 #
 # <stage> is conversion, compile, accuracy or performance, and <stage_output> is what that stage produced:
-# the converted ONNX model, one build's compile output directory, accuracy-result.json, or one component's
+# the converted ONNX model, one build's compile output directory, accuracy-result.json, or one whole-model
 # performance-result.json. The tests are <model_dir>/tests/<build|measure>/test_<stage>.py, and only those
 # that take the output run. The outcome is skipped when tests/tests.yaml sets run_tests: false. A
 # failed outcome exits 1 after printing it; any other error exits without an outcome. pytest reports on

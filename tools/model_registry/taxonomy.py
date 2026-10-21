@@ -75,7 +75,7 @@ def load_taxonomy(path: str | Path) -> dict[str, Any]:
     except (OSError, yaml.YAMLError) as exc:
         raise ValidationError(f"{taxonomy_path}: could not load taxonomy: {exc}") from exc
     taxonomy = _mapping(value, "<root>")
-    expected = {"model_types", "modalities", "architecture_paradigms", "architectures", "tasks"}
+    expected = {"model_types", "architecture_paradigms", "model_families", "tasks"}
     unknown = sorted(set(taxonomy) - expected)
     missing = sorted(expected - set(taxonomy))
     if unknown or missing:
@@ -86,27 +86,25 @@ def load_taxonomy(path: str | Path) -> dict[str, Any]:
             details.append(f"unknown fields: {', '.join(unknown)}")
         raise ValidationError(f"{taxonomy_path}: taxonomy {'; '.join(details)}")
     model_types = _mapping(taxonomy["model_types"], "model_types")
-    modalities = _mapping(taxonomy["modalities"], "modalities")
     paradigms = _mapping(taxonomy["architecture_paradigms"], "architecture_paradigms")
-    architectures = _mapping(taxonomy["architectures"], "architectures")
+    model_families = _mapping(taxonomy["model_families"], "model_families")
     tasks = _mapping(taxonomy["tasks"], "tasks")
     _validate_entries(model_types, "model_types", {"display_name"})
-    _validate_entries(modalities, "modalities", {"display_name"})
     _validate_entries(paradigms, "architecture_paradigms", {"display_name"})
-    _validate_entries(architectures, "architectures", {"display_name", "paradigm", "allowed_model_types"})
+    _validate_entries(model_families, "model_families", {"display_name", "paradigm", "allowed_model_types"})
     _validate_entries(tasks, "tasks", {"display_name", "allowed_model_types"})
 
-    for architecture_id, architecture in architectures.items():
+    for family_id, architecture in model_families.items():
         paradigm = architecture.get("paradigm")
         if paradigm not in paradigms:
             raise ValidationError(
-                f"taxonomy architectures.{architecture_id}.paradigm references unknown ID {paradigm!r}"
+                f"taxonomy model_families.{family_id}.paradigm references unknown ID {paradigm!r}"
             )
-        allowed = _ids(architecture.get("allowed_model_types"), f"architectures.{architecture_id}.allowed_model_types")
+        allowed = _ids(architecture.get("allowed_model_types"), f"model_families.{family_id}.allowed_model_types")
         unknown_types = sorted(set(allowed) - set(model_types))
         if unknown_types:
             raise ValidationError(
-                f"taxonomy architectures.{architecture_id}.allowed_model_types references unknown IDs: "
+                f"taxonomy model_families.{family_id}.allowed_model_types references unknown IDs: "
                 f"{', '.join(unknown_types)}"
             )
     for task_id, task in tasks.items():
@@ -142,24 +140,16 @@ def validate_model_categorization(model: dict[str, Any], taxonomy: dict[str, Any
         if model_type not in task["allowed_model_types"]:
             raise ValidationError(f"tasks entry {task_id!r} is not compatible with model_type {model_type!r}")
 
-    inputs = model["modalities"]["inputs"]
-    outputs = model["modalities"]["outputs"]
-    for field, values in (("modalities.inputs", inputs), ("modalities.outputs", outputs)):
-        for modality_id in values:
-            if modality_id not in taxonomy["modalities"]:
-                raise ValidationError(f"{field} references unknown taxonomy ID {modality_id!r}")
-
-    architecture_id = model["architecture"]["id"]
-    architecture_entry = taxonomy["architectures"].get(architecture_id)
-    if architecture_entry is None:
-        raise ValidationError(f"architecture.id references unknown taxonomy ID {architecture_id!r}")
-    if model_type not in architecture_entry["allowed_model_types"]:
-        raise ValidationError(f"architecture {architecture_id!r} is not compatible with model_type {model_type!r}")
+    family_id = model["model_family"]
+    family_entry = taxonomy["model_families"].get(family_id)
+    if family_entry is None:
+        raise ValidationError(f"model_family references unknown taxonomy ID {family_id!r}")
+    if model_type not in family_entry["allowed_model_types"]:
+        raise ValidationError(f"model_family {family_id!r} is not compatible with model_type {model_type!r}")
 
     return {
         "model_type": model_type,
         "tasks": list(task_ids),
-        "modalities": {"inputs": list(inputs), "outputs": list(outputs)},
-        "architecture": {"id": architecture_id, "paradigm": architecture_entry["paradigm"]},
-        "tags": list(model.get("tags", [])),
+        "model_family": family_id,
+        "architecture_paradigm": family_entry["paradigm"],
     }

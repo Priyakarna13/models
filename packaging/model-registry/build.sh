@@ -38,9 +38,12 @@ SOURCE_ROOT="${BUILD_ROOT}/source"
 mkdir -p "${SOURCE_ROOT}"
 cp -R "${ROOT_DIR}/tools/model_registry" "${SOURCE_ROOT}/model_registry"
 find "${SOURCE_ROOT}/model_registry" -type d -name __pycache__ -prune -exec rm -rf {} +
-for ci_module in benchmark_manifest benchmark_publication registry candidates promotions; do
+for ci_module in measurement_manifest report_publication registry candidates promotions; do
   rm "${SOURCE_ROOT}/model_registry/${ci_module}.py"
 done
+mkdir -p "${SOURCE_ROOT}/model_registry/contracts"
+cp "${ROOT_DIR}/schemas/model-report.schema.json" "${ROOT_DIR}/taxonomies/metrics.json" \
+  "${SOURCE_ROOT}/model_registry/contracts/"
 install -m 0644 "${ROOT_DIR}/packaging/model-registry/__main__.py" \
   "${SOURCE_ROOT}/model_registry/__main__.py"
 sed -E "s/^version = \"[^\"]+\"/version = \"${PACKAGE_VERSION}\"/" \

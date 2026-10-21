@@ -6,14 +6,14 @@ import os
 import shutil
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
 
 from .artifact import deployment_files, verify_artifact
 from .errors import ValidationError
-from .fetch import Fetcher, sha256_file
+from .fetch import sha256_file
 from .model import load_and_validate_model
 from .source import source_identity
 
@@ -59,7 +59,6 @@ def assemble_package(
     model_id: str,
     build_profile_id: str,
     package_id: str,
-    resource_cache_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(repository).expanduser().resolve()
     compiled = Path(compiled_dir).expanduser().resolve()
@@ -68,7 +67,6 @@ def assemble_package(
     model = load_and_validate_model(model_dir, root / "schemas" / "model.schema.json")
     profiles = {item["id"]: item for item in model["build_profiles"]}
     packages = {item["id"]: item for item in model["packages"]}
-    resources = {item["id"]: item for item in model["resources"]}
     components = {item["id"]: item for item in model["components"]}
     compositions = {item["id"]: item for item in model["compositions"]}
     if build_profile_id not in profiles:
@@ -111,7 +109,7 @@ def assemble_package(
         elif current_identity != provenance_identity:
             raise ValidationError(f"{result_dir}: component provenance is incompatible with its package siblings")
 
-        native = components[component_id]["interface"]["format"] == "huggingface"
+        native = components[component_id]["format"] == "huggingface"
         archive_name = result.get("manifest" if native else "archive")
         if not isinstance(archive_name, str) or not archive_name:
             raise ValidationError(f"{result_dir}: compile result archive must be a non-empty string")
@@ -128,7 +126,7 @@ def assemble_package(
         if native:
             if package["composition"] not in compositions or compositions[package["composition"]]["type"] != "single":
                 raise ValidationError("A LLiMa package uses a single deployment composition")
-            if len(package["components"]) != 1 or package["resources"]:
+            if len(package["components"]) != 1:
                 raise ValidationError("A LLiMa package contains one complete deployment and no extra resources")
             if result.get("format") != "llima":
                 raise ValidationError("Hugging Face compile result must declare format llima")
@@ -145,7 +143,6 @@ def assemble_package(
         component_entries.append(
             {
                 "id": component_id,
-                "role": components[component_id]["role"],
                 **({"format": "llima"} if native else {}),
                 "path": package_path,
                 "sha256": digest,
@@ -161,48 +158,10 @@ def assemble_package(
     else:
         packaged_composition = {"id": composition["id"], "type": composition["type"]}
 
-    fetcher = Fetcher(resource_cache_dir)
-    resource_entries: list[dict[str, Any]] = []
-    resource_files: list[tuple[str, Path]] = []
-    occupied_paths: set[str] = set()
-    for package_path, _ in component_files:
-        if package_path in occupied_paths:
-            raise ValidationError(f"package path is declared more than once: {package_path}")
-        occupied_paths.add(package_path)
-    for resource_id in sorted(package["resources"]):
-        resource = resources[resource_id]
-        source = resource["source"]
-        path, _, digest, size = fetcher.fetch_source(source)
-        install_path = PurePosixPath(resource["install_path"]).as_posix()
-        paths: list[str] = []
-        if source["type"] == "file":
-            paths.append(install_path)
-            files = [(install_path, path)]
-        else:
-            source_root = path
-            for _ in PurePosixPath(source["entrypoint"]).parts:
-                source_root = source_root.parent
-            files = []
-            for member in source["files"]:
-                package_path = (PurePosixPath(install_path) / member["path"]).as_posix()
-                paths.append(package_path)
-                files.append((package_path, source_root / member["path"]))
-        for package_path, resource_path in files:
-            if package_path in occupied_paths:
-                raise ValidationError(f"package path is declared more than once: {package_path}")
-            occupied_paths.add(package_path)
-            resource_files.append((package_path, resource_path))
-        resource_entry = {
-            "id": resource_id,
-            "paths": paths,
-            "source_sha256": digest,
-            "size_bytes": size,
-        }
-        if "license" in resource:
-            resource_entry["license"] = resource["license"]
-        resource_entries.append(resource_entry)
-
-    packaged_files = sorted((*component_files, *resource_files))
+    packaged_files = sorted(component_files)
+    names = [name for name, _ in packaged_files]
+    if len(names) != len(set(names)):
+        raise ValidationError("component archives must have distinct package paths")
     installed_files = [
         {"path": name, "sha256": sha256_file(path)[0], "size_bytes": path.stat().st_size}
         for name, path in packaged_files
@@ -218,7 +177,7 @@ def assemble_package(
         "target": profiles[build_profile_id]["target"],
         "provenance": provenance_identity or {},
         "components": component_entries,
-        "resources": resource_entries,
+        "resources": [],
         "files": installed_files,
         "license": model["license"],
     }
@@ -243,12 +202,16 @@ def assemble_package(
         shutil.copytree(native_deployment, deployment, copy_function=_link_or_copy)
         (deployment / "manifest.json").write_bytes(manifest_bytes)
         result = {
-            "status": "success", "model_id": model_id, "package_id": package_id,
-            "build_profile_id": build_profile_id, "layout": "directory",
+            "status": "success",
+            "model_id": model_id,
+            "package_id": package_id,
+            "build_profile_id": build_profile_id,
+            "layout": "directory",
             "manifest_path": "deployment/manifest.json",
             "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
             "size_bytes": sum(item["size_bytes"] for item in installed_files),
-            "built_at": datetime.now(timezone.utc).isoformat(), "manifest": manifest,
+            "built_at": datetime.now(timezone.utc).isoformat(),
+            "manifest": manifest,
         }
         (package_dir / "package-result.json").write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -294,7 +257,6 @@ def assemble_available_packages(
     repository: str | Path,
     compiled_dir: str | Path,
     output_dir: str | Path,
-    resource_cache_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     root = Path(repository).expanduser().resolve()
     results: list[dict[str, Any]] = []
@@ -319,7 +281,6 @@ def assemble_available_packages(
                             model_id=model["id"],
                             build_profile_id=profile_id,
                             package_id=package["id"],
-                            resource_cache_dir=resource_cache_dir,
                         )
                     )
     return results

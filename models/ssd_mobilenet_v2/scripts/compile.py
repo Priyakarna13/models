@@ -1,5 +1,28 @@
 #!/usr/bin/env python3
-"""Quantize and compile one pinned SSD-MobileNet V2 Modalix variant."""
+"""Quantize and compile one pinned SSD-MobileNet V2 Modalix variant.
+
+Source qualification evidence (recorded, not a DevKit accuracy stage):
+id: coco_val2017_quantization
+scope:
+  type: component
+  component: model
+build_profiles:
+- w8a8
+- w16a16
+status: pending_hardware_qualification
+reference: onnx_fp32_raw_heads
+dataset: coco_val2017
+calibration_samples: 128
+validation_samples: 32
+split: category_balanced_and_disjoint
+metrics:
+- raw_head_cosine_similarity
+- raw_head_normalized_root_mean_square_error
+- decoded_detection_recall_at_0_5_iou
+- decoded_detection_mean_matched_iou
+note: Raw-head quality is compiler-gated; decoded accuracy and performance remain
+  pending Modalix hardware qualification.
+"""
 
 from __future__ import annotations
 

@@ -19,7 +19,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from contract import DEFAULT_MODEL_SIZE, DeploymentContract
 from dataset import (
     DroneDataset,
     FixedBatchCollator,
@@ -39,6 +38,7 @@ from model import (
     validate_attention_qat_scaffolding,
     validate_deploy_outputs,
 )
+from model_scripts import DEFAULT_MODEL_SIZE, DeploymentContract
 from paths import natural_path_key
 from provenance import (
     SWML_QAT_PACKAGE_SHA256,

@@ -14,19 +14,14 @@ MODEL_DIR = ROOT / "models" / "rf_detr_small"
 
 def _config() -> dict:
     model = load_and_validate_model(MODEL_DIR)
-    return find_fidelity_config(
-        MODEL_DIR, model, build_profile_id="w8a8_w16a16", component_id="decoder"
-    )
+    return find_fidelity_config(MODEL_DIR, model, build_profile_id="w8a8_w16a16", component_id="decoder")
 
 
 def _report(config: dict) -> dict:
     return {
-        "component_id": config["result_component"],
+        "component_id": "decoder",
         "status": config["status"],
-        "dataset": {
-            key: config["dataset"][key]
-            for key in ("id", "variant", "sha256")
-        },
+        "dataset": {key: config["dataset"][key] for key in ("id", "variant", "sha256")},
         "selection": config["selection"],
         "samples": config["selection"]["samples"],
         "metrics": [

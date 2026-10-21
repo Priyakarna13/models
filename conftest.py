@@ -158,13 +158,13 @@ def compiled(request: pytest.FixtureRequest) -> Path:
 
 @pytest.fixture
 def accuracy(request: pytest.FixtureRequest) -> dict[str, Any]:
-    """The build's DevKit accuracy result, as published (schemas/accuracy-result.schema.json)."""
+    """The build's DevKit accuracy result, as published (schemas/model-report.schema.json)."""
     return json.loads(_given(request, "accuracy").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
 def performance(request: pytest.FixtureRequest) -> dict[str, Any]:
-    """One component's DevKit performance result, as published (schemas/performance-result.schema.json)."""
+    """The whole-model performance report (schemas/model-report.schema.json)."""
     return json.loads(_given(request, "performance").read_text(encoding="utf-8"))
 
 

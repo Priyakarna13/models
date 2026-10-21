@@ -191,18 +191,17 @@ in this order:
    multi-component model whose `model.yaml` declares a `pipeline` first shows
    the order its components run in, from input to output: numbered components,
    with any CPU step between them, such as RF-DETR's **Top 300 proposals**.
-   When the build has a [package benchmark](benchmarking.md#package-benchmark)
-   result, the tiles, context line, and **Benchmark details** are that result,
-   for the components and CPU step running together. **Runtime Layer Analysis** and **Execution graph** each
-   switch between the components, and **Download CSV** names the package and
-   lists each component's layer timings. The catalog shows the package result as
-   the model's one value. Otherwise, each component's measurements appear under
-   its number.
+   The tiles, context line, and **Benchmark details** show one whole-model
+   performance result for the selected build profile, including orchestration
+   and CPU steps measured by its script. **Runtime Layer Analysis** and
+   **Execution graph** switch between available component diagnostics.
+   **Download CSV** lists each component's layer timings. The catalog uses the
+   same whole-model score; a missing result displays Not measured.
 3. **Accuracy.** The status, the first four metrics, the evaluated sample
    count, and the commit and GitHub workflow of the run that measured them.
    In the developer UI, **Evaluation details** explains the status and coverage and lists
    the remaining metrics, each with its published score when
-   `published_metrics` in `model.yaml` records one for the measured dataset.
+   `reference_metrics` in `model.yaml` records one for the measured dataset.
    Its **Published scores** row lists every published entry with its dataset,
    conditions, and source. A build with no accuracy result yet shows only the
    published scores.

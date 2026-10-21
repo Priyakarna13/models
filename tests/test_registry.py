@@ -187,7 +187,7 @@ def _packaged_result(tmp_path: Path) -> Path:
 
 
 def _add_fidelity_result(dist: Path) -> Path:
-    config = load_model(ROOT / "models" / "resnet_50")["fidelity"][0]
+    config = load_model(ROOT / "models" / "resnet_50")["numerical_fidelity"]
     path = dist / "resnet_50" / "w16a16" / "model" / "fidelity.json"
     path.write_text(
         json.dumps(
@@ -214,6 +214,13 @@ def _add_fidelity_result(dist: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    manifest_path = path.parent.parent / "compile-outputs.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["correctness"] = {
+        "component_id": "model", "path": "model/fidelity.json",
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+    manifest_path.write_text(json.dumps(manifest))
     return path
 
 
@@ -356,7 +363,7 @@ def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatc
         "github_run_id": "1234",
         "license": {
             "spdx": "Apache-2.0",
-            "redistribution": "allowed",
+            "customer_redistribution": "prohibited",
             "attribution": "Derived from microsoft/resnet-50 and distributed under Apache-2.0.",
         },
     }
@@ -481,6 +488,10 @@ def test_publish_preflights_all_evidence_before_external_writes(tmp_path: Path) 
     fidelity = json.loads(fidelity_path.read_text(encoding="utf-8"))
     fidelity["unexpected"] = True
     fidelity_path.write_text(json.dumps(fidelity), encoding="utf-8")
+    manifest_path = fidelity_path.parent.parent / "compile-outputs.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["correctness"]["sha256"] = hashlib.sha256(fidelity_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
     calls = []
     store = FakeStore()
 
@@ -672,26 +683,29 @@ def test_catalog_builds_record_stage_keys_bound_to_their_compile_runs() -> None:
         ]} for model_id in models]}
         document = build_catalog_snapshot(repository=ROOT, branch="develop", git_sha="a" * 40, previous=previous)
         resnet = next(item for item in document["models"] if item["id"] == "resnet_50")
-        return {build["build_profile_id"]: build for build in resnet["builds"]}
+        return {
+            build["build_profile_id"]: {**build, **resnet["measurements"][build["build_profile_id"]]}
+            for build in resnet["builds"]
+        }
 
     builds = snapshot("00000000-0000-4000-8000")
     for profile_id, build in builds.items():
-        assert build["benchmark_fingerprint"] == performance_key(
-            ROOT, model, profile_id, "model", {"model": {"run_id": build["run_id"], "artifact_sha256": "e" * 64}}
+        assert build["performance"] == performance_key(
+            ROOT, model, profile_id, {"model": {"run_id": build["run_id"], "artifact_sha256": "e" * 64}}
         )
     # Only the profile with DevKit accuracy records an accuracy key, on its result component.
-    assert builds["w16a16"]["validation_fingerprint"] is None
-    assert builds["w8a8"]["validation_fingerprint"] == accuracy_key(
+    assert "accuracy" not in builds["w16a16"]
+    assert builds["w8a8"]["accuracy"] == accuracy_key(
         ROOT, model, "w8a8", {"model": builds["w8a8"]},
     )
-    assert builds["w8a8"]["validation_fingerprint"] != builds["w8a8"]["benchmark_fingerprint"]
+    assert builds["w8a8"]["accuracy"] != builds["w8a8"]["performance"]
 
     # A new compile run of identical inputs still needs its own board measurements.
     rebuilt = snapshot("00000000-0000-4000-9000")
     for profile_id in builds:
         assert rebuilt[profile_id]["compile_fingerprint"] == builds[profile_id]["compile_fingerprint"]
-        assert rebuilt[profile_id]["benchmark_fingerprint"] != builds[profile_id]["benchmark_fingerprint"]
-    assert rebuilt["w8a8"]["validation_fingerprint"] != builds["w8a8"]["validation_fingerprint"]
+        assert rebuilt[profile_id]["performance"] != builds[profile_id]["performance"]
+    assert rebuilt["w8a8"]["accuracy"] != builds["w8a8"]["accuracy"]
 
 
 def test_incremental_catalog_keeps_prior_builds_for_missing_changed_invocations(monkeypatch) -> None:
@@ -1093,3 +1107,93 @@ def test_compile_timing_supports_legacy_outputs_and_utc_timestamps(tmp_path: Pat
         "scope": "compile_recipe", "started_at": "2026-08-13T00:00:00+00:00",
         "finished_at": "2026-08-13T01:29:52+00:00",
     }
+
+
+@pytest.mark.parametrize("selection_field", ["branch_deployments", "approved_deployments"])
+def test_publish_catalog_retains_on_demand_reports_when_build_requirements_change(monkeypatch, selection_field):
+    model = load_model(ROOT / "models/rf_detr_small")
+    model["build_on_demand"] = True
+    profile = "w8a8_w16a16"
+    inputs = {
+        component: {"run_id": f"selected-a-{component}", "artifact_sha256": digest * 64}
+        for component, digest in (("backbone", "a"), ("decoder", "b"))
+    }
+    measured = {
+        "performance": performance_key(ROOT, model, profile, inputs),
+        "accuracy": accuracy_key(ROOT, model, profile, inputs),
+    }
+    previous = {"models": [{
+        "id": model["id"], "builds": [], "measurements": {profile: measured},
+        selection_field: {profile: {"deployment_id": "selected-a", "artifacts": [
+            {"component_id": component, "run_id": build["run_id"], "artifact_name": "mpk"}
+            for component, build in inputs.items()
+        ]}},
+    }]}
+    matrix = build_matrix({model["id"]: model}, [model["id"]], [profile],
+                          repository=ROOT, compiler_version=COMPILER_IDENTITY)["include"]
+    matrix[0]["build_fingerprint"] = "f" * 64
+    monkeypatch.setattr("model_registry.registry.load_models", lambda _: {model["id"]: model})
+    monkeypatch.setattr("model_registry.registry._head_matrix", lambda *_: matrix)
+
+    inherited = {"models": [{
+        "id": model["id"], "measurements": {profile: {"performance": "e" * 64}},
+        "builds": [
+            {"component_id": component, "build_profile_id": profile, "compile_fingerprint": "f" * 64,
+             "run_id": f"inherited-{component}"}
+            for component in inputs
+        ],
+        "approved_deployments": {profile: {"artifacts": [
+            {"component_id": component, "run_id": f"inherited-{component}", "artifact_name": "mpk"}
+            for component in inputs
+        ]}},
+    }]}
+    posted = []
+
+    def read(url):
+        document = inherited if url.endswith("refs%2Fheads%2Fdevelop") else previous
+        return {"catalog": {"catalog_revision": "a" * 40, "document": document}}
+
+    def write(method, path, body, key):
+        posted.append(body["catalog"])
+        return {"stored": True}
+
+    snapshot = publish_catalog(
+        repository=ROOT, branch="feature/on-demand", git_sha="c" * 40,
+        api_url="https://registry.example.invalid", read_api_url="https://reader.example.invalid",
+        aws_region="us-west-2", base_branches=["develop"], read_request=read, request=write,
+    )["catalog"]
+
+    assert posted == [snapshot]
+    published = snapshot["models"][0]
+    assert published["measurements"] == {profile: measured}
+    assert published["build_requirements"][profile]["invocations"][0]["compile_fingerprint"] == "f" * 64
+    assert published["builds"] == []
+    assert snapshot["pending_builds"] == []
+
+
+@pytest.mark.parametrize("components", [[], ["backbone"], ["backbone", "backbone"], ["backbone", "other"]])
+def test_on_demand_catalog_does_not_preserve_keys_without_complete_selected_inputs(monkeypatch, components):
+    model = load_model(ROOT / "models/rf_detr_small")
+    model["build_on_demand"] = True
+    profile = "w8a8_w16a16"
+    previous = {"models": [{
+        "id": model["id"], "builds": [], "measurements": {profile: {"performance": "d" * 64}},
+        "branch_deployments": {profile: {"artifacts": [
+            {"component_id": component, "run_id": f"run-{component}", "artifact_name": "mpk"}
+            for component in components
+        ]}},
+        "approved_deployments": {profile: {"artifacts": [
+            {"component_id": component, "run_id": f"older-{component}", "artifact_name": "mpk"}
+            for component in ("backbone", "decoder")
+        ]}},
+    }]}
+    monkeypatch.setattr("model_registry.registry.load_models", lambda _: {model["id"]: model})
+
+    snapshot = publish_catalog(
+        repository=ROOT, branch="feature/on-demand", git_sha="c" * 40,
+        api_url="https://registry.example.invalid", read_api_url="https://reader.example.invalid",
+        aws_region="us-west-2", read_request=lambda _: {"catalog": {"document": previous}},
+        request=lambda *_: {"stored": True},
+    )["catalog"]
+
+    assert snapshot["models"][0]["measurements"] == {}

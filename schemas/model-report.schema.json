@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sima-neat/models/schemas/model-report.schema.json",
+  "title": "SiMa model measurement report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "stage",
+    "context",
+    "metrics",
+    "evidence"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sima.model-report"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "stage": {
+      "enum": [
+        "performance",
+        "accuracy"
+      ]
+    },
+    "context": {
+      "type": "object"
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/metric"
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "metrics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/metric"
+            }
+          },
+          "context": {
+            "type": "object"
+          },
+          "execution_plan": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "layer_stats": {
+            "$ref": "#/$defs/layerStats"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "build_profile_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "build_profile_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "provenance": {
+      "type": "object"
+    },
+    "details": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "status"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.]*$"
+        },
+        "status": {
+          "enum": [
+            "measured",
+            "unavailable"
+          ]
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "direction": {
+          "enum": [
+            "higher",
+            "lower",
+            "neutral"
+          ]
+        },
+        "aggregation": {
+          "enum": [
+            "raw",
+            "mean",
+            "min",
+            "max",
+            "p50",
+            "p95",
+            "p99",
+            "sum"
+          ]
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "context": {
+          "type": "object"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "details": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "measured"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "value",
+              "unit"
+            ],
+            "not": {
+              "required": [
+                "reason"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "reason"
+            ],
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "media_type"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "layerStats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "stage_index",
+          "total_execution_time_us"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "stage_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total_execution_time_us": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

@@ -42,13 +42,7 @@ const published = [
 ];
 
 test('published scores sit beside measurements of the same dataset only', () => {
-  assert.deepEqual(publishedScores(published, 'coco-2017'), {coco_map: 0.53, coco_ap50: 0.721});
+  assert.deepEqual(publishedScores(published, 'coco-2017'), {'model.accuracy.coco_map': 0.53, 'model.accuracy.coco_ap50': 0.721});
   assert.deepEqual(publishedScores(published, 'imagenet-2012'), {});
   assert.deepEqual(publishedScores(undefined, 'coco-2017'), {});
-});
-
-test('model.yaml scores replace the ones older results carry', () => {
-  // Results published before published_metrics embed the score on each metric as its reference.
-  const metrics = {coco_map: {value: 0.47, reference: 0.52}, coco_ar1: {value: 0.3, reference: 0.4}, coco_ap75: {value: 0.5}};
-  assert.deepEqual(publishedScores(published, 'coco-2017', metrics), {coco_map: 0.53, coco_ar1: 0.4, coco_ap50: 0.721});
 });

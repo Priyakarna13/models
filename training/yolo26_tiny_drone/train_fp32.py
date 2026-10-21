@@ -8,7 +8,6 @@ import json
 import tempfile
 from pathlib import Path
 
-from contract import DEFAULT_MODEL_SIZE, DeploymentContract
 from dataset import (
     dataset_content_sha256,
     load_manifest,
@@ -16,6 +15,7 @@ from dataset import (
     sha256_file,
     write_ultralytics_dataset,
 )
+from model_scripts import DEFAULT_MODEL_SIZE, DeploymentContract
 from provenance import (
     YOLO26N_SHA256,
     activate_verified_ultralytics_runtime,

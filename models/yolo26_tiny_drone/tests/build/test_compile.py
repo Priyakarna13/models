@@ -111,7 +111,7 @@ def test_export_canonicalizes_rank_four_matmul_to_modelsdk_einsum(tmp_path: Path
 @requires_training
 def test_contract_declares_grouped_p2_through_p5_outputs() -> None:
     namespace: dict[str, object] = {}
-    exec((RECIPE / "contract.py").read_text(encoding="utf-8"), namespace)
+    exec((SCRIPTS_DIR / "contract.py").read_text(encoding="utf-8"), namespace)
     outputs = namespace["OUTPUTS"]
     assert [name for name, _shape in outputs] == [
         "bbox_0",
@@ -544,7 +544,7 @@ def test_qat_requires_complete_attention_scaffolding() -> None:
 
 @requires_training
 def test_export_audits_full_int8_operator_boundary() -> None:
-    source = (RECIPE / "onnx_audit.py").read_text(encoding="utf-8")
+    source = (SCRIPTS_DIR / "onnx_audit.py").read_text(encoding="utf-8")
     ast.parse(source)
     for operator in ("BatchNormalization", "MatMul"):
         assert f'"{operator}"' in source
@@ -607,24 +607,26 @@ def test_export_consumes_only_verified_input_snapshots() -> None:
 @requires_training
 def test_compile_recipe_requires_representative_data_and_audits_the_mpk() -> None:
     source = (RECIPE / "compile.py").read_text(encoding="utf-8")
+    deployment = (SCRIPTS_DIR / "deployment.py").read_text(encoding="utf-8")
     ast.parse(source)
+    ast.parse(deployment)
     assert "MINIMUM_CALIBRATION_IMAGES = 128" in source
     assert "random.Random(seed).sample" in source
     assert 'export_report["qualification_eligible"] and not args.allow_smoke' in source
     assert 'if not report["qualification_eligible"] and not allow_smoke' in source
     assert "expected_convolutions: int" in source
-    assert "EXPECTED_ATTENTION_MATMULS = 8" in source
-    assert "EXPECTED_ATTENTION_SOFTMAXES = 4" in source
-    assert '"BatchMatmul": EXPECTED_ATTENTION_MATMULS' in source
-    assert "attention_types != {expected_io}" in source
-    assert '"compute_scalar_type": "int8"' in source
+    assert "EXPECTED_ATTENTION_MATMULS = 8" in deployment
+    assert "EXPECTED_ATTENTION_SOFTMAXES = 4" in deployment
+    assert '"BatchMatmul": EXPECTED_ATTENTION_MATMULS' in deployment
+    assert "attention_types != {expected_io}" in deployment
+    assert '"compute_scalar_type": "int8"' in deployment
     assert "any_shape_on_mla=" not in source
     assert "automatic_layout_conversion=" not in source
     assert "tessellate_parameters" not in source
-    assert "len(mla_outputs) != len(contract.outputs)" in source
-    assert '"tessellation": "mla"' in source
-    assert "role_input_abi != expected_output_abi" in source
-    assert 'str(plugin.get("processor", "")).upper() == "A65"' in source
+    assert "len(mla_outputs) != len(contract.outputs)" in deployment
+    assert '"tessellation": "mla"' in deployment
+    assert "role_input_abi != expected_output_abi" in deployment
+    assert 'str(plugin.get("processor", "")).upper() == "A65"' in deployment
     main = source[source.index("def main()") :]
     assert main.index("build_calibration(selected, contract)") < main.index("require_unchanged_dataset(")
     assert "with tempfile.TemporaryDirectory" in main
@@ -1001,17 +1003,13 @@ def test_registry_entry_pins_qualified_qat_and_calibration_sources() -> None:
         "size_bytes": 2798186,
         "media_type": "application/onnx",
     }
-    assert model["calibrations"][0]["source"]["sha256"] == (
+    assert model["datasets"]["default"]["source"]["sha256"] == (
         "8418b35d20ced1a9135eb8862e5554544f261023963ec6290e587057d2b11b2b"
     )
     assert profile["id"] == "w8a8"
     assert profile["target"] == "modalix"
-    assert model["compositions"] == [
-        {"id": "default", "type": "single", "component": "model", "entrypoint": "default"}
-    ]
-    benchmark = model["benchmark"][0]
-    assert benchmark["id"] == "modalix_tracker_latency"
-    assert benchmark["scope"] == {"type": "component", "component": "model"}
+    assert model["compositions"] == [{"id": "default", "type": "single", "component": "model", "entrypoint": "default"}]
+    benchmark = model["performance"]
     assert benchmark["build_profiles"] == ["w8a8"]
     assert binding["parameters"]["calibration_samples"] == 128
     assert binding["parameters"]["calibration_tensor_sha256"] == (
@@ -1089,7 +1087,11 @@ def test_modelsdk_output_labels_refuse_to_overwrite_an_abi_change(
 
 
 def test_registry_accuracy_gates_match_qualified_export() -> None:
-    accuracy = load_and_validate_model(MODEL_DIR)["accuracy"][0]
+    docstring = ast.get_docstring(ast.parse((SCRIPTS_DIR / "compile.py").read_text()))
+    accuracy = yaml.safe_load(
+        docstring.split("Source qualification evidence (recorded, not a DevKit accuracy stage):\n", 1)[1]
+    )
+    assert "accuracy" not in load_and_validate_model(MODEL_DIR)
     metrics = {item["name"]: item for item in accuracy["metrics"]}
 
     assert "engine" not in accuracy
@@ -1123,8 +1125,7 @@ def test_quantized_snapshot_is_deterministic_and_fail_closed(
     quantized_json = source_dir / f"{snapshot.MODEL_NAME}.sima.json"
     quantized_digest = hashlib.sha256(quantized_json.read_bytes()).hexdigest()
     payload_digests = {
-        name: hashlib.sha256((source_dir / name).read_bytes()).hexdigest()
-        for name in snapshot.MODEL_FILES
+        name: hashlib.sha256((source_dir / name).read_bytes()).hexdigest() for name in snapshot.MODEL_FILES
     }
     report = {
         "schema_version": 1,

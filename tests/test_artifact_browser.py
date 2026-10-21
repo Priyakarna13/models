@@ -14,8 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
-from model_registry.benchmark_publication import load_benchmark_result
 from model_registry.model import load_models
+from model_registry.model_report import load_report
 
 ROOT = Path(__file__).resolve().parents[1]
 BROWSER = ROOT / "artifact-browser"
@@ -26,7 +26,14 @@ DOCUSAURUS_CONFIG = ROOT / "website" / "docusaurus.config.ts"
 DOCS_STYLES = ROOT / "website" / "src" / "css" / "custom.css"
 DOCS_THEME_TOGGLE = ROOT / "website" / "src" / "theme" / "ColorModeToggle" / "index.tsx"
 BROWSER_MODULES = (
-    "app.js", "state.js", "ui.js", "metrics.js", "api.js", "catalog-view.js", "compare-view.js", "model-view.js",
+    "app.js",
+    "state.js",
+    "ui.js",
+    "metrics.js",
+    "api.js",
+    "catalog-view.js",
+    "compare-view.js",
+    "model-view.js",
 )
 
 
@@ -93,12 +100,12 @@ def test_browser_links_home_relative_to_the_deployed_subpath() -> None:
     assert '<a id="nav-models" href="./" aria-current="page">Browse models</a>' in html
     assert '<a id="nav-compare" href="./?view=compare">Compare</a>' in html
     assert (
-        '<a class="developer-only" href="./docs"><span class="nav-long">Developer docs</span><span class="nav-short">Docs</span></a>'
-        in html
+        '<a class="developer-only" href="./docs"><span class="nav-long">Developer docs</span>'
+        '<span class="nav-short">Docs</span></a>' in html
     )
     assert 'class="sectionbar"' in html
     assert 'href="./docs/metadata-schema">YAML reference</a>' not in html
-    assert '>GitHub</a>' not in html
+    assert ">GitHub</a>" not in html
 
 
 def test_browser_redirects_the_extensionless_models_route_before_loading_assets() -> None:
@@ -162,7 +169,8 @@ def _preview(root: Path) -> Iterator[str]:
         port = probe.getsockname()[1]
     server = subprocess.Popen(
         [sys.executable, str(BROWSER / "preview.py"), "--root", str(root), "--port", str(port)],
-        stdout=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE,
+        text=True,
     )
     try:
         server.stdout.readline()
@@ -228,23 +236,16 @@ def test_preview_serves_full_packages_as_the_publisher_records_them(tmp_path: Pa
     assert 'item.artifact_type === "model-package"' in _browser_source("app.js")
 
 
-def test_preview_reports_a_package_result_on_its_last_components_build(tmp_path: Path) -> None:
-    api = "/v1/repositories/sima-neat/models"
+def test_preview_reports_one_model_result_with_complete_component_diagnostics(tmp_path: Path) -> None:
     with _preview(tmp_path) as base:
-        catalog = _get_json(f"{base}{api}/catalogs/current?git_ref=refs/heads/develop")
-        model = next(model for model in catalog["catalog"]["document"]["models"] if model["id"] == "rf_detr_nano")
-        builds = [build for build in model["builds"] if build["build_profile_id"] == "w8a8_w16a16"]
-        benchmarked = [build["component_id"] for build in builds if build.get("benchmark_fingerprint")]
-        decoder = next(build for build in builds if build["component_id"] == "decoder")
-        result = _get_json(f"{base}/v1/runs/{decoder['run_id']}/benchmarks/latest")["result"]
-
-    # The package's benchmark runs under its last component only.
-    assert benchmarked == ["decoder"]
-    assert result["benchmark_type"] == "model.orchestration"
-    assert result["model"]["package_id"] == "default"
-    assert [item["component_id"] for item in result["components"]] == ["backbone", "decoder"]
-    assert [item["sha256"] for item in result["components"]] == [build["artifact_sha256"] for build in builds]
-    assert result["configuration"]["workload"]["selection"] == "Backbone, Top 300 proposals on the CPU, decoder"
+        entries = _get_json(f"{base}/v1/repositories/sima-neat/models/models")["models"]
+        model = next(item for item in entries if item["model_id"] == "rf_detr_nano")
+        summary = model["reports"]["w8a8_w16a16"]["performance"]
+        result = _get_json(f"{base}/v1/runs/{summary['run_id']}/model-report")["report"]
+    assert result["model"] == {"id": "rf_detr_nano", "build_profile_id": "w8a8_w16a16"}
+    assert list(result["components"]) == ["backbone", "decoder"]
+    assert summary["metrics"] == result["metrics"]
+    assert "components" not in summary
 
 
 def test_preview_serves_fixture_paths_only_inside_the_fixtures(tmp_path: Path) -> None:
@@ -260,7 +261,9 @@ def test_preview_serves_fixture_paths_only_inside_the_fixtures(tmp_path: Path) -
             # Raw request lines keep the ".." that an HTTP client would normalize away.
             response = subprocess.run(
                 ["curl", "-s", "--path-as-is", "-o", os.devnull, "-w", "%{http_code}", f"{base}{request}"],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             )
             status[request] = response.stdout
 
@@ -277,8 +280,22 @@ def test_combined_portal_fingerprints_mutable_browser_assets() -> None:
 
     assert "process.env.GITHUB_SHA" in assemble
     for asset in (
-        "app", "state", "ui", "metrics", "api", "catalog-view", "compare-view", "model-view",
-        "benchmark-adapters", "layer-stats", "branch-builds", "downloads", "markdown", "brand", "styles", "config",
+        "app",
+        "state",
+        "ui",
+        "metrics",
+        "api",
+        "catalog-view",
+        "compare-view",
+        "model-view",
+        "benchmark-adapters",
+        "layer-stats",
+        "branch-builds",
+        "downloads",
+        "markdown",
+        "brand",
+        "styles",
+        "config",
     ):
         assert f"'{asset}'" in assemble
     assert "cpSync(docsBuild, output, {recursive: true})" in assemble
@@ -290,7 +307,7 @@ def assemble_portal(root: Path) -> subprocess.CompletedProcess[str]:
     (root / "website" / "build").mkdir()
     shutil.copy(PORTAL_ASSEMBLER, root / "website" / "scripts" / PORTAL_ASSEMBLER.name)
     shutil.copy(PORTAL_ASSEMBLER.with_name("portal-config.mjs"), root / "website" / "scripts" / "portal-config.mjs")
-    for source in ("models", "schemas", "tools"):
+    for source in ("models", "schemas", "tools", "taxonomies"):
         (root / source).symlink_to(ROOT / source)
     return subprocess.run(
         ["node", str(root / "website" / "scripts" / PORTAL_ASSEMBLER.name)],
@@ -307,8 +324,16 @@ def test_assembled_portal_modules_import_only_deployed_files(tmp_path: Path) -> 
     portal = tmp_path / "website" / "portal-build"
     modules = sorted(portal.glob("*.aaaaaaaaaaaa.js"))
     assert {path.name.split(".")[0] for path in modules} >= {
-        "app", "state", "ui", "metrics", "api", "catalog-view", "compare-view", "model-view",
-        "downloads", "branch-builds",
+        "app",
+        "state",
+        "ui",
+        "metrics",
+        "api",
+        "catalog-view",
+        "compare-view",
+        "model-view",
+        "downloads",
+        "branch-builds",
     }
     for module in modules:
         for specifier in re.findall(r"[\"'](\.\.?/[^\"'\s]*\.js)[\"']", module.read_text(encoding="utf-8")):
@@ -342,7 +367,9 @@ def test_browser_metric_labels_match_the_accuracy_metric_taxonomy() -> None:
         ],
         cwd=ROOT, check=True, capture_output=True, text=True,
     )  # fmt: skip
-    assert json.loads(labels.stdout) == [[name, entry["display_name"]] for name, entry in taxonomy.items()]
+    assert json.loads(labels.stdout) == [
+        ["model.accuracy." + name, entry["display_name"]] for name, entry in taxonomy.items()
+    ]
 
 
 def test_portal_assembly_rejects_relative_imports_it_does_not_deploy(tmp_path: Path) -> None:
@@ -368,7 +395,7 @@ def test_model_instructions_load_inline_with_integrity_checks() -> None:
     assert "/artifacts/${encodeURIComponent(documentation.artifact_name" in script
     assert 'crypto.subtle.digest("SHA-256"' in script
     assert "state.documentationCache.set(documentationKey(documentation), markdown)" in script
-    assert '<div data-model-card-body>${modelCardBody(documentation)}</div>' in script
+    assert "<div data-model-card-body>${modelCardBody(documentation)}</div>" in script
     assert 'disclosure("model-card"' not in script
     assert "loadModelCard();" in script
     assert "documentationHeroUrl" in script
@@ -391,7 +418,10 @@ def test_full_model_card_starts_after_the_overview_the_page_already_shows() -> N
     probe = f"console.log(JSON.stringify({cases}.map(modelCardRemainder)));"
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", script[start:end] + probe],
-        cwd=ROOT, check=True, capture_output=True, text=True,
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     assert json.loads(result.stdout) == ["## Usage\n\nRun it.\n", None]
 
@@ -400,13 +430,16 @@ def test_w8a8_variants_are_listed_first() -> None:
     script = _browser_source("api.js")
     start = script.index("export function buildProfileId(")
     end = script.index("export function profileGroups(")
-    helper = script[start:script.index("\n}\n", start) + 3]
-    groups = script[end:script.index("export function activeModelBuild(")]
+    helper = script[start : script.index("\n}\n", start) + 3]
+    groups = script[end : script.index("export function activeModelBuild(")]
     builds = [{"build_profile_id": profile} for profile in ("w16a16", "w8a8", "a_fp32", "w8a8_w16a16")]
     probe = f"console.log(JSON.stringify(profileGroups({{builds: {json.dumps(builds)}}}).map(([id]) => id)));"
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", helper + groups + probe],
-        cwd=ROOT, check=True, capture_output=True, text=True,
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     assert json.loads(result.stdout) == ["w8a8", "w8a8_w16a16", "a_fp32", "w16a16"]
 
@@ -414,7 +447,7 @@ def test_w8a8_variants_are_listed_first() -> None:
 def test_catalog_view_prefers_the_current_catalog_over_cached_history() -> None:
     script = _browser_source("api.js")
     start = script.index("export function catalogModelForRun(")
-    helper = script[start:script.index("\n}\n", start) + 3]
+    helper = script[start : script.index("\n}\n", start) + 3]
     run = {"id": "reused", "git_ref": "refs/heads/develop", "commit_sha": "old", "metadata": {"model_id": "yolo26n"}}
     probe = f"""
 const state = {{
@@ -429,7 +462,10 @@ console.log(JSON.stringify(families));
 """
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", helper + probe],
-        cwd=ROOT, check=True, capture_output=True, text=True,
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     assert json.loads(result.stdout) == ["yolo", "yolo_26"]
 
@@ -458,10 +494,10 @@ def test_execution_graph_opens_its_tensors_from_details_beside_the_diagram() -> 
     adapters = (BROWSER / "benchmark-adapters.js").read_text(encoding="utf-8")
     design = (BROWSER / "DESIGN.md").read_text(encoding="utf-8")
 
-    assert "executionGraph: executionGraph(result.execution_plan ?? report?.execution_plan)" in adapters
+    assert "executionGraph: executionGraph(component.execution_plan)" in adapters
     # Every model's execution graph is a disclosure; a pipeline's switches between its components.
-    assert "${executionGraphSection([{ id: runId, graph: benchmark.executionGraph }], runId)}" in script
-    assert "${layerAnalysisSection([{ analysis: benchmark.layerAnalysis }], runId)}" in script
+    assert "executionGraphSection(components.map(" in script
+    assert "layerAnalysisSection(components.map(" in script
     # Details sits beside the diagram and controls the tensor table, which starts closed.
     assert '<div class="execution-graph-row"><ol>${steps}</ol>${details}</div>' in script
     assert 'aria-controls="${escapeHtml(key)}" aria-expanded="${open}">Details${icons.chevron}</button>' in script
@@ -500,8 +536,8 @@ def test_model_card_markdown_resolves_safe_relative_links_at_the_source_commit()
     )
     rendered = json.loads(result.stdout)
     source_url = "https://github.com/sima-neat/models/blob/" + "a" * 40
-    assert f'{source_url}/models/ssd_mobilenet_v3/qat/README.md' in rendered["html"]
-    assert f'{source_url}/models/ssd_mobilenet_v3/README.md#usage' in rendered["html"]
+    assert f"{source_url}/models/ssd_mobilenet_v3/qat/README.md" in rendered["html"]
+    assert f"{source_url}/models/ssd_mobilenet_v3/README.md#usage" in rendered["html"]
     assert "javascript:" not in rendered["html"]
     assert rendered["traversal"] is None
     assert rendered["external"] is None
@@ -543,27 +579,18 @@ def test_model_card_markdown_renders_every_validator_supported_fence() -> None:
     assert rendered["heading"] == "<h4>Conversion</h4>"
     assert rendered["closedHeading"] == "<h4>Conversion</h4>"
     assert rendered["indented"] == (
-        "<pre><code>first-command\nsecond-command\n\nprintf &quot;&lt;ready&gt;&quot;</code></pre>\n"
-        "<p>next</p>"
+        "<pre><code>first-command\nsecond-command\n\nprintf &quot;&lt;ready&gt;&quot;</code></pre>\n<p>next</p>"
     )
-    assert rendered["blockquoteFence"] == (
-        '<pre><code class="language-bash">### configure\necho ready</code></pre>'
-    )
-    assert rendered["blockquoteLiteral"] == (
-        '<pre><code class="language-bash">&gt; output.txt</code></pre>'
-    )
-    assert rendered["listFence"] == (
-        '<pre><code class="language-bash">### configure\necho ready</code></pre>'
-    )
+    assert rendered["blockquoteFence"] == ('<pre><code class="language-bash">### configure\necho ready</code></pre>')
+    assert rendered["blockquoteLiteral"] == ('<pre><code class="language-bash">&gt; output.txt</code></pre>')
+    assert rendered["listFence"] == ('<pre><code class="language-bash">### configure\necho ready</code></pre>')
     assert rendered["mixedFence"] == '<pre><code class="language-bash">echo ready</code></pre>'
     assert rendered["nestedListFence"] == '<pre><code class="language-bash">echo ready</code></pre>'
     assert rendered["continuationFence"] == (
         '<ul><li>step</li></ul>\n<pre><code class="language-bash">\n## configure\necho ready</code></pre>'
     )
     assert "<h3>Unexpected</h3>" in rendered["endedContainer"]
-    assert rendered["listIndentedCode"] == (
-        '<ul><li><pre><code>echo one \\\ntwo</code></pre></li></ul>'
-    )
+    assert rendered["listIndentedCode"] == ("<ul><li><pre><code>echo one \\\ntwo</code></pre></li></ul>")
 
 
 def test_developer_docs_workflow_only_validates_the_combined_portal() -> None:
@@ -603,7 +630,7 @@ def test_combined_portal_shares_theme_storage_and_section_navigation() -> None:
     assert 'href="${baseUrl}?view=compare">Compare</a>' in config
     assert "label: 'YAML reference'" not in config
     assert "label: 'GitHub'" not in config
-    assert 'Staging registry' in config
+    assert "Staging registry" in config
     assert "showLastUpdateAuthor" not in config
     assert "showLastUpdateTime" not in config
 
@@ -637,8 +664,12 @@ def test_browser_and_docs_draw_accents_from_the_sima_brand_palette() -> None:
     docs_styles = DOCS_STYLES.read_text(encoding="utf-8")
 
     for name, color in (
-        ("blue", "#5998DD"), ("teal", "#C0E8DB"), ("green", "#2A9C4F"),
-        ("lime", "#A4CC2D"), ("purple", "#D1CEE6"), ("orange", "#D26728"),
+        ("blue", "#5998DD"),
+        ("teal", "#C0E8DB"),
+        ("green", "#2A9C4F"),
+        ("lime", "#A4CC2D"),
+        ("purple", "#D1CEE6"),
+        ("orange", "#D26728"),
     ):
         assert f"--sima-{name}: {color};" in brand
     assert '<link rel="stylesheet" href="brand.css" />' in (BROWSER / "index.html").read_text(encoding="utf-8")
@@ -674,15 +705,15 @@ def test_catalog_avoids_per_run_enrichment_and_uses_local_cache() -> None:
     assert "state.runs[0]?.id" not in browser
 
 
-def test_branch_search_and_categories_filter_the_cached_snapshot() -> None:
+def test_catalog_filters_are_applied_before_pagination_and_scoped_in_cache() -> None:
     script = _browser_source("app.js", "api.js")
-
-    assert 'const branchSnapshot = history === "latest" && branch !== "all"' in script
-    assert 'const categories = branchSnapshot ? [] :' in script
-    assert 'const search = branchSnapshot ? "" :' in script
-    assert 'const compiler = branchSnapshot ? "any" :' in script
-    assert 'if (branchSnapshotMode()) return;' in script
-    assert 'if (branchSnapshotMode()) {\n    renderRuns();\n    return;\n  }' in script
+    assert 'modelQuery.set("q", elements.search.value.trim())' in script
+    assert 'modelQuery.set("toolchain_version", elements["compiler-filter"].value)' in script
+    assert 'Object.entries(categoryFilters())) if (value) modelQuery.set(name, value)' in script
+    assert 'const categories = Object.entries(categoryFilters())' in script
+    assert 'const search = elements.search.value.trim()' in script
+    assert 'allPages(api, `${base}/models`, modelQuery, "models")' in script
+    assert "branchSnapshotMode()" not in script
 
 
 def test_branch_switch_loads_builds_even_if_taxonomy_refresh_fails() -> None:
@@ -690,9 +721,12 @@ def test_branch_switch_loads_builds_even_if_taxonomy_refresh_fails() -> None:
     branch_change = script.split('elements["branch-filter"].addEventListener("change", async () => {', 1)[1]
     branch_change = branch_change.split('elements["compiler-filter"].addEventListener', 1)[0]
 
-    assert 'await loadTaxonomy(state.preferredBranch || DEFAULT_BRANCH);\n  } catch (error) {' in branch_change
-    assert 'setCategoryFiltersDisabled(true);' in branch_change
-    assert 'if (navigationId !== state.navigationId) return;\n  try {\n    await loadRuns({ branch: state.preferredBranch });' in branch_change
+    assert "await loadTaxonomy(state.preferredBranch || DEFAULT_BRANCH);\n  } catch (error) {" in branch_change
+    assert "setCategoryFiltersDisabled(true);" in branch_change
+    assert (
+        "if (navigationId !== state.navigationId) return;\n  try {\n"
+        "    await loadRuns({ branch: state.preferredBranch });" in branch_change
+    )
     assert 'elements[elementId].disabled ? "" :' in script
 
 
@@ -702,7 +736,7 @@ def test_cached_build_history_preserves_run_mode() -> None:
 
     assert 'catalogMode: "runs"' in script
     assert 'state.catalogMode = modelsMode ? "models" : "runs"' in script
-    assert 'mode: state.catalogMode' in script
+    assert "mode: state.catalogMode" in script
     assert 'cached.models?.length || !cached.runs?.length ? "models" : "runs"' in script
     assert 'payload.mode !== "runs" && Object.hasOwn(payload, "models")' in script
     assert "applyCatalog(cached, { cache: false })" in script
@@ -743,10 +777,10 @@ def test_cached_run_detail_backfills_package_when_catalog_context_changes() -> N
     script = _browser_source("app.js")
     select_run = script.split("async function selectRun(", 1)[1].split("let pendingDownloads", 1)[0]
 
-    assert 'const currentPackage = variantPackage(variant.runs);' in select_run
-    assert 'variant.packageSummary?.run?.id !== currentPackage.run_id' in select_run
-    assert '(cached || currentPackage.run_id !== variant.requestedPackageId)' in select_run
-    assert 'variant.packageSummary = await api(`/v1/runs/${currentPackage.run_id}`).catch(() => null);' in select_run
+    assert "const currentPackage = variantPackage(variant.runs);" in select_run
+    assert "variant.packageSummary?.run?.id !== currentPackage.run_id" in select_run
+    assert "(cached || currentPackage.run_id !== variant.requestedPackageId)" in select_run
+    assert "variant.packageSummary = await api(`/v1/runs/${currentPackage.run_id}`).catch(() => null);" in select_run
 
 
 def test_run_selection_keeps_the_url_branch_in_sync_with_the_filter() -> None:
@@ -771,7 +805,10 @@ def test_browser_history_restores_category_filters_and_empty_detail() -> None:
     script = _browser_source("app.js")
     initialize = script.split("async function initialize()", 1)[1].split('elements["theme-toggle"]', 1)[0]
 
-    assert 'Object.entries(CATEGORY_QUERY_FIELDS).map(([elementId, queryName]) => [elementId, link.get(queryName) || ""])' in initialize
+    assert (
+        "Object.entries(CATEGORY_QUERY_FIELDS).map(([elementId, queryName]) => [elementId, link.get(queryName)"
+        in initialize
+    )
     assert "state.taxonomy = null" in initialize
     assert "if (state.selectedId || linkedVariant) detailSkeleton();\n  else showEmptyDetail();" in initialize
     assert "if (state.taxonomy) populateCategoryFilters();" in initialize
@@ -804,7 +841,7 @@ def test_branch_filter_uses_an_independent_cached_registry_catalog() -> None:
     assert "branchCatalogCacheKey" in script
     assert "readCachedBranches" in script
     assert "writeCachedBranches" in script
-    assert "loadTaxonomy(elements[\"branch-filter\"].value || DEFAULT_BRANCH)" in script
+    assert 'loadTaxonomy(elements["branch-filter"].value || DEFAULT_BRANCH)' in script
     assert "The registry returned an empty branch catalog; keeping saved branches." in script
     assert "knownBranches.delete(branch)" not in browser
     assert "...(payload.branches || [])" not in browser
@@ -815,7 +852,7 @@ def test_earlier_builds_pagination_tracks_the_selected_branch() -> None:
 
     assert 'query.set("git_ref", `refs/heads/${branch}`)' in script
     assert "availableBranches" in script
-    assert 'await loadRuns({ branch: elements["branch-filter"].value })' in script
+    assert 'await loadRuns({ branch: elements["branch-filter"].value, allModels:' in script
     assert 'elements["load-more"].hidden = !state.hasMore' in script
 
 
@@ -864,7 +901,7 @@ def test_developer_filters_are_directly_visible_and_status_is_not_presented() ->
     assert 'id="filter-drawer" class="filter-drawer" data-open="false"' in html
     assert 'id="more-filters"' not in html
     assert "moreFiltersActive" not in script
-    assert html.index('id="task-filter"') < html.index('id="architecture-filter"') < html.index('id="branch-filter"')
+    assert html.index('id="task-filter"') < html.index('id="model-family-filter"') < html.index('id="branch-filter"')
     assert '<label class="developer-only"><span>Branch</span>' in html
     assert '<label class="developer-only"><span>Compiler</span>' in html
     assert 'id="filter-count"' in html
@@ -886,12 +923,15 @@ def test_model_catalog_is_default_with_explicit_build_history_mode() -> None:
     assert 'id="history-filter" type="checkbox" role="switch"' in html
     assert "Switches from models to chronological build runs." in html
     assert "Show build history" in html
-    assert 'if (historical) {' in script
-    assert 'allPages(api, `${base}/runs`, compileQuery, "runs")' in script
-    assert 'allPages(api, `${base}/runs`, packageQuery, "runs")' in script
-    assert 'allPages(api, `${base}/models`, modelQuery, "models")' in script
+    assert "if (historical) {" in script
+    assert "await api(`${base}/models?${modelQuery}`)" in script
+    assert "api(`${base}/runs?${query}`)" in script
+    assert 'modelQuery.set("cursor", state.cursor)' in script
     assert 'query.set("run_type", "model_compile")' in script
-    assert 'if (historical && !elements["history-filter"].checked) query.set("latest_per_model_compiler", "true")' in script
+    assert (
+        'if (historical && !elements["history-filter"].checked) query.set("latest_per_model_compiler", "true")'
+        in script
+    )
     assert 'link.get("history") === "1"' in script
     assert 'url.searchParams.set("history", "1")' in script
     assert 'elements["history-filter"].checked = false' in script
@@ -902,7 +942,7 @@ def test_browser_loads_taxonomy_from_the_current_catalog_and_exposes_category_fa
     html = (BROWSER / "index.html").read_text(encoding="utf-8")
     script = _browser_source("app.js", "state.js", "catalog-view.js")
 
-    for element_id in ("task-filter", "architecture-filter"):
+    for element_id in ("task-filter", "model-family-filter"):
         assert f'id="{element_id}"' in html
     for removed in ("model-type-filter", "paradigm-filter", "input-modality-filter"):
         assert f'id="{removed}"' not in html
@@ -910,7 +950,7 @@ def test_browser_loads_taxonomy_from_the_current_catalog_and_exposes_category_fa
     assert "/catalogs/current?git_ref=" in script
     assert "payload.catalog?.document?.taxonomy" in script
     assert '"task-filter": "task"' in script
-    assert '"architecture-filter": "architecture_id"' in script
+    assert '"model-family-filter": "model_family"' in script
     assert "setCategoryFiltersDisabled(true)" in script
     assert "Category filters are temporarily unavailable" in script
 
@@ -919,7 +959,7 @@ def test_filters_list_only_used_values_and_hide_without_a_choice() -> None:
     html = (BROWSER / "index.html").read_text(encoding="utf-8")
     script = _browser_source("catalog-view.js")
 
-    assert '<span>Model family</span><select id="architecture-filter">' in html
+    assert '<span>Model family</span><select id="model-family-filter">' in html
     assert "state.runs.flatMap((run) => run[field] ?? [])" in script
     assert "if (build.run) return { ...build.run, ...catalogCategories(model) };" in _browser_source("api.js")
     model_view = _browser_source("model-view.js")
@@ -935,7 +975,7 @@ def test_category_filters_are_server_side_and_shareable() -> None:
     assert "query.set(name, value)" in script
     assert "url.searchParams.set(queryName, value)" in script
     assert "url.searchParams.delete(queryName)" in script
-    assert "run.architecture_id === current.architecture_id" in script
+    assert "run.model_family === current.model_family" in script
     assert "(run.tasks || []).includes(current.task)" in script
 
 
@@ -958,7 +998,7 @@ def test_browser_formats_v1_and_v2_build_identities_without_a_false_default() ->
     assert "const profile = run.metadata?.build_profile_id || run.metadata?.variant_id;" in script
     assert 'return profile ? variantLabel(profile) : "Build identity unavailable";' in script
     assert 'components.length > 1 || components[0] !== "model" ? components.join(" · ") : ""' in script
-    assert '<small>${escapeHtml(profileLabel(run))}</small>' in script
+    assert "<small>${escapeHtml(profileLabel(run))}</small>" in script
     assert '"default artifact"' not in browser
     assert "run.metadata?.build_profile_id, run.metadata?.component_id" in script
 
@@ -990,22 +1030,15 @@ def test_performance_and_accuracy_name_the_commit_and_workflow_that_measured_the
     measurement_source = script.split("function measurementSource(run, modelId)", 1)[1].split("\nfunction ", 1)[0]
 
     # A reused build is measured by later runs, whose commit and workflow the build run does not carry.
-    assert "api(`/v1/runs/${benchmarkRunId}`).then((benchmarkSummary) => benchmarkSummary.run)" in api
-    assert "benchmarkTests, benchmarkRun, accuracy }" in api
-    assert "api(`/v1/runs/${run.id}`).catch(() => null)," in api
-    assert "return { ...payload, run: summary?.run || run };" in api
+    assert "api(`/v1/runs/${summary.run_id}`).then((value) => value.run)" in api
     # Each result links to the model source and the workflow of its own run, never the build's.
     assert "githubModelUrl(run, modelId)" in measurement_source
     assert "run.ci_run_url" in measurement_source
     assert r"/^[a-f0-9]{40}$/i.test(commit)" in measurement_source
     assert 'target="_blank" rel="noreferrer"' in measurement_source
     assert "${measurementSource(run, modelId)}</p>" in script
-    assert "componentBenchmark(detail.benchmark, run.id, detail.benchmarkRun, modelId)" in script
     assert "const source = measurementSource(result?.run, modelId);" in script
-    assert "${escapeHtml(dataset.split || \"\")}${sourceMarkup}</p>" in script
-    assert "return { report: devkitPayload.result, run: devkitPayload.run };" in script
-    assert "return { report: legacyDevkit.summary, run: detail.benchmarkRun };" in script
-    assert "return { report: detail.accuracy?.result || fallback?.summary, run: detail.summary.run };" in script
+    assert '${escapeHtml(dataset.split || "")}${sourceMarkup}</p>' in script
     assert ".measurement-link {" in styles
 
 
@@ -1018,7 +1051,7 @@ def test_archive_validation_is_a_compact_accessible_status_mark() -> None:
     assert 'class="mpk-validation-mark" tabindex="0" role="img"' in script
     assert '"Model deployment" : "MPK package"' in script
     assert "integrity verified: file structure, checksum, and build provenance match." in script
-    assert '<h3>Validation</h3>' not in browser
+    assert "<h3>Validation</h3>" not in browser
     assert ".detail-title-actions" in styles
     compact_controls = ".model-source-link, .original-model-link, .mpk-validation-mark { width: 38px; height: 38px"
     assert compact_controls in styles
@@ -1065,8 +1098,8 @@ def test_download_is_promoted_and_artifacts_show_only_size_and_checksum() -> Non
     assert "${icons.download}<span>Download package</span>" in script
     assert "${icons.download}<span>Download components</span>" in script
     assert '<dl class="package-facts">' in script
-    assert '<dt>Size</dt>' in script
-    assert 'Manifest SHA-256' in script
+    assert "<dt>Size</dt>" in script
+    assert "Manifest SHA-256" in script
     assert "Download individual components" not in browser
     assert 'class="download-button"' not in browser
     assert 'class="artifact-main"' not in browser
@@ -1082,9 +1115,9 @@ def test_package_download_dialog_uses_one_consistent_label_value_grid() -> None:
 
     assert 'id="download-kicker"' not in html
     assert '"download-kicker"' not in browser
-    assert '<dt>File name</dt>' in script
-    assert '<dt>Attribution</dt>' in script
-    assert 'Attribution: ${license.attribution}' not in browser
+    assert "<dt>File name</dt>" in script
+    assert "<dt>Attribution</dt>" in script
+    assert "Attribution: ${license.attribution}" not in browser
     assert ".download-package-info dt, .download-package-info dd" in styles
     assert ".download-package-info dt { border-right: 1px solid var(--line)" in styles
     assert ".download-package-info code { font: inherit" in styles
@@ -1097,8 +1130,13 @@ def test_only_model_packs_are_presented_as_artifacts() -> None:
 
     assert 'artifact.artifact_type === "model-pack"' in script
     assert "const artifacts = modelPackArtifacts(detail.summary.artifacts)" in script
-    assert 'artifacts.map((artifact) => keyValue(artifactDelivery(artifact) === "archive" ? "SHA-256" : "Manifest SHA-256", artifact.sha256, { copy: true, mono: true }))' in script
-    assert '|| artifacts[0]' not in browser
+    assert (
+        'artifacts.map((artifact) => keyValue('
+        'artifactDelivery(artifact) === "archive" ? "SHA-256" : "Manifest SHA-256", '
+        'artifact.sha256, { copy: true, mono: true }))'
+        in script
+    )
+    assert "|| artifacts[0]" not in browser
 
 
 def test_detail_links_to_the_original_model_whatever_was_compiled() -> None:
@@ -1108,8 +1146,11 @@ def test_detail_links_to_the_original_model_whatever_was_compiled() -> None:
 
     # The declared card decides the link, so converted models link to their checkpoint's page too.
     assert 'url.protocol === "https:" && !url.username && !url.password' in script
-    assert "trustedHttpsUrl(input.metadata?.model_card) || huggingFaceRepositoryUrl(input.source_reference)" in original_model_link
-    assert "startsWith(\"hf://\")" not in original_model_link
+    assert (
+        "trustedHttpsUrl(input.metadata?.model_card) || huggingFaceRepositoryUrl(input.source_reference)"
+        in original_model_link
+    )
+    assert 'startsWith("hf://")' not in original_model_link
     assert "hf:\\/\\/(models|datasets|spaces)" in script
     assert 'url.hostname === "huggingface.co"' in original_model_link
     assert 'Open the original model on ${huggingFace ? "Hugging Face" : url.hostname}' in original_model_link
@@ -1124,137 +1165,45 @@ def test_detail_links_to_the_original_model_whatever_was_compiled() -> None:
     assert ".external-model-link svg { fill: none; stroke: currentColor;" in styles
 
 
-def test_benchmark_rendering_is_schema_versioned_and_charted() -> None:
-    script = _browser_source("metrics.js", "api.js", "model-view.js")
-    browser = _browser_source()
-    adapters = (BROWSER / "benchmark-adapters.js").read_text(encoding="utf-8")
-    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
-
-    assert 'import { adaptBenchmarkResult, packageBenchmark } from "./benchmark-adapters.js"' in script
-    assert "new Map([1, 2, 3, 4, 5, 6].map((version) => [version, adaptResult]))" in adapters
-    # Schema 6 stores Core's saved report; the browser reads the metrics from it as the registry does.
-    assert "const stored = result.schema_version >= 6 ? reportMetrics(result) : result.metrics || {};" in adapters
-    assert "/benchmarks/latest" in script
-    # Each headline tile shows one number; Benchmark details has three cards on the left and two on the right.
+def test_benchmark_rendering_reads_only_the_named_report_contract() -> None:
+    script = _browser_source("api.js", "model-view.js")
+    adapters = (BROWSER / "benchmark-adapters.js").read_text()
+    assert 'report.schema !== "sima.model-report"' in adapters
+    assert "report.schema_version !== 1" in adapters
+    assert "/model-report" in script
+    assert "/benchmarks/latest" not in script
+    assert "benchmark_report" not in adapters
     assert "KPI_METRICS.map((key) => kpiTile(key, benchmark.measurements[key]))" in script
-    assert 'disclosure(`benchmark:${key}`, "Benchmark details", details.markup' in script
-    for card in ['["performance", "Performance"', '["heat", "Heat"', '["cpu", "CPU"', '["power", "Power"',
-                 '["memory", "Memory"']:
-        assert card in script
-    assert 'const RIGHT_COLUMN_CARDS = new Set(["power", "memory", "other"]);' in script
-    assert '["Throughput (async / sync)", ["throughput_fps", "sync_throughput_fps"]' in script
-    assert "(benchmark.batchSize * 1000) / latency.value" in script
-    assert "batchSize: result.configuration?.workload?.batch_size" in adapters
-    assert "cpuCores: cpuCores(report)" in adapters
-    assert "report?.telemetry?.cpu_cores_usage_pct" in adapters
-    assert "coreLoad(benchmark.cpuCores)" in script
-    assert '<p class="metric-caption core-legend"><span><b></b>Average</span><span><i></i>Peak</span></p>' in script
-    assert ".core-load {" in styles
-    assert '<span class="qualifier">' in script
-    assert '["Latency (p50 / p95 / p99)", ["latency_p50_ms", "latency_p95_ms", "latency_p99_ms"]' in script
-    assert "cpuCount: result.environment?.cpu_count" in adapters
-    assert "`${benchmark.cpuCount} cores`" in script
-    assert 'const rows = [["Section", "Metric", "Value", "Unit", "Key", "Note"]];' in script
-    assert 'download="${escapeHtml(csvFileName(benchmark))}">${icons.download}Download CSV' in script
-    assert "data:text/csv;charset=utf-8," in script
-    # SoC power is the sum of its MLA and Non-MLA rails, nested under SoM; its peak is an upper bound.
-    assert '["SoC", "soc", "MLA plus Non-MLA.' in script
-    assert '["Non-MLA", "power_rail_soc_ddr_vdd_watts",' in script
-    assert 'const SOC_RAILS = ["power_rail_mla_watts", "power_rail_soc_ddr_vdd_watts"];' in script
-    assert 'return [reading(sum("mean")), reading(sum("maximum"))];' in script
-    assert "≤" not in script
-    # The other SoM rails are rows at the SoC's level, and the bar above the table replaces the legend.
-    assert "...Object.keys(RAILS).filter((key) => !SOC_RAILS.includes(key)).map((key) => [RAILS[key][0], key, RAILS[key][1], null, 1])" in script
-    assert "rail-legend" not in script and "rail-legend" not in styles
-    assert 'title="Average SoM power by rail"' in script
-    assert '</h4>${lead || ""}<table>' in script
-    assert ".rail-split > .rail-soc {" in styles
-    assert "repeating-linear-gradient(135deg, var(--red) 0 2px" in script
-    assert ".detail-card tbody tr.depth-2 th" in styles
-    assert '["SoM", ["avg_board_temperature_c", "peak_board_temperature_c"]' in script
-    assert '["CMA pool", ["avg_cma_memory_mib", "peak_cma_memory_mib"]' in script
-    assert "power: { lead: railSplit(measurements) }" in script
-    assert 'power_rail_mla_watts: ["MLA core (0.68 V)"' in script
-    assert ".rail-split" in styles
-    assert ".detail-cards" in styles
-    assert ".info-mark::after { content: attr(data-tooltip);" in styles
-    assert "telemetryText(benchmark.telemetry)" in script
-    assert "metric-group" not in browser
     assert "Other measurements</h4>" in script
-    assert "mlaFrequencyHz: result.environment?.mla_frequency_hz" in adapters
-    assert "cpuFrequencyKhz: result.environment?.cpu_frequency_khz" in adapters
-    assert 'clock("MLA", benchmark.mlaFrequencyHz / 1e6)' in script
-    assert 'clock("CPU", benchmark.cpuFrequencyKhz / 1e3)' in script
-    assert '["Runtime", benchmark.tool]' in script
-    assert '<footer class="benchmark-footer"><dl class="benchmark-provenance">' in script
-    assert ".benchmark-action {" in styles
-    assert "data-trial-metric" not in browser
-    assert "trialChart" not in browser
-    assert "fallbackMetricLabel" in script
-    assert "mla_memory_peak_delta_mib" in script
-    assert "time_to_first_inference_ms" in script
+    assert "layerAnalysisSection" in script
+    assert "Download CSV" in script
 
 
 def test_preview_accuracy_uses_the_regression_metrics_without_an_authored_inventory() -> None:
     preview = runpy.run_path(str(BROWSER / "preview.py"))
-    result = preview["_accuracy_result"](load_models(ROOT)["resnet_50"], {
-        "build_profile_id": "w8a8", "component_id": "model", "artifact_sha256": "a" * 64,
-    })
-    assert set(result["metrics"]) == {"top1_accuracy", "top5_accuracy"}
+    result = preview["_accuracy_result"](load_models(ROOT)["resnet_50"], "w8a8")
+    assert {item["name"] for item in result["metrics"]} == {
+        "model.accuracy.top1_accuracy",
+        "model.accuracy.top5_accuracy",
+    }
 
 
 def test_accuracy_result_is_rendered_with_scope_and_reference_comparison() -> None:
-    script = _browser_source("api.js", "model-view.js")
-    browser = _browser_source()
-    styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
-
-    assert 'api(`/v1/runs/${runId}/accuracy/latest`)' in script
-    assert "detail.accuracy?.result || fallback?.summary" in script
-    # The DevKit run wins over the legacy benchmark-run result, which wins over compile-run accuracy.
-    devkit_first = script.index("if (devkitPayload?.result) return")
-    assert devkit_first < script.index("if (legacyDevkit) return") < script.index("detail.accuracy?.result ||")
-    assert 'item.suite === "accuracy"' in script
+    script = _browser_source("model-view.js")
     assert 'id="accuracy-section"' in script
-    assert "Candidate top-1" in script
-    assert "Reference ${percentage(reference.top1_accuracy)}" in script
     assert "dataset.evaluated_samples.toLocaleString()" in script
-    # The status is a plain badge; its explanation sits in the Evaluation details row.
-    assert '<span class="status-badge ${statusClass}">${status}</span>' in script
-    assert 'disclosure("accuracy", "Evaluation details", details, coverageLabel)' in script
-    assert "accuracy-explainer" not in browser
-    assert "run the qualification profile for final accuracy reporting" in script
-    assert 'const coverageLabel = fullCoverage ? "Full coverage" : "Sampled coverage"' in script
-    assert 'const status = qualified ? "Qualification" : "Provisional"' in script
     assert 'report.validation?.status !== "provisional"' in script
-    assert ".accuracy-summary" in styles
-    assert ".status-badge.provisional" in styles
-    assert ".status-badge.qualification" in styles
-    assert ".accuracy-explainer" not in styles
+    assert 'disclosure("accuracy", "Evaluation details", details, coverageLabel)' in script
+    assert "legacyDevkit" not in script
 
 
-def test_devkit_accuracy_is_resolved_from_the_catalog_accuracy_key_and_rendered_per_metric() -> None:
-    script = _browser_source("api.js", "model-view.js", "accuracy-metrics.js")
-
-    # One accuracy key per variant: the component build that carries it names every MPK it measured.
-    assert "accuracyKeyForRuns(runs).then(devkitAccuracy)" in script
-    # History mode has no catalog loaded, so the key comes from the catalog at the build's own revision.
-    assert 'const current = state.catalogMode === "runs" ? null : catalogModelForRun(runs[0]);' in script
-    assert "return keyIn(await loadHistoricalCatalogModel(runs[0]));" in script
-    assert "runIds.has(build.run_id) && build.validation_fingerprint" in script
-    assert 'run_type: "model_accuracy", fingerprint: accuracyKey, fingerprint_version: "1"' in script
-    assert "api(`/v1/runs/${run.id}/accuracy/latest`)" in script
-    assert "api(`/v1/runs/${benchmarkRunId}/test-results`)" in script
-    assert "item.summary?.schema_version === 2" in script
-    assert "orderedMetricNames(Object.keys(metrics))" in script
-    assert 'coco_map: "mAP 50–95"' in script
-    assert 'coco_ar100: "AR@100"' in script
-    assert "ACCURACY_METRIC_LABELS[name] || name" in script
-    # Results with more metrics than tiles list the rest in a table; each shows its published score.
+def test_measurements_are_resolved_by_profile_summary_and_rendered_per_metric() -> None:
+    script = _browser_source("api.js", "model-view.js")
+    assert "model?.reports?.[runProfile(anchor)]" in script
+    assert "loadModelReport(summaries.performance), loadModelReport(summaries.accuracy)" in script
+    assert "exactInputs" in script
     assert ".slice(0, ACCURACY_SUMMARY_TILES)" in script
     assert ".slice(ACCURACY_SUMMARY_TILES)" in script
-    assert "Published ${published}" in script
-    assert '<th scope="col">Published</th>' in script
-    # Units come from the published result, so the formatted value is escaped before insertion.
     assert "<strong>${escapeHtml(accuracyMetricValue(metric))}</strong>" in script
 
 
@@ -1268,14 +1217,14 @@ def test_numerical_fidelity_is_rendered_from_correctness_results() -> None:
     panel = script.split("function fidelityPanel(", 1)[1].split("function licensePanel(", 1)[0]
     assert '<div class="benchmark-summary">${metrics}</div>' in panel
     assert panel.count('class="benchmark-metric"') == 2
-    assert '<span>${escapeHtml(metric.name)} · Cosine similarity</span>' in panel
-    assert '<span>${escapeHtml(metric.name)} · Normalized RMSE</span>' in panel
-    assert '<table>' not in panel
+    assert "<span>${escapeHtml(metric.name)} · Cosine similarity</span>" in panel
+    assert "<span>${escapeHtml(metric.name)} · Normalized RMSE</span>" in panel
+    assert "<table>" not in panel
     assert panel.index('class="benchmark-summary"') < panel.index('class="muted-message"')
     assert "<details" not in panel
     assert "${icons.download}<span>Download JSON</span>" in panel
-    assert 'Number(metric.cosine_similarity).toFixed(4)' in panel
-    assert 'Number(metric.normalized_rmse).toFixed(4)' in panel
+    assert "Number(metric.cosine_similarity).toFixed(4)" in panel
+    assert "Number(metric.normalized_rmse).toFixed(4)" in panel
     assert "Mean absolute error" not in panel
     assert "Maximum absolute error" not in panel
     assert "Output similarity, not task accuracy" in panel
@@ -1299,16 +1248,16 @@ def test_compare_explores_one_task_with_a_chart_and_selected_table() -> None:
     assert "export const MAX_COMPARED_BUILDS = 3;" in script
     assert 'comparePicks: ["", "", ""]' in script
     assert 'selectControl("Task", "task"' in script
-    assert 'const options = taskOptions;' in script
+    assert "const options = taskOptions;" in script
     assert 'class="compare-tooltip"' in script
     assert 'class="compare-chart"' in script
-    assert 'data-compare-toggle=' in script
-    assert 'Model comparisons' in script
+    assert "data-compare-toggle=" in script
+    assert "Model comparisons" in script
     assert 'class="compare-tbd">TBD' in script
     # The picks live in the link, so a comparison can be shared and survives reload and Back.
     assert 'params.getAll("build")' in script
     assert 'url.searchParams.set("view", "compare");' in script
-    assert 'if (compareLink) state.comparePicks = picksFromUrl(link);' in script
+    assert "if (compareLink) state.comparePicks = picksFromUrl(link);" in script
     # The model page the reader came from fills the first empty picker.
     assert "if (viewed && !state.comparePicks.includes(viewed) && empty >= 0)" in script
     rows = ("Throughput", "Latency", "SoM power", "Energy per inference", "Headline metric", "Published")
@@ -1321,19 +1270,30 @@ def test_compare_explores_one_task_with_a_chart_and_selected_table() -> None:
 
 
 def test_compare_bolds_a_value_only_against_the_same_component() -> None:
-    metrics = _browser_source("metrics.js").replace("export ", "")
+    metrics = (
+        _browser_source("metrics.js")
+        .replace("export ", "")
+        .replace("./metric-catalog.js", "./artifact-browser/metric-catalog.js")
+    )
     script = _browser_source("compare-view.js")
     # measuredText and bestValues, without the benchmark adapter between them.
-    measured = script[script.index("function measuredText("):script.index("// Each component is measured on its own")]
-    best = script[script.index("// A single-component build competes"):script.index("function performanceCell(")]
+    measured = script[script.index("function measuredText(") : script.index("// Each component is measured on its own")]
+    best = script[script.index("// A single-component build competes") : script.index("function performanceCell(")]
 
     def build(**latencies: float | None) -> dict:
-        return {"components": [
-            {"component": component, "measurements": {} if value is None else {
-                "latency_avg_ms": {"status": "measured", "value": value, "unit": "ms"},
-            }}
-            for component, value in latencies.items()
-        ]}
+        return {
+            "components": [
+                {
+                    "component": component,
+                    "measurements": {}
+                    if value is None
+                    else {
+                        "model.latency.avg": {"status": "measured", "value": value, "unit": "ms"},
+                    },
+                }
+                for component, value in latencies.items()
+            ]
+        }
 
     columns = [
         build(backbone=31.6, decoder=22.7),
@@ -1342,10 +1302,13 @@ def test_compare_bolds_a_value_only_against_the_same_component() -> None:
         build(model=8.4),
         build(encoder=5.0, decoder=None),
     ]
-    probe = f"console.log(JSON.stringify(Object.fromEntries(bestValues({json.dumps(columns)}, 'latency_avg_ms'))));"
+    probe = f"console.log(JSON.stringify(Object.fromEntries(bestValues({json.dumps(columns)}, 'model.latency.avg'))));"
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", metrics + measured + best + probe],
-        cwd=ROOT, check=True, capture_output=True, text=True,
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     # Lower latency wins within each component; an encoder no other build has gets no mark.
     assert json.loads(result.stdout) == {"backbone": 17.9, "decoder": 22.7, "model": 8.4}
@@ -1353,22 +1316,39 @@ def test_compare_bolds_a_value_only_against_the_same_component() -> None:
 
 def test_catalog_orders_a_family_from_smallest_to_largest() -> None:
     script = _browser_source("catalog-view.js")
-    ordering = script[script.index("// Size words order a family"):script.index("function modelCardImage(")]
+    ordering = script[script.index("// Size words order a family") : script.index("function modelCardImage(")]
     names = [
-        "YOLO26x-det", "RF-DETR Large", "YOLO26l-det", "YOLO26n-det", "RF-DETR Nano",
-        "YOLO26s-det", "ResNet-50", "YOLO26m-det", "RF-DETR Medium", "RF-DETR Small",
+        "YOLO26x-det",
+        "RF-DETR Large",
+        "YOLO26l-det",
+        "YOLO26n-det",
+        "RF-DETR Nano",
+        "YOLO26s-det",
+        "ResNet-50",
+        "YOLO26m-det",
+        "RF-DETR Medium",
+        "RF-DETR Small",
     ]
     models = [{"display_name": name} for name in names]
-    probe = (
-        f"console.log(JSON.stringify({json.dumps(models)}.sort(compareModels).map((model) => model.display_name)));"
-    )
+    probe = f"console.log(JSON.stringify({json.dumps(models)}.sort(compareModels).map((model) => model.display_name)));"
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", ordering.replace("export ", "") + probe],
-        cwd=ROOT, check=True, capture_output=True, text=True,
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     assert json.loads(result.stdout) == [
-        "ResNet-50", "RF-DETR Nano", "RF-DETR Small", "RF-DETR Medium", "RF-DETR Large",
-        "YOLO26n-det", "YOLO26s-det", "YOLO26m-det", "YOLO26l-det", "YOLO26x-det",
+        "ResNet-50",
+        "RF-DETR Nano",
+        "RF-DETR Small",
+        "RF-DETR Medium",
+        "RF-DETR Large",
+        "YOLO26n-det",
+        "YOLO26s-det",
+        "YOLO26m-det",
+        "YOLO26l-det",
+        "YOLO26x-det",
     ]
 
 
@@ -1393,9 +1373,7 @@ def test_model_catalog_uses_clean_model_navigation_and_detail_build_switching() 
     assert "function compilerFilteredBuilds(model)" in script
     assert "compilerFilteredBuilds(model).filter" in script
     assert "build.toolchain_version === compiler" in script
-    assert 'branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,' in script
-    assert 'elements["compiler-filter"].value, elements["branch-filter"].value)' in script
-    assert "...state.compileRuns.map((run) => run.toolchain_version)" in script
+    assert 'modelQuery.set("toolchain_version", elements["compiler-filter"].value)' in script
     assert "branchName(anchor.git_ref) !== linkedBranch && !listed" in script
     assert "payload.models.flatMap" not in browser
     assert '.detail-variant-tab[aria-selected="true"] {' in styles
@@ -1407,7 +1385,7 @@ def test_model_catalog_uses_clean_model_navigation_and_detail_build_switching() 
     # A card says what the model is; numbers and build state belong on the model page.
     for marker in ("metricDisplay", "Not measured", "profileLabel", "precision"):
         assert marker not in render_model_card
-    assert "taxonomyLabel(\"tasks\", id)" in render_model_card
+    assert 'taxonomyLabel("tasks", id)' in render_model_card
     assert "compareModels" in script.split("function renderModels(", 1)[1].split("\nfunction ", 1)[0]
     assert "const selected = profile === variant.profile;" in script
     assert "profiles.find(([id]) => id === requestedProfile) || profiles[0]" in script
@@ -1434,7 +1412,7 @@ def test_catalog_and_model_page_are_full_page_views() -> None:
     assert "detail-layout" not in browser
     assert "detail-layout" not in styles
     # Focus follows the view, and Back restores the catalog position rather than the browser's own guess.
-    assert 'if (focusWasHidden) elements[VIEWS[view][1]].focus({ preventScroll: true });' in script
+    assert "if (focusWasHidden) elements[VIEWS[view][1]].focus({ preventScroll: true });" in script
     assert 'elements[navigation[0]].setAttribute("aria-current", "page");' in script
     assert '<h2 id="result-title" tabindex="-1">Models</h2>' in html
     assert 'history.scrollRestoration = "manual";' in script
@@ -1451,7 +1429,7 @@ def test_model_metadata_tags_use_semantic_icons() -> None:
 
     for icon in ("branch", "precision", "compiler", "license", "modelType", "architecture", "task"):
         assert f"{icon}: `<svg" in script
-    assert "detailTag(icons.branch, branchName(run.git_ref), \"branch\")" in script
+    assert 'detailTag(icons.branch, branchName(run.git_ref), "branch")' in script
     assert 'class="detail-tag detail-tag-${kind}"' in script
     assert ".detail-tag svg" in styles
     assert ".detail-tag-branch svg { stroke: var(--blue); }" in styles
@@ -1461,12 +1439,12 @@ def test_model_license_metadata_is_rendered_with_redistribution_and_attribution(
     script = _browser_source("model-view.js")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
 
-    assert "const license = run.metadata?.license" in script
+    assert "const license = variant.license || run.metadata?.license" in script
     assert "function licensePanel(license)" in script
     assert 'detailTag(icons.license, license.spdx, "license")' in script
     assert '<p class="license-line"><strong>${escapeHtml(license.spdx)}</strong>' in script
     assert "<span>${escapeHtml(redistribution)}</span></p>" in script
-    assert "`Redistribution ${license.redistribution}`" in script
+    assert "`Customer redistribution ${license.customer_redistribution}`" in script
     assert 'class="license-attribution"' in script
     assert ".detail-tag-license svg" in styles
     assert ".license-attribution" in styles
@@ -1477,62 +1455,15 @@ def test_local_preview_fixture_is_a_current_result_and_server_is_same_origin() -
     script = _browser_source("app.js")
 
     # The fixture follows the current result format, so publication accepts it unchanged.
-    load_benchmark_result(BROWSER / "fixtures" / "performance-result.json")
-    assert 'apiBase: location.origin' in server
+    load_report(BROWSER / "fixtures" / "performance-result.json")
+    assert "apiBase: location.origin" in server
     assert "127\\.0\\.0\\.1|localhost" in script
 
 
-def test_branch_cards_use_only_coherent_branch_runs_and_matching_packages() -> None:
+def test_summary_pagination_preserves_order_and_cursor() -> None:
     script = r"""
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-const source = readFileSync('./artifact-browser/branch-builds.js', 'utf8');
-const {allPages, branchModels} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
-
-const run = (id, model, component, workflow, version = '3.0', time = '2026-10-01T12:00:00Z') => ({
-  id, run_type: 'model_compile', status: 'completed',
-  git_ref: 'refs/heads/perf/rfdetr-attention-layout', commit_sha: workflow,
-  toolchain_version: version, target_platform: 'modalix', finished_at: time,
-  metadata: {model_id: model, build_profile_id: 'w8a8_w16a16', component_id: component, github_run_id: workflow},
-});
-const current = [run('backbone', 'rf_detr_small', 'backbone', 'workflow-2'),
-                 run('decoder', 'rf_detr_small', 'decoder', 'workflow-2')];
-const old = [run('old-backbone', 'rf_detr_small', 'backbone', 'workflow-1', '2.1', '2026-09-01T12:00:00Z'),
-             run('old-decoder', 'rf_detr_small', 'decoder', 'workflow-1', '2.1', '2026-09-01T12:00:00Z')];
-const catalog = [{model_id: 'rf_detr_small', display_name: 'RF-DETR', builds: [
-  {run_id: 'stale-backbone', build_profile_id: 'w8a8_w16a16', component_id: 'backbone'},
-  {run_id: 'stale-decoder', build_profile_id: 'w8a8_w16a16', component_id: 'decoder',
-   validation_fingerprint: 'stale-accuracy-key'},
-]},
-                 {model_id: 'ssd_mobilenet', display_name: 'SSD', builds: [{run_id: 'inherited', build_profile_id: 'w8a8_w16a16'}]}];
-const packageRun = (id, components) => ({id, run_type: 'model_package', status: 'completed',
-  git_ref: 'refs/heads/perf/rfdetr-attention-layout', commit_sha: 'workflow-2', metadata: {
-  model_id: 'rf_detr_small', build_profile_id: 'w8a8_w16a16', component_run_ids: components,
-}});
-const packages = [packageRun('good', {backbone: 'backbone', decoder: 'decoder'}),
-                  packageRun('wrong', {backbone: 'backbone', decoder: 'old-decoder'})];
-const models = branchModels([...old, ...current], packages, catalog);
-assert.deepEqual(models.map(model => model.model_id), ['rf_detr_small']);
-assert.deepEqual(models[0].builds.map(build => build.run_id), ['backbone', 'decoder']);
-assert.equal(models[0].builds[0].run.git_ref, 'refs/heads/perf/rfdetr-attention-layout');
-// Only the catalog build of the same run carries its accuracy key.
-assert.deepEqual(models[0].builds.map(build => build.validation_fingerprint), [undefined, undefined]);
-const matched = [{...catalog[0], builds: [{run_id: 'decoder', build_profile_id: 'w8a8_w16a16',
-  component_id: 'decoder', validation_fingerprint: 'accuracy-key'}]}];
-assert.deepEqual(branchModels(current, [], matched)[0].builds.map(build => build.validation_fingerprint),
-                 [undefined, 'accuracy-key']);
-assert.deepEqual(models[0].packages.map(item => item.run_id), ['good']);
-assert.deepEqual(branchModels([...old, ...current], packages, catalog, '2.1')[0].builds.map(build => build.run_id),
-                 ['old-backbone', 'old-decoder']);
-const sameCompilerOld = [run('same-old-backbone', 'rf_detr_small', 'backbone', 'workflow-0', '3.0', '2026-08-01T12:00:00Z'),
-                         run('same-old-decoder', 'rf_detr_small', 'decoder', 'workflow-0', '3.0', '2026-08-01T12:00:00Z')];
-assert.deepEqual(branchModels([...sameCompilerOld, ...current], packages, catalog, '3.0')[0].builds.map(build => build.run_id),
-                 ['backbone', 'decoder']);
-assert.deepEqual(branchModels([], packages, catalog), []);
-assert.deepEqual(branchModels([{...run('benchmark', 'inherited', 'model', 'workflow-2'), run_type: 'model_benchmark'}], [], catalog), []);
-const develop = ['ssd_mobilenet', 'resnet50', 'yolov8', 'mobilenet', 'rf_detr_small', 'unet']
-  .map(model => run(model, model, 'model', model));
-assert.equal(branchModels(develop, [], catalog).length, 6);
+import {allPages} from './artifact-browser/branch-builds.js';
 const calls = [];
 const definitions = await allPages(async path => {
   calls.push(path);
@@ -1544,10 +1475,7 @@ assert.deepEqual(definitions.map(model => model.model_id), ['first', 'second']);
 assert.equal(calls.length, 2);
 assert.match(calls[1], /cursor=page-2/);
 """
-    subprocess.run(
-        ["node", "--input-type=module", "-e", script],
-        cwd=ROOT, check=True, capture_output=True, text=True,
-    )
+    subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, check=True, capture_output=True, text=True)
 
 
 def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None:
@@ -1557,8 +1485,13 @@ def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None
 
     # Build-level sections render once per variant, in the page order.
     order = [
-        "detailBuildSwitcher(variant)", "${overviewMarkup}", 'id="components-section"', "${accuracyMarkup}",
-        "packageCard(variant,", 'disclosure("provenance", "Build provenance"', "sourceInputPanel(inputs)",
+        "detailBuildSwitcher(variant)",
+        "${overviewMarkup}",
+        'id="components-section"',
+        "${accuracyMarkup}",
+        "packageCard(variant,",
+        'disclosure("provenance", "Build provenance"',
+        "sourceInputPanel(inputs)",
         "licensePanel(license)",
     ]
     positions = [render_detail.index(marker) for marker in order]
@@ -1569,18 +1502,9 @@ def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None
     assert "details.flatMap((detail) => detail.provenance.inputs || [])" in render_detail
     assert "(input) => input.sha256 || input.name" in render_detail
     assert "details.map((detail) => componentRow(detail, singleComponent))" in render_detail
-    # Without a package result, the page says the component numbers do not add up to one.
-    assert "${singleComponent || measuredPackage ? \"\" : `<p class=\"section-note\">" in render_detail
-    assert "component latencies do not add up to end-to-end latency" in render_detail
-    # A declared pipeline orders and numbers the components under a strip; otherwise they keep run order.
-    # A package result replaces the component scores under the strip.
-    assert "componentPerformance(detail, !singleComponent, order && index + 1, model)" in render_detail
-    strip, package, components = (render_detail.index(marker) for marker in (
-        '${order ? pipelineStrip(variant.pipeline) : ""}',
-        "? packagePerformance(measuredPackage, model)",
-        ": performanceDetails.map((detail, index) => componentPerformance(",
-    ))
-    assert strip < package < components
+    assert "Not measured for this build." in render_detail
+    assert "modelBenchmark(variant)" in render_detail
+    assert '${order ? pipelineStrip(variant.pipeline) : ""}' in render_detail
     package_performance = script.split("function packagePerformance(", 1)[1].split("\nfunction ", 1)[0]
     # One layer analysis and one execution graph disclosure, each switching between the components.
     assert (
@@ -1592,7 +1516,7 @@ def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None
     assert 'disclosure(`graphs:${key}`, "Execution graph"' in graphs
     assert 'componentSwitch(graphed.map(({ label }) => label), 0, "data-graph-component")' in graphs
     select = script.split("export function selectExecutionGraph(", 1)[1].split("\n}\n", 1)[0]
-    assert 'item.hidden = item.dataset.graphPanel !== button.value;' in select
+    assert "item.hidden = item.dataset.graphPanel !== button.value;" in select
     assert 'elements["detail-pane"].addEventListener("click", selectExecutionGraph);' in _browser_source("app.js")
     # Switching component re-renders the panel and restarts the minimum time on the new scale.
     update = script.split("export function updateLayerAnalysis(", 1)[1].split("\nexport function ", 1)[0]
@@ -1604,8 +1528,6 @@ def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None
         assert marker not in render_detail
     # Each component's benchmark sits in the Performance section, not in its file row.
     assert "componentBenchmark(" not in component_row
-    component_performance = script.split("function componentPerformance(", 1)[1].split("function ", 1)[0]
-    assert "componentBenchmark(detail.benchmark, run.id, detail.benchmarkRun, modelId)" in component_performance
     # A component row is a disclosure keyed by its run, with compile parameters nested inside it.
     assert 'disclosure(`component:${run.id}`, single ? "Files and checksums" : component, body, meta)' in component_row
     assert 'disclosure(`parameters:${run.id}`, "Compile parameters"' in component_row
@@ -1615,8 +1537,11 @@ def test_preview_native_deployments_use_manifest_and_path_preserving_files(tmp_p
     api = "/v1/repositories/sima-neat/models"
     with _preview(tmp_path) as base:
         catalog = _get_json(f"{base}{api}/catalogs/current?git_ref=refs/heads/develop")
-        model = next(model for model in catalog["catalog"]["document"]["models"]
-                     if model["categories"]["model_type"] in {"llm", "vlm"})
+        model = next(
+            model
+            for model in catalog["catalog"]["document"]["models"]
+            if model["categories"]["model_type"] in {"llm", "vlm"}
+        )
         for record in [model["builds"][0], model["packages"][0]]:
             artifacts = _get_json(f"{base}/v1/runs/{record['run_id']}")["artifacts"]
             manifest, *files = artifacts
@@ -1627,3 +1552,11 @@ def test_preview_native_deployments_use_manifest_and_path_preserving_files(tmp_p
             assert manifest["metadata"]["deployment_size_bytes"] == sum(file["size_bytes"] for file in files)
             assert manifest["size_bytes"] < manifest["metadata"]["deployment_size_bytes"]
             assert all(file["artifact_type"] == "model-file" and file["metadata"]["path"] for file in files)
+
+
+def test_cached_catalog_keeps_model_summaries_without_reconstructing_compile_runs():
+    browser = _browser_source("api.js", "catalog-view.js", "app.js")
+    assert "models: state.models" in browser
+    assert "state.models = append ? [...state.models, ...models] : models" in browser
+    assert "compileRuns" not in browser
+    assert "catalogBuildRuns" not in browser

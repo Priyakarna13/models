@@ -94,3 +94,11 @@ button with an icon. Blue text ending in ↗ is a link that leaves the browser.
    reduced-motion support while simplifying the interface.
 6. Show the answer before the evidence: key numbers first, then one row to
    open for the rest.
+
+## Report boundary
+
+Use the catalog's per-profile performance and accuracy summaries for lists and
+comparisons. Load the selected `sima.model-report` version 1 only when opening
+a model. Headline scores belong to the complete model and build profile;
+component diagnostics provide layer analysis without replacing that score.
+The pipeline strip remains static metadata from the checked-in model definition.

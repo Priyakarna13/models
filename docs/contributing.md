@@ -195,11 +195,11 @@ components and can force every selected build to recompile, which also
 applies a changed model test at once; otherwise a changed test applies the next
 time its stage runs. A dispatch that
 names build profiles or components compiles and publishes those builds but
-skips ordinary package and catalog updates. On-demand builds publish their
+skips ordinary package updates. A hosted step still binds expected measurement
+keys, including when it reuses compiled inputs. On-demand builds publish their
 complete candidate, including packages; a feature-branch run also selects it
-in that branch's catalog after finalization. LLiMa does this in the existing
-Publish job; models with multiple invocations join them in the orchestrator's
-`publish-candidates` job before publication.
+in that branch's catalog after finalization. Each profile has one complete invocation. Its hosted Publish job finalizes
+the candidate before measurement dispatch, for both ONNX and LLiMa.
 Each complete candidate publishes independently of failures in other models
 or profiles.
 Develop and Main still require separate approval and promotion.

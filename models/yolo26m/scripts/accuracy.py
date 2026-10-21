@@ -216,7 +216,21 @@ def main(argv: list[str] | None = None) -> int:
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    raw_path = args.output.with_name("accuracy-raw.json")
+    raw_path.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    report = {
+        "schema": "sima.model-report",
+        "schema_version": 1,
+        "stage": "accuracy",
+        "context": {"dataset": result["dataset"], "core_version": result["core_version"]},
+        "metrics": [
+            {"name": f"model.accuracy.{name}", "status": "measured", **metric}
+            for name, metric in result["metrics"].items()
+        ],
+        "details": result.get("details", {}),
+        "evidence": [{"path": raw_path.name, "media_type": "application/json"}],
+    }
+    args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     print(json.dumps({name: round(item["value"], 4) for name, item in result["metrics"].items()}))
     return 0
 

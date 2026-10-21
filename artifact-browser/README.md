@@ -65,26 +65,23 @@ this checkout defines; a model added or removed there appears or disappears
 without changes to the preview. Only what a board or the registry would produce
 is synthetic: run IDs, timestamps, sizes, and measured values. Two catalog
 revisions give every variant an older build in its history.
-The preview's benchmark results start from
-`artifact-browser/fixtures/performance-result.json`, a ResNet-50 result
-that `import-core-benchmark` produced from a DevKit Core benchmark, so its
-board telemetry and power rails are real readings; the preview varies only
-speed, energy, and MLA memory per build, and generates illustrative layer timings
-covering all ten recognized operation families in each profiling panel. These synthetic
-layer names include fused operations, nested reshapes, segmentation helpers,
-outputs and zero-time entries. Input placeholders are omitted, matching the
-benchmark API. These names do not describe the selected model's actual graph.
-Edit it to exercise other metric
-values or availability states. Keep one fixture per benchmark adapter, not
-per schema version: a new format that needs its own adapter adds its own
-fixture and tests, and the existing fixture keeps covering the older formats.
-Keep an adapter for every published schema version.
+The preview's performance fixture is a `sima.model-report` version 1 document
+with recorded board telemetry and illustrative model speeds and layer timings.
+Layer names cover the recognized operation families; they do not describe the
+selected model's actual graph. Edit the fixture to exercise metric values and
+availability states.
 
-Benchmark adapters preserve every metric that follows the result contract.
-Known metrics receive curated labels, formatting, and a place in a benchmark
-card; unknown additive metrics appear automatically under Other measurements.
-Unsupported schema versions still
-link to the raw result instead of guessing at incompatible structures.
+The catalog response carries one performance and accuracy summary per build
+profile. Opening a model fetches its selected report details from
+`/v1/runs/{run_id}/model-report`. The browser does not infer a model score from
+component runs. Optional component diagnostics supply layer timings and execution
+graphs; the static pipeline still comes from the checked-in model definition.
+
+Known metrics receive labels and formatting from the build-pinned metric catalog.
+Unknown additive metrics appear under Other measurements. Unsupported contracts
+show no interpreted score; archived historical evidence remains downloadable.
+The active reader accepts only `sima.model-report` version 1 after the coordinated
+fresh-report cutover.
 
 ## Staging deployment
 
@@ -187,7 +184,7 @@ everything longer sits in one expandable row.
   component in one table).
 - **Accuracy** shows the status, the first four metrics, and the scope.
   In the developer UI, **Evaluation details** explains status and coverage and lists the context
-  and remaining metrics. **Published scores** lists each `published_metrics`
+  and remaining metrics. **Published scores** lists each `reference_metrics`
   entry of `model.yaml` with its dataset, conditions, and source; a published
   score sits beside a measured one only when both name the same dataset. A
   build without an accuracy result shows only the published scores.
@@ -232,7 +229,7 @@ delegation.
 | `catalog-view.js` | Model cards, build history, search, and filters |
 | `model-view.js` | The model page |
 | `compare-view.js` | The Compare page: pickers and table |
-| `benchmark-adapters.js` | One shape for every supported result schema |
+| `benchmark-adapters.js` | Standard report metrics and component diagnostics |
 | `metrics.js` | Metric labels, units, and formatting |
 | `downloads.js` | Component discovery for downloads |
 | `markdown.js` | The README renderer |
@@ -257,7 +254,7 @@ for the deployed portal and fails when a module imports a file missing from its
 It also writes `component-pipelines.<revision>.json` from the `pipeline` field
 of each `model.yaml`, which draws the component order on a multi-component
 model page, and `published-metrics.<revision>.json` from each
-`published_metrics`; `preview.py` serves the same data from `models/`.
+`reference_metrics`; `preview.py` serves the same data from `models/`.
 `accuracy-metrics.js` keeps the metric labels of
 `taxonomies/accuracy-metrics.yaml`, and a test keeps the two in step. Run
 `build:portal` with the repository installed or `PYTHON` set, as for
@@ -339,7 +336,7 @@ publication time as compile time; the workflow link provides historical job timi
 The publisher accepts optional `compile-timing.json` alongside `compile-outputs.json`,
 validates its timezone-aware start/end timestamps before any registry writes,
 and publishes it as additive run metadata. Existing outputs remain publishable.
-No registry API or database schema changes are required.
+Report summaries and details require the coordinated Vulcan model-report API.
 
 The preview's layer timings are illustrative generated data, including zero-time
 entries and multiple MLA stages to exercise the analysis controls. Production

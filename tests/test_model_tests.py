@@ -27,18 +27,17 @@ performance:
   run_tests: true
   expected:
     w8a8:
-      model:
-        throughput_fps: 100.0
+      model.inference_rate: 100.0
 """
-PERFORMANCE_TESTS = '''
+PERFORMANCE_TESTS = """
 def test_needs_no_output() -> None:
     assert True
 
 
 def test_throughput_meets_its_minimum(performance, build_profile) -> None:
     assert build_profile == "w8a8"
-    assert performance["benchmark_report"]["fps"] >= 100
-'''
+    assert performance["metrics"][0]["value"] >= 100
+"""
 
 
 @pytest.fixture
@@ -56,7 +55,11 @@ def model_dir(tmp_path: Path) -> Path:
 
 def performance_result(tmp_path: Path, fps: float) -> Path:
     path = tmp_path / "performance-result.json"
-    result = {"model": {"build_profile_id": "w8a8"}, "benchmark_report": {"fps": fps}}
+    result = {
+        "model": {"build_profile_id": "w8a8"},
+        "context": {},
+        "metrics": [{"name": "model.inference_rate", "status": "measured", "value": fps, "unit": "inferences/s"}],
+    }
     path.write_text(json.dumps(result), encoding="utf-8")
     return path
 
@@ -195,8 +198,11 @@ def test_a_test_with_its_own_fixture_of_a_stage_output_name_still_runs(model_dir
 
 
 def accuracy_result(**values: float) -> dict:
-    metrics = {name: {"value": value, "unit": "ratio", "direction": "higher"} for name, value in values.items()}
-    return {"model": {"build_profile_id": "w8a8"}, "metrics": metrics}
+    metrics = [
+        {"name": name, "status": "measured", "value": value, "unit": "ratio", "direction": "higher"}
+        for name, value in values.items()
+    ]
+    return {"model": {"build_profile_id": "w8a8"}, "context": {}, "metrics": metrics}
 
 
 @pytest.mark.parametrize(
@@ -216,8 +222,7 @@ def accuracy_result(**values: float) -> dict:
 def test_measured_shortfalls_compare_each_expected_value(tmp_path: Path, result: dict, shortfalls: list[str]) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "tests.yaml").write_text(
-        "accuracy:\n  run_tests: true\n  expected:\n    w8a8:\n"
-        "      top1: 0.80\n      top5: 0.95\n",
+        "accuracy:\n  run_tests: true\n  expected:\n    w8a8:\n      top1: 0.80\n      top5: 0.95\n",
         encoding="utf-8",
     )
 
@@ -231,54 +236,46 @@ def test_measured_shortfalls_hold_a_lower_is_better_metric_under_its_allowed_ris
         encoding="utf-8",
     )
     result = accuracy_result(error=0.2101)
-    result["metrics"]["error"]["direction"] = "lower"
+    result["metrics"][0]["direction"] = "lower"
 
     assert measured_shortfalls(tmp_path, "accuracy", result) == ["error 0.2101 is above 0.2 by more than 5%"]
 
 
-def test_measured_shortfalls_take_the_performance_component(tmp_path: Path) -> None:
+def test_measured_shortfalls_use_the_whole_model_score(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "tests.yaml").write_text(PERFORMANCE_EXPECTED, encoding="utf-8")
-    result = json.loads((ROOT / "artifact-browser/fixtures/performance-result.json").read_text(encoding="utf-8"))
-    result["model"].update(build_profile_id="w8a8", component_id="model")
-
-    def measured(fps: float) -> dict:
-        return {**result, "benchmark_report": {**result["benchmark_report"], "fps": fps}}
-
-    assert measured_shortfalls(tmp_path, "performance", measured(90)) == []
-    assert measured_shortfalls(tmp_path, "performance", measured(89)) == [
-        "throughput_fps 89 is below 100 by more than 10%"
-    ]
-
-
-
-def test_measured_shortfalls_take_the_package_of_a_package_result(tmp_path: Path) -> None:
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "tests.yaml").write_text(
-        PERFORMANCE_EXPECTED + "      default:\n        throughput_fps: 50.0\n", encoding="utf-8"
-    )
-    result = json.loads((ROOT / "artifact-browser/fixtures/performance-result.json").read_text(encoding="utf-8"))
-    result["model"].update(build_profile_id="w8a8", component_id=None, package_id="default")
-
-    def measured(fps: float) -> dict:
-        return {**result, "benchmark_report": {**result["benchmark_report"], "fps": fps}}
-
-    assert measured_shortfalls(tmp_path, "performance", measured(45)) == []
-    assert measured_shortfalls(tmp_path, "performance", measured(44)) == [
-        "throughput_fps 44 is below 50 by more than 10%"
+    result = {
+        "model": {"build_profile_id": "w8a8"},
+        "context": {},
+        "metrics": [{"name": "model.inference_rate", "status": "measured", "value": 90, "unit": "inferences/s"}],
+        "components": {
+            "decoder": {
+                "metrics": [
+                    {"name": "model.inference_rate", "status": "measured", "value": 1000, "unit": "inferences/s"}
+                ]
+            }
+        },
+    }
+    assert measured_shortfalls(tmp_path, "performance", result) == []
+    result["metrics"][0]["value"] = 89
+    assert measured_shortfalls(tmp_path, "performance", result) == [
+        "model.inference_rate 89 is below 100 by more than 10%"
     ]
 
 
 @pytest.mark.parametrize(
     ("expected", "error"),
     [
-        ({"w8a8": {"top1_accuracy": 0.8, "top5_accuracy": 0.95}}, None),
-        ({}, "accuracy.expected.w8a8 lacks top1_accuracy"),
+        ({"w8a8": {"model.accuracy.top1_accuracy": 0.8, "model.accuracy.top5_accuracy": 0.95}}, None),
+        ({}, "accuracy.expected.w8a8 lacks model.accuracy.top1_accuracy"),
         ({"w8a8": {}}, "accuracy.expected.w8a8"),
-        ({"w8a8": {"top5_accuracy": 0.95}}, "lacks top1_accuracy"),
-        ({"w8a8": {"top1_accuracy": 0.8, "unknown_metric": 0.9}}, "unregistered metrics: unknown_metric"),
-        ({"w8a8": {"top1_accuracy": float("nan")}}, "must be a finite number"),
-        ({"w8a8": {"top1_accuracy": float("inf")}}, "must be a finite number"),
+        ({"w8a8": {"model.accuracy.top5_accuracy": 0.95}}, "lacks model.accuracy.top1_accuracy"),
+        (
+            {"w8a8": {"model.accuracy.top1_accuracy": 0.8, "unknown_metric": 0.9}},
+            "unregistered metrics: unknown_metric",
+        ),
+        ({"w8a8": {"model.accuracy.top1_accuracy": float("nan")}}, "must be a finite number"),
+        ({"w8a8": {"model.accuracy.top1_accuracy": float("inf")}}, "must be a finite number"),
     ],
 )
 def test_accuracy_expectations_remain_a_gate_without_a_declared_metric_list(
@@ -293,8 +290,7 @@ def test_accuracy_expectations_remain_a_gate_without_a_declared_metric_list(
         encoding="utf-8",
     )
     model = {
-        "benchmark": [],
-        "accuracy": [{"engine": "devkit_script", "build_profiles": ["w8a8"], "required_metrics": ["top1_accuracy"]}],
+        "accuracy": {"build_profiles": ["w8a8"], "required_metrics": ["model.accuracy.top1_accuracy"]},
     }
     if error is None:
         validate_model_tests(model_dir, model, ROOT / "schemas" / "model-tests.schema.json")
@@ -311,8 +307,7 @@ def test_accuracy_expectations_may_be_skipped_explicitly(model_dir: Path) -> Non
         encoding="utf-8",
     )
     model = {
-        "benchmark": [],
-        "accuracy": [{"engine": "devkit_script", "build_profiles": ["w8a8"], "required_metrics": ["top1_accuracy"]}],
+        "accuracy": {"build_profiles": ["w8a8"], "required_metrics": ["model.accuracy.top1_accuracy"]},
     }
 
     validate_model_tests(model_dir, model, ROOT / "schemas" / "model-tests.schema.json")

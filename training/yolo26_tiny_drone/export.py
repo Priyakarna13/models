@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from contract import INPUT_NAME, DeploymentContract
 from model import (
     EXPECTED_ATTENTION_MATMULS,
     EXPECTED_ATTENTION_SOFTMAXES,
@@ -24,7 +23,7 @@ from model import (
     validate_attention_qat_scaffolding,
     validate_deploy_outputs,
 )
-from onnx_audit import audit_onnx, canonicalize_attention_for_modelsdk, sha256_file
+from model_scripts import INPUT_NAME, DeploymentContract, audit_onnx, canonicalize_attention_for_modelsdk, sha256_file
 from provenance import (
     SWML_QAT_REVISION,
     VerifiedRuntimePackage,

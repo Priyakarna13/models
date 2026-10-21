@@ -27,10 +27,6 @@ on:
         required: false
         type: string
         default: ""
-      publishable:
-        description: Whether this build updates the branch catalog
-        required: true
-        type: boolean
       aws_region:
         required: true
         type: string
@@ -249,9 +245,8 @@ jobs:
   publish:
     name: Publish
     needs: compile
-    if: ${{ !fromJSON(inputs.entry).build_on_demand || fromJSON(inputs.entry).runner_script == 'scripts/run_llima_compilation.sh' }}
     runs-on: ubuntu-latest
-    environment: ${{ inputs.vulcan_environment }}
+    environment: ${{ inputs.vulcan_environment == 'staging' && 'staging-publish' || inputs.vulcan_environment }}
     permissions:
       actions: write
       contents: read
@@ -268,6 +263,7 @@ jobs:
       KMS_KEY_ID: ${{ inputs.artifact_kms_key_id }}
       VULCAN_ENVIRONMENT: ${{ inputs.vulcan_environment }}
       BASE_BRANCHES: ${{ inputs.base_branches }}
+      PLANNED_RUNTIME: ${{ toJSON(fromJSON(inputs.entry).runtime) }}
     steps:
       - name: Check out the trusted revision
         uses: actions/checkout@v6
@@ -378,20 +374,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Start the DevKit stages
-        if: >-
-          inputs.vulcan_environment == 'staging' &&
-          fromJSON(inputs.entry).target == 'modalix' &&
-          join(fromJSON(inputs.entry).stages, '') != ''
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ENTRY: ${{ inputs.entry }}
-        run: scripts/start_devkit_stages.sh "$ENTRY" "$GITHUB_RUN_ID"
-
       - name: Assemble the packages this build completes
         id: packages
-        if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand
+        if: ${{ !fromJSON(inputs.entry).build_on_demand }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -400,7 +385,6 @@ jobs:
             --repository . \
             --compiled-dir _compiled \
             --output-dir _packages \
-            --resource-cache-dir "$RUNNER_TEMP/model-registry-resources" \
             --all \
             --json > "$RUNNER_TEMP/packages.json"
           count="$(jq -er '.count' "$RUNNER_TEMP/packages.json")"
@@ -408,7 +392,7 @@ jobs:
           echo "Assembled $count model package(s)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the finalized packages
-        if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand && steps.packages.outputs.count != '0'
+        if: ${{ !fromJSON(inputs.entry).build_on_demand && steps.packages.outputs.count != '0' }}
         run: |
           set -euo pipefail
           model-registry publish-package \
@@ -421,7 +405,7 @@ jobs:
             --json > "$RUNNER_TEMP/package-publication.json"
 
       - name: Publish this build in the catalog
-        if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand
+        if: ${{ !fromJSON(inputs.entry).build_on_demand }}
         run: |
           set -euo pipefail
           : "${REGISTRY_READ_API_URL:?VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL is required}"
@@ -429,9 +413,10 @@ jobs:
           if [[ -d _packages ]]; then
             package_args=(--package-dir _packages)
           fi
+          printf '%s\n' "$PLANNED_RUNTIME" > "$RUNNER_TEMP/runtime.json"
           failure="$RUNNER_TEMP/catalog-publication-error"
           for attempt in 1 2 3 4 5 6 7 8; do
-            if model-registry publish-catalog --repository . --compiled-dir _compiled "${package_args[@]}" \
+            if model-registry publish-catalog --runtime "$RUNNER_TEMP/runtime.json" --repository . --compiled-dir _compiled "${package_args[@]}" \
               --api-url "$REGISTRY_API_URL" --read-api-url "$REGISTRY_READ_API_URL" \
               --aws-region "$AWS_REGION" --branch "$GITHUB_REF_NAME" \
               --bucket "$ARTIFACT_BUCKET" --kms-key-id "$KMS_KEY_ID" \
@@ -448,3 +433,14 @@ jobs:
             delay=$(( 2 ** attempt > 30 ? 30 : 2 ** attempt ))
             sleep "$(( delay + RANDOM % 5 ))"
           done
+
+      - name: Start the DevKit stages
+        if: >-
+          inputs.vulcan_environment == 'staging' &&
+          fromJSON(inputs.entry).target == 'modalix' &&
+          join(fromJSON(inputs.entry).stages, '') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENTRY: ${{ inputs.entry }}
+        run: scripts/start_devkit_stages.sh "$ENTRY" "$GITHUB_RUN_ID"

@@ -36,7 +36,7 @@ SEEDS = range(123, 133)
 
 
 def validate_source(source):
-    declared = (source.get("type"), source.get("entrypoint"), [item.get("path") for item in source.get("files", [])])
+    declared = (source.get("type"), source.get("main_file"), [item.get("path") for item in source.get("files", [])])
     if declared != SOURCE:
         raise ValueError(f"Expected the Hugging Face file set {SOURCE}, model.yaml declares {declared}")
 
@@ -203,13 +203,9 @@ def convert(source, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--conversion", default="default", help="conversion entry in model.yaml")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
-    conversions = load_and_validate_model(MODEL_DIR).get("conversion", {})
-    if args.conversion not in conversions:
-        parser.error(f"unknown conversion {args.conversion!r}; model.yaml declares: {', '.join(sorted(conversions))}")
-    source = conversions[args.conversion]["source"]
+    source = load_and_validate_model(MODEL_DIR)["conversion"]["source"]
     validate_source(source)
     path, *_ = Fetcher().fetch_source(source)
     convert(path, args.output_dir.resolve())

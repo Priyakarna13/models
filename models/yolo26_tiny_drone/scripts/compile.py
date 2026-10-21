@@ -1,36 +1,53 @@
 #!/usr/bin/env python3
-"""Compile the qualified YOLO26-P2 tiny-drone source into its registry MPK."""
+"""Compile the qualified YOLO26-P2 tiny-drone source into its registry MPK.
+
+Source qualification evidence (recorded, not a DevKit accuracy stage):
+id: multiuav_tiny_drone_accuracy
+scope:
+  type: component
+  component: model
+build_profiles:
+- w8a8
+status: qualified_reference
+dataset_sha256: 2747596e19c2b0f47882610de1129f28f0d434250bd2338d3e73ac69f5a3a6aa
+validation_tiny_ground_truth_count: 197828
+metrics:
+- name: qat_ap50
+  minimum: 0.3
+  measured: 0.9649116197101038
+- name: qat_tiny_recall50
+  minimum: 0.5
+  measured: 0.9810037001839982
+- name: ap50_drop
+  maximum: 0.02
+  measured: 0.0001795978578725821
+- name: tiny_recall50_drop
+  maximum: 0.05
+  measured: -0.0031694199001152112
+note: Metrics are from the sequence-safe held-out MultiUAV split recorded by the qualified
+  epoch-7 export.
+"""
 
 from __future__ import annotations
 
 import argparse
 import gc
 import json
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from calibration import validate_calibration
+from contract import DeploymentContract
+from deployment import MODEL_NAME, audit_mpk, audit_quantized_model, preprocess_rgb_image
 from model_registry.fetch import Fetcher
 from model_registry.model import load_model as load_metadata
 from model_registry.source import SourceSpec
+from onnx_audit import audit_onnx
 from output_labels import restore_public_output_labels
 from quantized_snapshot import materialize_snapshot
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
-REPOSITORY_ROOT = MODEL_DIR.parents[1]
-TRAINING_DIR = REPOSITORY_ROOT / "training" / "yolo26_tiny_drone"
-sys.path.insert(0, str(TRAINING_DIR))
-
-from compile import (  # noqa: E402
-    MODEL_NAME,
-    audit_mpk,
-    audit_quantized_model,
-    preprocess_rgb_image,
-)
-from contract import DeploymentContract  # noqa: E402
-from onnx_audit import audit_onnx  # noqa: E402
 
 
 def variant_config(variant_id: str) -> dict[str, Any]:

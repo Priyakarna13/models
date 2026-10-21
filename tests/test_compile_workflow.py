@@ -104,7 +104,6 @@ def test_compile_workflow_has_independent_build_stages() -> None:
         "initialize-catalog",
         "compile",
         "publish-catalog",
-        "publish-candidates",
         "measure",
         "report-partial-publication",
     }
@@ -146,7 +145,8 @@ def test_workflow_never_schedules_pull_requests_on_vulcan() -> None:
     assert list(build_workflow["on"]) == ["workflow_call"]
     assert jobs["compile"]["uses"] == "./.github/workflows/vulcan-model-compile.yml"
     self_hosted = [
-        name for name, job in build_workflow["jobs"].items()
+        name
+        for name, job in build_workflow["jobs"].items()
         if isinstance(job["runs-on"], list) and "self-hosted" in job["runs-on"]
     ]
     assert self_hosted == ["compile"]
@@ -217,20 +217,35 @@ def test_targeted_profile_or_component_dispatch_skips_catalog_updates() -> None:
 
 @pytest.mark.parametrize(
     ("manual", "models", "profiles", "expected"),
-    [(False, "resnet_50", "modalix_bf16", False), (True, "", "", False),
-     (True, "resnet_50", "", True), (True, "resnet_50", "modalix_bf16", True)],
+    [
+        (False, "resnet_50", "modalix_bf16", False),
+        (True, "", "", False),
+        (True, "resnet_50", "", True),
+        (True, "resnet_50", "modalix_bf16", True),
+    ],
 )
 def test_only_explicit_manual_model_selection_enables_on_demand_builds(
-    manual: bool, models: str, profiles: str, expected: bool,
+    manual: bool,
+    models: str,
+    profiles: str,
+    expected: bool,
 ) -> None:
     plan = step(load(WORKFLOW)["jobs"]["plan"], "Compare stage keys with published runs")
-    selection = plan["run"].split('plan="$(model-registry plan-stages', 1)[0]
+    selection = plan["run"].split("printf", 1)[0]
     result = subprocess.run(
         ["bash", "-c", selection + '\nprintf "%s\\n" "${scope_args[@]}"'],
-        env={**os.environ, "REGISTRY_READ_API_URL": "https://registry.invalid", "MANUAL_BUILD": str(manual).lower(),
-             "REQUESTED_MODELS": models, "REQUESTED_PROFILES": profiles, "REQUESTED_COMPONENTS": "",
-             "FORCE_REBUILD_ALL": "true"},
-        capture_output=True, text=True, check=True,
+        env={
+            **os.environ,
+            "REGISTRY_READ_API_URL": "https://registry.invalid",
+            "MANUAL_BUILD": str(manual).lower(),
+            "REQUESTED_MODELS": models,
+            "REQUESTED_PROFILES": profiles,
+            "REQUESTED_COMPONENTS": "",
+            "FORCE_REBUILD_ALL": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
     )
 
     assert ("--include-on-demand" in result.stdout.splitlines()) is expected
@@ -242,7 +257,7 @@ def test_branches_reuse_builds_from_the_resolved_base_branch_catalogs() -> None:
     base = next(item for item in jobs["select"]["steps"] if item.get("id") == "base")
 
     assert "model-registry resolve-base" in base["run"]
-    assert ".base_branches | join(\",\")" in base["run"]
+    assert '.base_branches | join(",")' in base["run"]
     assert base["env"]["PREFERRED_BRANCH"] == "${{ inputs.base_branch }}"
     plan = step(jobs["plan"], "Compare stage keys with published runs")
     assert plan["env"]["BASE_BRANCHES"] == "${{ needs.select.outputs.base_branches }}"
@@ -278,20 +293,20 @@ def test_plan_compares_stage_keys_with_the_environment_registry() -> None:
         "compile_matrix": "${{ steps.plan.outputs.compile_matrix }}",
         "measure_count": "${{ steps.plan.outputs.measure_count }}",
         "measure_matrix": "${{ steps.plan.outputs.measure_matrix }}",
-        "candidate_count": "${{ steps.plan.outputs.candidate_count }}",
-        "candidate_matrix": "${{ steps.plan.outputs.candidate_matrix }}",
     }
 
 
 def test_reused_build_stages_are_measured_on_modalix_only() -> None:
     plan = step(load(WORKFLOW)["jobs"]["plan"], "Compare stage keys with published runs")
-    program = jq_program(plan["run"], 'measure_matrix="$(jq -c')
+    program = jq_program(plan["run"], 'measure_matrix="$(jq -c --argjson runtime "$PLANNED_RUNTIME"')
     document = {
         "compile": {"include": []},
         "measure": {"include": [{"model_id": "a", "target": "modalix"}, {"model_id": "b", "target": "davinci"}]},
     }
 
-    assert run_jq(program, document) == {"include": [{"model_id": "a", "target": "modalix"}]}
+    assert run_jq(program.replace("$runtime", "{}"), document) == {
+        "include": [{"model_id": "a", "target": "modalix", "runtime": {}}]
+    }
 
 
 # Runner authorization and catalog initialization
@@ -314,7 +329,7 @@ def test_runner_classes_are_authorized_before_builds_are_queued() -> None:
     assert build["strategy"]["matrix"] == "${{ fromJSON(needs.authorize-runner-classes.outputs.matrix) }}"
     assert build["strategy"]["fail-fast"] == "false"
     assert build["with"]["entry"] == "${{ toJSON(matrix) }}"
-    assert build["with"]["publishable"] == "${{ needs.select.outputs.publishable == 'true' }}"
+    assert "publishable" not in build["with"]
     assert build["secrets"] == "inherit"
     assert set(build["with"]) == set(load(BUILD_WORKFLOW)["on"]["workflow_call"]["inputs"])
 
@@ -323,45 +338,58 @@ def test_catalog_marks_authorized_builds_pending_before_they_run() -> None:
     initialize = load(WORKFLOW)["jobs"]["initialize-catalog"]
     publish = step(initialize, "Publish the pending invocation plan")
 
-    assert initialize["needs"] == ["select", "resolve-vulcan-config", "authorize-runner-classes"]
+    assert initialize["needs"] == ["select", "plan", "resolve-vulcan-config", "authorize-runner-classes"]
     assert "needs.select.outputs.publishable == 'true'" in initialize["if"]
     assert "needs.authorize-runner-classes.result == 'success'" in initialize["if"]
-    assert publish["env"]["SELECTED_MATRIX"] == "${{ needs.authorize-runner-classes.outputs.matrix }}"
+    assert (
+        publish["env"]["SELECTED_MATRIX"]
+        == "${{ needs.authorize-runner-classes.outputs.matrix || needs.plan.outputs.compile_matrix }}"
+    )
     assert "model-registry publish-catalog" in publish["run"]
     assert '--selected-matrix "$matrix_file"' in publish["run"]
     assert '--base-branches "$BASE_BRANCHES"' in publish["run"]
 
 
-@pytest.mark.parametrize(("branch", "on_demand", "publishable", "expected"), [
-    ("feature/llima-models", True, "false", True),
-    ("feature/llima-models", False, "false", False),
-    ("develop", True, "false", False),
-    ("main", True, "false", False),
-    ("master", True, "false", False),
-    ("develop", False, "true", True),
-])
-def test_targeted_candidates_publish_feature_requirements_before_compiling(branch, on_demand, publishable, expected):
+@pytest.mark.parametrize(
+    ("event", "models", "profiles", "compile_count", "authorization", "expected"),
+    [
+        ("workflow_dispatch", "rf_detr_small", "w8a8_w16a16", "0", "skipped", True),
+        ("workflow_dispatch", "rf_detr_small", "w8a8_w16a16", "1", "success", True),
+        ("workflow_dispatch", "rf_detr_small", "w8a8_w16a16", "1", "failure", False),
+        ("workflow_dispatch", "rf_detr_small", "", "0", "skipped", False),
+        ("push", "rf_detr_small", "w8a8_w16a16", "0", "skipped", False),
+    ],
+)
+def test_targeted_dispatch_initializes_keys_for_reused_and_new_builds(
+    event, models, profiles, compile_count, authorization, expected
+):
     condition = load(WORKFLOW)["jobs"]["initialize-catalog"]["if"]
-    assert evaluate(condition, {
-        "!cancelled()": True,
-        "github.ref": f"refs/heads/{branch}",
-        "needs.select.outputs.publishable": publishable,
-        "needs.resolve-vulcan-config.result": "success",
-        "needs.authorize-runner-classes.result": "success",
-        "contains(fromJSON(needs.authorize-runner-classes.outputs.matrix).include.*.build_on_demand, true)": on_demand,
-    }) is expected
+    assert (
+        evaluate(
+            condition,
+            {
+                "!cancelled()": True,
+                "github.event_name": event,
+                "inputs.models": models,
+                "inputs.profiles": profiles,
+                "needs.select.outputs.publishable": "false",
+                "needs.plan.result": "success",
+                "needs.plan.outputs.compile_count": compile_count,
+                "needs.authorize-runner-classes.result": authorization,
+                "needs.resolve-vulcan-config.result": "success",
+            },
+        )
+        is expected
+    )
 
 
-def test_native_candidates_are_not_published_again_by_the_multi_invocation_job():
-    plan = step(load(WORKFLOW)["jobs"]["plan"], "Compare stage keys with published runs")
-    program = jq_program(plan["run"], 'candidate_matrix="$(jq -c')
-    native = {"model_id": "qwen", "build_profile_id": "w4a16", "build_on_demand": True,
-              "runner_script": "scripts/run_llima_compilation.sh"}
-    generic = {"model_id": "vision", "build_profile_id": "w8a8", "build_on_demand": True,
-               "runner_script": "scripts/run_model_compilation.sh"}
-    assert run_jq(program, {"include": [native, generic, generic, {**generic, "build_on_demand": False}]}) == {
-        "include": [{"model_id": "vision", "build_profile_id": "w8a8"}],
-    }
+def test_one_invocation_finalizes_each_complete_candidate():
+    assert "publish-candidates" not in load(WORKFLOW)["jobs"]
+    publish = load(BUILD_WORKFLOW)["jobs"]["publish"]
+    assert "if" not in publish
+    assert (
+        step(publish, "Publish and finalize the complete candidate")["if"] == "fromJSON(inputs.entry).build_on_demand"
+    )
 
 
 @pytest.mark.parametrize(
@@ -377,7 +405,9 @@ def test_native_candidates_are_not_published_again_by_the_multi_invocation_job()
     ],
 )
 def test_build_allows_only_intentional_catalog_initialization_skips(
-    publishable, initialize_result, expected,
+    publishable,
+    initialize_result,
+    expected,
 ) -> None:
     condition = load(WORKFLOW)["jobs"]["compile"]["if"]
     values = {
@@ -406,7 +436,11 @@ def test_build_allows_only_intentional_catalog_initialization_skips(
     ],
 )
 def test_catalog_snapshot_publishes_even_when_builds_fail(
-    cancelled, publishable, compile_count, initialize_result, expected,
+    cancelled,
+    publishable,
+    compile_count,
+    initialize_result,
+    expected,
 ) -> None:
     job = load(WORKFLOW)["jobs"]["publish-catalog"]
     values = {
@@ -447,23 +481,29 @@ def test_catalog_snapshot_carries_this_revision_without_build_outputs() -> None:
         ("workflow_dispatch", "staging", "success", "3", True),
         ("push", "production", "success", "1", False),
         ("push", "staging", "failure", "1", False),
-        ("push", "staging", "skipped", "1", False),
+        ("workflow_dispatch", "staging", "skipped", "1", True),
         ("push", "staging", "success", "0", False),
     ],
 )
 def test_reused_builds_start_devkit_stages_after_the_catalog_snapshot(
-    event, environment, catalog_result, measure_count, expected,
+    event,
+    environment,
+    catalog_result,
+    measure_count,
+    expected,
 ) -> None:
     job = load(WORKFLOW)["jobs"]["measure"]
     values = {
         "!cancelled()": True,
         "github.event_name": event,
         "needs.publish-catalog.result": catalog_result,
+        "needs.initialize-catalog.result": "success",
         "needs.select.outputs.vulcan_environment": environment,
         "needs.plan.outputs.measure_count": measure_count,
+        "needs.plan.result": "success",
     }
 
-    assert job["needs"] == ["select", "plan", "publish-catalog"]
+    assert job["needs"] == ["select", "plan", "initialize-catalog", "publish-catalog"]
     # Without a status function GitHub adds success(), which also requires the
     # indirectly needed build jobs and skips reused builds when one build fails.
     assert job["if"].startswith("!cancelled() &&")
@@ -503,13 +543,17 @@ def test_failed_builds_are_reported_after_the_snapshot() -> None:
     def job(name: str, conclusion: str) -> dict:
         return {"name": name, "conclusion": conclusion, "html_url": f"https://example.test/{name}"}
 
-    pages = [{"jobs": [
-        job("Compile a/b (p) / Compile", "failure"),
-        job("Compile a/b (p) / Publish", "skipped"),
-        job("Compile c/d (p) / Publish", "cancelled"),
-        job("Compile e/f (p) / Publish", "success"),
-        job("Publish the catalog at this revision", "failure"),
-    ]}]
+    pages = [
+        {
+            "jobs": [
+                job("Compile a/b (p) / Compile", "failure"),
+                job("Compile a/b (p) / Publish", "skipped"),
+                job("Compile c/d (p) / Publish", "cancelled"),
+                job("Compile e/f (p) / Publish", "success"),
+                job("Publish the catalog at this revision", "failure"),
+            ]
+        }
+    ]
     failed = run_jq(program, pages)
     assert [item["name"] for item in failed] == ["Compile a/b (p) / Compile", "Compile c/d (p) / Publish"]
 
@@ -555,10 +599,7 @@ def test_compile_script_runs_in_activated_model_compiler_shell() -> None:
         "${{ fromJSON(inputs.entry).runner_script || 'scripts/run_model_compilation.sh' }}"
     )
     assert script.index("activate-model-compiler") < script.index('"$COMPILE_RUNNER"')
-    assert (
-        '"$COMPILE_RUNNER" "$MODEL_DIR" "$BUILD_PROFILE_ID" "$COMPILE_INVOCATION_ID" "$ARTIFACT_ROOT"'
-        in script
-    )
+    assert '"$COMPILE_RUNNER" "$MODEL_DIR" "$BUILD_PROFILE_ID" "$COMPILE_INVOCATION_ID" "$ARTIFACT_ROOT"' in script
     order = [
         step_index(compile_job, name)
         for name in (
@@ -588,7 +629,7 @@ def test_compile_tests_check_the_build_before_its_publication() -> None:
     assert workflow["jobs"]["publish"]["needs"] == "compile"
     # pytest is installed before compiling, and only the test step puts it on PYTHONPATH.
     install = step(compile_job, "Install pytest for the model's compile tests")["run"]
-    assert "--target \"$RUNNER_TEMP/model-test-tools\"" in install
+    assert '--target "$RUNNER_TEMP/model-test-tools"' in install
     assert "GITHUB_ENV" not in install
     assert "pip install" not in script
     assert 'PYTHONPATH="$RUNNER_TEMP/model-test-tools' in script
@@ -596,9 +637,9 @@ def test_compile_tests_check_the_build_before_its_publication() -> None:
 
 
 def test_sima_cli_install_retries_only_transient_package_manager_lock_failures() -> None:
-    script = step(
-        load(BUILD_WORKFLOW)["jobs"]["compile"], "Install dataset-registry from the main branch artifact"
-    )["run"]
+    script = step(load(BUILD_WORKFLOW)["jobs"]["compile"], "Install dataset-registry from the main branch artifact")[
+        "run"
+    ]
 
     assert "for attempt in 1 2 3" in script
     assert "Unable to acquire the dpkg frontend lock" in script
@@ -663,11 +704,8 @@ def test_build_is_published_from_a_hosted_runner() -> None:
     download = step(publish, "Download this compiler output")
 
     assert publish["needs"] == "compile"
-    assert publish["if"] == (
-        "${{ !fromJSON(inputs.entry).build_on_demand || "
-        "fromJSON(inputs.entry).runner_script == 'scripts/run_llima_compilation.sh' }}"
-    )
-    assert publish["runs-on"] == "ubuntu-latest"
+    assert "if" not in publish
+
     assert publish["permissions"] == {"actions": "write", "contents": "read", "id-token": "write"}
     assert upload["with"]["name"].startswith("compiler-output-")
     assert download["with"]["name"] == upload["with"]["name"]
@@ -686,10 +724,10 @@ def test_build_is_published_from_a_hosted_runner() -> None:
             "Configure artifact-registry publisher credentials",
             "Publish the complete component set",
             "Retain the published model output for the DevKit stages",
-            "Start the DevKit stages",
             "Assemble the packages this build completes",
             "Publish the finalized packages",
             "Publish this build in the catalog",
+            "Start the DevKit stages",
         )
     ]
     assert order == sorted(order)
@@ -768,7 +806,8 @@ def build(model_id: str, components: list[str], stages: list[str]) -> dict:
         "model_id": model_id,
         "build_profile_id": "int8",
         "compile_invocation_id": "default",
-        "benchmark_component_ids": components,
+        "runtime": {"neat_core": {"install_target": "core@develop:" + "a" * 12}},
+        "builds": [],
         "stages": stages,
     }
 
@@ -789,7 +828,10 @@ def test_start_script_dispatches_every_benchmark_input() -> None:
 @pytest.mark.parametrize(
     ("gh", "link"),
     [
-        ("echo https://github.com/sima-neat/models/actions/runs/123", "https://github.com/sima-neat/models/actions/runs/123"),
+        (
+            "echo https://github.com/sima-neat/models/actions/runs/123",
+            "https://github.com/sima-neat/models/actions/runs/123",
+        ),
         ("true", "link unavailable"),
     ],
 )
@@ -807,9 +849,9 @@ def test_start_script_logs_one_devkit_run_link_per_build(tmp_path: Path, gh: str
     assert summary.read_text(encoding="utf-8") == lines
     alpha, beta = calls.read_text(encoding="utf-8").splitlines()
     assert "-f source_run_id= " in alpha
-    assert "-f component_ids=model " in alpha
+    assert '-f runtime={"neat_core":{"install_target":"core@develop:aaaaaaaaaaaa"}}' in alpha
     # An accuracy-only build names no performance component.
-    assert "-f component_ids= -f stages=accuracy" in beta
+    assert "-f builds=[] -f stages=accuracy" in beta
 
 
 def test_start_script_accepts_one_build_with_its_source_run(tmp_path: Path) -> None:
@@ -852,39 +894,27 @@ def test_native_candidates_finalize_and_select_in_the_existing_publish_job() -> 
     for branch in ("develop", "main", "master"):
         assert f"github.ref != 'refs/heads/{branch}'" in select["if"]
     assert step(publish, "Publish the complete component set")["if"] == "${{ !fromJSON(inputs.entry).build_on_demand }}"
-    assert assemble["if"] == "inputs.publishable && !fromJSON(inputs.entry).build_on_demand"
+    assert assemble["if"] == "${{ !fromJSON(inputs.entry).build_on_demand }}"
     assert "--all" in assemble["run"]
     assert packages["if"] == (
-        "inputs.publishable && !fromJSON(inputs.entry).build_on_demand && steps.packages.outputs.count != '0'"
+        "${{ !fromJSON(inputs.entry).build_on_demand && steps.packages.outputs.count != '0' }}"
     )
     assert "model-registry publish-package" in packages["run"]
-    assert catalog["if"] == "inputs.publishable && !fromJSON(inputs.entry).build_on_demand"
+    assert catalog["if"] == "${{ !fromJSON(inputs.entry).build_on_demand }}"
     assert "--compiled-dir _compiled" in catalog["run"]
     assert '--base-branches "$BASE_BRANCHES"' in catalog["run"]
 
 
-def test_candidates_join_every_invocation_and_never_promote_catalog() -> None:
-    job = load(WORKFLOW)["jobs"]["publish-candidates"]
-    assert "compile" in job["needs"]
-    for result, cancelled, expected in (
-        ("success", False, True), ("failure", False, True),
-        ("skipped", False, False), ("cancelled", False, False), ("failure", True, False),
-    ):
-        assert evaluate(job["if"], {
-            "cancelled()": cancelled, "needs.plan.outputs.candidate_count": "2", "needs.compile.result": result,
-        }) is expected
-    assert job["runs-on"] == "ubuntu-latest"
-    assert job["environment"] == "${{ needs.select.outputs.vulcan_environment }}"
-    steps = job["steps"]
-    download = next(item for item in steps if item.get("uses") == "actions/download-artifact@v7")
-    assert download["with"]["pattern"].endswith("-${{ matrix.build_profile_id }}-*")
-    assert not download["with"].get("merge-multiple", False)
-    text = "\n".join(item.get("run", "") for item in steps)
-    assert "model-registry publish-candidate" in text
-    assert "model-registry publish-branch-deployment" in text
-    assert "publish-catalog" not in text
-    assert "--summary" in text
-
+def test_candidate_finalization_precedes_dispatch_and_preserves_promotion_boundary():
+    job = load(BUILD_WORKFLOW)["jobs"]["publish"]
+    assert step_index(job, "Publish and finalize the complete candidate") < step_index(job, "Start the DevKit stages")
+    assert step_index(job, "Publish this candidate in the feature-branch catalog") < step_index(
+        job, "Start the DevKit stages"
+    )
+    dispatch = step(job, "Start the DevKit stages")
+    assert "publishable" not in dispatch["if"]
+    assert "build_on_demand" not in dispatch["if"]
+    assert not any("approve" in item.get("run", "") for item in job["steps"])
 
 
 def test_concurrent_builds_retry_catalog_snapshot_conflicts() -> None:
@@ -970,3 +1000,11 @@ def test_resnet_recipe_is_python_and_uses_the_standard_cli_contract() -> None:
     assert {"--model", "--output-dir", "--build-profile", "--dataset"} <= option_strings
     assert "--accuracy-samples" not in option_strings
     assert "--accuracy-workers" not in option_strings
+
+
+def test_completed_profile_is_catalogued_before_measurement_dispatch():
+    job = load(BUILD_WORKFLOW)["jobs"]["publish"]
+    assert step_index(job, "Publish this build in the catalog") < step_index(job, "Start the DevKit stages")
+    for name in ("Assemble the packages this build completes", "Publish this build in the catalog"):
+        assert "publishable" not in step(job, name)["if"]
+    assert "--resource-cache-dir" not in step(job, "Assemble the packages this build completes")["run"]

@@ -47,7 +47,7 @@ cache="hit"
 if [[ "$(dirname "$path")/resolution-receipt.json" -nt "$started" ]]; then
   cache="downloaded"
 fi
-row="| $(field accuracy_id) | \`$path\` | \`$(field sha256)\` | $(field size_bytes) | $cache |"
+row="| $BUILD_PROFILE_ID | \`$path\` | \`$(field sha256)\` | $(field size_bytes) | $cache |"
 echo "$row"
 {
   echo "### Accuracy dataset"

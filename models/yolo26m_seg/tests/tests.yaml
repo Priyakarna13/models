@@ -6,41 +6,39 @@ accuracy:
   run_tests: true
   expected:
     w16a16:
-      coco_mask_map: 0.4378
-      coco_mask_ap50: 0.6645
-      coco_mask_ap75: 0.4743
-      coco_mask_ap_small: 0.2547
-      coco_mask_ap_medium: 0.4857
-      coco_mask_ap_large: 0.5994
-      coco_mask_ar1: 0.3389
-      coco_mask_ar10: 0.5566
-      coco_mask_ar100: 0.6007
-      coco_mask_ar_small: 0.4201
-      coco_mask_ar_medium: 0.6565
-      coco_mask_ar_large: 0.7656
-      coco_box_map: 0.5230
-      coco_box_ap50: 0.6938
+      model.accuracy.coco_mask_map: 0.4378
+      model.accuracy.coco_mask_ap50: 0.6645
+      model.accuracy.coco_mask_ap75: 0.4743
+      model.accuracy.coco_mask_ap_small: 0.2547
+      model.accuracy.coco_mask_ap_medium: 0.4857
+      model.accuracy.coco_mask_ap_large: 0.5994
+      model.accuracy.coco_mask_ar1: 0.3389
+      model.accuracy.coco_mask_ar10: 0.5566
+      model.accuracy.coco_mask_ar100: 0.6007
+      model.accuracy.coco_mask_ar_small: 0.4201
+      model.accuracy.coco_mask_ar_medium: 0.6565
+      model.accuracy.coco_mask_ar_large: 0.7656
+      model.accuracy.coco_box_map: 0.523
+      model.accuracy.coco_box_ap50: 0.6938
     w8a8:
-      coco_mask_map: 0.4115
-      coco_mask_ap50: 0.6323
-      coco_mask_ap75: 0.4425
-      coco_mask_ap_small: 0.2338
-      coco_mask_ap_medium: 0.4555
-      coco_mask_ap_large: 0.5744
-      coco_mask_ar1: 0.3298
-      coco_mask_ar10: 0.5489
-      coco_mask_ar100: 0.5953
-      coco_mask_ar_small: 0.4171
-      coco_mask_ar_medium: 0.6519
-      coco_mask_ar_large: 0.7525
-      coco_box_map: 0.4922
-      coco_box_ap50: 0.6675
+      model.accuracy.coco_mask_map: 0.4115
+      model.accuracy.coco_mask_ap50: 0.6323
+      model.accuracy.coco_mask_ap75: 0.4425
+      model.accuracy.coco_mask_ap_small: 0.2338
+      model.accuracy.coco_mask_ap_medium: 0.4555
+      model.accuracy.coco_mask_ap_large: 0.5744
+      model.accuracy.coco_mask_ar1: 0.3298
+      model.accuracy.coco_mask_ar10: 0.5489
+      model.accuracy.coco_mask_ar100: 0.5953
+      model.accuracy.coco_mask_ar_small: 0.4171
+      model.accuracy.coco_mask_ar_medium: 0.6519
+      model.accuracy.coco_mask_ar_large: 0.7525
+      model.accuracy.coco_box_map: 0.4922
+      model.accuracy.coco_box_ap50: 0.6675
 performance:
   run_tests: true
   expected:
     w16a16:
-      model:
-        throughput_fps: 54.0
+      model.inference_rate: 54.0
     w8a8:
-      model:
-        throughput_fps: 14.5
+      model.inference_rate: 14.5

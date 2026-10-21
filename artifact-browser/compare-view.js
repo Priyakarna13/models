@@ -3,7 +3,7 @@ import { adaptBenchmarkResult } from "./benchmark-adapters.js";
 import { state, elements, catalogMode, showView, taxonomyLabel } from "./state.js";
 import { escapeHtml, variantLabel } from "./ui.js";
 import { metricDefinition, metricDisplay } from "./metrics.js";
-import { anchorBuild, compilerFilteredBuilds, loadRunDetail, loadVariant, profileGroups, mapWithConcurrency } from "./api.js";
+import { anchorBuild, compilerFilteredBuilds, variantSummary, profileGroups, mapWithConcurrency } from "./api.js";
 import { compareModels } from "./catalog-view.js";
 import { accuracyHeadline } from "./model-view.js";
 
@@ -30,11 +30,11 @@ export function writePicksToUrl(url) {
 }
 
 const PERFORMANCE_ROWS = [
-  ["throughput_fps", "Throughput"],
-  ["latency_avg_ms", "Latency"],
-  ["avg_power_watts", "SoM power"],
-  ["energy_per_inference_joules", "Energy per inference"],
-  ["mla_memory_peak_mib", "Peak MLA memory"],
+  ["model.inference_rate", "Throughput"],
+  ["model.latency.avg", "Latency"],
+  ["board.power.avg", "SoM power"],
+  ["model.energy_per_inference", "Energy per inference"],
+  ["model.mla_memory.peak", "Peak MLA memory"],
 ];
 
 function catalogVariants() {
@@ -55,13 +55,8 @@ function measuredText(metric, key) {
 // Each component is measured on its own and the CPU stage between components is not, so a build lists
 // one value per component and never adds them up.
 function componentMeasurements(variant) {
-  return variant.details.map((detail) => {
-    const adapted = detail.benchmark ? adaptBenchmarkResult(detail.benchmark.result) : null;
-    return {
-      component: variant.details.length > 1 ? detail.summary.run.metadata?.component_id || "model" : "model",
-      measurements: adapted?.kind === "supported" ? adapted.value.measurements : {},
-    };
-  });
+  const adapted = adaptBenchmarkResult(variant.performance?.result);
+  return [{ component: "model", measurements: adapted.kind === "supported" ? adapted.value.measurements : {} }];
 }
 
 // A single-component build competes with other single-component builds; a component of a larger model
@@ -119,8 +114,7 @@ function comparisonTable(columns) {
 }
 
 async function loadPickedVariant(option) {
-  const anchor = (await loadRunDetail(option.build.run_id)).summary.run;
-  return loadVariant(anchor);
+  return variantSummary(option.model, option.profile);
 }
 
 let compareRequestId = 0;
@@ -142,7 +136,7 @@ function datasetLabel(dataset) {
 function comparisonPlot(columns) {
   const points = columns.flatMap(column => {
     const readings = column.components[0]?.measurements;
-    const throughput = measuredText(readings?.throughput_fps, "throughput_fps");
+    const throughput = measuredText(readings?.["model.inference_rate"], "model.inference_rate");
     return throughput ? [{column, x: throughput.number}] : [];
   });
   const groups = new Map();
@@ -238,7 +232,7 @@ export function showComparisonTooltip(point) {
   if (!tooltip || !column) return;
   hideComparisonTooltip();
   const readings = column.components[0]?.measurements;
-  const throughput = measuredText(readings?.throughput_fps, "throughput_fps");
+  const throughput = measuredText(readings?.["model.inference_rate"], "model.inference_rate");
   const field = (label, value) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`;
   tooltip.innerHTML = `<strong>${escapeHtml(column.option.model.display_name || column.option.model.model_id)}</strong><dl>
     ${field("Variant", variantLabel(column.option.profile))}

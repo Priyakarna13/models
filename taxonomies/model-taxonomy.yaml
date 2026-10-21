@@ -9,29 +9,6 @@ model_types:
   vlm:
     display_name: VLM
 
-modalities:
-  image:
-    display_name: Image
-  video:
-    display_name: Video
-  text:
-    display_name: Text
-  audio:
-    display_name: Audio
-  class_scores:
-    display_name: Class Scores
-  bounding_boxes:
-    display_name: Bounding Boxes
-  masks:
-    display_name: Masks
-  depth_map:
-    display_name: Depth Map
-  embeddings:
-    display_name: Embeddings
-  landmarks:
-    display_name: Landmarks
-
-# An architecture is the network design a family is built on. Keep it coarse.
 architecture_paradigms:
   cnn:
     display_name: CNN
@@ -40,7 +17,7 @@ architecture_paradigms:
 
 # A family is the upstream model line, named without generation or size
 # (YOLO, not YOLO26n). The model's id and display_name carry those.
-architectures:
+model_families:
   clip:
     display_name: CLIP
     paradigm: transformer

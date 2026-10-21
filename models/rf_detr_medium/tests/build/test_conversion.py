@@ -77,7 +77,7 @@ def test_fixed_onnx_interface(tmp_path, case, converter: ModuleType):
 
 def test_source_must_be_the_hugging_face_file_set(converter: ModuleType):
     model = load_metadata(ROOT / "models/rf_detr_medium")
-    converter.validate_source(model["conversion"]["default"]["source"])
+    converter.validate_source(model["conversion"]["source"])
     pth = {"type": "file", "uri": "https://example.com/checkpoint.pth"}
     with pytest.raises(ValueError, match="Hugging Face file set"):
         converter.validate_source(pth)

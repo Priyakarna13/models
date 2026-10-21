@@ -1,22 +1,26 @@
-build-on-demand: true
 display_name: Whisper Small
+
 description: Transcribes spoken audio into text with optional automatic language detection.
+
 model_type: audio
-tasks: [automatic_speech_recognition]
-modalities:
-  inputs: [audio]
-  outputs: [text]
-architecture: whisper
+
+tasks:
+  - automatic_speech_recognition
+
+model_family: whisper
+
+build_on_demand: true
+
 license:
   spdx: Apache-2.0
-  redistribution: allowed
+  customer_redistribution: prohibited
   attribution: Derived from openai/whisper-small under Apache-2.0.
-components:
-- id: model
+
+compilation:
+  format: huggingface
   source:
     repository: openai/whisper-small
     revision: 973afd24965f72e36ca33b3055d56a652f456b4d
-    entrypoint: config.json
     files:
       added_tokens.json:
         sha256: 9715fd2243b6f06a5858b5e32950d2853f73dd5bc201aafcf76f5082a2d8acd1
@@ -51,14 +55,17 @@ components:
       vocab.json:
         sha256: 8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9
         size_bytes: 835550
-  format: huggingface
-  entrypoint: transcribe
-build_profiles:
-- id: w8a16
-  runner_class: expensive
+    main_file: config.json
   components:
-  - id: model
-    parameters:
-      precision: a16w8
-      use_future_token_mask: true
-      enable_log_probe: true
+    - model
+  runtime_entrypoint: transcribe
+
+build_profiles:
+  w8a16:
+    runner_class: expensive
+    components:
+      model:
+        parameters:
+          precision: a16w8
+          use_future_token_mask: true
+          enable_log_probe: true

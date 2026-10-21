@@ -215,16 +215,16 @@ def test_compile_reads_the_declared_build_parameters(load_script: Callable[[str]
 
 def test_model_preserves_compilation_and_quality_settings(load_script: Callable[[str], ModuleType]) -> None:
     model = load_metadata(MODEL_DIR)
-    assert model["components"][0]["interface"]["format"] == "onnx"
+    assert model["components"][0]["format"] == "onnx"
     assert {profile["id"] for profile in model["build_profiles"]} == {"w16a16", "w8a8"}
     assert model["license"] == {
         "spdx": "AGPL-3.0-only",
-        "redistribution": "restricted",
+        "customer_redistribution": "prohibited",
         "attribution": "YOLO26 is developed by Ultralytics and distributed under AGPL-3.0.",
     }
-    entry = model["accuracy"][0]
+    entry = model["accuracy"]
     for expected in load_model_tests(MODEL_DIR)["accuracy"]["expected"].values():
-        assert set(expected) == set(load_script("accuracy").METRICS)
-    assert entry["required_metrics"] == ["coco_keypoint_map"]
+        assert set(expected) == {"model.accuracy." + name for name in load_script("accuracy").METRICS}
+    assert entry["required_metrics"] == ["model.accuracy.coco_keypoint_map"]
     assert (entry["dataset"]["id"], entry["dataset"]["variant"]) == ("coco-2017", "val")
-    assert model["calibrations"][0]["dataset"]["variant"] == "cal"
+    assert model["datasets"]["coco_images"]["variant"] == "cal"

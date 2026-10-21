@@ -24,7 +24,7 @@ profile, complete this sequence before opening a pull request:
 4. Compile the build in the pinned Model Compiler environment.
 5. Validate the compile outputs and each MPK, and read the fidelity report when
    one is declared.
-6. Run the performance stage for every benchmarked component on a DevKit.
+6. Run the performance stage for the complete model on a DevKit.
 7. Run the accuracy stage on a DevKit when the build profile declares DevKit
    accuracy.
 8. Review the results and keep them, and the logs, outside the repository.
@@ -71,7 +71,7 @@ model-registry validate models/<model-id>
 
 This checks the JSON Schema, taxonomy references, the immutable source policy,
 matching directory and model IDs, component and build-profile references,
-compile invocations, packages, the `fidelity`, `accuracy`, and `benchmark`
+compile invocations, packages, the `numerical_fidelity`, `accuracy`, and `performance`
 entries, the model folder layout, and every referenced recipe and surgery
 hook. A declared `conversion` also needs `scripts/convert.py` and
 `scripts/requirements-convert.txt`. Fix the reported field in `model.yaml`; do
@@ -136,8 +136,7 @@ model-registry matrix --repository . --models <model-id>
 `resolve-compiler` prints the pinned compiler `identity`, `label`, and
 `version`. The matrix is deterministic JSON with one entry per build. Each
 entry names its `compile_invocation_id`, `component_ids`, the
-`benchmark_component_ids` of its performance stage, and the `accuracy_id` of
-its accuracy stage, or `null`. Narrow it with `--profiles` and `--components`.
+`performance` and `accuracy` booleans. Narrow it with `--profiles` and `--components`.
 
 Pass the compiler identity to see each build's compile key:
 
@@ -251,7 +250,7 @@ model-registry validate-compile-outputs <output-directory>/compile-outputs.json 
 
 When a `fidelity` entry applies, read `<result-component>/fidelity.json` and
 confirm its metrics are what the entry's status claims. See [Accuracy and
-fidelity](local-accuracy-development.md#compile-time-fidelity).
+fidelity](metadata-schema.md#numerical-fidelity).
 
 To check a download package, assemble it from the compiled output:
 
@@ -276,53 +275,40 @@ access to it before continuing; validation alone is not enough to submit.
 
 ## Benchmark locally on a Modalix DevKit
 
-The performance stage runs the model's standalone `scripts/performance.py`
-once for each component listed
-in the build's `benchmark_component_ids`. It measures the
-compiled model with Neat Core's default synthetic workload; it does not
-measure accuracy or application preprocessing and postprocessing.
+Run the model's standalone script or the shared local/CI command:
 
-Complete the DevKit setup in [DevKit performance](benchmarking.md#set-up-a-devkit)
-once. Then copy the exact compiled MPK and the model's performance script
-to the DevKit and run the ordinary workload:
-
-```bash
-~/pyneat/bin/python models/resnet_50/scripts/performance.py \
-  --mpk /workspace/resnet_50_mpk.tar.gz --output /workspace/benchmark \
-  2>&1 | tee /workspace/benchmark.log
+```sh
+model-registry performance models/resnet_50 --build-profile w8a8 \
+  --compiled-dir /path/to/builds --output /tmp/resnet-performance
 ```
 
-The same command with `python models/resnet_50/scripts/performance.py` works
-inside an activated PyNeat environment. Confirm a successful exit and check the
-saved `benchmark/benchmark-report.json` for `latency_ms`, `fps`, and the power
-fields, and `benchmark/benchmark-context.json` for `core_version`.
-For YOLO decoder settings or a custom package workload, follow
-[DevKit performance](benchmarking.md#the-performance-script).
-Keep the report and log outside Git. For a package benchmark, pass every
-component MPK to the model's script as described in the linked guide.
+The command verifies the complete profile, prepares measurement clocks and runs
+`models/resnet_50/scripts/performance.py`. It requires local compile outputs,
+not registry publication receipts. For multiple components the script receives
+all artifacts and measures its own complete orchestration. See
+[performance scripts and reports](benchmarking.md).
 
-`scripts/run_model_performance.sh` is the CI wrapper around this script. It
-needs the registry publication record of a published compilation, so it does
-not run on a local compile.
+Customers can also run the script directly without the registry package:
+
+```sh
+~/pyneat/bin/python models/resnet_50/scripts/performance.py \
+  --mpk /path/to/model_mpk.tar.gz --output /tmp/resnet-performance
+```
+
+The standard report retains `benchmark-report.json` as raw evidence.
+Keep the report and log outside Git.
 
 ## Measure declared accuracy locally
 
-Run this step when the build profile has an `accuracy` entry with `engine:
-devkit_script`; the matrix shows it as `accuracy_id`.
-
-`scripts/run_model_accuracy.sh` runs the accuracy stage on a DevKit against a
-local compile output:
-
-```bash
-scripts/run_model_accuracy.sh models/<model-id> <profile-id> <output-root> <result-directory>
+```sh
+model-registry accuracy models/resnet_50 --build-profile w8a8 \
+  --compiled-dir /path/to/builds --output /tmp/resnet-accuracy
 ```
 
-It needs a full Model Registry install from this checkout (`python -m pip
-install .`) with Dataset Registry, named by `REGISTRY_PYTHON`, and PyNeat,
-named by `PYNEAT_PYTHON`. It writes `script-output.json`, `accuracy.log`, and
-`accuracy-result.json`. For a short smoke test, run `accuracy.py` directly with
-`--limit`. [Accuracy and fidelity](local-accuracy-development.md#accuracy-on-the-devkit)
-covers both forms and the result contract.
+Use `--dataset-cache` for a shared archive cache and `--python` for a different
+PyNeat interpreter. The command checks immutable inputs and dataset pins,
+prepares requirements, runs the model script and writes `accuracy-result.json`.
+See [local accuracy development](local-accuracy-development.md).
 
 ## Finish the local review
 
@@ -333,7 +319,7 @@ Before leaving the local workflow, confirm that:
 - every intended build appears in the matrix;
 - every build compiles and its compile outputs and MPKs validate;
 - each declared fidelity report has the expected metrics;
-- the performance stage succeeds for every benchmarked component of that exact
+- the performance stage succeeds for the complete model of that exact
   MPK;
 - the accuracy stage succeeds when declared, with the expected sample count and
   required metrics; and
@@ -357,7 +343,7 @@ When this checklist passes, continue to [Submit for review](contributing.md).
 | Unexpected file in the model directory | A model directory holds only `model.yaml`, `README.md`, `hero.png`, `scripts/`, and `tests/`. |
 | `set up exactly the stages this model has` or `unexpected test files` | Give `tests/tests.yaml` one entry per stage the model has, and keep only `tests.yaml`, the stage test files, and `fixtures/` under `tests/` ([write the model's tests](adding-a-model.md#10-write-the-models-tests)). |
 | `tests run but tests/<group>/test_<stage>.py is missing` | Add the stage's test file, or set the stage's `run_tests: false` with a `skip_reason`. |
-| `accuracy.expected.<profile> lacks` or `performance.expected.<profile>.<component> lacks` | Add the build's latest published value under `expected` ([set up `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). |
+| `accuracy.expected.<profile> lacks` or `performance.expected.<profile> lacks` | Add the build's latest published value under `expected` ([set up `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). |
 | Build missing from the matrix | Check the component binding `status`, the requested IDs, and the build profile's `compile_invocations`. |
 | Unexpected MPK count | Start from an empty output directory. An invocation writes exactly one MPK per component. |
 

@@ -67,7 +67,7 @@ jobs:
       VULCAN_ARTIFACT_REGISTRY_API_URL: ${{ needs.configure.outputs.api_url }}
       VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL: ${{ needs.configure.outputs.read_api_url }}
     runs-on: ubuntu-latest
-    environment: ${{ needs.configure.outputs.vulcan_environment }}
+    environment: ${{ needs.configure.outputs.vulcan_environment == 'staging' && 'staging-publish' || needs.configure.outputs.vulcan_environment }}
     permissions:
       contents: read
       actions: read
@@ -116,7 +116,7 @@ jobs:
       VULCAN_ARTIFACT_REGISTRY_API_URL: ${{ needs.configure.outputs.api_url }}
       VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL: ${{ needs.configure.outputs.read_api_url }}
     runs-on: ubuntu-latest
-    environment: ${{ needs.configure.outputs.vulcan_environment }}
+    environment: ${{ needs.configure.outputs.vulcan_environment == 'staging' && 'staging-publish' || needs.configure.outputs.vulcan_environment }}
     permissions:
       contents: read
       issues: write
@@ -219,7 +219,7 @@ jobs:
       VULCAN_ARTIFACT_REGISTRY_API_URL: ${{ needs.configure.outputs.api_url }}
       VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL: ${{ needs.configure.outputs.read_api_url }}
     runs-on: ubuntu-latest
-    environment: ${{ needs.configure.outputs.vulcan_environment }}
+    environment: ${{ needs.configure.outputs.vulcan_environment == 'staging' && 'staging-publish' || needs.configure.outputs.vulcan_environment }}
     permissions:
       contents: read
       issues: write

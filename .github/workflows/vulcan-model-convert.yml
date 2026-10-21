@@ -1,15 +1,11 @@
 name: Vulcan Model Convert
-run-name: Convert ${{ inputs.model }} (${{ inputs.conversion }})
+run-name: Convert ${{ inputs.model }}
 on:
   workflow_dispatch:
     inputs:
       model:
         description: Model directory ID
         required: true
-        type: string
-      conversion:
-        description: Conversion entry in the model's model.yaml
-        default: default
         type: string
 permissions:
   contents: read
@@ -20,10 +16,8 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
-      id-token: write
     env:
       MODEL_ID: ${{ inputs.model }}
-      CONVERSION: ${{ inputs.conversion }}
       EXPORT_VENV: /mnt/nvme/model-export-${{ github.run_id }}-${{ github.run_attempt }}-venv
       EXPORT_DIR: /mnt/nvme/model-export-${{ github.run_id }}-${{ github.run_attempt }}
       PIP_CACHE_DIR: /mnt/nvme/pip-cache
@@ -42,7 +36,6 @@ jobs:
       - name: Validate model selection
         run: |
           [[ "$MODEL_ID" =~ ^[a-z][a-z0-9_]*$ ]]
-          [[ "$CONVERSION" =~ ^[a-z][a-z0-9_]*$ ]]
           test -f "models/$MODEL_ID/scripts/convert.py"
       - uses: actions/cache@v4
         with:
@@ -53,30 +46,42 @@ jobs:
           CONVERSION_VENV: ${{ env.EXPORT_VENV }}
         run: |
           mkdir -p "$TMPDIR"
-          scripts/run_model_conversion.sh "models/$MODEL_ID" "$CONVERSION" "$EXPORT_DIR"
+          scripts/run_model_conversion.sh "models/$MODEL_ID" "$EXPORT_DIR"
       - name: Test the converted model with the model's conversion tests
         run: |
           "$EXPORT_VENV/bin/python" -E -s -m pip --isolated install --cache-dir "$PIP_CACHE_DIR" '.[tests]'
           REGISTRY_PYTHON="$EXPORT_VENV/bin/python" \
             scripts/run_model_tests.sh conversion "models/$MODEL_ID" "$EXPORT_DIR/model.onnx"
+      - name: Retain converted output after model tests
+        uses: actions/upload-artifact@v7
+        with:
+          name: converted-model
+          path: ${{ env.EXPORT_DIR }}/model.onnx
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: convert
+    runs-on: ubuntu-latest
+    environment: staging-publish
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      MODEL_ID: ${{ inputs.model }}
+      EXPORT_DIR: _converted
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: converted-model
+          path: _converted
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: us-west-2
           role-to-assume: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN }}
       - name: Publish ONNX and print source pin
-        run: |
-          model="$EXPORT_DIR/model.onnx"
-          sha="$(sha256sum "$model" | cut -d ' ' -f 1)"
-          size="$(stat -c %s "$model")"
-          key="models-onnx/$MODEL_ID/$sha/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/model.onnx"
-          aws s3api put-object --bucket sima-neat-artifacts-staging --key "$key" --body "$model" \
-            --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id alias/sima-neat-artifacts-staging \
-            --checksum-sha256 "$(openssl dgst -sha256 -binary "$model" | base64 -w0)" \
-            --metadata "git-sha=$GITHUB_SHA,config=$CONVERSION"
-          uri="https://artifacts.stg.neat.sima.ai/$key"
-          curl --fail --silent --show-error "$uri" -o "$RUNNER_TEMP/downloaded.onnx"
-          echo "$sha  $RUNNER_TEMP/downloaded.onnx" | sha256sum --check
-          printf 'source:\n  type: file\n  uri: %s\n  sha256: %s\n  size_bytes: %s\n' "$uri" "$sha" "$size" > "$EXPORT_DIR/source.yaml"
-          cat "$EXPORT_DIR/source.yaml"
-          # shellcheck disable=SC2016
-          printf '```yaml\n%s\n```\n' "$(cat "$EXPORT_DIR/source.yaml")" >> "$GITHUB_STEP_SUMMARY"
+        run: scripts/publish_model_conversion.sh

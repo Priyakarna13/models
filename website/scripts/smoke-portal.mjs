@@ -255,7 +255,10 @@ async function checkCatalogLayouts(browser, url) {
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
         await page.locator('#task-filter').selectOption('visual_question_answering');
         await page.getByRole('heading', {name: 'Visual Question Answering', exact: true}).waitFor();
-        if (await page.locator('.catalog-model-link').count() !== 1 || await page.locator('.catalog-model-link').innerText() !== 'Qwen3.5-0.8B') throw new Error('multi-task model did not follow the selected task');
+        await page.waitForFunction(() => {
+          const links = document.querySelectorAll('.catalog-model-link');
+          return links.length === 1 && links[0].textContent === 'Qwen3.5-0.8B';
+        });
         await page.locator('#task-filter').selectOption('');
         await page.locator('#search').fill('no such model xyz');
         await page.getByRole('heading', {name: 'No matching models', exact: true}).waitFor();
@@ -354,7 +357,8 @@ async function checkTaskComparison(browser, base) {
         const profiles = await add.locator('option').allTextContents();
         if (!profiles.some(text => text.endsWith('W8A8')) || !profiles.some(text => text.endsWith('W16A16'))) throw new Error('task list lost precision variants');
         if (!await page.locator('.compare-point[data-compare-toggle$=".w8a8"]').count() || !await page.locator('.compare-point[data-compare-toggle$=".w16a16"]').count()) throw new Error('chart did not include every precision');
-        const first = page.locator('.compare-point').first();
+        // The last SVG point is painted on top when nearby touch targets overlap.
+        const first = page.locator('.compare-point').last();
         await first.hover();
         const tooltip = page.getByRole('tooltip');
         await tooltip.waitFor();
@@ -428,6 +432,50 @@ async function checkTaskComparison(browser, base) {
   }
 }
 
+async function checkLargeCatalog(browser, url) {
+  const page = await browser.newPage();
+  const detailRequests = [];
+  const pages = [];
+  let modelTemplate;
+  page.on('request', request => {
+    if (/^\/v1\/runs\/[^/]+(?:\/(?:model-report|test-results|parameters))?$/.test(new URL(request.url()).pathname)) detailRequests.push(request.url());
+  });
+  await page.route('**/v1/repositories/*/*/models?*', async route => {
+    const response = await route.fetch();
+    const original = await response.json();
+    const template = modelTemplate ||= original.models.find(model => model.builds?.length && model.reports);
+    const query = new URL(route.request().url()).searchParams;
+    const start = Number(query.get('cursor') || 0);
+    pages.push(start);
+    const models = Array.from({length: 500}, (_, offset) => {
+      const model = structuredClone(template);
+      model.model_id = `scale_${offset}`;
+      model.display_name = `Scale model ${offset}`;
+      model.builds = model.builds.map(build => ({...build, run_id: `${build.run_id}-${offset}`}));
+      return model;
+    });
+    const filtered = query.get('q') ? models.filter(model => model.display_name.includes(query.get('q'))) : models;
+    const more = start + 100 < filtered.length;
+    await route.fulfill({json: {models: filtered.slice(start, start + 100), count: filtered.length,
+      has_more: more, next_cursor: more ? String(start + 100) : null}});
+  });
+  try {
+    await page.goto(new URL('/?branch=develop', url).href);
+    await page.waitForFunction(() => document.querySelectorAll('#result-list .model-card').length === 100);
+    for (let count = 200; count <= 500; count += 100) {
+      await page.locator('#load-more').click();
+      await page.waitForFunction(expected => document.querySelectorAll('#result-list .model-card').length === expected, count);
+    }
+    if (pages.join(',') !== '0,100,200,300,400') throw new Error(`Unexpected catalog pagination: ${pages}`);
+    if (detailRequests.length) throw new Error(`Catalog fetched ${detailRequests.length} per-run details`);
+    await page.locator('#search').fill('Scale model 499');
+    await page.waitForResponse(response => new URL(response.url()).searchParams.get('q') === 'Scale model 499');
+    await page.waitForFunction(() => document.querySelectorAll('#result-list .model-card').length === 1);
+    if (!(await page.locator('#result-list').innerText()).includes('Scale model 499')) throw new Error('server search lost a model beyond the first page');
+    console.log('ok  500-model catalog · five pages, server search, no per-run report requests');
+  } finally { await page.close(); }
+}
+
 const {server, ready} = startPreview();
 let failed = false;
 try {
@@ -440,6 +488,7 @@ try {
       ['variant page', variantUrl, '#components-section .component-performance'],
       ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a8_w16a16', variantUrl), '#components-section .component-pipeline'],
     ];
+    await checkLargeCatalog(browser, variantUrl);
     await checkLayerAnalysis(browser, variantUrl);
     await checkExecutionTooltips(browser, variantUrl);
     await checkCatalogLayouts(browser, new URL('/', variantUrl));

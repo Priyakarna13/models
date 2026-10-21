@@ -4,14 +4,12 @@ accuracy:
   run_tests: true
   expected:
     w8a8:
-      top1_accuracy: 0.7764
-      top5_accuracy: 0.9356
+      model.accuracy.top1_accuracy: 0.7764
+      model.accuracy.top5_accuracy: 0.9356
 performance:
   run_tests: true
   expected:
     w16a16:
-      model:
-        throughput_fps: 578.6
+      model.inference_rate: 578.6
     w8a8:
-      model:
-        throughput_fps: 1491.4
+      model.inference_rate: 1491.4

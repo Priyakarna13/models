@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +36,7 @@ def resolve_model_compiler(repository: str | Path) -> dict[str, str]:
         raise ValidationError("dependency manifest must define model-compiler as an object")
     version = dependency.get("version")
     if not isinstance(version, str) or MODEL_COMPILER_VERSION.fullmatch(version) is None:
-        raise ValidationError(
-            "model-compiler.version must use MAJOR.MINOR.PATCH or "
-            "MAJOR.MINOR.PATCH.SERVICE format"
-        )
+        raise ValidationError("model-compiler.version must use MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.SERVICE format")
     channel = dependency.get("channel")
     revision = dependency.get("revision")
     if channel is None and revision is None:
@@ -74,9 +72,10 @@ def resolve_benchmark_runtime(repository: str | Path) -> dict[str, Any]:
         raise ValidationError("devkit.board must be a non-empty string")
     if not isinstance(os_type, str) or not os_type:
         raise ValidationError("devkit.os_type must be a non-empty string")
-    if not isinstance(install_target, str) or re.fullmatch(
-        r"core@[A-Za-z0-9][A-Za-z0-9._/-]*(?::[a-f0-9]{12,40})?", install_target
-    ) is None:
+    if (
+        not isinstance(install_target, str)
+        or re.fullmatch(r"core@[A-Za-z0-9][A-Za-z0-9._/-]*(?::[a-f0-9]{12,40})?", install_target) is None
+    ):
         raise ValidationError("neat-core.install_target must name a Core release or branch package")
 
     return {
@@ -87,3 +86,31 @@ def resolve_benchmark_runtime(repository: str | Path) -> dict[str, Any]:
         },
         "neat_core": {"install_target": install_target},
     }
+
+
+def pin_benchmark_runtime(repository: str | Path, *, read_text: Callable[[str], str] | None = None) -> dict[str, Any]:
+    """Resolve a published Core branch once; installation and keys reuse the immutable selection."""
+    import ssl
+    from urllib.parse import quote
+    from urllib.request import urlopen
+
+    import certifi
+
+    runtime = resolve_benchmark_runtime(repository)
+    target = runtime["neat_core"]["install_target"]
+    ref = target.removeprefix("core@")
+    if ":" in ref:
+        return runtime
+    url = f"https://artifacts.neat.sima.ai/core/{quote(quote(ref, safe=''), safe='')}/latest.tag"
+    try:
+        if read_text:
+            revision = read_text(url).strip()
+        else:
+            with urlopen(url, timeout=30, context=ssl.create_default_context(cafile=certifi.where())) as response:
+                revision = response.read().decode().strip()
+    except (OSError, ValueError) as exc:
+        raise ValidationError(f"could not resolve published Core revision: {exc}") from exc
+    if re.fullmatch(r"[a-f0-9]{12,40}", revision) is None:
+        raise ValidationError("published Core selection must be an immutable 12–40 character revision")
+    runtime["neat_core"]["install_target"] = f"{target}:{revision}"
+    return runtime

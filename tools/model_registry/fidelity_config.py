@@ -13,12 +13,8 @@ def validate_fidelity_result(
 ) -> None:
     report_path = Path(path)
     expected = {
-        "component_id": config["result_component"],
         "status": config["status"],
-        "dataset": {
-            key: config["dataset"][key]
-            for key in ("id", "variant", "sha256")
-        },
+        "dataset": {key: config["dataset"][key] for key in ("id", "variant", "sha256")},
         "selection": config["selection"],
         "samples": config["selection"]["samples"],
     }
@@ -38,22 +34,9 @@ def find_fidelity_config(
     build_profile_id: str,
     component_id: str,
 ) -> dict[str, Any] | None:
-    directory = Path(model_dir).expanduser().resolve()
-    packages = {package["id"]: package for package in model["packages"]}
-    matches = []
-    for entry in model["fidelity"]:
-        if build_profile_id not in entry["build_profiles"]:
-            continue
-        scope = entry["scope"]
-        applies = scope == {"type": "component", "component": component_id}
-        if scope["type"] == "package":
-            applies = component_id in packages[scope["package"]]["components"]
-        if applies:
-            matches.append(entry)
-    if not matches:
+    config = model.get("numerical_fidelity")
+    if config is None or build_profile_id not in config["build_profiles"]:
         return None
-    if len(matches) != 1:
-        raise ValidationError(
-            f"{directory}: expected exactly one fidelity entry for {build_profile_id}/{component_id}"
-        )
-    return matches[0]
+    if component_id not in {component["id"] for component in model["components"]}:
+        raise ValidationError(f"{model_dir}: unknown fidelity component {component_id!r}")
+    return config

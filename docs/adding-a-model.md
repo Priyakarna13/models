@@ -3,7 +3,7 @@
 A Model Registry contribution describes a product that developers can find,
 build, test, and download reproducibly. For a simple model, that product is one
 ONNX input and one compiled MPK. A larger product can contain several compiled
-components, runtime resources, a composition, and a download package.
+components with one derived download package.
 `model.yaml` joins those pieces, and the model's `scripts/` directory holds the
 code that compiles and measures them.
 
@@ -19,7 +19,7 @@ Before creating files, identify:
 - each independently compiled ONNX component;
 - whether a component source is one file or a set of related files;
 - the public entrypoint, concrete compiler inputs, preprocessing and decoding;
-- runtime files such as tokenizers, labels, or configuration;
+- checkpoint and deployment files such as tokenizers and configuration;
 - the target-wide build profiles and component-specific compiler parameters;
 - how the components compose and what users download;
 - the calibration, fidelity, and accuracy data each build needs.
@@ -29,8 +29,7 @@ ownership in `CODEOWNERS`; do not add owner or maturity boilerplate to YAML.
 
 ## 2. Create the directory
 
-The directory name supplies the lowercase snake-case model ID. An explicit
-`id` must match it. A model directory may contain only these entries:
+The directory name supplies the lowercase snake-case model ID. A model directory may contain only these entries:
 
 ```text
 models/<model-id>/
@@ -50,12 +49,12 @@ models/<model-id>/
     build/test_conversion.py    # only with convert.py
     build/test_compile.py
     measure/test_accuracy.py    # only when model.yaml declares DevKit accuracy
-    measure/test_performance.py # only when model.yaml declares a benchmark
+    measure/test_performance.py # required with performance
     fixtures/                   # optional test data
 ```
 
-Put every model-specific setting in `model.yaml`, not in separate
-configuration files. [Step 11](#11-write-the-readme) describes the README.
+Put declarative model settings in `model.yaml` and executable behavior in its
+scripts. Keep one blank line between top-level YAML sections. [Step 11](#11-write-the-readme) describes the README.
 
 Keep board-only code inside `performance.py` or `accuracy.py`. For ONNX, any other
 `.py` or `.sh` file under `scripts/` is a compile input, so a helper that
@@ -64,7 +63,7 @@ Keep board-only code inside `performance.py` or `accuracy.py`. For ONNX, any oth
 
 ## 3. Pin every input
 
-Each compiled component owns its source. Use `type: file` for one artifact and
+The compilation declares one source shared by its ordered components. Use `type: file` for one artifact and
 a file set when the recipe needs related files in a fixed relative layout.
 Every file retains its SHA-256 and byte count. Hugging Face file sets can share
 one immutable repository/revision declaration; see [source shorthand](metadata-schema.md#components-and-source-sets).
@@ -93,98 +92,64 @@ model-registry fetch models/<model-id> --component <component-id>
 
 When upstream publishes a checkpoint instead of ONNX, declare it under
 `conversion` and provide `scripts/convert.py` with
-`scripts/requirements-convert.txt`. `convert.py` receives `--conversion
-<entry>` and `--output-dir <directory>` and writes `model.onnx` there.
+`scripts/requirements-convert.txt`. `convert.py` receives `--output-dir <directory>` and writes `model.onnx` there.
 `scripts/run_model_conversion.sh` runs it in a fresh Python 3.12 environment:
 
 ```bash
-scripts/run_model_conversion.sh models/<model-id> default /tmp/<model-id>-export
+scripts/run_model_conversion.sh models/<model-id> /tmp/<model-id>-export
 ```
 
 The **Vulcan Model Convert** workflow runs the same script, publishes
 `model.onnx`, and prints the `source` block to pin in `model.yaml`. Only that
 pin reaches the compile stage; editing `convert.py` recompiles nothing.
 
-## 4. Describe components and interfaces
+## 4. Describe compilation
 
-Declare one `components` entry for each independently compiled unit. For a
-single model, keep its `id`, `format: onnx` or `format: huggingface`, and pinned
-`source`. The role defaults to `inference`. Conventional recipes are
-`scripts/compile.py` and `scripts/compile.sh`; do not repeat their paths.
+Declare the input format, source and ordered output components under
+`compilation`. A single model uses `components: [model]`; RF-DETR uses
+`components: [backbone, decoder]`. The conventional recipe is `scripts/compile.py`
+for ONNX or `scripts/compile.sh` for Hugging Face checkpoints.
 
-The public entrypoint defaults to `default`. Qwen/Gemma set `entrypoint: generate`
-and Whisper sets `entrypoint: transcribe`, independently of `source.entrypoint`.
-Keep preprocessing, decoding and surgery in executable code and describe their
-application-facing behavior in the README. Put concrete compiler shape overrides
-in build parameters. Core execution plans supply tensor details after compilation.
+Put preprocessing, graph surgery, tensor boundaries and decoding in executable
+model scripts. Test the actual graph and compiled artifacts. The README explains
+what an application passes between components. Do not duplicate tensor inventories,
+roles or recipe paths in YAML. Native models can declare `runtime_entrypoint:
+generate` or `transcribe`; the source file selector is named `main_file`.
 
-Multi-component products retain minimal explicit interface contracts for real
-connections, an ordered package and composition, and any CPU steps. Inspect the
-actual graph after surgery and validate compiled artifacts against these contracts.
-Planning remains offline and does not import the SDK.
+## 5. Add datasets
 
-## 5. Add resources and calibration
+Declare immutable pins once under `datasets` and use their aliases in
+`build_profiles.<profile>.calibration_dataset`, `numerical_fidelity.dataset`
+and `accuracy.dataset`. Dataset Registry pins keep their ID, variant, SHA-256
+and byte count. An existing non-registry archive can use `source` under its alias.
 
-Declare non-compiled files under `resources` and give each its package
-`install_path`. Examples include tokenizers, vocabularies, labels, and runtime
-configuration. Declare a separate license when a resource has different
-distribution terms.
-
-Declare immutable dataset pins once under `datasets` and refer to their aliases
-from calibration bindings, fidelity and accuracy. Aliases preserve the full
-dataset ID, variant, SHA-256 and size. Keep sample selections in their consuming
-stage. Explicit `calibrations` remain available for non-dataset sources or pending
-inputs with a reason.
-
-Calibration is compiler input for quantization. It is not accuracy evidence.
-Calibration, fidelity, and accuracy datasets resolve through Dataset Registry
-and need working Artifactory access. See [Datasets for local model
-development](datasets.md).
+Keep sample selection in the consuming stage. Calibration supplies quantization
+ranges; it is not accuracy evidence. See [Datasets for local model development](datasets.md).
 
 ## 6. Define build profiles and compile invocations
 
-A build profile is one product-wide target configuration, such as
-`w8a8`. Bind every participating component and put its compiler
-parameters on the binding:
+Each profile is one compile invocation for all declared components:
 
 ```yaml
 build_profiles:
-  - id: w8a8
+  w8a8:
+    calibration_dataset: calibration
     components:
-      - id: model
-        calibration: default
+      model:
         parameters: {precision: w8a8}
 ```
 
-Name the profile by its variant ID: the precision token of each component from
-[`naming-conventions.yaml`](../naming-conventions.yaml), in component order,
-with a repeated token written once, such as `w8a8`, `w16a16`, or
-`w8a8_w16a16`. Each compiled MPK carries the model and variant ID, such as
-`yolo26n_w8a8_mpk.tar.gz`. See [Build profiles](metadata-schema.md#build-profiles)
-for the full rules.
+Use precision tokens from [`naming-conventions.yaml`](../naming-conventions.yaml)
+in component order, collapsing repeats. Each component keeps its own explicit
+compiler parameters. The target is Modalix; the compiler is pinned in
+`deps/manifest.json`. A proven unsupported profile needs a reason.
 
-By default each supported binding is its own compile invocation, named after
-its component. Components that share preparation or intermediate data compile
-together in one declared invocation:
+The loader derives an invocation ID: the component ID for a singleton, `default`
+for several components. No `compile_invocations` section is authored. All
+components share an effective runner class. Elevated runner requests require
+[approval](runner-class-requests.md).
 
-```yaml
-    compile_invocations:
-      - id: detector
-        components: [backbone, decoder]
-```
-
-Grouped components must share one source, one effective runner class, and at
-most one calibration, set on the first listed component. A package and a DevKit
-accuracy entry must each compile all their components in one invocation.
-
-A binding proven incompatible may stay as `status: unsupported` with a reason.
-Do not use it for untested work.
-The build target defaults to `modalix`; keep runner class and graph-changing
-parameters explicit. Mixed-precision profiles still declare each component's
-precision rather than deriving it from the profile ID.
-
-ONNX recipes use the following interface for single and grouped invocations.
-For Hugging Face checkpoints, use the [LLiMa recipe](#llima-language-and-vision-language-models) instead:
+ONNX recipes implement this interface:
 
 ```text
 scripts/compile.py --model <verified-source> --output-dir <new-directory> \
@@ -192,94 +157,64 @@ scripts/compile.py --model <verified-source> --output-dir <new-directory> \
   [--dataset <verified-calibration>] [--fidelity-dataset <verified-fidelity-dataset>]
 ```
 
-`--model` is the verified source of the invocation's first component. The
-runner passes `--dataset` when the binding selects a ready calibration and
-`--fidelity-dataset` when a `fidelity` entry applies. The recipe:
+Read the effective definition with `model_registry.model.load_model` so aliases
+and conventional paths resolve consistently. Write one component directory per
+output. A singleton MPK is `<model_id>_<profile_id>_mpk.tar.gz`; multiple components
+add `_<component_id>` before `_mpk.tar.gz`. Pass the matching basename to the
+compiler. Downloading undeclared data inside a recipe is not allowed.
 
-- reads its effective build profile with `model_registry.model.load_model`, so
-  dataset aliases and omitted defaults reach execution consistently;
-- writes exactly one `<model-id>_<profile-id>_mpk.tar.gz` under
-  `<output-dir>/<component-id>/` for each component of the invocation, by
-  passing `<model-id>_<profile-id>` to the compiler as the model name; a
-  profile with several components adds `_<component-id>` to both;
-- writes `fidelity.json` beside the MPK of the fidelity entry's
-  `result_component` when a `fidelity` entry applies;
-- for a grouped invocation, also writes `<output-dir>/compile-outputs.json`
-  with `outputs` (each component's MPK path and SHA-256), `derived_graphs`
-  (each component's derived graph SHA-256), and `correctness` (the result
-  component's `fidelity.json` and its SHA-256); and
-- never downloads undeclared data.
+`compile-outputs.json` records each output path and SHA-256. A grouped recipe
+also records the derived graph hash for each component. When numerical fidelity
+is declared, write one `fidelity.json` and one `correctness` pointer to it. The
+pointer locates compile-time evidence, not a parent for benchmark results.
+The shared runner records singleton outputs if the recipe has not done so.
 
-For a single-component invocation, `scripts/run_model_compilation.sh` writes
-`compile-outputs.json` when the recipe does not. Shared download, checksum, MPK
-validation, and publication code belongs in `tools/`, not in model code.
+## 7. Describe the display pipeline
 
-Elevated `runner_class` requests need approval. See [Compile runner class
-requests and approvals](runner-class-requests.md).
+Package layout is derived: one component yields its MPK; several components
+form the default ZIP; native LLiMa deployments preserve their directory layout.
+Do not declare packages, compositions or resources in YAML.
 
-## 7. Define composition and packages
+For multiple components, an optional `pipeline` lists each component once in
+compilation order with readable CPU steps between them. It is display-only:
 
-A one-component product can omit `compositions` and `packages`: the loader
-generates IDs `default`, the public entrypoint, no extra resources and all
-compatible profiles, retaining the existing download layout. Declare packages
-when selecting resources or a different retrieval unit.
+```yaml
+pipeline:
+  - component: backbone
+  - cpu: Top 300 proposals
+  - component: decoder
+```
 
-A multi-component product uses a `declarative` composition whose
-`components`, `connections`, `inputs`, and `outputs` are written inline in
-`model.yaml`; see [Compositions and
-packages](metadata-schema.md#compositions-and-packages).
+Actual orchestration remains inside `performance.py` and `accuracy.py`.
 
-Its explicit ordered package selects:
+## 8. Declare numerical fidelity, accuracy and performance
 
-- the components whose MPKs it contains;
-- the runtime resources to install;
-- the compatible build profiles;
-- the composition that explains how to use them.
+Each stage has one section, without an ID, scope or result component. Omit an
+unimplemented optional stage. Omitted `build_profiles` selects all supported
+profiles; use an explicit list for restrictions such as INT8-only accuracy.
 
-Exactly one package is `default: true`. CI assembles each package from the
-build that compiles its components, so a user downloads the complete product
-as one archive.
-
-For a multi-component product, also add `pipeline` so the model browser shows
-the order the components run in; see [Compositions and
-packages](metadata-schema.md#compositions-and-packages).
-
-## 8. Declare fidelity, accuracy, and benchmark entries
-
-Omit an unimplemented stage. Accuracy and fidelity IDs stay explicit. For one
-component, accuracy/fidelity default to package `default` and its sole result
-component; ordinary performance defaults to that component. Omitted
-`build_profiles` selects every supported profile for the scope. Retain restrictions
-such as INT8-only accuracy and explicit multi-component scopes and result components.
-
-| Section | Measured by | Runs in |
+| Section | Implementation | Result |
 | --- | --- | --- |
-| `fidelity` | `compile.py`, comparing the compiled graph with the source model | compile stage |
-| `accuracy` with `engine: devkit_script` | `accuracy.py`, running the compiled MPKs | accuracy stage |
-| `accuracy` without `engine` | nothing; the entry records results measured elsewhere | no stage |
-| `benchmark` | the model's standalone `performance.py` | performance stage |
+| `numerical_fidelity` | `compile.py` compares compiled and source outputs | compile-time diagnostic |
+| `accuracy` | `accuracy.py` evaluates the complete model | one model/profile report |
+| `performance` | `performance.py` measures the complete model | one model/profile report |
 
-Fidelity is diagnostic numerical agreement, not task accuracy. A build profile
-has at most one `devkit_script` accuracy entry. Every component with a
-`benchmark` entry in a build profile gets its own performance result.
+Vision models must declare performance with `model.latency.avg` and
+`model.inference_rate`. Require power/energy metrics where the workload captures
+them. Accuracy declares its pinned dataset and nonempty `required_metrics`.
+Metric names and units come from `taxonomies/metrics.json`.
 
-Record the scores the source model's authors published under
-[`published_metrics`](metadata-schema.md#published-metrics), with the dataset,
-conditions, and pinned page of each. Record only numbers the page prints for
-these weights; leave the field out when none are published.
+Scripts control their own workload, orchestration, telemetry monitor, sample count,
+duration and layer statistics. They return the common `sima.model-report` format;
+optional component diagnostics do not replace the whole-model result. The registry
+validates the report and publishes it against the model/profile and every compiled
+input. No special ID changes that behavior. See [performance](benchmarking.md)
+and [accuracy and fidelity](local-accuracy-development.md).
 
-Use `benchmark: true` for an ordinary single-component MPK workload: ID
-`modalix_latency`, 1000 samples, minimum 60000 ms and layer statistics enabled.
-Use the explicit form for decoder choices, different settings or required metrics;
-YOLO keeps its decoder and mandatory power/energy measurements. A custom
-`performance.py` remains appropriate for RF-DETR's package pipeline. Its settings
-stay script-owned; unsupported YAML workload options fail validation.
-
-Follow [Accuracy and fidelity](local-accuracy-development.md) for the fidelity
-and accuracy contracts, and [DevKit performance](benchmarking.md) for shared and
-custom workloads. Executable accuracy keeps `engine: devkit_script` and nonempty
-`required_metrics`. Registered returned metric names and `tests/tests.yaml`
-expectations replace the repeated accuracy `metrics` list.
+Record source authors' scores under [`reference_metrics`](metadata-schema.md#published-metrics),
+with their exact dataset, conditions and pinned page. Keep model-specific
+qualification evidence alongside the implementation when it is not a published
+source score. Do not represent recorded scores as executable accuracy stages.
 
 ## 9. Know what a change reruns
 
@@ -287,15 +222,15 @@ Each stage has a stage key, a SHA-256 of everything its result depends on. CI
 compiles a build only when neither the branch's catalog nor, on a feature
 branch, a base branch's catalog records a build with its current compile key.
 It runs a DevKit stage only when no completed registry run carries that stage's
-current key. Models with `build-on-demand: true` require an explicit manual
+current key. Models with `build_on_demand: true` require an explicit manual
 selection before either stage can run; see [on-demand builds](#on-demand-builds).
 
 | Stage | Key inputs |
 | --- | --- |
-| compile (ONNX) | source identity and layout, dependencies, explicit multi-component boundary contracts, component parameters and calibration, target and compatibility, consumed fidelity settings, compile/surgery code, declared training code, the Model Compiler version, `scripts/run_model_compilation.sh`, and the shared model loader |
+| compile (ONNX) | source identity and layout, dependencies, component parameters and calibration, target and compatibility, consumed fidelity settings, compile/surgery code, the Model Compiler version, `scripts/run_model_compilation.sh`, and the shared model loader |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
-| performance | the compile run and MPK digest of every measured component in package order, the workload declaration and model-owned `performance.py`, shared performance tooling, and the DevKit runtime pin |
-| accuracy | the compile runs and MPK digests of its components, the `accuracy` entry, `accuracy.py` and `requirements-accuracy.txt`, shared accuracy tooling and registered metric vocabulary, and the DevKit runtime pin |
+| performance | the complete set of compile runs and artifact digests, `performance`, `performance.py`, shared execution/report validation code, the named report contract, semantics of used metrics, and the resolved immutable runtime |
+| accuracy | the complete set of compile runs and artifact digests, `accuracy`, `accuracy.py`, its requirements, shared execution/report validation code, the named report contract, semantics of used metrics, and the resolved immutable runtime |
 
 ONNX compile code includes every `.py` and `.sh` under `scripts/` except
 `performance.py`, `accuracy.py`, `requirements-accuracy.txt`, `convert.py` and
@@ -307,13 +242,13 @@ recompiled build is always remeasured.
 
 | Change | Reruns |
 | --- | --- |
-| README, display metadata, `published_metrics`, `convert.py`, registry tooling outside a stage's tooling | nothing |
-| `build-on-demand` | nothing; changes scheduling and catalog metadata only |
+| README, display metadata, `reference_metrics`, `convert.py`, registry tooling outside a stage's tooling | nothing |
+| `build_on_demand` | nothing; changes scheduling and catalog metadata only |
 | a model's tests under `tests/`, or `scripts/run_model_tests.sh` | nothing; a changed test applies the next time its stage runs |
-| a model's `performance.py` or benchmark declaration | affected performance stages |
+| a model's `performance.py` or performance declaration | affected performance stages |
 | `accuracy.py`, its requirements, or the `accuracy` entry | that model's accuracy |
-| registered accuracy vocabulary or its loader | accuracy stages |
-| the DevKit runtime pin, the benchmarking workflow, or `benchmark_publication.py` | every performance and accuracy stage |
+| semantic definition of a used metric | stages using that metric; display labels rerun nothing |
+| the resolved DevKit runtime or shared execution/report validation code | affected performance and accuracy stages |
 | a source model or graph parameter | that model's affected builds, then their DevKit stages |
 | an ONNX compile script or other ONNX compile input | that model's affected builds, then their DevKit stages |
 | the Model Compiler pin | every build, then every DevKit stage |
@@ -339,9 +274,9 @@ output of its stage by taking that output's fixture from the root
 | File | Exercises | Stage-output fixture | That test runs in CI |
 | --- | --- | --- | --- |
 | `build/test_conversion.py` | `convert.py` | `converted`: the ONNX path | after conversion, before the ONNX upload |
-| `build/test_compile.py` | `compile.py`, calibration, surgery, declared training code | `compiled`: the build's output directory | after compilation, before the build is published |
+| `build/test_compile.py` | `compile.py`, calibration and surgery | `compiled`: the build's output directory | after compilation, before the build is published |
 | `measure/test_accuracy.py` | `accuracy.py` | `accuracy`: the accuracy result | after the DevKit accuracy stage, before publication |
-| `measure/test_performance.py` | `performance.py` | `performance`: one component's performance result | after the DevKit performance stage, before publication |
+| `measure/test_performance.py` | `performance.py` | `performance`: the whole-model performance report | after the DevKit performance stage, before publication |
 
 A test without a stage-output fixture runs in `python -m pytest` on every pull
 request. Import a model script with the `load_script` fixture, as in
@@ -356,8 +291,8 @@ publication. A failing measurement test publishes its result with test status
 
 `tests/tests.yaml` has one entry per stage the model has: `conversion` when
 the model has `scripts/convert.py`, `compile` always, `accuracy` when
-`model.yaml` declares a `devkit_script` accuracy entry, and `performance` when
-it declares a benchmark. `model-registry validate` rejects a missing or extra
+`model.yaml` declares an accuracy section, and `performance` when
+it declares performance. `model-registry validate` rejects a missing or extra
 entry.
 
 Each entry sets `run_tests`. `true` runs the stage's test file. `false` skips
@@ -370,9 +305,7 @@ deliver on a DevKit in `expected`: the latest published value of every
 measured build. For accuracy, supply a nonempty map of registered finite numeric
 expectations per build profile, covering at least its `required_metrics`. Keep
 optional expectations such as top-5: a missing expected measurement fails.
-For performance, use `throughput_fps`, per build
-profile and component, or package for a [package
-benchmark](benchmarking.md#package-benchmark). Take the values from the model browser's latest
+For performance, use `model.inference_rate` per build profile. Take the values from the model browser's latest
 `develop` results, rounded to 4 decimal places for accuracy and 1 for
 throughput.
 
@@ -389,17 +322,15 @@ accuracy:
   run_tests: true
   expected:
     w8a8:
-      top1_accuracy: 0.7764
-      top5_accuracy: 0.9356
+      model.accuracy.top1_accuracy: 0.7764
+      model.accuracy.top5_accuracy: 0.9356
 performance:
   run_tests: true
   expected:
     w16a16:
-      model:
-        throughput_fps: 578.6
+      model.inference_rate: 578.6
     w8a8:
-      model:
-        throughput_fps: 1491.4
+      model.inference_rate: 1491.4
 ```
 
 `model-registry validate` requires an `expected` value for every build the
@@ -419,9 +350,10 @@ def test_performance_meets_its_expected_values(performance: dict[str, Any], mode
 
 
 def test_performance_records_the_execution_plan_the_browser_draws(performance: dict[str, Any]) -> None:
-    plan = performance["execution_plan"]
-    assert (plan["schema"], plan["schema_version"]) == ("sima.neat.execution_plan", 1)
-    assert plan["nodes"] and plan["edges"]
+    for component in performance["components"].values():
+        plan = component["execution_plan"]
+        assert (plan["schema"], plan["schema_version"]) == ("sima.neat.execution_plan", 1)
+        assert plan["nodes"] and plan["edges"]
 ```
 
 Update `expected` when a reviewed change moves a published value, such as a
@@ -509,7 +441,7 @@ full loop for every build before submitting.
 
 ## On-demand builds
 
-Set top-level `build-on-demand: true` for any model whose expensive builds
+Set top-level `build_on_demand: true` for any model whose expensive builds
 should run only on request. The default is `false`; existing automatic ONNX
 builds keep their scheduling. Pushes validate on-demand models and publish
 their metadata, but never compile or measure them, even when inputs change.
@@ -530,7 +462,7 @@ for retention and the separate promotion workflow.
 ## LLiMa language and vision-language models
 
 Declare a complete language model as one component, with `format: huggingface`,
-`entrypoint: generate`, and a pinned Hugging Face file set whose source entrypoint
+`runtime_entrypoint: generate`, and a pinned Hugging Face file set whose source `main_file`
 is `config.json`. Share the repository/revision while retaining every weight,
 tokenizer, processor and chat-template file's path, size and SHA-256. The conventional
 recipe is `scripts/compile.sh`. The verified downloader assembles the checkpoint
@@ -577,7 +509,7 @@ the deployment folder with `manifest.json` at its root; its component uses
 file. See the [manifest and metadata contract](metadata-schema.md#llima-checkpoint-and-deployment-formats).
 No native stage creates a deployment ZIP.
 
-Whisper sets `entrypoint: transcribe` and uses a model-specific recipe calling
+Whisper sets `runtime_entrypoint: transcribe` and uses a model-specific recipe calling
 `WhisperModel` directly instead of `llima-compile`. Its profile selects A16W8
 and the Whisper mask and log-probe options, without LLM context or image settings.
 The runner forwards boolean parameters as `--name` or `--no-name`.
@@ -590,7 +522,7 @@ README and hero changes remain outside compile identities. The YAML migration
 plans one ONNX rebuild rather than recreating removed descriptive inputs solely
 to preserve their old hashes; LLiMa graph identities remain unchanged.
 
-Omit `calibrations`, `fidelity`, `accuracy`, and `benchmark` when no corresponding
+Omit `datasets`, `numerical_fidelity`, `accuracy`, and `performance` when no corresponding
 stage is implemented. A manual Qwen build compiles and publishes only; performance
 and accuracy are separate follow-ups [#294](https://github.com/sima-neat/models/issues/294)
 and [#295](https://github.com/sima-neat/models/issues/295). The default Qwen profile

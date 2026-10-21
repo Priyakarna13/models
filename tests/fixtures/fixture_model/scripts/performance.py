@@ -1,1 +1,1 @@
-# Performance-stage fixture.
+# Test fixture: no runtime execution.

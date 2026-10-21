@@ -26,12 +26,11 @@ if len(entries) != 1 or len(entries[0]["component_ids"]) != 1:
     raise SystemExit("LLiMa requires one component per compile invocation")
 print(entries[0]["component_id"])
 ' "$COMPILE_INVOCATION_ID")"
-cache_args=()
+fetch_args=(fetch "$MODEL_DIR" --component "$component_id" --json)
 if [[ -n "${MODEL_REGISTRY_CACHE_DIR:-}" ]]; then
-  cache_args=(--cache-dir "$MODEL_REGISTRY_CACHE_DIR")
+  fetch_args+=(--cache-dir "$MODEL_REGISTRY_CACHE_DIR")
 fi
-checkpoint="$("$PYTHON" -m model_registry fetch "$MODEL_DIR" --component "$component_id" \
-  "${cache_args[@]}" --json | "$PYTHON" -c '
+checkpoint="$("$PYTHON" -m model_registry "${fetch_args[@]}" | "$PYTHON" -c '
 import json, sys
 from pathlib import Path
 print(Path(json.load(sys.stdin)["path"]).parent)

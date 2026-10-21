@@ -4,7 +4,7 @@
 # Usage: start_devkit_stages.sh <builds_json> [source_run_id]
 #
 # <builds_json> is one plan entry or a matrix ({"include": [...]}); each entry names model_id,
-# build_profile_id, compile_invocation_id, benchmark_component_ids, and stages. A source run ID names
+# build_profile_id, compile_invocation_id, runtime, builds (when reused), and stages. A source run ID names
 # the compile run whose output the benchmark downloads; without one, the benchmark restores the build
 # from the registry. Needs GH_TOKEN with actions: write, GITHUB_REPOSITORY, GITHUB_REF_NAME,
 # GITHUB_SHA, and GITHUB_STEP_SUMMARY. A failed start does not stop the others; the script then exits 1.
@@ -24,11 +24,11 @@ SOURCE_RUN_ID="${2:-}"
 # A unit separator keeps an empty component list as its own field.
 builds="$(jq -r 'if has("include") then .include[] else . end
   | [.model_id, .build_profile_id, .compile_invocation_id,
-     (.benchmark_component_ids | join(",")), (.stages | join(","))]
+     (.runtime | tojson), ((.builds // []) | tojson), (.stages | join(","))]
   | join("\u001f")' <<< "$1")"
 
 failed=0
-while IFS=$'\x1f' read -r model_id profile_id invocation_id component_ids stages; do
+while IFS=$'\x1f' read -r model_id profile_id invocation_id runtime builds_json stages; do
   [[ -n "$model_id" ]] || continue
   # The benchmark runs only when dispatched on its source branch.
   if output="$(gh workflow run vulcan-model-benchmarking.yml \
@@ -41,7 +41,8 @@ while IFS=$'\x1f' read -r model_id profile_id invocation_id component_ids stages
     -f model_id="$model_id" \
     -f build_profile_id="$profile_id" \
     -f compile_invocation_id="$invocation_id" \
-    -f component_ids="$component_ids" \
+    -f runtime="$runtime" \
+    -f builds="$builds_json" \
     -f stages="$stages" 2>&1)"; then
     run_url="$(grep -Eom1 'https://[^[:space:]]+/actions/runs/[0-9]+' <<< "$output" || true)"
     link="${run_url:-link unavailable}"

@@ -28,7 +28,7 @@ def test_lifecycle_uses_repository_scoped_oidc_publisher() -> None:
     credentials = next(step for step in job["steps"] if step.get("uses", "").startswith("aws-actions/"))
 
     assert workflow["permissions"] == {"contents": "read", "id-token": "write"}
-    assert job["environment"] == "staging"
+    assert job["environment"] == "staging-publish"
     assert credentials["uses"] == "aws-actions/configure-aws-credentials@v6"
     assert credentials["with"]["role-to-assume"] == "${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN }}"
     assert "s3:" not in WORKFLOW.read_text(encoding="utf-8")
@@ -56,7 +56,7 @@ def test_purge_is_polled_and_restore_is_idempotent() -> None:
 
     assert "/v1/repositories/${REPOSITORY}/branches/${OPERATION}" in script
     assert "/v1/purge-jobs/${job_id}" in script
-    assert "for attempt in {1..60}" in script
+    assert "for _attempt in {1..60}" in script
     assert 'if [[ "$OPERATION" == restore ]]' in script
     assert "Registered S3 object versions removed" in script
     assert lifecycle["env"]["REPOSITORY"] == "${{ github.repository }}"

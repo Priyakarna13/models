@@ -1,0 +1,583 @@
+// Generated from taxonomies/metrics.json; portal assembly verifies this copy.
+export const METRIC_CATALOG = {
+  "model.latency.avg": {
+    "unit": "ms",
+    "direction": "lower",
+    "display_name": "Average latency",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "ms"
+    }
+  },
+  "model.latency.p50": {
+    "unit": "ms",
+    "direction": "lower",
+    "display_name": "Latency p50",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "ms"
+    }
+  },
+  "model.latency.p95": {
+    "unit": "ms",
+    "direction": "lower",
+    "display_name": "Latency p95",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "ms"
+    }
+  },
+  "model.latency.p99": {
+    "unit": "ms",
+    "direction": "lower",
+    "display_name": "Latency p99",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "ms"
+    }
+  },
+  "model.inference_rate": {
+    "unit": "inferences/s",
+    "direction": "higher",
+    "display_name": "Throughput",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "fps"
+    }
+  },
+  "board.power.avg": {
+    "unit": "W",
+    "direction": "lower",
+    "display_name": "SoM power",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "W"
+    }
+  },
+  "board.energy": {
+    "unit": "J",
+    "direction": "lower",
+    "display_name": "Benchmark energy",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "J"
+    }
+  },
+  "board.power.peak": {
+    "unit": "W",
+    "direction": "lower",
+    "display_name": "Peak SoM power",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "W"
+    }
+  },
+  "board.mla_power.avg": {
+    "unit": "W",
+    "direction": "lower",
+    "display_name": "MLA power",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "W"
+    }
+  },
+  "board.mla_power.peak": {
+    "unit": "W",
+    "direction": "lower",
+    "display_name": "Peak MLA power",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1,
+      "unit": "W"
+    }
+  },
+  "board.die_temperature.avg": {
+    "unit": "°C",
+    "direction": "lower",
+    "display_name": "SoC temperature",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "°C"
+    }
+  },
+  "board.die_temperature.peak": {
+    "unit": "°C",
+    "direction": "lower",
+    "display_name": "Peak SoC temperature",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "°C"
+    }
+  },
+  "board.som_temperature.avg": {
+    "unit": "°C",
+    "direction": "lower",
+    "display_name": "SoM temperature",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "°C"
+    }
+  },
+  "board.som_temperature.peak": {
+    "unit": "°C",
+    "direction": "lower",
+    "display_name": "Peak SoM temperature",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "°C"
+    }
+  },
+  "board.cpu_usage.avg": {
+    "unit": "%",
+    "direction": "lower",
+    "display_name": "CPU usage, all cores",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "%"
+    }
+  },
+  "board.cpu_usage.peak": {
+    "unit": "%",
+    "direction": "lower",
+    "display_name": "Peak CPU usage, all cores",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "%"
+    }
+  },
+  "board.cpu_core_usage.avg": {
+    "unit": "%",
+    "direction": "lower",
+    "display_name": "CPU usage, busiest core",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "%"
+    }
+  },
+  "board.cpu_core_usage.peak": {
+    "unit": "%",
+    "direction": "lower",
+    "display_name": "Peak CPU usage, busiest core",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "%"
+    }
+  },
+  "model.mla_memory.avg": {
+    "unit": "MiB",
+    "direction": "lower",
+    "display_name": "MLA memory",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "MiB"
+    }
+  },
+  "model.mla_memory.peak": {
+    "unit": "MiB",
+    "direction": "lower",
+    "display_name": "Peak MLA memory",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 1,
+      "scale": 1,
+      "unit": "MiB"
+    }
+  },
+  "board.cma_memory.avg": {
+    "unit": "MiB",
+    "direction": "lower",
+    "display_name": "CMA pool in use",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 0,
+      "scale": 1,
+      "unit": "MiB"
+    }
+  },
+  "board.cma_memory.peak": {
+    "unit": "MiB",
+    "direction": "lower",
+    "display_name": "Peak CMA pool in use",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 0,
+      "scale": 1,
+      "unit": "MiB"
+    }
+  },
+  "board.linux_memory.avg": {
+    "unit": "MiB",
+    "direction": "lower",
+    "display_name": "Linux memory used",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 0,
+      "scale": 1,
+      "unit": "MiB"
+    }
+  },
+  "board.linux_memory.peak": {
+    "unit": "MiB",
+    "direction": "lower",
+    "display_name": "Peak Linux memory used",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 0,
+      "scale": 1,
+      "unit": "MiB"
+    }
+  },
+  "model.energy_per_inference": {
+    "unit": "J/inference",
+    "direction": "lower",
+    "display_name": "Energy / inference",
+    "stage": "performance",
+    "type": "number",
+    "display": {
+      "digits": 2,
+      "scale": 1000,
+      "unit": "mJ/inference"
+    }
+  },
+  "model.accuracy.top1_accuracy": {
+    "display_name": "Top-1",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.top5_accuracy": {
+    "display_name": "Top-5",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_map": {
+    "display_name": "mAP 50–95",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ap50": {
+    "display_name": "AP50",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ap75": {
+    "display_name": "AP75",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ap_small": {
+    "display_name": "AP small",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ap_medium": {
+    "display_name": "AP medium",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ap_large": {
+    "display_name": "AP large",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ar1": {
+    "display_name": "AR@1",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ar10": {
+    "display_name": "AR@10",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ar100": {
+    "display_name": "AR@100",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ar_small": {
+    "display_name": "AR small",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ar_medium": {
+    "display_name": "AR medium",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_ar_large": {
+    "display_name": "AR large",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_map": {
+    "display_name": "Keypoint mAP 50–95",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ap50": {
+    "display_name": "Keypoint AP50",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ap75": {
+    "display_name": "Keypoint AP75",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ap_medium": {
+    "display_name": "Keypoint AP medium",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ap_large": {
+    "display_name": "Keypoint AP large",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ar": {
+    "display_name": "Keypoint AR",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ar50": {
+    "display_name": "Keypoint AR50",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ar75": {
+    "display_name": "Keypoint AR75",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ar_medium": {
+    "display_name": "Keypoint AR medium",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_keypoint_ar_large": {
+    "display_name": "Keypoint AR large",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_person_box_map": {
+    "display_name": "Person box mAP 50–95",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_person_box_ap50": {
+    "display_name": "Person box AP50",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_map": {
+    "display_name": "Mask mAP 50–95",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ap50": {
+    "display_name": "Mask AP50",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ap75": {
+    "display_name": "Mask AP75",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ap_small": {
+    "display_name": "Mask AP small",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ap_medium": {
+    "display_name": "Mask AP medium",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ap_large": {
+    "display_name": "Mask AP large",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ar1": {
+    "display_name": "Mask AR@1",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ar10": {
+    "display_name": "Mask AR@10",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ar100": {
+    "display_name": "Mask AR@100",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ar_small": {
+    "display_name": "Mask AR small",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ar_medium": {
+    "display_name": "Mask AR medium",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_mask_ar_large": {
+    "display_name": "Mask AR large",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_box_map": {
+    "display_name": "Box mAP 50–95",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  },
+  "model.accuracy.coco_box_ap50": {
+    "display_name": "Box AP50",
+    "unit": "ratio",
+    "direction": "higher",
+    "stage": "accuracy",
+    "type": "number"
+  }
+};

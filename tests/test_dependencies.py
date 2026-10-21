@@ -116,3 +116,36 @@ def test_missing_model_compiler_dependency_fails(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError, match="must define model-compiler"):
         resolve_model_compiler(tmp_path)
+
+
+def test_mutable_runtime_is_pinned_once_before_planning():
+    from model_registry.dependencies import pin_benchmark_runtime
+
+    requests = []
+
+    def read(url):
+        requests.append(url)
+        return "a" * 12 + "\n"
+
+    runtime = pin_benchmark_runtime(ROOT, read_text=read)
+    assert runtime["neat_core"]["install_target"] == "core@develop:" + "a" * 12
+    assert requests == ["https://artifacts.neat.sima.ai/core/develop/latest.tag"]
+
+
+def test_pinned_runtime_never_resolves_latest_again(tmp_path):
+    from model_registry.dependencies import pin_benchmark_runtime
+
+    manifest = json.loads((ROOT / "deps/manifest.json").read_text())
+    manifest["neat-core"]["install_target"] = "core@develop:" + "b" * 12
+    (tmp_path / "deps").mkdir()
+    (tmp_path / "deps/manifest.json").write_text(json.dumps(manifest))
+    result = pin_benchmark_runtime(tmp_path, read_text=lambda url: pytest.fail("must not read latest"))
+    assert result["neat_core"]["install_target"] == manifest["neat-core"]["install_target"]
+
+
+@pytest.mark.parametrize("revision", ["latest", "develop", "", "abc", "x" * 12])
+def test_runtime_resolution_rejects_mutable_or_invalid_artifact_identity(revision):
+    from model_registry.dependencies import pin_benchmark_runtime
+
+    with pytest.raises(ValidationError, match="immutable"):
+        pin_benchmark_runtime(ROOT, read_text=lambda url: revision)

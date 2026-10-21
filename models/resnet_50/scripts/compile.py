@@ -48,7 +48,8 @@ def _variant(metadata: dict[str, Any], variant_id: str) -> dict[str, Any]:
 
 
 def _fidelity_config(metadata: dict[str, Any], variant_id: str) -> dict[str, Any] | None:
-    return next((item for item in metadata["fidelity"] if variant_id in item["build_profiles"]), None)
+    config = metadata.get("numerical_fidelity")
+    return config if config and variant_id in config["build_profiles"] else None
 
 
 def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: Path | None) -> AfeModel:
@@ -135,7 +136,7 @@ def measure_fidelity(
         "schema_version": 1,
         "model_id": MODEL_ID,
         "build_profile_id": variant_id,
-        "component_id": config["result_component"],
+        "component_id": "model",
         "scope": "component",
         "status": config["status"],
         "reference": "ONNX source (ONNX Runtime)",
@@ -173,12 +174,12 @@ def main() -> int:
         parser.error(f"model does not exist: {source}")
     fidelity = _fidelity_config(_metadata(), args.build_profile)
     if fidelity is not None and args.fidelity_dataset is None:
-        parser.error(f"{args.build_profile} declares fidelity {fidelity['id']!r}; pass --fidelity-dataset")
+        parser.error(f"{args.build_profile} declares numerical fidelity; pass --fidelity-dataset")
     component_dir = args.output_dir.expanduser().resolve() / COMPONENT_ID
     dataset = args.dataset.expanduser().resolve() if args.dataset else None
     candidate = compile_model(source, component_dir, args.build_profile, dataset)
     if fidelity is not None:
-        LOG.info("Measuring %s on %d images", fidelity["id"], fidelity["selection"]["samples"])
+        LOG.info("Measuring numerical fidelity on %d images", fidelity["selection"]["samples"])
         fidelity_dataset = args.fidelity_dataset.expanduser().resolve()
         report = measure_fidelity(source, candidate, fidelity_dataset, fidelity, args.build_profile)
         (component_dir / "fidelity.json").write_text(

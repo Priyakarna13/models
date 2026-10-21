@@ -277,22 +277,15 @@ def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], 
         compile_module._quantization_config({"precision": "w8a8"})
 
 
-@pytest.mark.parametrize("field", ["shape", "dtype", "name"])
-def test_compile_rejects_mismatched_boundary_contract(
-    field: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str], ModuleType]
+@pytest.mark.parametrize("components", [["decoder", "backbone"], ["backbone"], ["backbone", "other"]])
+def test_compile_rejects_mismatched_components(
+    components: list[str], load_script: Callable[[str], ModuleType]
 ) -> None:
     compile_module = load_script("compile")
     metadata = _metadata()
-    tensor = metadata["components"][1]["interface"]["entrypoints"][0]["inputs"][0]
-    shape = tensor["shape"]
-    # Shape and dtype changes preserve the byte count, which alone cannot validate a connection.
-    tensor[field] = {"shape": [shape[0], shape[1], shape[2] * shape[3], 1],
-                     "dtype": "int32", "name": "wrong_features"}[field]
-    monkeypatch.setattr(compile_module, "load_metadata", lambda _: metadata)
-
-    with pytest.raises(ValueError, match="decoder inputs do not match the RF-DETR graph boundary"):
-        compile_module.compile_model(tmp_path / "source.onnx", "w8a16_w16a16", None,
-                                     tmp_path / "images", tmp_path / "output")
+    metadata["components"] = [{"id": name} for name in components]
+    with pytest.raises(ValueError, match="compilation components"):
+        compile_module._validate_boundary_contract(metadata)
 
 
 def test_the_decoder_calibrates_in_every_build_profile(load_script: Callable[[str], ModuleType]) -> None:
@@ -403,23 +396,19 @@ def test_surgery_simplifies_only_the_decoder_partition() -> None:
 
 def test_model_declares_onnx_and_full_pipeline_correctness() -> None:
     model = load_metadata(MODEL_DIR)
-    invocation = model["build_profiles"][0]["compile_invocations"][0]
-    correctness = model["fidelity"][0]
-    benchmarks = model["benchmark"]
+    correctness = model["numerical_fidelity"]
+    benchmarks = model["performance"]
 
-    assert invocation["components"] == ["backbone", "decoder"]
-    assert "python_packages" not in invocation
+    assert model["compilation"]["components"] == ["backbone", "decoder"]
     assert model["components"][0]["source"]["type"] == "file"
     assert model["components"][0]["source"]["uri"].endswith("/model.onnx")
-    assert model["calibrations"][0]["dataset"]["id"] == "coco-2017"
+    assert model["datasets"]["coco_images"]["id"] == "coco-2017"
     assert [profile["id"] for profile in model["build_profiles"]] == ["w8a8_w16a16", "w8a16_w16a16"]
     assert model["build_profiles"][0]["components"][0]["parameters"]["calibration_samples"] == 50
     assert model["build_profiles"][0]["components"][0]["parameters"]["calibration_bins"] == 2048
-    assert correctness["scope"] == {"type": "package", "package": "default"}
-    assert [(entry["id"], entry["scope"]) for entry in benchmarks] == [
-        ("orchestration", {"type": "package", "package": "default"})
-    ]
-    assert benchmarks[0]["required_metrics"] == ["avg_power_watts", "energy_per_inference_joules"]
+    assert correctness["outputs"] == ["dets", "labels"]
+    assert benchmarks["required_metrics"] == [
+        "model.latency.avg", "model.inference_rate", "board.power.avg", "model.energy_per_inference"]
 
 
 def test_an_afe_system_exit_fails_the_phase(

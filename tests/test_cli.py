@@ -23,12 +23,12 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
 @pytest.mark.parametrize(
     "command",
     [
-        "make-benchmark-manifest",
+        "prepare-measurement",
         "publish",
         "promotion",
         "publish-candidate",
         "publish-branch-deployment",
-        "publish-benchmark",
+        "publish-report",
         "publish-catalog",
         "resolve-base",
         "resolve-benchmark-runtime",
@@ -47,7 +47,7 @@ def test_repository_cli_retains_ci_only_commands() -> None:
     parser = cli._parser()
     subcommands = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
 
-    assert {"publish", "publish-benchmark", "publish-catalog"} <= set(subcommands.choices)
+    assert {"publish", "publish-report", "publish-catalog"} <= set(subcommands.choices)
     assert {"package", "fetch-previous"}.isdisjoint(subcommands.choices)
 
 
@@ -62,9 +62,19 @@ def test_verify_artifact_dispatches_to_the_generic_verifier(entrypoint, monkeypa
 
     monkeypatch.setattr(cli, "verify_artifact", verify)
 
-    assert entrypoint([
-        "verify-artifact", str(tmp_path), "--write-manifest", "--json", "--model-id", "qwen3_5_0_8b",
-    ]) == 0
+    assert (
+        entrypoint(
+            [
+                "verify-artifact",
+                str(tmp_path),
+                "--write-manifest",
+                "--json",
+                "--model-id",
+                "qwen3_5_0_8b",
+            ]
+        )
+        == 0
+    )
     assert calls == [(tmp_path, True, {"model_id": "qwen3_5_0_8b"})]
     assert json.loads(capsys.readouterr().out) == result
 
@@ -72,8 +82,10 @@ def test_verify_artifact_dispatches_to_the_generic_verifier(entrypoint, monkeypa
 def test_publish_candidate_forwards_workflow_arguments_and_writes_summary(monkeypatch, tmp_path, capsys) -> None:
     calls = []
     result = {
-        "deployment_id": "candidate-id", "manifest_digest": "b" * 64,
-        "git_ref": "refs/heads/feature/llima-models", "commit_sha": "a" * 40,
+        "deployment_id": "candidate-id",
+        "manifest_digest": "b" * 64,
+        "git_ref": "refs/heads/feature/llima-models",
+        "commit_sha": "a" * 40,
         "protection": [{"reason": "latest_successful", "expires_at": None}],
     }
 
@@ -84,22 +96,63 @@ def test_publish_candidate_forwards_workflow_arguments_and_writes_summary(monkey
     monkeypatch.setattr("model_registry.candidates.publish_candidate", publish)
     summary = tmp_path / "summary.md"
     expected = {
-        "repository": tmp_path, "dist_dir": tmp_path / "compiled", "output_dir": tmp_path / "candidate",
-        "model_id": "qwen3_5_0_8b", "build_profile_id": "w4a16", "api_url": "https://registry.example.invalid",
-        "aws_region": "us-west-2", "bucket": "models", "kms_key_id": "key",
-        "environment": "staging", "branch": "feature/llima-models", "git_sha": "a" * 40,
-        "github_run_id": "123", "github_run_attempt": "1", "github_run_url": "https://example.invalid/run/123",
+        "repository": tmp_path,
+        "dist_dir": tmp_path / "compiled",
+        "output_dir": tmp_path / "candidate",
+        "model_id": "qwen3_5_0_8b",
+        "build_profile_id": "w4a16",
+        "api_url": "https://registry.example.invalid",
+        "aws_region": "us-west-2",
+        "bucket": "models",
+        "kms_key_id": "key",
+        "environment": "staging",
+        "branch": "feature/llima-models",
+        "git_sha": "a" * 40,
+        "github_run_id": "123",
+        "github_run_attempt": "1",
+        "github_run_url": "https://example.invalid/run/123",
     }
-    assert main([
-        "publish-candidate", "--repository", str(expected["repository"]),
-        "--dist-dir", str(expected["dist_dir"]), "--output-dir", str(expected["output_dir"]),
-        "--model", expected["model_id"], "--build-profile", expected["build_profile_id"],
-        "--api-url", expected["api_url"], "--aws-region", expected["aws_region"],
-        "--bucket", expected["bucket"], "--kms-key-id", expected["kms_key_id"],
-        "--environment", expected["environment"], "--branch", expected["branch"], "--git-sha", expected["git_sha"],
-        "--github-run-id", expected["github_run_id"], "--github-run-attempt", expected["github_run_attempt"],
-        "--github-run-url", expected["github_run_url"], "--summary", str(summary), "--json",
-    ]) == 0
+    assert (
+        main(
+            [
+                "publish-candidate",
+                "--repository",
+                str(expected["repository"]),
+                "--dist-dir",
+                str(expected["dist_dir"]),
+                "--output-dir",
+                str(expected["output_dir"]),
+                "--model",
+                expected["model_id"],
+                "--build-profile",
+                expected["build_profile_id"],
+                "--api-url",
+                expected["api_url"],
+                "--aws-region",
+                expected["aws_region"],
+                "--bucket",
+                expected["bucket"],
+                "--kms-key-id",
+                expected["kms_key_id"],
+                "--environment",
+                expected["environment"],
+                "--branch",
+                expected["branch"],
+                "--git-sha",
+                expected["git_sha"],
+                "--github-run-id",
+                expected["github_run_id"],
+                "--github-run-attempt",
+                expected["github_run_attempt"],
+                "--github-run-url",
+                expected["github_run_url"],
+                "--summary",
+                str(summary),
+                "--json",
+            ]
+        )
+        == 0
+    )
     assert calls == [expected]
     assert json.loads(capsys.readouterr().out) == result
     text = summary.read_text()
@@ -251,7 +304,7 @@ def test_fetch_fidelity_dataset_skips_model_without_fidelity(monkeypatch, capsys
 def test_invalid_model_has_nonzero_exit(capsys) -> None:
     result = main(["validate", str(ROOT / "tests" / "fixtures" / "invalid_model")])
     assert result == 2
-    assert "components[0].source" in capsys.readouterr().err
+    assert "compilation.source" in capsys.readouterr().err
 
 
 def test_matrix_emits_workflow_json(capsys) -> None:
@@ -364,64 +417,94 @@ def test_tooling_supports_python_module_entrypoint() -> None:
     assert "Model Registry lifecycle tooling" in result.stdout
 
 
-PUBLISH_MEASUREMENT_ARGS = {
-    "publish-benchmark": ["--result", "performance-result.json"],
-    "publish-accuracy": ["--result", "accuracy-result.json", "--compiled-dir", "compiled"],
-}
-PUBLISH_MEASUREMENT_FUNCTIONS = {
-    "publish-benchmark": "publish_benchmark_result",
-    "publish-accuracy": "publish_accuracy_run",
-}
-
-
-def publish_measurement(monkeypatch, command: str, *extra: str, subject: dict | None = None) -> list[dict]:
-    calls = []
-
-    def publish(**kwargs):
-        calls.append(kwargs)
-        return {
-            "result_fingerprint": "f", "accuracy_key": "k", "model_id": "m", "build_profile_id": "p",
-            **(subject or {"component_id": "c"}),
-        }  # fmt: skip
-
-    monkeypatch.setattr(f"model_registry.benchmark_publication.{PUBLISH_MEASUREMENT_FUNCTIONS[command]}", publish)
-    main([
-        command, *PUBLISH_MEASUREMENT_ARGS[command], "--repository", ".", "--api-url", "https://writer.example.invalid",
-        "--bucket", "model-artifacts", "--environment", "staging", "--branch", "feat/tests", "--git-sha", "a" * 40,
-        *extra,
-    ])  # fmt: skip
-    return calls
-
-
-@pytest.mark.parametrize("command", PUBLISH_MEASUREMENT_ARGS)
 @pytest.mark.parametrize("status", ["passed", "failed", "skipped"])
-def test_publishing_a_measurement_sends_its_test_status(monkeypatch, command: str, status: str) -> None:
-    calls = publish_measurement(monkeypatch, command, "--test-status", status)
+def test_publishing_a_measurement_sends_its_test_status(monkeypatch, tmp_path, status, capsys):
+    calls = []
+    monkeypatch.setattr(
+        "model_registry.report_publication.publish_report",
+        lambda **kwargs: calls.append(kwargs) or {"run_id": "report"},
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"model_id": "model"}')
+    assert (
+        main(
+            [
+                "publish-report",
+                "--manifest",
+                str(manifest),
+                "--result",
+                "result.json",
+                "--api-url",
+                "https://writer.invalid",
+                "--bucket",
+                "reports",
+                "--environment",
+                "staging",
+                "--test-status",
+                status,
+            ]
+        )
+        == 0
+    )
+    assert calls[0]["test_status"] == status
+    assert calls[0]["manifest"] == {"model_id": "model"}
+    assert json.loads(capsys.readouterr().out) == {"run_id": "report"}
 
-    assert [call["test_status"] for call in calls] == [status]
 
-
-def test_publishing_a_package_benchmark_names_its_package(monkeypatch, capsys) -> None:
-    publish_measurement(monkeypatch, "publish-benchmark", "--test-status", "passed", subject={"package_id": "default"})
-
-    assert capsys.readouterr().out == "Published benchmark f for m/p/default\n"
-
-
-@pytest.mark.parametrize("command", PUBLISH_MEASUREMENT_ARGS)
 @pytest.mark.parametrize("extra", [(), ("--test-status", "error")])
-def test_publishing_a_measurement_requires_a_test_outcome(monkeypatch, command: str, extra: tuple[str, ...]) -> None:
+def test_publishing_a_measurement_requires_a_test_outcome(extra):
     with pytest.raises(SystemExit) as raised:
-        publish_measurement(monkeypatch, command, *extra)
-
+        main(
+            [
+                "publish-report",
+                "--manifest",
+                "manifest.json",
+                "--result",
+                "result.json",
+                "--api-url",
+                "https://writer.invalid",
+                "--bucket",
+                "reports",
+                "--environment",
+                "staging",
+                *extra,
+            ]
+        )
     assert raised.value.code == 2
 
+
+@pytest.mark.parametrize("stage", ["performance", "accuracy"])
+def test_local_measurement_cli_uses_shared_runner_without_publication(monkeypatch, tmp_path, stage):
+    calls = []
+    monkeypatch.setattr(
+        "model_registry.measurement.run_measurement",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"stage": stage},
+    )
+    assert (
+        cli.author_main(
+            [
+                stage,
+                str(tmp_path / "model"),
+                "--build-profile",
+                "int8",
+                "--compiled-dir",
+                str(tmp_path / "compiled"),
+                "--output",
+                str(tmp_path / "result"),
+            ]
+        )
+        == 0
+    )
+    assert calls[0][0] == (tmp_path / "model", "int8", tmp_path / "compiled", tmp_path / "result")
+    assert calls[0][1]["stage"] == stage
+    assert calls[0][1]["runtime"] is None
 
 
 @pytest.mark.parametrize(
     ("argument", "base_branches"),
     [(None, []), ("", []), ("develop", ["develop"]), ("develop,release-1.0", ["develop", "release-1.0"])],
 )
-def test_publish_catalog_passes_optional_base_branches(monkeypatch, argument, base_branches) -> None:
+def test_publish_catalog_passes_optional_base_branches(monkeypatch, tmp_path, argument, base_branches) -> None:
     calls = []
 
     def publish(**kwargs):
@@ -429,11 +512,24 @@ def test_publish_catalog_passes_optional_base_branches(monkeypatch, argument, ba
         return {"catalog": {"catalog_revision": "a" * 40}}
 
     monkeypatch.setattr("model_registry.registry.publish_catalog", publish)
+    runtime = tmp_path / "runtime.json"
+    runtime.write_text("{}")
     args = [
-        "publish-catalog", "--api-url", "https://writer.example.invalid",
-        "--read-api-url", "https://reader.example.invalid", "--branch", "feat/names",
-        "--git-sha", "a" * 40, "--bucket", "model-artifacts",
-        "--environment", "staging",
+        "publish-catalog",
+        "--runtime",
+        str(runtime),
+        "--api-url",
+        "https://writer.example.invalid",
+        "--read-api-url",
+        "https://reader.example.invalid",
+        "--branch",
+        "feat/names",
+        "--git-sha",
+        "a" * 40,
+        "--bucket",
+        "model-artifacts",
+        "--environment",
+        "staging",
     ]
     if argument is not None:
         args.extend(["--base-branches", argument])

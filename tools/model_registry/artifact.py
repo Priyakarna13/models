@@ -28,11 +28,13 @@ def validate_compile_outputs(
         raise ValidationError(f"{manifest_file}: could not load compile outputs: {exc}") from exc
 
     # A grouped invocation compiles several components from one derived graph set, so it must also
-    # record each component's derived graph and the invocation's correctness result.
+    # record each component's derived graph. Declared numerical fidelity is checked by publication.
     grouped = len(component_ids) > 1
     fields = {"model_id", "build_profile_id", "compile_invocation_id", "outputs"}
     if grouped:
-        fields.update({"derived_graphs", "correctness"})
+        fields.add("derived_graphs")
+    if isinstance(manifest, dict) and "correctness" in manifest:
+        fields.add("correctness")
     if not isinstance(manifest, dict) or set(manifest) != fields:
         raise ValidationError(f"{manifest_file}: compile outputs must contain {sorted(fields)}")
     identity = {
@@ -108,9 +110,7 @@ def validate_compile_outputs(
         graph_ids: set[str] = set()
         for index, graph in enumerate(graphs):
             if not isinstance(graph, dict) or set(graph) != {"component_id", "sha256"}:
-                raise ValidationError(
-                    f"{manifest_file}: derived_graphs[{index}] must contain component_id and sha256"
-                )
+                raise ValidationError(f"{manifest_file}: derived_graphs[{index}] must contain component_id and sha256")
             component_id = graph["component_id"]
             digest = graph["sha256"]
             if component_id not in expected_components or component_id in graph_ids:
@@ -121,6 +121,9 @@ def validate_compile_outputs(
         if graph_ids != expected_components:
             raise ValidationError(f"{manifest_file}: derived_graphs must cover every component")
 
+        result["derived_graphs"] = graphs
+
+    if "correctness" in manifest:
         correctness = manifest["correctness"]
         if not isinstance(correctness, dict) or set(correctness) != {"component_id", "path", "sha256"}:
             raise ValidationError(f"{manifest_file}: correctness must contain component_id, path, and sha256")
@@ -140,7 +143,6 @@ def validate_compile_outputs(
             raise ValidationError(f"{manifest_file}: correctness SHA-256 does not match")
         result.update(
             {
-                "derived_graphs": graphs,
                 "correctness": {
                     "component_id": component_id,
                     "path": str(correctness_path),
@@ -167,19 +169,44 @@ def record_compile_outputs(
         if len(archives) != 1:
             raise ValidationError(f"expected one MPK in {root / component_id}, found {len(archives)}")
         native = archives[0].name == "deployment-manifest.json"
-        outputs.append({
-            "component_id": component_id,
-            "artifact_path" if native else "mpk_path": f"{component_id}/{archives[0].name}",
-            "artifact_sha256" if native else "mpk_sha256": sha256_file(archives[0])[0],
-        })
+        outputs.append(
+            {
+                "component_id": component_id,
+                "artifact_path" if native else "mpk_path": f"{component_id}/{archives[0].name}",
+                "artifact_sha256" if native else "mpk_sha256": sha256_file(archives[0])[0],
+            }
+        )
+    reports = [
+        (component, root / component / "fidelity.json")
+        for component in component_ids
+        if (root / component / "fidelity.json").is_file()
+    ]
+    if len(reports) > 1:
+        raise ValidationError("one model profile must have at most one numerical fidelity report")
+    correctness = {}
+    if reports:
+        component, report = reports[0]
+        correctness = {
+            "correctness": {
+                "component_id": component,
+                "path": f"{component}/fidelity.json",
+                "sha256": sha256_file(report)[0],
+            }
+        }
     manifest = root / "compile-outputs.json"
     manifest.write_text(
-        json.dumps({
-            "model_id": model_id,
-            "build_profile_id": build_profile_id,
-            "compile_invocation_id": compile_invocation_id,
-            "outputs": outputs,
-        }, indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            {
+                "model_id": model_id,
+                "build_profile_id": build_profile_id,
+                "compile_invocation_id": compile_invocation_id,
+                "outputs": outputs,
+                **correctness,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return manifest

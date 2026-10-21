@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from contract import DEFAULT_MODEL_SIZE
+from model_scripts import DEFAULT_MODEL_SIZE
 from paths import ultralytics_label_path
 from PIL import Image, ImageEnhance
 from torch import Tensor

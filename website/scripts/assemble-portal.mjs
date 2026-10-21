@@ -17,10 +17,16 @@ const revision = (
 ).slice(0, 12);
 
 const fingerprintedAssets = [
+  'metric-catalog',
   'app', 'state', 'ui', 'metrics', 'api', 'catalog-view', 'compare-view', 'model-view',
   'benchmark-adapters', 'layer-stats', 'branch-builds', 'downloads', 'markdown', 'accuracy-metrics', 'brand', 'styles',
   'config', 'portal-shell',
 ];
+const canonicalMetrics = JSON.parse(readFileSync(join(repository, 'taxonomies/metrics.json'), 'utf8'));
+const browserMetrics = await import(new URL('../../artifact-browser/metric-catalog.js', import.meta.url));
+if (JSON.stringify(canonicalMetrics) !== JSON.stringify(browserMetrics.METRIC_CATALOG)) {
+  throw new Error('artifact-browser/metric-catalog.js must match taxonomies/metrics.json');
+}
 const stylesheets = ['brand', 'styles'];
 const config = portalConfig();
 

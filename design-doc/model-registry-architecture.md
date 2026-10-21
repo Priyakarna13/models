@@ -18,7 +18,7 @@ byte size, and SHA-256.
 | --- | --- |
 | Model-owned `scripts/compile.py` | Reads its build profile from `model.yaml`, emits one MPK per compiled component, and writes the declared fidelity report. |
 | Model-owned `scripts/compile.sh` | Calls `llima-compile`; receives checkpoint/output paths, the profile's compiler options and `BUILD_PROFILE_ID`. |
-| Shared `performance.py` or model-owned `scripts/performance.py` | Benchmarks one MPK with Neat Core, or runs a model-specific package workload. |
+| Model-owned `scripts/performance.py` | Runs the whole-model workload, including orchestration, and emits a standard report. |
 | Model-owned `scripts/accuracy.py` | Measures task accuracy with a build's MPKs on a Modalix DevKit, when declared. |
 | Runner scripts in `scripts/` | Run each stage the same way locally and in CI: `run_model_compilation.sh`, `run_llima_compilation.sh`, `run_model_performance.sh`, `run_model_accuracy.sh`, and `run_model_conversion.sh`. |
 | `model-registry` | Author-safe `sima-cli` package for validation, verified input handling, the compile matrix, and compile-output and MPK checks. CI installs the full command surface for stage planning, packaging, provenance, and publication. |
@@ -38,12 +38,12 @@ design-doc/                Architecture and lifecycle design documents
 docs/                      Developer contribution guides
 models/<model-id>/         model.yaml, README.md, hero.png, model code in scripts/, and its tests in tests/
 packaging/model-registry/  Build and installer for the author-safe sima-cli package
-schemas/                   Model, composition, package, and result JSON Schemas
+schemas/                   Model, package, and report JSON Schemas
 scripts/                   Stage runner scripts and CI helpers
 taxonomies/                Sanctioned model categories and display labels
 tests/                     Repository-wide unit and contract tests and their fixtures
 tools/model_registry/      Shared CLI and lifecycle implementation
-training/                  Declared training code that is a compile input of its model
+training/                  Training workflows; deployed model code stays under its model folder
 website/                   Developer documentation site
 ```
 
@@ -84,12 +84,14 @@ this table. Modules marked CI only are removed from the author package by
 | `promotions.py` | pinned environment-specific Develop requests, inspection, decisions, receipts and review summaries (CI only) |
 | `candidates.py` | complete model/profile candidate contracts, run publication and binding, finalization, feature selection and retry receipts (CI only) |
 | `performance.py` | validating that a declared benchmark has a model-owned runnable script |
-| `benchmark_manifest.py` | the DevKit benchmark manifest for a compiled build (CI only) |
-| `benchmark_publication.py` | publishing performance and accuracy runs (CI only) |
-| `benchmark_metrics.py` | reading registry metrics from the saved Core report |
-| `core_benchmark.py` | packaging the saved Core report for publication |
-| `accuracy_config.py`, `accuracy_result.py` | finding a build's DevKit accuracy entry; accuracy result documents |
-| `published_metrics.py` | the accuracy metric vocabulary, validating each model's `published_metrics`, and the published scores the portal ships |
+| `measurement_manifest.py` | trusted profile inputs and expected stage keys bound before board execution (CI only) |
+| `report_publication.py` | publishing whole-model performance and accuracy reports against trusted inputs (CI only) |
+| `model_report.py` | the common report and metric contract |
+| `measurement.py` | local and CI measurement execution using verified local inputs |
+| `benchmark_metrics.py` | canonical report metric records |
+| `measurement_environment.py` | recording the actual board runtime |
+| `accuracy_config.py` | finding the executable accuracy stage for a profile |
+| `published_metrics.py` | the accuracy metric vocabulary, validating each model's `reference_metrics`, and the published scores the portal ships |
 | `fidelity_config.py` | finding a build's fidelity entry and checking its result |
 | `artifact.py` | compile outputs, MPK/deployed LLiMa verification, and deployment file indexes |
 | `artifact_metadata.py` | publication metadata validation |
@@ -112,11 +114,11 @@ result depends on.
 | Stage | Model script | Key | Registry record |
 | --- | --- | --- | --- |
 | compile | `compile.py` or `compile.sh` | `compile_key` in `stage_keys.py` | compile run per component, recorded in the branch catalog |
-| performance | `scripts/performance.py` | `performance_key` in `stage_keys.py` | `model_benchmark` run under the component's compile run |
-| accuracy | `accuracy.py` | `accuracy_key` in `stage_keys.py` | `model_accuracy` run under the result component's compile run |
+| performance | `scripts/performance.py` | `performance_key` in `stage_keys.py` | parentless `model_benchmark` run for the model/profile, linking every input |
+| accuracy | `accuracy.py` | `accuracy_key` in `stage_keys.py` | parentless `model_accuracy` run for the model/profile, linking every input |
 
 The ONNX compile key covers the invocation's `model.yaml` projection, the fidelity
-entries, the model's compile scripts, shared model loader, declared training code, and the compiler
+entries, the model's compile scripts, shared model loader and the compiler
 version. The LLiMa key covers checkpoint content, target, declared graph
 parameters and pinned compiler identity; scripts and registry helpers are not
 compile inputs. The performance and accuracy keys cover the compile runs and MPK
@@ -127,11 +129,24 @@ changed test applies the next time its stage runs. The contributor guide lists
 every input in [what a change
 reruns](../docs/adding-a-model.md#9-know-what-a-change-reruns).
 
-The YAML simplification rollout requires 47 ONNX compile invocations: two ResNet,
-eight RF-DETR, 30 standard YOLO26, six SSD-MobileNet and one Tiny Drone. The three
-LLiMa compile keys remain unchanged. Plan 47 performance runs and 39 executable
-accuracy runs; SSD/Tiny Drone accuracy remains recorded-only. These are rollout
-work items; the migration does not dispatch them while editing.
+The report cutover is coordinated with Vulcan. Deploy the additive backend,
+archive historical report evidence, refresh active measurements, then enable
+new readers and writers. Compiled artifacts and native compile identities stay
+intact. The PR does not execute that live cutover. Report schema majors change
+only for incompatible changes; repository-internal documents have one reader
+and writer contract.
+
+The hosted planner resolves mutable Core selectors once. Its immutable runtime
+flows through keys, installation and report provenance. The hosted measurement
+stager binds every compile input and updates expected profile keys, even when a
+targeted on-demand dispatch skips ordinary catalog publication. It retains that
+manifest separately from board evidence. The publisher verifies source, runtime,
+complete artifact set and report contract before writing.
+
+Catalogs carry expected `measurements[profile][stage]` keys. Vulcan returns a
+bounded summary only when a completed report matches those keys and the exact
+visible deployment. Detail reads load telemetry and layer plans lazily. The
+static `pipeline` strip continues to come from the portal's model definitions.
 
 ## CI flow
 
@@ -156,8 +171,7 @@ push (Vulcan Model Orchestrator, every push)
   -> compile (Vulcan Model Compile, per selected build)
        compile: backend runner, verify-artifact, the model's compile tests (self-hosted, read-only)
        publish: compile runs, fidelity, start DevKit stages, packages, catalog entry
-       on-demand LLiMa: finalize the complete candidate, then select it in its feature catalog
-  -> publish-candidates (other on-demand models): join all invocations, finalize and select in the feature catalog
+       on-demand: finalize the complete candidate, then select it in its feature catalog
   -> publish the catalog snapshot
   -> measure: start the DevKit stages that reused builds still lack
 DevKit stages (per build)
@@ -244,7 +258,7 @@ operates on registered runs and exact S3 object versions.
 
 ## On-demand builds
 
-Any expensive model may set top-level `build-on-demand: true`; the default is
+Any expensive model may set top-level `build_on_demand: true`; the default is
 `false`. Pushes validate its contract and publish catalog metadata but never
 compile or measure it. Existing automatic models keep their scheduling.
 The flag changes scheduling and catalog metadata only, never compile keys.
@@ -253,9 +267,8 @@ An explicit **Vulcan Model Orchestrator** dispatch selects both `models` and
 For Qwen3.5-0.8B use `models=qwen3_5_0_8b`, `profiles=w4a16`.
 
 In staging, `publish-candidate` waits for every invocation of the selected
-model/profile. A single-component LLiMa build does this in its existing Publish
-job; other on-demand models join their invocations in the orchestrator's
-`publish-candidates` job.
+model/profile. Each profile has one invocation, so its hosted Publish job finalizes the
+complete candidate for both ONNX and LLiMa models.
 Each candidate requires its own compile tests to pass; a failure in another
 model/profile does not block its finalization.
 It registers one versioned contract, binds each compile and

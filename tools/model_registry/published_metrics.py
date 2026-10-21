@@ -48,7 +48,7 @@ def validate_published_metrics(entries: list[dict[str, Any]], vocabulary: dict[s
 def published_metrics_by_model(models: dict[str, dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     """Each model's published scores, keyed by model ID, for the model browser."""
     return {
-        model_id: model["published_metrics"]
+        model_id: model["reference_metrics"]
         for model_id, model in sorted(models.items())
-        if model.get("published_metrics")
+        if model.get("reference_metrics")
     }

@@ -1,7 +1,7 @@
 // Model page: performance, accuracy, model card, build details, and license.
 import { accuracyMetricLabel, orderedMetricNames, publishedScores } from "./accuracy-metrics.js";
 import { selectLayers, layerTimeScale, layerFamily, LAYER_FAMILIES } from "./layer-stats.js";
-import { adaptBenchmarkResult, packageBenchmark } from "./benchmark-adapters.js";
+import { modelBenchmark } from "./benchmark-adapters.js";
 import { renderMarkdown, resolveDocumentationLink } from "./markdown.js";
 import { customerView, state, elements, catalogMode, currentVariant, showView, taxonomyLabel } from "./state.js";
 import { icons, escapeHtml, branchName, shortSha, profileLabel, variantLabel, precisionLabel, showToast, disclosure } from "./ui.js";
@@ -124,7 +124,7 @@ function metricRow({ label, text, unit }) {
 }
 
 // The headline metrics, one number each.
-const KPI_METRICS = ["throughput_fps", "latency_avg_ms", "avg_power_watts", "energy_per_inference_joules"];
+const KPI_METRICS = ["model.inference_rate", "model.latency.avg", "board.power.avg", "model.energy_per_inference"];
 
 // The SoC draws on two SoM rails: the MLA's own and the one for the rest of the SoC.
 const SOC_RAILS = ["power_rail_mla_watts", "power_rail_soc_ddr_vdd_watts"];
@@ -146,29 +146,29 @@ const RAILS = {
 // and a depth when it is part of the row above it.
 const DETAIL_CARDS = [
   ["performance", "Performance", "gauge", [], [
-    ["Throughput (async / sync)", ["throughput_fps", "sync_throughput_fps"], "Async: several inputs in flight.\nSync: one input at a time."],
-    ["Latency (mean)", ["latency_avg_ms"], "Mean time for one inference."],
-    ["Latency (p50 / p95 / p99)", ["latency_p50_ms", "latency_p95_ms", "latency_p99_ms"], "p50: 50% of inferences are faster.\np95: 95% are faster.\np99: 99% are faster."],
+    ["Throughput (async / sync)", ["model.inference_rate", "sync_throughput_fps"], "Async: several inputs in flight.\nSync: one input at a time."],
+    ["Latency (mean)", ["model.latency.avg"], "Mean time for one inference."],
+    ["Latency (p50 / p95 / p99)", ["model.latency.p50", "model.latency.p95", "model.latency.p99"], "p50: 50% of inferences are faster.\np95: 95% are faster.\np99: 99% are faster."],
   ]],
   ["heat", "Heat", "thermometer", ["Average", "Peak"], [
-    ["SoC", ["avg_die_temperature_c", "peak_die_temperature_c"], "Hottest SoC die sensor."],
-    ["SoM", ["avg_board_temperature_c", "peak_board_temperature_c"], "Hottest SoM board sensor."],
+    ["SoC", ["board.die_temperature.avg", "board.die_temperature.peak"], "Hottest SoC die sensor."],
+    ["SoM", ["board.som_temperature.avg", "board.som_temperature.peak"], "Hottest SoM board sensor."],
   ]],
   ["cpu", "CPU", "compiler", ["Average", "Peak"], [
-    ["All cores", ["avg_cpu_usage_pct", "peak_cpu_usage_pct"], "Mean load across all cores."],
-    ["Busiest core", ["avg_cpu_core_usage_pct", "peak_cpu_core_usage_pct"], "Load on the most loaded core."],
+    ["All cores", ["board.cpu_usage.avg", "board.cpu_usage.peak"], "Mean load across all cores."],
+    ["Busiest core", ["board.cpu_core_usage.avg", "board.cpu_core_usage.peak"], "Load on the most loaded core."],
   ]],
   ["power", "Power", "power", ["Average", "Peak"], [
-    ["SoM", ["avg_power_watts", "peak_power_watts"], "Sum of all SoM rails."],
+    ["SoM", ["board.power.avg", "board.power.peak"], "Sum of all SoM rails."],
     ["SoC", "soc", "MLA plus Non-MLA.\nPeak: sum of their peaks, an upper bound.", null, 1],
-    ["MLA", ["avg_mla_power_watts", "peak_mla_power_watts"], "MLA core rail (0.68 V).", "power_rail_mla_watts", 2],
+    ["MLA", ["board.mla_power.avg", "board.mla_power.peak"], "MLA core rail (0.68 V).", "power_rail_mla_watts", 2],
     ["Non-MLA", "power_rail_soc_ddr_vdd_watts", "SoC and DDR VDD rail: the SoC outside the MLA.", null, 2],
     ...Object.keys(RAILS).filter((key) => !SOC_RAILS.includes(key)).map((key) => [RAILS[key][0], key, RAILS[key][1], null, 1]),
   ]],
   ["memory", "Memory", "memory", ["Average", "Peak"], [
-    ["MLA", ["mla_memory_avg_mib", "mla_memory_peak_mib"], "Memory allocated to the MLA."],
-    ["CMA pool", ["avg_cma_memory_mib", "peak_cma_memory_mib"], "Contiguous memory in use, shared with other drivers."],
-    ["Linux", ["avg_linux_memory_mib", "peak_linux_memory_mib"], "Memory used by Linux and its processes."],
+    ["MLA", ["model.mla_memory.avg", "model.mla_memory.peak"], "Memory allocated to the MLA."],
+    ["CMA pool", ["board.cma_memory.avg", "board.cma_memory.peak"], "Contiguous memory in use, shared with other drivers."],
+    ["Linux", ["board.linux_memory.avg", "board.linux_memory.peak"], "Memory used by Linux and its processes."],
   ]],
 ];
 // Performance, heat, and CPU fill the left column; power, memory, and any other measurements the right.
@@ -176,7 +176,7 @@ const RIGHT_COLUMN_CARDS = new Set(["power", "memory", "other"]);
 // The tiles and cards place these metrics; any other measured metric is listed under Other measurements.
 // Benchmark energy is energy per inference times the sample count, so it is not shown again.
 const PLACED_METRICS = new Set([
-  ...KPI_METRICS, "energy_joules",
+  ...KPI_METRICS, "board.energy",
   ...DETAIL_CARDS.flatMap(([, , , , rows]) => rows.flatMap(([, keys]) => (Array.isArray(keys) ? keys : []))),
 ]);
 
@@ -200,7 +200,7 @@ function readingCell(value) {
 }
 
 function powerRails(measurements) {
-  return (measurements.peak_power_watts?.details?.breakdown || []).filter((rail) => Number.isFinite(rail.mean));
+  return (measurements["board.power.peak"]?.details?.breakdown || []).filter((rail) => Number.isFinite(rail.mean));
 }
 
 // The average and peak of one SoM rail, or of the SoC rails together, from the rail details of peak SoM power.
@@ -290,9 +290,9 @@ function telemetryText(telemetry) {
 
 // Synchronous throughput: the latency loop runs one input at a time, so it completes one batch per mean latency.
 function syncThroughput(benchmark) {
-  const latency = benchmark.measurements.latency_avg_ms;
+  const latency = benchmark.measurements["model.latency.avg"];
   if (latency?.status !== "measured" || !(latency.value > 0) || !(benchmark.batchSize > 0)) return null;
-  return { status: "measured", value: (benchmark.batchSize * 1000) / latency.value, unit: benchmark.measurements.throughput_fps?.unit };
+  return { status: "measured", value: (benchmark.batchSize * 1000) / latency.value, unit: benchmark.measurements["model.inference_rate"]?.unit };
 }
 
 function benchmarkDetails(benchmark, payload) {
@@ -329,7 +329,7 @@ function benchmarkDetails(benchmark, payload) {
 // The CSV download: every reading of one component or package as one table. Context comes first, then
 // each card's metrics, every SoM rail, every CPU core, the remaining measurements, and the MLA layers of
 // each component measured.
-const CSV_EXTRA_METRICS = { power: ["energy_per_inference_joules", "energy_joules"] };
+const CSV_EXTRA_METRICS = { power: ["model.energy_per_inference", "board.energy"] };
 
 function benchmarkCsv(benchmark, readings) {
   const rows = [["Section", "Metric", "Value", "Unit", "Key", "Note"]];
@@ -605,19 +605,6 @@ function benchmarkSummary(benchmark, payload, key, run, modelId) {
     ${disclosure(`benchmark:${key}`, "Benchmark details", details.markup, details.titles.join(" · "))}`;
 }
 
-function componentBenchmark(payload, runId, benchmarkRun, modelId) {
-  if (!payload) return `<p class="muted-message">No completed benchmark is linked to this component yet.</p>`;
-  const adapted = adaptBenchmarkResult(payload.result);
-  if (adapted.kind === "unsupported") {
-    return `<p class="muted-message">This benchmark schema (v${escapeHtml(adapted.schemaVersion)}) is newer than this browser can render.</p>${payload.result_artifact_url ? `<a class="external-link" href="${escapeHtml(payload.result_artifact_url)}" target="_blank" rel="noreferrer">Open raw result ${icons.external}</a>` : ""}`;
-  }
-  if (adapted.kind !== "supported") return "";
-  const benchmark = adapted.value;
-  return `${benchmarkSummary(benchmark, payload, runId, benchmarkRun, modelId)}
-    ${layerAnalysisSection([{ analysis: benchmark.layerAnalysis }], runId)}
-    ${executionGraphSection([{ id: runId, graph: benchmark.executionGraph }], runId)}`;
-}
-
 // Component and role ids read as words: "feature_extractor" becomes "Feature extractor".
 function humanize(id) {
   const words = String(id).replaceAll("_", " ");
@@ -650,19 +637,6 @@ function packagePerformance({ run, payload, result }, modelId) {
     ${benchmarkSummary(result, payload, key, run, modelId)}
     ${layerAnalysisSection(components.map(({ label, layerAnalysis }) => ({ label, analysis: layerAnalysis })), key)}
     ${executionGraphSection(components.map(({ id, label, executionGraph }) => ({ id: `${key}:${id}`, label, graph: executionGraph })), key)}
-  </div>`;
-}
-
-// A multi-component model shows each component's numbers under its name; they are never combined.
-function componentPerformance(detail, named, number, modelId) {
-  const run = detail.summary.run;
-  const id = run.metadata?.component_id || "model";
-  const heading = number
-    ? `<h4 class="numbered"><span class="component-number">${number}</span>${escapeHtml(humanize(id))}</h4>`
-    : `<h4>${escapeHtml(id)}</h4>`;
-  return `<div class="component-performance">
-    ${named ? heading : ""}
-    ${componentBenchmark(detail.benchmark, run.id, detail.benchmarkRun, modelId)}
   </div>`;
 }
 
@@ -708,31 +682,23 @@ const ACCURACY_SUMMARY_TILES = 4;
 // The registry does not preserve a result's metric order, so known metrics follow the label order and
 // any others follow them in the order they arrive.
 function orderedAccuracyMetrics(report) {
-  const metrics = report.metrics || {};
-  return orderedMetricNames(Object.keys(metrics)).map((name) => [name, metrics[name]]);
-}
-
-// The DevKit accuracy run wins over the legacy result on the benchmark run, which wins over compile-run
-// accuracy. Each result carries the run that measured it.
-function accuracyResult(detail, devkitPayload) {
-  const fallback = (detail.tests.test_results || [])
-    .find((item) => item.suite === "accuracy" && item.summary?.schema_version === 1);
-  const legacyDevkit = (detail.benchmarkTests?.test_results || [])
-    .find((item) => item.suite === "accuracy" && item.summary?.schema_version === 2);
-  if (devkitPayload?.result) return { report: devkitPayload.result, run: devkitPayload.run };
-  if (legacyDevkit) return { report: legacyDevkit.summary, run: detail.benchmarkRun };
-  return { report: detail.accuracy?.result || fallback?.summary, run: detail.summary.run };
+  const metrics = report.metrics || [];
+  const order = orderedMetricNames(metrics.map((metric) => metric.name));
+  return [...metrics].sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name)).map((metric) => [metric.name, metric]);
 }
 
 function variantAccuracy(variant) {
-  return variant.details.map((detail) => accuracyResult(detail, variant.devkit))
-    .find(({ report }) => [1, 2].includes(report?.schema_version)) || null;
+  const payload = variant.devkit;
+  const report = payload?.result;
+  if (report?.schema !== "sima.model-report" || report.schema_version !== 1 || report.stage !== "accuracy") return null;
+  return { report: { ...report, dataset: report.context?.dataset,
+    validation: { status: report.context?.validation_status }, execution: { core_version: report.context?.core_version } },
+    run: payload.run };
 }
 
 // The first accuracy metric of a build and the source model's published score, for the Compare page.
 export function accuracyHeadline(variant) {
   const report = variantAccuracy(variant)?.report;
-  if (report?.schema_version === 1) return { label: "Top-1", value: percentage(report.metrics?.candidate?.top1_accuracy), published: "" };
   const [name, metric] = report ? orderedAccuracyMetrics(report)[0] || [] : [];
   if (!name) return null;
   const published = publishedScores(variant.published, report.dataset?.id, report.metrics)[name];
@@ -753,25 +719,13 @@ function accuracyPanel(result, modelId, published = []) {
   const publishedMarkup = !customerView && published.length
     ? disclosure("published-scores", "Published scores", publishedTables(published), `${published.length} ${published.length === 1 ? "source" : "sources"}`)
     : "";
-  if (report?.schema_version === 2) {
-    const scores = publishedScores(published, report.dataset?.id, report.metrics);
-    return accuracySection(report, accuracyMetricTiles(report, scores), accuracyContextV2(report), accuracyMetricTable(report, scores), source, publishedMarkup);
-  }
-  if (!report || report.schema_version !== 1) return publishedAccuracySection(published);
-  const candidate = report.metrics?.candidate || {};
-  const reference = report.metrics?.reference || {};
-  const comparison = report.metrics?.comparison || {};
-  const evaluation = report.evaluation || {};
-  return accuracySection(report, `
-      <div class="accuracy-metric primary"><span>Candidate top-1</span><strong>${percentage(candidate.top1_accuracy)}</strong><small>Reference ${percentage(reference.top1_accuracy)}</small></div>
-      <div class="accuracy-metric primary"><span>Candidate top-5</span><strong>${percentage(candidate.top5_accuracy)}</strong><small>Reference ${percentage(reference.top5_accuracy)}</small></div>
-      <div class="accuracy-metric"><span>Top-1 agreement</span><strong>${percentage(comparison.top1_agreement)}</strong><small>Candidate vs reference</small></div>
-      <div class="accuracy-metric"><span>Top-1 delta</span><strong>${percentage(comparison.top1_delta, { signed: true })}</strong><small>Top-5 ${percentage(comparison.top5_delta, { signed: true })}</small></div>
-    `, `${keyValue("Profile", evaluation.profile)}${keyValue("Scope", report.report_scope)}${keyValue("Workers", report.execution?.workers)}${keyValue("Throughput", Number.isFinite(report.execution?.samples_per_second) ? `${report.execution.samples_per_second.toFixed(2)} images/s` : null)}`, "", source, publishedMarkup);
+  if (!report) return publishedAccuracySection(published);
+  const scores = publishedScores(published, report.dataset?.id);
+  return accuracySection(report, accuracyMetricTiles(report, scores), accuracyContextV2(report), accuracyMetricTable(report, scores), source, publishedMarkup);
 }
 
 function accuracyMetricValue(metric) {
-  if (!Number.isFinite(metric?.value)) return "—";
+  if (metric?.status !== "measured" || !Number.isFinite(metric?.value)) return "—";
   return metric.unit === "ratio" ? percentage(metric.value) : `${metric.value.toFixed(4)} ${metric.unit}`;
 }
 
@@ -886,7 +840,7 @@ function fidelityPanel(tests, runId) {
 
 function licensePanel(license) {
   if (!license?.spdx) return "";
-  const redistribution = license.redistribution ? `Redistribution ${license.redistribution}` : "Redistribution not recorded";
+  const redistribution = license.customer_redistribution ? `Customer redistribution ${license.customer_redistribution}` : "Customer redistribution not recorded";
   return `<section id="license-section" class="license-section" tabindex="-1"><div class="detail-section-title"><h3>License</h3></div>
     <p class="license-line"><strong>${escapeHtml(license.spdx)}</strong><span>${escapeHtml(redistribution)}</span></p>
     ${license.attribution ? `<p class="license-attribution">${escapeHtml(license.attribution)}</p>` : ""}
@@ -1041,7 +995,7 @@ export function renderDetail(variant) {
       ? keyValue("Maximum context", `${parameters.max_num_tokens.toLocaleString("en-US")} tokens (input + output)`) : "",
     hasImageResolution ? keyValue("Image input resolution", `${parameters.input_height} × ${parameters.input_width} pixels`) : "",
   ].join("") : "";
-  const license = run.metadata?.license;
+  const license = variant.license || run.metadata?.license;
   // CI reuses a build until its compile inputs change, so the build's commit can predate the scripts
   // that measured it. The source link opens the commit the model card comes from; Build provenance
   // keeps the build's own commit.
@@ -1061,10 +1015,7 @@ export function renderDetail(variant) {
   const builtAt = Math.max(...variant.runs.map((item) => Date.parse(item.finished_at || item.created_at || "") || 0));
   const singleComponent = details.length === 1;
   const order = pipelineOrder(variant);
-  const performanceDetails = order
-    ? [...details].sort((a, b) => order.indexOf(a.summary.run.metadata?.component_id) - order.indexOf(b.summary.run.metadata?.component_id))
-    : details;
-  const measuredPackage = packageBenchmark(details);
+  const measuredPackage = modelBenchmark(variant);
   const backLabel = elements["result-title"].textContent || "Models";
   const downloadAction = fullPackage
     ? `<button class="download-action" type="button" data-download="package" data-run-id="${escapeHtml(fullPackage.run_id)}">${icons.download}<span>${downloadLabel}</span>${packageArtifact ? `<small>${escapeHtml(formatBytes(deploymentSize(packageArtifact)))}</small>` : ""}</button>`
@@ -1082,7 +1033,7 @@ export function renderDetail(variant) {
     <header class="detail-title">
       <div class="detail-title-copy">
         <h2>${escapeHtml(displayName)}</h2>
-        <div class="detail-tags">${(categories.tasks || []).map((task) => detailTag(icons.task, taxonomyLabel("tasks", task), "task")).join("")}${categories.architecture?.id ? detailTag(icons.architecture, taxonomyLabel("architectures", categories.architecture.id), "architecture") : ""}${categories.model_type ? detailTag(icons.modelType, taxonomyLabel("model_types", categories.model_type), "model-type") : ""}${precisions.length ? detailTag(icons.precision, precisions.map(precisionLabel).join(" + "), "precision") : ""}${detailTag(icons.compiler, `${run.toolchain_name || "compiler"} ${run.toolchain_version || ""}`.trim(), "compiler")}${detailTag(icons.branch, branchName(run.git_ref), "branch")}${license?.spdx ? detailTag(icons.license, license.spdx, "license") : ""}</div>
+        <div class="detail-tags">${(categories.tasks || []).map((task) => detailTag(icons.task, taxonomyLabel("tasks", task), "task")).join("")}${categories.model_family ? detailTag(icons.architecture, taxonomyLabel("model_families", categories.model_family), "architecture") : ""}${categories.model_type ? detailTag(icons.modelType, taxonomyLabel("model_types", categories.model_type), "model-type") : ""}${precisions.length ? detailTag(icons.precision, precisions.map(precisionLabel).join(" + "), "precision") : ""}${detailTag(icons.compiler, `${run.toolchain_name || "compiler"} ${run.toolchain_version || ""}`.trim(), "compiler")}${detailTag(icons.branch, branchName(run.git_ref), "branch")}${license?.spdx ? detailTag(icons.license, license.spdx, "license") : ""}</div>
         ${catalogModel?.description ? `<p class="lede">${escapeHtml(catalogModel.description)}</p>` : ""}
         <div class="detail-title-actions">
           ${downloadAction}
@@ -1098,12 +1049,11 @@ export function renderDetail(variant) {
     ${overviewMarkup}
 
     <section id="components-section" class="component-section" tabindex="-1"><div class="detail-section-title"><h3>Performance on ${escapeHtml(targetName(run))}</h3></div>
-      ${singleComponent ? "" : `<p class="section-lede">This model runs as ${details.length} components${measuredPackage ? ", measured running together." : ", each measured on its own."}</p>`}
+      ${singleComponent ? "" : `<p class="section-lede">This model runs as ${details.length} components, measured as one pipeline.</p>`}
       ${order ? pipelineStrip(variant.pipeline) : ""}
       ${measuredPackage
         ? packagePerformance(measuredPackage, model)
-        : performanceDetails.map((detail, index) => componentPerformance(detail, !singleComponent, order && index + 1, model)).join("")}
-      ${singleComponent || measuredPackage ? "" : `<p class="section-note">Each component is measured on its own. The CPU stage between components is not measured, so component latencies do not add up to end-to-end latency.</p>`}
+        : `<p class="muted-message">Not measured for this build.</p>`}
     </section>
 
     ${accuracyMarkup}

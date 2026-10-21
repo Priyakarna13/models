@@ -48,11 +48,15 @@ def deployment(path: Path) -> Path:
     (path / "devkit").mkdir(parents=True)
     (path / "elf_files").mkdir()
     (path / "npy_files").mkdir()
-    (path / "devkit/vlm_config.json").write_text(json.dumps({
-        "lm_cfg": {},
-        "pipeline_cfg": {"max_num_tokens": 4096, "input_token_group_size": 128},
-        "vm_cfg": {"image_size": [448, 448]},
-    }))
+    (path / "devkit/vlm_config.json").write_text(
+        json.dumps(
+            {
+                "lm_cfg": {},
+                "pipeline_cfg": {"max_num_tokens": 4096, "input_token_group_size": 128},
+                "vm_cfg": {"image_size": [448, 448]},
+            }
+        )
+    )
     (path / "devkit/tokenizer.json").write_text("{}")
     (path / "devkit/backup").mkdir()
     (path / "devkit/backup/tokenizer.json").write_text("{}")
@@ -66,6 +70,7 @@ def deployment(path: Path) -> Path:
 
 class Registry:
     """Capture the real publisher requests and serve their immutable artifacts back."""
+
     def __init__(self):
         self.calls = []
         self.runs = {}
@@ -87,10 +92,14 @@ class Registry:
             return response
         if path == DEPLOYMENTS and method == "POST":
             self.candidate = {
-                **body, "deployment_id": "11111111-1111-4111-8111-111111111111", "state": "assembling",
-                "contract_digest": canonical_sha256(body["contract"]), "manifest_digest": None,
+                **body,
+                "deployment_id": "11111111-1111-4111-8111-111111111111",
+                "state": "assembling",
+                "contract_digest": canonical_sha256(body["contract"]),
+                "manifest_digest": None,
                 "upload_prefix": "models/candidates/11111111-1111-4111-8111-111111111111/",
-                "assembly_expires_at": "2099-01-01T00:00:00Z", "availability": "assembling",
+                "assembly_expires_at": "2099-01-01T00:00:00Z",
+                "availability": "assembling",
                 "protection": [{"reason": "assembly", "expires_at": "2099-01-01T00:00:00Z"}],
             }
             response = dict(self.candidate)
@@ -110,10 +119,16 @@ class Registry:
                 spec = self.candidate["contract"]["roles"][role]
                 assert run_id in self.completed
                 assert all(f"/v1/runs/{run_id}/artifacts/{name}" in self.artifacts for name in spec["artifacts"])
-                assert all(any(path == f"/v1/runs/{run_id}/inputs/{name}" for _, path, _ in self.calls)
-                           for name in spec["inputs"])
-            self.candidate.update(state="finalized", manifest_digest="f" * 64, availability="registered",
-                                  protection=[{"reason": "latest_successful", "expires_at": None}])
+                assert all(
+                    any(path == f"/v1/runs/{run_id}/inputs/{name}" for _, path, _ in self.calls)
+                    for name in spec["inputs"]
+                )
+            self.candidate.update(
+                state="finalized",
+                manifest_digest="f" * 64,
+                availability="registered",
+                protection=[{"reason": "latest_successful", "expires_at": None}],
+            )
             response = dict(self.candidate)
         elif path == "/v1/runs":
             run_id = f"run-{len(self.runs)}"
@@ -144,10 +159,18 @@ class Registry:
 
     def args(self):
         return dict(
-            api_url="https://registry.example.invalid", aws_region="us-west-2", bucket="models",
-            kms_key_id=None, environment="staging", branch="feature/llima-models", git_sha="a" * 40,
-            github_run_id="1", github_run_attempt="1", github_run_url="https://example.invalid/run/1",
-            request=self.request, artifact_store=self,
+            api_url="https://registry.example.invalid",
+            aws_region="us-west-2",
+            bucket="models",
+            kms_key_id=None,
+            environment="staging",
+            branch="feature/llima-models",
+            git_sha="a" * 40,
+            github_run_id="1",
+            github_run_attempt="1",
+            github_run_url="https://example.invalid/run/1",
+            request=self.request,
+            artifact_store=self,
         )
 
 
@@ -160,9 +183,14 @@ def compiled(tmp_path):
     model = load_and_validate_model(ROOT / "models" / MODEL)
     compiler = resolve_model_compiler(ROOT)
     provenance = {
-        "model_id": MODEL, "build_profile_id": PROFILE, "component_id": "model", "target": "modalix",
+        "model_id": MODEL,
+        "build_profile_id": PROFILE,
+        "component_id": "model",
+        "target": "modalix",
         "source_sha256": source_identity(model["components"][0]["source"]),
-        "git_sha": "a" * 40, "environment": "staging", "compiler_version": compiler["version"],
+        "git_sha": "a" * 40,
+        "environment": "staging",
+        "compiler_version": compiler["version"],
         "compiler_label": compiler["label"],
         "build_fingerprint": compile_key(ROOT, MODEL, PROFILE, "model", compiler["identity"]),
     }
@@ -177,21 +205,30 @@ def test_native_deployment_publish_package_and_retrieve_without_archiving(compil
     component = compiled / MODEL / PROFILE / "model"
     source = component / "deployment"
     manifest = validate_compile_outputs(
-        component.parent / "compile-outputs.json", component.parent,
-        model_id=MODEL, build_profile_id=PROFILE, compile_invocation_id="model", component_ids=["model"],
+        component.parent / "compile-outputs.json",
+        component.parent,
+        model_id=MODEL,
+        build_profile_id=PROFILE,
+        compile_invocation_id="model",
+        component_ids=["model"],
     )
     assert manifest["outputs"][0]["artifact_path"] == str(component / "deployment-manifest.json")
     registry = Registry()
     candidate = publish_candidate(
-        repository=ROOT, dist_dir=compiled, output_dir=tmp_path / "candidate",
-        model_id=MODEL, build_profile_id=PROFILE, **registry.args(),
+        repository=ROOT,
+        dist_dir=compiled,
+        output_dir=tmp_path / "candidate",
+        model_id=MODEL,
+        build_profile_id=PROFILE,
+        **registry.args(),
     )
     assert candidate["state"] == "finalized"
     published = json.loads((component / "registry-publication.json").read_text())
     compile_run = published["runs"][0]["run_id"]
     source_input = next(body for _, path, body in registry.calls if path.endswith("/inputs/source-component"))
-    assert source_input["metadata"]["revision"] == (
-        load_and_validate_model(ROOT / "models" / MODEL)["upstream"]["revision"]
+    assert (
+        source_input["metadata"]["revision"]
+        == (load_and_validate_model(ROOT / "models" / MODEL)["upstream"]["revision"])
     )
     package_dir = tmp_path / "candidate/packages" / MODEL / PROFILE / "packages/default"
     package = json.loads((package_dir / "package-result.json").read_text())
@@ -208,18 +245,32 @@ def test_native_deployment_publish_package_and_retrieve_without_archiving(compil
     package_run = packages["packages"][0]["run_id"]
     artifact = registry.artifacts[f"/v1/runs/{package_run}/artifacts/package"]
     assert artifact["media_type"] == "application/json"
-    assert artifact["metadata"]["deployment_size_bytes"] == sum(path.stat().st_size for path in source.rglob("*")
-                                                                  if path.is_file())
+    assert artifact["metadata"]["deployment_size_bytes"] == sum(
+        path.stat().st_size for path in source.rglob("*") if path.is_file()
+    )
     for item in package["manifest"]["files"]:
         registered = registry.artifacts[f"/v1/runs/{package_run}/artifacts/{item['artifact']}"]
         assert (registered["sha256"], registered["size_bytes"]) == (item["sha256"], item["size_bytes"])
     assert all(artifact["retention_class"] == "on-demand" for artifact in registry.artifacts.values())
     assert all(run["metadata"]["build_on_demand"] for run in registry.runs.values())
 
-    catalog = {"catalog_revision": "b" * 40, "models": [{"id": MODEL, "builds": [{
-        "build_profile_id": PROFILE, "compile_invocation_id": "model", "component_id": "model",
-        "run_id": compile_run, "artifact_sha256": published["runs"][0]["artifact_sha256"],
-    }]}]}
+    catalog = {
+        "catalog_revision": "b" * 40,
+        "models": [
+            {
+                "id": MODEL,
+                "builds": [
+                    {
+                        "build_profile_id": PROFILE,
+                        "compile_invocation_id": "model",
+                        "component_id": "model",
+                        "run_id": compile_run,
+                        "artifact_sha256": published["runs"][0]["artifact_sha256"],
+                    }
+                ],
+            }
+        ],
+    }
 
     def read(url):
         if "/catalogs/current?" in url:
@@ -231,9 +282,16 @@ def test_native_deployment_publish_package_and_retrieve_without_archiving(compil
         return {"run": {"toolchain_version": resolve_model_compiler(ROOT)["version"]}}
 
     restore_args = dict(
-        repository=ROOT, output_dir=tmp_path / "restored", api_url="https://registry.example.invalid",
-        branch="develop", catalog_revision="b" * 40, model_id=MODEL, build_profile_id=PROFILE,
-        compile_invocation_id="model", read_request=read, download_request=registry.objects.__getitem__,
+        repository=ROOT,
+        output_dir=tmp_path / "restored",
+        api_url="https://registry.example.invalid",
+        branch="develop",
+        catalog_revision="b" * 40,
+        model_id=MODEL,
+        build_profile_id=PROFILE,
+        compile_invocation_id="model",
+        read_request=read,
+        download_request=registry.objects.__getitem__,
     )
     stage_catalog_build(**restore_args)
     restored = tmp_path / "restored" / MODEL / PROFILE / "model/deployment"
@@ -269,8 +327,13 @@ def test_native_publication_rejects_wrong_compiled_settings_before_creating_runs
     path.write_text(json.dumps(config))
     provenance = json.loads((component / "compile-result.json").read_text())["provenance"]
     verify_artifact(component, write_manifest=True, provenance=provenance)
-    record_compile_outputs(component.parent, model_id=MODEL, build_profile_id=PROFILE,
-                           compile_invocation_id="model", component_ids=["model"])
+    record_compile_outputs(
+        component.parent,
+        model_id=MODEL,
+        build_profile_id=PROFILE,
+        compile_invocation_id="model",
+        component_ids=["model"],
+    )
     registry = Registry()
     with pytest.raises(ValidationError, match="compiled max_num_tokens does not match model.yaml"):
         publish_compilations(repository=ROOT, dist_dir=compiled, **registry.args())
@@ -280,8 +343,14 @@ def test_native_publication_rejects_wrong_compiled_settings_before_creating_runs
 def test_candidate_retries_resume_bound_runs_and_finalized_candidates(compiled, tmp_path):
     registry = Registry()
     registry.fail_once = "/artifacts/package"
-    args = dict(repository=ROOT, dist_dir=compiled, output_dir=tmp_path / "candidate",
-                model_id=MODEL, build_profile_id=PROFILE, **registry.args())
+    args = dict(
+        repository=ROOT,
+        dist_dir=compiled,
+        output_dir=tmp_path / "candidate",
+        model_id=MODEL,
+        build_profile_id=PROFILE,
+        **registry.args(),
+    )
     with pytest.raises(RegistryPublicationError, match="temporary publication failure"):
         publish_candidate(**args)
     assert json.loads((tmp_path / "candidate/candidate.json").read_text())["state"] == "assembling"
@@ -304,8 +373,14 @@ def test_candidate_rejects_expired_assembly_before_publication(compiled, tmp_pat
         return result
 
     with pytest.raises(ValidationError, match="assembly expired"):
-        publish_candidate(repository=ROOT, dist_dir=compiled, output_dir=tmp_path / "candidate",
-                          model_id=MODEL, build_profile_id=PROFILE, **{**registry.args(), "request": request})
+        publish_candidate(
+            repository=ROOT,
+            dist_dir=compiled,
+            output_dir=tmp_path / "candidate",
+            model_id=MODEL,
+            build_profile_id=PROFILE,
+            **{**registry.args(), "request": request},
+        )
     assert not registry.runs
 
 
@@ -325,8 +400,11 @@ def test_candidate_upload_retry_reuses_saved_exact_s3_version(tmp_path, monkeypa
 
     def head(self, key, version_id=None):
         calls.append(version_id)
-        return {"ChecksumSHA256": checksum, "ContentLength": payload.stat().st_size,
-                "VersionId": version_id or ("original" if len(calls) == 1 else "newer")}
+        return {
+            "ChecksumSHA256": checksum,
+            "ContentLength": payload.stat().st_size,
+            "VersionId": version_id or ("original" if len(calls) == 1 else "newer"),
+        }
 
     monkeypatch.setattr(S3ArtifactStore, "_head", head)
     args = dict(receipt_dir=tmp_path / "uploads")
@@ -346,7 +424,7 @@ def test_llima_runner_passes_yaml_settings_to_the_recipe(tmp_path, image_input, 
     model_dir = root / "models" / MODEL
     path = model_dir / "model.yaml"
     model = yaml.safe_load(path.read_text())
-    parameters = model["build_profiles"][0]["components"][0]["parameters"]
+    parameters = model["build_profiles"][PROFILE]["components"]["model"]["parameters"]
     parameters.update(max_num_tokens=8192, language_group_size=group_size)
     if image_input:
         parameters.update(input_height=512, input_width=640)
@@ -367,13 +445,13 @@ def test_llima_runner_passes_yaml_settings_to_the_recipe(tmp_path, image_input, 
     tools = tmp_path / "bin"
     tools.mkdir()
     programs = {
-        "registry-python": '''import json, os, sys
+        "registry-python": """import json, os, sys
 if sys.argv[1:4] == ["-m", "model_registry", "fetch"]:
     print(json.dumps({"path": os.environ["CHECKPOINT_CONFIG"]}))
 else:
     os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
-''',
-        "llima-compile": '''import json, os, sys
+""",
+        "llima-compile": """import json, os, sys
 from pathlib import Path
 checkpoint = Path(sys.argv[1])
 assert checkpoint.is_symlink()
@@ -381,24 +459,38 @@ assert checkpoint.name == "Qwen3.5-0.8B-Autoround-Safetensors"
 assert checkpoint.resolve() == Path(os.environ["CHECKPOINT_CONFIG"]).parent
 Path(os.environ["COMPILE_ARGUMENTS"]).write_text(json.dumps(sys.argv[1:]))
 Path(sys.argv[sys.argv.index("-o") + 1]).mkdir()
-''',
-        "llima-deploy": '''import os, shutil, sys
+""",
+        "llima-deploy": """import os, shutil, sys
 shutil.copytree(os.environ["DEPLOYMENT_SOURCE"], sys.argv[2])
-''',
+""",
     }
     for name, code in programs.items():
         executable = tools / name
         executable.write_text(f"#!{sys.executable}\n{code}")
         executable.chmod(0o755)
     captured = tmp_path / "arguments.json"
-    subprocess.run([
-        "bash", str(root / "scripts/run_llima_compilation.sh"), str(model_dir), PROFILE, "model",
-        str(tmp_path / "output"),
-    ], check=True, capture_output=True, text=True, env={
-        **os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "PYTHONPATH": str(root / "tools"),
-        "MODEL_COMPILER_PYTHON": str(tools / "registry-python"), "CHECKPOINT_CONFIG": str(checkpoint / "config.json"),
-        "DEPLOYMENT_SOURCE": str(source), "COMPILE_ARGUMENTS": str(captured),
-    })
+    process = subprocess.run(
+        [
+            "bash",
+            str(root / "scripts/run_llima_compilation.sh"),
+            str(model_dir),
+            PROFILE,
+            "model",
+            str(tmp_path / "output"),
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{tools}:{os.environ['PATH']}",
+            "PYTHONPATH": str(root / "tools"),
+            "MODEL_COMPILER_PYTHON": str(tools / "registry-python"),
+            "CHECKPOINT_CONFIG": str(checkpoint / "config.json"),
+            "DEPLOYMENT_SOURCE": str(source),
+            "COMPILE_ARGUMENTS": str(captured),
+        },
+    )
+    assert process.returncode == 0, process.stderr
     arguments = json.loads(captured.read_text())
     assert not Path(arguments[0]).exists()
     assert (checkpoint / "config.json").read_text() == "{}"
@@ -416,11 +508,20 @@ shutil.copytree(os.environ["DEPLOYMENT_SOURCE"], sys.argv[2])
     replay = output / MODEL / PROFILE / "model/deployment/compile.sh"
     replay_arguments = tmp_path / "replay-arguments.json"
     executable = tools / "llima-compile"
-    executable.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
-                          'open(os.environ["COMPILE_ARGUMENTS"], "w").write(json.dumps(sys.argv[1:]))\n')
-    subprocess.run(["bash", str(replay)], cwd=tmp_path, check=True, env={
-        **os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "COMPILE_ARGUMENTS": str(replay_arguments),
-    })
+    executable.write_text(
+        f"#!{sys.executable}\nimport json, os, sys\n"
+        'open(os.environ["COMPILE_ARGUMENTS"], "w").write(json.dumps(sys.argv[1:]))\n'
+    )
+    subprocess.run(
+        ["bash", str(replay)],
+        cwd=tmp_path,
+        check=True,
+        env={
+            **os.environ,
+            "PATH": f"{tools}:{os.environ['PATH']}",
+            "COMPILE_ARGUMENTS": str(replay_arguments),
+        },
+    )
     recorded = json.loads(replay_arguments.read_text())
     assert recorded[0] == "Qwen3.5-0.8B-Autoround-Safetensors"
     assert recorded[1:3] == ["-o", "Qwen3.5-0.8B-Autoround-compiled"]
@@ -429,17 +530,28 @@ shutil.copytree(os.environ["DEPLOYMENT_SOURCE"], sys.argv[2])
     manifest = json.loads((replay.parent.parent / "deployment-manifest.json").read_text())
     assert "compile.sh" in {item["path"] for item in manifest["files"]}
     compiler = resolve_model_compiler(root)
-    verify_artifact(output / MODEL / PROFILE / "model", write_manifest=True, provenance={
-        "model_id": MODEL, "build_profile_id": PROFILE, "component_id": "model", "target": "modalix",
-        "source_sha256": source_identity(model["components"][0]["source"]),
-        "git_sha": "a" * 40, "environment": "staging", "compiler_version": compiler["version"],
-        "compiler_label": compiler["label"],
-        "build_fingerprint": compile_key(root, MODEL, PROFILE, "model", compiler["identity"]),
-    })
+    verify_artifact(
+        output / MODEL / PROFILE / "model",
+        write_manifest=True,
+        provenance={
+            "model_id": MODEL,
+            "build_profile_id": PROFILE,
+            "component_id": "model",
+            "target": "modalix",
+            "source_sha256": source_identity(model["components"][0]["source"]),
+            "git_sha": "a" * 40,
+            "environment": "staging",
+            "compiler_version": compiler["version"],
+            "compiler_label": compiler["label"],
+            "build_fingerprint": compile_key(root, MODEL, PROFILE, "model", compiler["identity"]),
+        },
+    )
     prepared = _preflight_compilations(root, output, load_models(root), environment="staging", git_sha="a" * 40)
     assert prepared[0]["compiled_parameters"] == {
-        "max_num_tokens": 8192, "language_group_size": group_size,
-        "input_height": 512 if image_input else 448, "input_width": 640 if image_input else 448,
+        "max_num_tokens": 8192,
+        "language_group_size": group_size,
+        "input_height": 512 if image_input else 448,
+        "input_width": 640 if image_input else 448,
     }
 
 
@@ -452,15 +564,16 @@ def test_whisper_recipe_and_saved_script_preserve_settings(tmp_path, future_mask
     tools = tmp_path / "bin"
     tools.mkdir()
     python = tools / "python3"
-    python.write_text(f"#!{sys.executable}\nimport os, sys\n"
-                      "os.execv(sys.executable, [sys.executable, '-S', *sys.argv[1:]])\n")
+    python.write_text(
+        f"#!{sys.executable}\nimport os, sys\nos.execv(sys.executable, [sys.executable, '-S', *sys.argv[1:]])\n"
+    )
     python.chmod(0o755)
     modules = {
         "afe/__init__.py": "",
         "afe/apis/__init__.py": "",
         "afe/apis/error_handling_variables.py": "def enable_verbose_error_messages(): pass\n",
         "sima_lmm/__init__.py": "",
-        "sima_lmm/model.py": '''import json, os
+        "sima_lmm/model.py": """import json, os
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
@@ -483,15 +596,19 @@ class WhisperModel:
         Path(os.environ["COMPILER_CALLS"]).write_text(json.dumps({
             "source": self.source, "mode": mode, "generation": kwargs,
         }, default=str))
-''',
+""",
     }
     for name, code in modules.items():
         path = tools / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(code)
     captured = tmp_path / "calls.json"
-    env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "PYTHONPATH": str(tools),
-           "COMPILER_CALLS": str(captured)}
+    env = {
+        **os.environ,
+        "PATH": f"{tools}:{os.environ['PATH']}",
+        "PYTHONPATH": str(tools),
+        "COMPILER_CALLS": str(captured),
+    }
     options = [
         f"--{'' if future_mask else 'no-'}use_future_token_mask",
         f"--{'' if log_probe else 'no-'}enable_log_probe",
@@ -501,8 +618,7 @@ class WhisperModel:
         (recipe, [str(checkpoint), str(output), *options], output),
         (output / "compile.sh", [], work / "whisper-small-a16w8"),
     ):
-        subprocess.run(["bash", str(script), *arguments], cwd=work, env=env,
-                       check=True, capture_output=True, text=True)
+        subprocess.run(["bash", str(script), *arguments], cwd=work, env=env, check=True, capture_output=True, text=True)
         calls = json.loads(captured.read_text())
         assert (work / calls["source"]["hf_cache_path"]).resolve() == checkpoint
         assert calls["source"]["model_name"] == "whisper-small"
@@ -517,7 +633,7 @@ class WhisperModel:
     assert os.access(output / "compile.sh", os.X_OK)
 
 
-def test_mpk_candidate_joins_multiple_invocations_before_finalizing(tmp_path, monkeypatch):
+def test_mpk_candidate_binds_every_grouped_component_before_finalizing(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     model_dir = root / "models/fixture_model"
     shutil.copytree(ROOT / "tests/fixtures/fixture_model", model_dir)
@@ -529,15 +645,15 @@ def test_mpk_candidate_joins_multiple_invocations_before_finalizing(tmp_path, mo
         shutil.copyfile(ROOT / relative, destination)
     path = model_dir / "model.yaml"
     model = yaml.safe_load(path.read_text())
-    model["build-on-demand"] = True
-    model["components"].append({**model["components"][0], "id": "aux"})
-    model["build_profiles"][0]["components"].append({"id": "aux", "parameters": {}})
+    model["build_on_demand"] = True
+    model["compilation"]["components"].append("aux")
+    model["build_profiles"]["fixture"]["components"]["aux"] = {"parameters": {}}
     path.write_text(yaml.safe_dump(model, sort_keys=False))
     compiler = resolve_model_compiler(root)
     registry = Registry()
     invocations = tmp_path / "invocations"
     for component in ("model", "aux"):
-        output = invocations / component / "fixture_model/fixture" / component
+        output = invocations / "default" / "fixture_model/fixture" / component
         output.mkdir(parents=True)
         archive = output / f"fixture_model_fixture_{component}_mpk.tar.gz"
         with tarfile.open(archive, "w:gz") as stream:
@@ -545,40 +661,103 @@ def test_mpk_candidate_joins_multiple_invocations_before_finalizing(tmp_path, mo
                 info = tarfile.TarInfo(name)
                 info.size = len(payload)
                 stream.addfile(info, io.BytesIO(payload))
-        verify_artifact(output, write_manifest=True, provenance={
-            "model_id": "fixture_model", "build_profile_id": "fixture", "component_id": component,
-            "target": "modalix", "source_sha256": "a" * 64, "git_sha": "a" * 40,
-            "environment": "staging", "compiler_version": compiler["version"], "compiler_label": compiler["label"],
-            "build_fingerprint": compile_key(root, "fixture_model", "fixture", component, compiler["identity"]),
-        })
-        record_compile_outputs(output.parent, model_id="fixture_model", build_profile_id="fixture",
-                               compile_invocation_id=component, component_ids=[component])
+        verify_artifact(
+            output,
+            write_manifest=True,
+            provenance={
+                "model_id": "fixture_model",
+                "build_profile_id": "fixture",
+                "component_id": component,
+                "target": "modalix",
+                "source_sha256": "a" * 64,
+                "git_sha": "a" * 40,
+                "environment": "staging",
+                "compiler_version": compiler["version"],
+                "compiler_label": compiler["label"],
+                "build_fingerprint": compile_key(root, "fixture_model", "fixture", "default", compiler["identity"]),
+            },
+        )
+    manifest = record_compile_outputs(
+        output.parent,
+        model_id="fixture_model",
+        build_profile_id="fixture",
+        compile_invocation_id="default",
+        component_ids=["model", "aux"],
+    )
+    outputs = json.loads(manifest.read_text())
+    outputs["derived_graphs"] = [{"component_id": component, "sha256": "d" * 64} for component in ("model", "aux")]
+    manifest.write_text(json.dumps(outputs))
     from model_registry import stage_plan
 
-    previous = {"models": [{"id": "fixture_model", "builds": [
-        {"build_profile_id": "fixture", "component_id": "model", "run_id": "older-source",
-         "compile_fingerprint": compile_key(root, "fixture_model", "fixture", "model", compiler["identity"])},
-    ]}]}
+    previous = {
+        "models": [
+            {
+                "id": "fixture_model",
+                "builds": [
+                    {
+                        "build_profile_id": "fixture",
+                        "component_id": "model",
+                        "run_id": "older-source",
+                        "compile_fingerprint": compile_key(
+                            root, "fixture_model", "fixture", "default", compiler["identity"]
+                        ),
+                    },
+                ],
+            }
+        ]
+    }
     monkeypatch.setattr(stage_plan, "read_catalog_sources", lambda *args: (None, [previous]))
-    plan_args = dict(repository=root, compiler_version=compiler["identity"], branch="feature/candidate",
-                     model_ids=["fixture_model"], profile_ids=["fixture"], include_on_demand=True,
-                     read=lambda url: {}, read_api_url="https://registry.example.invalid")
+    plan_args = dict(
+        repository=root,
+        compiler_version=compiler["identity"],
+        branch="feature/candidate",
+        model_ids=["fixture_model"],
+        profile_ids=["fixture"],
+        include_on_demand=True,
+        read=lambda url: {},
+        read_api_url="https://registry.example.invalid",
+    )
     plan = stage_plan.plan_stages(**plan_args)
-    assert {item["compile_invocation_id"] for item in plan["compile"]["include"]} == {"model", "aux"}
-    with pytest.raises(ValidationError, match="complete profile"):
+    assert {item["compile_invocation_id"] for item in plan["compile"]["include"]} == {"default"}
+    with pytest.raises(ValidationError, match="complete model build"):
         stage_plan.plan_stages(**plan_args, component_ids=["aux"])
-    result = publish_candidate(repository=root, dist_dir=invocations, output_dir=tmp_path / "candidate",
-                               model_id="fixture_model", build_profile_id="fixture", **registry.args())
+    result = publish_candidate(
+        repository=root,
+        dist_dir=invocations,
+        output_dir=tmp_path / "candidate",
+        model_id="fixture_model",
+        build_profile_id="fixture",
+        **registry.args(),
+    )
     assert result["state"] == "finalized"
     assert set(registry.bindings) == {"compile-model", "compile-aux", "package-default"}
-    finalization = next(index for index, (method, path, _) in enumerate(registry.calls)
-                        if path.startswith(DEPLOYMENTS) and path.endswith("/finalize"))
-    assert all(index < finalization for index, (_, path, _) in enumerate(registry.calls)
-               if path.startswith("/v1/runs/") and path.endswith("/finalize"))
+    finalization = next(
+        index
+        for index, (method, path, _) in enumerate(registry.calls)
+        if path.startswith(DEPLOYMENTS) and path.endswith("/finalize")
+    )
+    assert all(
+        index < finalization
+        for index, (_, path, _) in enumerate(registry.calls)
+        if path.startswith("/v1/runs/") and path.endswith("/finalize")
+    )
 
 
-@pytest.mark.parametrize("unsafe", ["../escape", "/absolute", "./alias", "elf_files//alias", "bad\\path",
-                                    "manifest.json", "manifest.json/alias", ".", "foo.", "a:b"])
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "../escape",
+        "/absolute",
+        "./alias",
+        "elf_files//alias",
+        "bad\\path",
+        "manifest.json",
+        "manifest.json/alias",
+        ".",
+        "foo.",
+        "a:b",
+    ],
+)
 def test_deployment_manifest_rejects_unsafe_paths(unsafe):
     item = {"path": unsafe, "artifact": deployment_artifact_name(unsafe), "sha256": "a" * 64, "size_bytes": 1}
     with pytest.raises(ValidationError, match="unsafe"):
@@ -588,6 +767,7 @@ def test_deployment_manifest_rejects_unsafe_paths(unsafe):
 def test_deployment_manifest_rejects_aliases_and_overlapping_paths():
     def item(path):
         return {"path": path, "artifact": deployment_artifact_name(path), "sha256": "a" * 64, "size_bytes": 1}
+
     for files in ([item("a"), item("A")], [item("a"), item("a/b")]):
         with pytest.raises(ValidationError, match="duplicate|overlap"):
             deployment_files({"files": files})
@@ -623,7 +803,6 @@ def test_registry_download_streams_and_replaces_only_verified_files(tmp_path, mo
 
     destination.write_bytes(previous)
     with pytest.raises(ValidationError, match="SHA-256"):
-        _download_registry_file("https://example.invalid/weights", destination,
-                                {**artifact, "sha256": "0" * 64})
+        _download_registry_file("https://example.invalid/weights", destination, {**artifact, "sha256": "0" * 64})
     assert destination.read_bytes() == previous
     assert sorted(tmp_path.iterdir()) == [destination]

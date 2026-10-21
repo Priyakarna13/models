@@ -1,26 +1,32 @@
-build-on-demand: true
 display_name: Qwen3.5-0.8B
+
 description: Generates text from instructions, conversation history, and images.
+
 model_type: vlm
-tasks: [text_generation, visual_question_answering]
-modalities:
-  inputs: [text, image]
-  outputs: [text]
-architecture: qwen
+
+tasks:
+  - text_generation
+  - visual_question_answering
+
+model_family: qwen
+
+build_on_demand: true
+
 license:
   spdx: Apache-2.0
-  redistribution: allowed
+  customer_redistribution: prohibited
   attribution: Derived from Qwen/Qwen3.5-0.8B; AutoRound checkpoint provided by SiMa.ai under Apache-2.0.
+
 upstream:
   repository: https://huggingface.co/simaai/Qwen3.5-0.8B-Autoround-Safetensors
   revision: 368d99afc0f454d646d9b2c847b635a82a016e9a
   derived_from: https://huggingface.co/Qwen/Qwen3.5-0.8B
-components:
-- id: model
+
+compilation:
+  format: huggingface
   source:
     repository: simaai/Qwen3.5-0.8B-Autoround-Safetensors
     revision: 368d99afc0f454d646d9b2c847b635a82a016e9a
-    entrypoint: config.json
     files:
       chat_template.jinja:
         sha256: 273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80
@@ -61,16 +67,19 @@ components:
       vocab.json:
         sha256: ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003
         size_bytes: 6722759
-  format: huggingface
-  entrypoint: generate
-build_profiles:
-- id: w4a16
-  runner_class: expensive
+    main_file: config.json
   components:
-  - id: model
-    parameters:
-      precision: a16w4
-      max_num_tokens: 4096
-      language_group_size: 128
-      input_height: 448
-      input_width: 448
+    - model
+  runtime_entrypoint: generate
+
+build_profiles:
+  w4a16:
+    runner_class: expensive
+    components:
+      model:
+        parameters:
+          precision: a16w4
+          max_num_tokens: 4096
+          language_group_size: 128
+          input_height: 448
+          input_width: 448

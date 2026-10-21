@@ -5,10 +5,16 @@
   "description": "One model's tests/tests.yaml: whether each stage's test file runs, and what the model is expected to deliver on a DevKit. build/ checks conversion and compilation; measure/ checks accuracy and performance.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["compile"],
+  "required": [
+    "compile"
+  ],
   "properties": {
-    "conversion": {"$ref": "#/$defs/buildStage"},
-    "compile": {"$ref": "#/$defs/buildStage"},
+    "conversion": {
+      "$ref": "#/$defs/buildStage"
+    },
+    "compile": {
+      "$ref": "#/$defs/buildStage"
+    },
     "accuracy": {
       "$ref": "#/$defs/measureStage",
       "unevaluatedProperties": false,
@@ -16,7 +22,9 @@
         "expected": {
           "description": "Per build profile, the value of every metric the accuracy result reports.",
           "type": "object",
-          "additionalProperties": {"$ref": "#/$defs/metricValues"}
+          "additionalProperties": {
+            "$ref": "#/$defs/metricValues"
+          }
         }
       }
     },
@@ -25,16 +33,10 @@
       "unevaluatedProperties": false,
       "properties": {
         "expected": {
-          "description": "Per build profile and benchmarked component or package, the throughput its performance result reports.",
+          "description": "Whole-model measurements by build profile.",
           "type": "object",
           "additionalProperties": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["throughput_fps"],
-              "properties": {"throughput_fps": {"type": "number", "exclusiveMinimum": 0}}
-            }
+            "$ref": "#/$defs/metricValues"
           }
         }
       }
@@ -45,35 +47,89 @@
       "description": "true runs the stage's test file; false skips it and needs a skip_reason.",
       "type": "boolean"
     },
-    "skipReason": {"type": "string", "minLength": 1},
+    "skipReason": {
+      "type": "string",
+      "minLength": 1
+    },
     "buildStage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["run_tests"],
+      "required": [
+        "run_tests"
+      ],
       "properties": {
-        "run_tests": {"$ref": "#/$defs/runTests"},
-        "skip_reason": {"$ref": "#/$defs/skipReason"}
+        "run_tests": {
+          "$ref": "#/$defs/runTests"
+        },
+        "skip_reason": {
+          "$ref": "#/$defs/skipReason"
+        }
       },
-      "if": {"properties": {"run_tests": {"const": false}}},
-      "then": {"required": ["skip_reason"]},
-      "else": {"not": {"required": ["skip_reason"]}}
+      "if": {
+        "properties": {
+          "run_tests": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "skip_reason"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "skip_reason"
+          ]
+        }
+      }
     },
     "measureStage": {
       "type": "object",
-      "required": ["run_tests"],
+      "required": [
+        "run_tests"
+      ],
       "properties": {
-        "run_tests": {"$ref": "#/$defs/runTests"},
-        "skip_reason": {"$ref": "#/$defs/skipReason"}
+        "run_tests": {
+          "$ref": "#/$defs/runTests"
+        },
+        "skip_reason": {
+          "$ref": "#/$defs/skipReason"
+        }
       },
-      "if": {"properties": {"run_tests": {"const": false}}},
-      "then": {"required": ["skip_reason"]},
-      "else": {"required": ["expected"], "not": {"required": ["skip_reason"]}}
+      "if": {
+        "properties": {
+          "run_tests": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "skip_reason"
+        ]
+      },
+      "else": {
+        "required": [
+          "expected"
+        ],
+        "not": {
+          "required": [
+            "skip_reason"
+          ]
+        }
+      }
     },
     "metricValues": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
-      "additionalProperties": {"type": "number"}
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_.]*$"
+      },
+      "additionalProperties": {
+        "type": "number"
+      }
     }
   }
 }

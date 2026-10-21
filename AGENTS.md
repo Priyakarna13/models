@@ -35,28 +35,33 @@ The shared tooling is one module per job. The
 which module owns what; put new shared code in the module that owns its job,
 and give a new job a new module named after what it does.
 
-Authored definitions use the shared loader in `model.py`: directory-derived ID,
-`architecture: <id>`, conventional recipes, `modalix` target, optional empty
-sections and generated single-component packages/compositions. Dataset aliases
-retain immutable pins; Hugging Face file sets can share a repository/revision.
-Compile recipes call `load_model` instead of parsing YAML independently. Keep
-multi-component boundary contracts, execution order and CPU steps explicit.
-Preprocessing, decoding and surgery belong in executable code and the README;
-ownership belongs in `CODEOWNERS`. Do not add maturity compatibility fields to
-new authored YAML.
+Authored definitions use the shared loader in `model.py`: a directory-derived
+ID, `model_family`, singular `conversion` and `compilation`, and a
+`build_profiles` mapping. Keep a blank line between top-level YAML sections.
+Recipes call `load_model` instead of parsing YAML independently. One profile
+compiles all its components in one invocation. Tensor boundaries, surgery and
+output audits belong in executable model-local code. The optional `pipeline`
+list describes the static component/CPU strip shown by the browser.
 
-`benchmark: true` schedules `modalix_latency` for a single ONNX component across
-its supported profiles. Explicit entries retain workload IDs, scope, profile
-restrictions and required metrics. Decoder selection, top-k, sample count,
-duration and layer statistics belong in each model's `scripts/performance.py`.
-Every benchmarked model must include that standalone script so customers can
-copy it and reproduce CI in the PyNeat environment, without registry imports
-or YAML configuration. Keep its `--mpk` and `--output` CLI.
-Executable accuracy keeps `engine: devkit_script` and nonempty required metrics;
-missing `engine` remains recorded-only. Returned accuracy names and regression
-expectations use `taxonomies/accuracy-metrics.yaml`. Each running profile needs
-nonempty finite expectations covering required metrics; optional expectations
-and the shared regression thresholds remain gates.
+Every vision model declares `performance` and keeps its own standalone
+`scripts/performance.py`, including simple single-component models. Keep its
+`--mpk` and `--output` CLI. Multi-component scripts receive one
+`--mpk component=path` per component and own orchestration in that script.
+Accuracy uses `scripts/accuracy.py` with its model-local requirements file.
+Customers must be able to copy the model folder without registry imports.
+
+Both scripts return `sima.model-report` version 1. Use canonical metric names
+from `taxonomies/metrics.json`, explicit units and truthful availability.
+Required metrics must be whole-model records. Component scores and layer plans
+are optional diagnostics. Preserve raw tool reports and telemetry as evidence.
+The shared `model-registry performance` and `accuracy` commands verify local
+compile outputs and attach provenance; neither needs registry receipts.
+
+Publication belongs to the model and build profile, with every compiled input
+linked by artifact ID, hash and exact S3 version. A hosted publisher validates
+against a manifest retained before board execution. Board jobs use `staging`;
+registry publisher jobs use `staging-publish`. Preserve runner grants and the
+separate protected promotion approval environment.
 
 ## LLiMa models
 
@@ -82,7 +87,7 @@ the pinned compiler identity. Keep graph-changing options in component
 `parameters`; script edits, job counts, logging and runner classes do not
 invalidate LLiMa builds.
 
-Any expensive model may set top-level `build-on-demand: true` (default `false`).
+Any expensive model may set top-level `build_on_demand: true` (default `false`).
 Pushes still validate it and publish catalog metadata, but never compile or
 measure it. A manual **Vulcan Model Orchestrator** dispatch must select its
 `models` and `profiles`; the planner also requires `--include-on-demand`.
@@ -115,8 +120,7 @@ models/<model_id>/tests/
 `accuracy`, `performance`), each with `run_tests: true`, or `false` with a
 `skip_reason`. A running `accuracy` or `performance` entry also sets
 `expected`: the latest published `develop` value of every measured build, per
-build profile for its accuracy regression metrics, and per build profile and
-component for `throughput_fps`. Each measure test asserts
+build profile for its accuracy regression metrics, and per build profile for `model.inference_rate`. Each measure test asserts
 `measured_shortfalls(model_dir, "<stage>", result) == []`; it fails when a
 value falls more than `ACCURACY_ALLOWED_DROP` (5%) or
 `PERFORMANCE_ALLOWED_DROP` (10%) in `model_tests.py` below its expected
@@ -159,13 +163,11 @@ in the same commit.
 | what a stage depends on: a `model.yaml` field its key reads, or a shared file it runs | the key function or the `PERFORMANCE_TOOLING`/`ACCURACY_TOOLING` list in `stage_keys.py`, the tables in [what a change reruns](docs/adding-a-model.md#9-know-what-a-change-reruns), and a test in `tests/test_compile_matrix.py` or `tests/test_stage_plan.py` |
 | the set of model scripts a DevKit stage or conversion runs | `NON_COMPILE_SCRIPTS` in `stage_keys.py`; every other `.py`/`.sh` under `scripts/` is an ONNX compile input |
 | board-only code | keep it inside `performance.py` or `accuracy.py`; a helper module under `scripts/` is an ONNX compile input, so editing it recompiles and then remeasures the model |
-| a custom `performance.py` | start from the [canonical script](docs/benchmarking.md#the-performance-script): save the whole Core `BenchmarkReport`, including board telemetry |
+| a custom `performance.py` | follow the [script contract](docs/benchmarking.md#the-performance-script): preserve the complete raw Core report and board telemetry |
 | a benchmark workload or implementation | hash its declaration and model-owned script in the performance key; preserve explicit decoders and required telemetry |
 | registered accuracy vocabulary or its loader | include it in accuracy tooling dependencies and retain required-metric and regression checks |
-| a Core benchmark reading the registry should publish | a row with its Vulcan measurement name in `REPORT_METRICS` or `TELEMETRY_METRICS` in `benchmark_metrics.py` and the same table in the browser's `benchmark-adapters.js`, its label in the browser's `metrics.js`, its row in `DETAIL_CARDS` in `model-view.js` when a Benchmark details card should show it, and the metric table in [benchmarking](docs/benchmarking.md#workload-and-measurements) |
-| a field of the performance result | `performance-result.schema.json`, `import_core_benchmark` in `core_benchmark.py`, and the browser's `benchmark-adapters.js`; a package result's `components` also feed `packageBenchmark`, which the model page and catalog read |
-| a compile input outside `models/<id>/`, such as declared training code | `MODEL_COMPILE_INPUT_PATHS` in `stage_keys.py` |
-| a model's category: `model_type`, `tasks`, `modalities`, or the family in `architecture.id` | pick existing IDs from `taxonomies/model-taxonomy.yaml`; when none fits, add the entry there and follow [Model categorization taxonomy](docs/model-taxonomy.md) |
+| a field of a measured report | `model-report.schema.json`, `model_report.py`, the vendored Vulcan contract, and the browser adapter; add contract tests |
+| a model's category: `model_type`, `tasks`, or `model_family` | pick existing IDs from `taxonomies/model-taxonomy.yaml`; when none fits, add the entry there and follow [Model categorization taxonomy](docs/model-taxonomy.md) |
 | the model folder layout | `MODEL_FOLDER_ENTRIES` in `model.py` and [the directory step](docs/adding-a-model.md#2-create-the-directory) |
 | a model script | the model's test of that behavior under `tests/build/` or `tests/measure/` |
 | what a model converts, compiles, or measures on a DevKit | its `tests/tests.yaml` entries, their `expected` values, and the stage test files they run |
@@ -174,7 +176,7 @@ in the same commit.
 | a `model-registry` command | `cli.py` (and `AUTHOR_COMMANDS` when authors run it), every workflow and script that calls it, `packaging/model-registry/install_model_registry_package.sh`, the docs, and `tests/test_cli.py` |
 | a module that only CI may run | the removal list in `packaging/model-registry/build.sh` |
 | a module's job, or a new module | the [module map](design-doc/model-registry-architecture.md#shared-tooling) |
-| a published result's shape | its schema under `schemas/` and `artifact-browser/`, which must keep rendering results already in the registry |
+| a published result's shape | its schema under `schemas/` and `artifact-browser/`, which must consume the current report contract; legacy evidence is archived during the coordinated cutover |
 | a CI job, trigger, or concurrency rule | [CI flow](design-doc/model-registry-architecture.md#ci-flow) and the [after-merge steps](docs/contributing.md#after-merge-trusted-staging-automation) |
 
 ## CI
@@ -216,7 +218,7 @@ in the same commit.
 1. Declare the change in `model.yaml` and the model's `scripts/` and
    `tests/`, following [adding a model](docs/adding-a-model.md) and the
    [metadata schema](docs/metadata-schema.md). Record the source model's
-   published scores in `published_metrics`.
+   published scores in `reference_metrics`.
 2. Run `python -m pytest` and `model-registry validate models/<model_id>`.
 3. Compile each changed build in the pinned Model Compiler with
    the backend's runner (`run_model_compilation.sh` or `run_llima_compilation.sh`)
@@ -226,7 +228,7 @@ in the same commit.
    `scripts/performance.py --mpk --output`, with one `--mpk component=<archive>` per component for a
    [package benchmark](docs/benchmarking.md#package-benchmark), and, for builds that declare accuracy,
    `scripts/run_model_accuracy.sh` on the compile output.
-   `scripts/run_model_performance.sh` needs a registered build, so CI runs it
+   `model-registry performance` uses the same verified local compile tree as CI
    ([benchmarking](docs/benchmarking.md),
    [local accuracy](docs/local-accuracy-development.md)).
 5. Report which stages you ran and where; CI publishes the results.
@@ -237,12 +239,14 @@ Conventions the code relies on:
   `--fidelity-dataset`, `--mpk`); data enters only through the dataset registry
   declared in `model.yaml`. Board stage scripts run without registry
   credentials.
-- Schemas under `schemas/` reject unknown fields. Published results keep their
-  `schema_version` (performance 6, accuracy 2, numerical fidelity 1) because
-  the artifact browser and `sima-cli` choose a renderer by it. Registry
-  documents that only this repository's tooling reads (`model.yaml`, compile
-  outputs, package manifests) carry no version; change their readers and
-  writers together instead.
+- Schemas under `schemas/` reject unknown fields. Performance and accuracy
+  share `schema: sima.model-report`, `schema_version: 1`. Numerical fidelity
+  remains separate. Use a new report major only for incompatible contract
+  changes; metric additions and labels do not bump it. Repository-internal
+  model, compile-output and package documents change with their readers.
+- `measurements[profile][stage]` carries expected keys in the catalog. The
+  server selects reports only for the exact visible artifact set. Preserve
+  approved older builds without attaching scores from newer candidates.
 
 ## Model browser
 
@@ -260,8 +264,8 @@ change.
   Actions are icon buttons; blue text with ↗ is only for external links.
 - Compare and show component measurements per component; never add them up
   or mark one component best against a different component.
-- Keep rendering every published benchmark schema version, and let unknown
-  metrics fall through to Other measurements rather than hiding them.
+- Use profile report summaries for catalog pages and load report detail lazily.
+  Keep unknown metrics visible under Other measurements.
 - Keep the preview data-driven. `preview.py` builds its catalog from
   `models/`; never add a model, name, or README to it by hand. It needs the
   repository installed (`python -m pip install .`) or `PYTHON` pointing at
@@ -271,8 +275,8 @@ change.
   `component-pipelines.<revision>.json` and `published-metrics.<revision>.json`
   from each `model.yaml`, so `build:portal` needs the same Python as
   `preview.py`.
-- A new accuracy metric goes into both `taxonomies/accuracy-metrics.yaml` and
-  `artifact-browser/accuracy-metrics.js`.
+- A new metric goes into `taxonomies/metrics.json`; regenerate browser assets
+  and update the vendored Vulcan catalog in the coordinated change.
 - Before a push, run `python -m pytest tests/test_artifact_browser.py`,
   `node --test tests/browser/*.test.mjs`, and `npm run typecheck`,
   `npm run build:portal`, and `npm run smoke:portal` with `--prefix website`,

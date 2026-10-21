@@ -196,7 +196,7 @@ def test_model_sources_match_pinned_v3_assets(load_script: Callable[[str], Modul
         "size_bytes": 15784877,
         "media_type": "application/x-gtar",
     }
-    assert metadata["calibrations"][0]["source"] == {
+    assert metadata["datasets"]["default"]["source"] == {
         "type": "file",
         "uri": "https://api.github.com/repos/sima-neat/models/releases/assets/500803386",
         "sha256": calibration.ARCHIVE_SHA256,

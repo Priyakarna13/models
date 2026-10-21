@@ -1,11 +1,11 @@
 import { variantDownloads, prepareDownloads, startDownloads, packageFormat, artifactDelivery, deploymentSize, huggingFaceLocation, modelDownloadCommand } from "./downloads.js";
 import { mountDeveloperPortal } from "./portal-shell.js";
 import {
-  allPages, branchModels, catalogBuildRuns, runProfile, variantBuildKey, variantBuilds,
+  allPages, runProfile, variantBuildKey, variantBuilds,
 } from "./branch-builds.js";
 import {
   config, customerView, DEFAULT_BRANCH, CATEGORY_QUERY_FIELDS, state, elements,
-  categoryFilters, catalogMode, branchSnapshotMode, currentVariant, showView,
+  categoryFilters, catalogMode, currentVariant, showView,
 } from "./state.js";
 import { icons, escapeHtml, branchName, showToast, profileLabel, variantLabel } from "./ui.js";
 import { formatBytes } from "./metrics.js";
@@ -347,7 +347,7 @@ async function copyText(value) {
   }
 }
 
-async function loadRuns({ append = false, branch = elements["branch-filter"].value, limit = 50 } = {}) {
+async function loadRuns({ append = false, branch = elements["branch-filter"].value, limit = 50, allModels = false } = {}) {
   const repo = state.repository;
   if (!repo) return;
   const requestId = ++state.runsRequestId;
@@ -372,33 +372,19 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
     if (historical) {
       payload = await api(`${base}/runs?${query}`);
     } else {
-      const compileQuery = new URLSearchParams(query);
-      compileQuery.set("limit", "100");
-      const packageQuery = new URLSearchParams({
-        limit: "100", status: "completed", run_type: "model_package", git_ref: `refs/heads/${branch}`,
-      });
       const modelQuery = new URLSearchParams({ limit: "100", git_ref: `refs/heads/${branch}` });
-      const [branchRuns, packageRuns, catalogDefinitions] = await Promise.all([
-        allPages(api, `${base}/runs`, compileQuery, "runs"),
-        allPages(api, `${base}/runs`, packageQuery, "runs"),
-        // A branch has no catalog until its first orchestrator run publishes one.
-        allPages(api, `${base}/models`, modelQuery, "models").catch((error) => {
-          if (error.status === 404) return [];
-          throw error;
-        }),
-      ]);
-      const gitRef = `refs/heads/${branch}`;
-      const ownRuns = branchRuns.filter((run) => run.git_ref === gitRef);
-      const inheritedRuns = await catalogBuildRuns(catalogDefinitions, ownRuns, api, base);
-      payload = {
-        mode: "models",
-        compileRuns: [...ownRuns, ...inheritedRuns],
-        packageRuns: packageRuns.filter((run) => run.git_ref === gitRef),
-        catalogDefinitions,
-      };
+      if (!allModels) {
+        if (elements.search.value.trim()) modelQuery.set("q", elements.search.value.trim());
+        for (const [name, value] of Object.entries(categoryFilters())) if (value) modelQuery.set(name, value);
+        if (elements["compiler-filter"].value) modelQuery.set("toolchain_version", elements["compiler-filter"].value);
+      }
+      if (append && state.cursor) modelQuery.set("cursor", state.cursor);
+      payload = allModels
+        ? { models: await allPages(api, `${base}/models`, modelQuery, "models"), has_more: false, next_cursor: null, mode: "models" }
+        : { ...await api(`${base}/models?${modelQuery}`), mode: "models" };
     }
     if (requestId !== state.runsRequestId) return;
-    applyCatalog(payload, { append });
+    applyCatalog(payload, { append, cache: !allModels });
   } catch (error) {
     if (requestId === state.runsRequestId) throw error;
   } finally {
@@ -425,7 +411,7 @@ async function initialize() {
   const linkedVariant = link.get("model") && link.get("variant")
     ? { modelId: link.get("model"), profile: link.get("variant") } : null;
   state.categorySelection = Object.fromEntries(
-    Object.entries(CATEGORY_QUERY_FIELDS).map(([elementId, queryName]) => [elementId, link.get(queryName) || ""]),
+    Object.entries(CATEGORY_QUERY_FIELDS).map(([elementId, queryName]) => [elementId, link.get(queryName) || (queryName === "model_family" ? link.get("architecture_id") : "") || ""]),
   );
   state.taxonomy = null;
   if (compareLink) {
@@ -501,7 +487,7 @@ async function initialize() {
     }
     if (activeFilterCount()) setFilterDrawer(true);
     if (cached || branchResult.status === "fulfilled" || state.availableBranches.length) {
-      await loadRuns({ branch: elements["branch-filter"].value });
+      await loadRuns({ branch: elements["branch-filter"].value, allModels: compareLink || Boolean(linkedVariant) });
     } else {
       // Older or temporarily unavailable registries can still infer branches
       // from a broad runs page without making that page authoritative.
@@ -582,7 +568,6 @@ elements.search.addEventListener("input", () => {
   renderRuns();
   writeSearchUrl();
   clearTimeout(searchTimer);
-  if (branchSnapshotMode()) return;
   searchTimer = setTimeout(() => loadRuns({ branch: state.preferredBranch }).catch((error) => showToast(error.message, true)), 250);
 });
 elements["branch-filter"].addEventListener("change", async () => {
@@ -595,9 +580,6 @@ elements["branch-filter"].addEventListener("change", async () => {
   state.selectedVariantKey = null;
   state.models = [];
   state.runs = [];
-  state.compileRuns = [];
-  state.packageRuns = [];
-  state.catalogDefinitions = [];
   elements["result-list"].innerHTML = Array.from({ length: 5 }, () => `<div class="row-skeleton"><span></span><span></span><span></span></div>`).join("");
   showEmptyDetail();
   const url = new URL(location.href);
@@ -621,14 +603,6 @@ elements["branch-filter"].addEventListener("change", async () => {
 });
 elements["compiler-filter"].addEventListener("change", async () => {
   updateFilterIndicators();
-  if (branchSnapshotMode() && catalogMode()) {
-    state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,
-      elements["compiler-filter"].value, elements["branch-filter"].value);
-    state.runs = state.models.flatMap((model) => model.builds.map((build) => runFromCatalogBuild(model, build)));
-    renderRuns();
-    writeCachedCatalog();
-    return;
-  }
   renderRuns();
   try {
     await loadRuns({ branch: state.preferredBranch });
@@ -649,10 +623,6 @@ Object.keys(CATEGORY_QUERY_FIELDS).forEach((elementId) => elements[elementId].ad
   state.categorySelection[elementId] = elements[elementId].value;
   writeCategoryFilterUrl();
   updateFilterIndicators();
-  if (branchSnapshotMode()) {
-    renderRuns();
-    return;
-  }
   try {
     await loadRuns({ branch: state.preferredBranch });
   } catch (error) {
@@ -713,13 +683,14 @@ function returnToCatalog() {
   history.pushState({}, "", url);
   renderRuns();
   showEmptyDetail();
+  loadRuns({ branch: state.preferredBranch }).catch(error => showToast(error.message, true));
 }
 elements["nav-models"].addEventListener("click", (event) => {
   event.preventDefault();
   returnToCatalog();
 });
 // The Compare page adds the model page the reader came from to its first empty picker.
-elements["nav-compare"].addEventListener("click", (event) => {
+elements["nav-compare"].addEventListener("click", async (event) => {
   event.preventDefault();
   if (elements.workspace.dataset.view === "compare") return;
   const variant = elements.workspace.dataset.view === "model" ? currentVariant() : null;
@@ -734,7 +705,10 @@ elements["nav-compare"].addEventListener("click", (event) => {
   url.searchParams.set("view", "compare");
   writePicksToUrl(url);
   history.pushState({}, "", url);
-  renderComparison();
+  try {
+    await loadRuns({ branch: state.preferredBranch, allModels: true });
+    renderComparison();
+  } catch (error) { showToast(error.message, true); }
 });
 elements["compare-pane"].addEventListener("change", (event) => {
   const add = event.target.closest("[data-compare-add]");

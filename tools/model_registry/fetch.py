@@ -197,7 +197,7 @@ class Fetcher:
                 self._verify(source_root / str(member["path"]), SourceSpec.from_mapping(member))
             if not manifest_path.is_file():
                 raise FetchError(f"cached source set {identity} is missing source-set.json")
-            return source_root / str(source["entrypoint"]), True, identity, total_size
+            return source_root / str(source["main_file"]), True, identity, total_size
 
         source_root.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{identity}.", dir=source_root.parent))
@@ -212,7 +212,7 @@ class Fetcher:
             manifest = {
                 "schema_version": 1,
                 "identity": identity,
-                "entrypoint": source["entrypoint"],
+                "entrypoint": source["main_file"],
                 "files": sorted(members, key=lambda item: str(item["path"])),
             }
             (temporary / "source-set.json").write_text(
@@ -227,7 +227,7 @@ class Fetcher:
         finally:
             if temporary is not None:
                 shutil.rmtree(temporary, ignore_errors=True)
-        return source_root / str(source["entrypoint"]), cache_hit, identity, total_size
+        return source_root / str(source["main_file"]), cache_hit, identity, total_size
 
 
 def urlsplit_hostname(url: str) -> str:

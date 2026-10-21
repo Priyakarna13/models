@@ -11,8 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .accuracy_config import accuracy_components, find_devkit_accuracy_config
-from .accuracy_result import ACCURACY_RESULT_SCHEMA
+from .accuracy_config import find_devkit_accuracy_config
 from .dependencies import resolve_benchmark_runtime
 from .errors import ValidationError
 from .model import (
@@ -21,21 +20,11 @@ from .model import (
     CONVERSION_FILES,
     PERFORMANCE_SCRIPT,
     SCRIPTS_DIR,
-    benchmark_entry,
     compile_invocations_for,
     load_and_validate_model,
+    performance_config,
 )
 from .source import source_identity
-
-MODEL_COMPILE_INPUT_PATHS = {
-    "yolo26_tiny_drone": (
-        "training/yolo26_tiny_drone/compile.py",
-        "training/yolo26_tiny_drone/contract.py",
-        "training/yolo26_tiny_drone/dataset.py",
-        "training/yolo26_tiny_drone/onnx_audit.py",
-        "training/yolo26_tiny_drone/paths.py",
-    ),
-}
 
 # Shared code used by ONNX builds.
 COMPILE_TOOLING = ("scripts/run_model_compilation.sh", "tools/model_registry/model.py")
@@ -45,36 +34,24 @@ _IGNORED_BUILD_SUFFIXES = {".pyc", ".pyo"}
 # Conversion produces the pinned source, and the board stages consume the MPK; none changes compilation.
 NON_COMPILE_SCRIPTS = {PERFORMANCE_SCRIPT, ACCURACY_SCRIPT, *CONVERSION_FILES}
 
-PERFORMANCE_RESULT_SCHEMA = "schemas/performance-result.schema.json"
 PERFORMANCE_RUN_TYPE = "model_benchmark"
 ACCURACY_RUN_TYPE = "model_accuracy"
-# Vulcan stores a run's fingerprint version from its environment and resolves version 1 by default.
+# Fingerprint versions are registry lookup identities, independent of report schema majors.
 PERFORMANCE_FINGERPRINT_VERSION = 2
 ACCURACY_FINGERPRINT_VERSION = 1
-# The workflow sets up the board run and benchmark_publication shapes the published run.
 BOARD_STAGE_TOOLING = (
-    ".github/workflows/vulcan-model-benchmarking.yml",
-    "tools/model_registry/benchmark_publication.py",
+    "tools/model_registry/measurement.py",
+    "tools/model_registry/model_report.py",
+    "tools/model_registry/measurement_environment.py",
+    "tools/model_registry/artifact.py",
+    "tools/model_registry/fetch.py",
+    "tools/model_registry/source.py",
+    "tools/model_registry/model.py",
+    "tools/model_registry/dependencies.py",
+    "tools/model_registry/accuracy_config.py",
 )
-PERFORMANCE_TOOLING = (
-    *BOARD_STAGE_TOOLING,
-    "scripts/run_model_performance.sh",
-    "tools/model_registry/core_benchmark.py",
-    "tools/model_registry/benchmark_metrics.py",
-    "tools/model_registry/benchmark_manifest.py",
-    PERFORMANCE_RESULT_SCHEMA,
-)
-ACCURACY_TOOLING = (
-    *BOARD_STAGE_TOOLING,
-    "scripts/install_dataset_registry.sh",
-    "scripts/cache_accuracy_dataset.sh",
-    "scripts/run_model_accuracy.sh",
-    "tools/model_registry/accuracy_result.py",
-    "tools/model_registry/published_metrics.py",
-    "tools/model_registry/taxonomy.py",
-    "taxonomies/accuracy-metrics.yaml",
-    ACCURACY_RESULT_SCHEMA,
-)
+PERFORMANCE_TOOLING = (*BOARD_STAGE_TOOLING, "scripts/run_model_performance.sh")
+ACCURACY_TOOLING = (*BOARD_STAGE_TOOLING, "scripts/run_model_accuracy.sh")
 
 
 def _hash_files(digest: Any, root: Path, paths: set[Path] | list[Path]) -> None:
@@ -108,7 +85,7 @@ def _file_digests(root: Path, required: list[str], optional: list[str] = ()) -> 
 def _compile_input_files(root: Path, model_id: str) -> list[Path]:
     """Code the compile runs: the shared runner, model scripts, and any declared training code."""
     candidates: list[Path] = []
-    for prefix in (*COMPILE_TOOLING, *MODEL_COMPILE_INPUT_PATHS.get(model_id, ())):
+    for prefix in COMPILE_TOOLING:
         path = root / prefix.rstrip("/")
         if path.is_file():
             candidates.append(path)
@@ -139,48 +116,11 @@ def _compile_input_files(root: Path, model_id: str) -> list[Path]:
     )
 
 
-def _calibration_projection(model: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any] | None:
-    calibration_id = binding.get("calibration")
-    if calibration_id is None:
+def _compile_consumed_fidelity(model: dict[str, Any], profile_id: str) -> dict[str, Any] | None:
+    config = model.get("numerical_fidelity")
+    if config is None or profile_id not in config["build_profiles"]:
         return None
-    try:
-        return next(item for item in model["calibrations"] if item["id"] == calibration_id)
-    except StopIteration as exc:  # Kept fail-closed even when called without full catalog validation.
-        raise ValidationError(f"unknown calibration {calibration_id!r}") from exc
-
-
-def _compile_consumed_fidelity(model: dict[str, Any], profile_id: str) -> list[dict[str, Any]]:
-    """Fidelity entries the compile recipe evaluates for a build profile."""
-    # Selection already depends on scope and profiles; hash only what the recipe reads.
-    return [
-        {key: value for key, value in entry.items() if key not in {"scope", "build_profiles"}}
-        for entry in model["fidelity"]
-        if profile_id in entry["build_profiles"]
-    ]
-
-
-def _component_compile_projection(component: dict[str, Any]) -> dict[str, Any]:
-    projection = {key: component[key] for key in ("id", "source", "depends_on") if key in component}
-    if component["interface"].get("entrypoints"):
-        projection["interface"] = component["interface"]  # Explicit multi-component boundary contract.
-    return projection
-
-
-def _binding_compile_projection(
-    model: dict[str, Any], binding: dict[str, Any]
-) -> dict[str, Any]:
-    return {
-        **{
-            key: binding[key]
-            for key in ("id", "parameters", "shape_profile")
-            if key in binding
-        },
-        **(
-            {"calibration": _calibration_projection(model, binding)}
-            if binding.get("calibration") is not None
-            else {}
-        ),
-    }
+    return {key: value for key, value in config.items() if key != "build_profiles"}
 
 
 def compile_key(
@@ -198,20 +138,30 @@ def compile_key(
     model = load_and_validate_model(root / "models" / model_id, root / "schemas" / "model.schema.json")
     try:
         profile = next(item for item in model["build_profiles"] if item["id"] == profile_id)
-        invocation = next(
-            item for item in compile_invocations_for(profile) if item["id"] == compile_invocation_id
-        )
+        invocation = next(item for item in compile_invocations_for(profile) if item["id"] == compile_invocation_id)
     except StopIteration as exc:
-        raise ValidationError(
-            f"unknown compile invocation: {model_id}/{profile_id}/{compile_invocation_id}"
-        ) from exc
+        raise ValidationError(f"unknown compile invocation: {model_id}/{profile_id}/{compile_invocation_id}") from exc
     components = {item["id"]: item for item in model["components"]}
     bindings = {item["id"]: item for item in profile["components"]}
-    if any(components[item]["interface"]["format"] == "huggingface" for item in invocation["components"]):
+    if any(components[item]["format"] == "huggingface" for item in invocation["components"]):
         # LLiMa recipes orchestrate a pinned compiler; graph options belong in parameters.
-        return _key({
-            "compiler_version": compiler,
-            "target": profile["target"],
+        return _key(
+            {
+                "compiler_version": compiler,
+                "target": profile["target"],
+                "components": [
+                    {
+                        "source_sha256": source_identity(components[component_id]["source"]),
+                        "parameters": bindings[component_id]["parameters"],
+                    }
+                    for component_id in invocation["components"]
+                ],
+            }
+        )
+    identity = {
+        "model_id": model_id,
+        "compile_invocation": {
+            "id": compile_invocation_id,
             "components": [
                 {
                     "source_sha256": source_identity(components[component_id]["source"]),
@@ -219,25 +169,13 @@ def compile_key(
                 }
                 for component_id in invocation["components"]
             ],
-        })
-    identity = {
-        "model_id": model_id,
-        "compile_invocation": {
-            "id": compile_invocation_id,
-            "components": [
-                {
-                    "component": _component_compile_projection(components[component_id]),
-                    "binding": _binding_compile_projection(model, bindings[component_id]),
-                }
-                for component_id in invocation["components"]
-            ],
         },
         "build_profile": {
             "id": profile_id,
             "target": profile["target"],
-            "compatibility": profile.get("compatibility", {}),
+            "calibration_dataset": model["datasets"].get(profile.get("calibration_dataset")),
         },
-        "fidelity": _compile_consumed_fidelity(model, profile_id),
+        "numerical_fidelity": _compile_consumed_fidelity(model, profile_id),
         "compiler_version": compiler,
     }
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode())
@@ -245,40 +183,70 @@ def compile_key(
     return digest.hexdigest()
 
 
+def _measurement_key(
+    repository: str | Path,
+    model: dict[str, Any],
+    build_profile_id: str,
+    builds: dict[str, dict[str, Any]],
+    stage: str,
+    runtime: dict[str, Any] | None,
+) -> str:
+    root = Path(repository).expanduser().resolve()
+    model_id = str(model["id"])
+    config = (
+        performance_config(model, build_profile_id)
+        if stage == "performance"
+        else find_devkit_accuracy_config(model, build_profile_id)
+    )
+    if config is None:
+        raise ValidationError(f"no {stage} stage applies to {model_id}/{build_profile_id}")
+    components = [component["id"] for component in model["components"]]
+    if set(components) != set(builds):
+        raise ValidationError(f"{stage} requires exactly the compiled components: {', '.join(components)}")
+    catalog = json.loads((root / "taxonomies/metrics.json").read_text(encoding="utf-8"))
+    required_metrics = config["required_metrics"]
+    unknown = set(required_metrics) - set(catalog)
+    if unknown:
+        raise ValidationError(f"unknown required metrics: {', '.join(sorted(unknown))}")
+    semantics = {
+        name: {field: catalog[name][field] for field in ("unit", "type", "direction", "stage")}
+        for name in required_metrics
+    }
+    script = PERFORMANCE_SCRIPT if stage == "performance" else ACCURACY_SCRIPT
+    tooling = PERFORMANCE_TOOLING if stage == "performance" else ACCURACY_TOOLING
+    required = [f"models/{model_id}/{script}", *tooling]
+    optional = [f"models/{model_id}/{ACCURACY_REQUIREMENTS}"] if stage == "accuracy" else []
+    return _key(
+        {
+            "report_contract": {"schema": "sima.model-report", "schema_version": 1},
+            "stage": stage,
+            "model_id": model_id,
+            "build_profile_id": build_profile_id,
+            "configuration": {key: value for key, value in config.items() if key != "build_profiles"},
+            "metric_semantics": semantics,
+            "builds": {
+                component: {
+                    "compile_run_id": builds[component]["run_id"],
+                    "artifact_sha256": builds[component]["artifact_sha256"],
+                }
+                for component in components
+            },
+            "files": _file_digests(root, required, optional),
+            "runtime": runtime if runtime is not None else resolve_benchmark_runtime(root),
+        }
+    )
+
+
 def performance_key(
     repository: str | Path,
     model: dict[str, Any],
     build_profile_id: str,
-    component_id: str,
     builds: dict[str, dict[str, Any]],
+    *,
+    runtime: dict[str, Any] | None = None,
 ) -> str:
-    """Identity of the DevKit performance measurement a component's build runs: its own, or its package's.
-
-    ``builds`` maps each component ID to its compile ``run_id`` and ``artifact_sha256``; the key covers the
-    build of every component the benchmark measures.
-    """
-    root = Path(repository).expanduser().resolve()
-    model_id = str(model["id"])
-    entry = benchmark_entry(model, component_id, build_profile_id)
-    if entry is None:
-        raise ValidationError(f"no benchmark entry applies to {model_id}/{build_profile_id}/{component_id}")
-    measured = accuracy_components(model, entry)
-    missing = [item for item in measured if item not in builds]
-    if missing:
-        raise ValidationError(f"benchmark {entry['id']!r} needs compiled component {missing[0]!r}")
-    return _key({
-        "stage": "performance",
-        "model_id": model_id,
-        "build_profile_id": build_profile_id,
-        "components": measured,
-        "builds": {
-            item: {"compile_run_id": builds[item]["run_id"], "artifact_sha256": builds[item]["artifact_sha256"]}
-            for item in measured
-        },
-        "benchmark": entry,
-        "files": _file_digests(root, [f"models/{model_id}/{PERFORMANCE_SCRIPT}", *PERFORMANCE_TOOLING]),
-        "runtime": resolve_benchmark_runtime(root),
-    })
+    """Identity of one whole-model performance measurement over exact compiled inputs."""
+    return _measurement_key(repository, model, build_profile_id, builds, "performance", runtime)
 
 
 def accuracy_key(
@@ -286,35 +254,8 @@ def accuracy_key(
     model: dict[str, Any],
     build_profile_id: str,
     builds: dict[str, dict[str, Any]],
+    *,
+    runtime: dict[str, Any] | None = None,
 ) -> str:
-    """Identity of a build profile's DevKit accuracy measurement over its scoped compiled components.
-
-    ``builds`` maps each component ID to its compile ``run_id`` and ``artifact_sha256``.
-    """
-    root = Path(repository).expanduser().resolve()
-    model_id = str(model["id"])
-    entry = find_devkit_accuracy_config(model, build_profile_id)
-    if entry is None:
-        raise ValidationError(f"no DevKit accuracy entry applies to {model_id}/{build_profile_id}")
-    scoped = accuracy_components(model, entry)
-    missing = [component_id for component_id in scoped if component_id not in builds]
-    if missing:
-        raise ValidationError(f"accuracy {entry['id']!r} needs compiled component {missing[0]!r}")
-    model_dir = f"models/{model_id}"
-    return _key({
-        "stage": "accuracy",
-        "model_id": model_id,
-        "build_profile_id": build_profile_id,
-        "accuracy": entry,
-        "builds": {
-            component_id: {
-                "compile_run_id": builds[component_id]["run_id"],
-                "artifact_sha256": builds[component_id]["artifact_sha256"],
-            }
-            for component_id in scoped
-        },
-        "files": _file_digests(
-            root, [f"{model_dir}/{ACCURACY_SCRIPT}", *ACCURACY_TOOLING], [f"{model_dir}/{ACCURACY_REQUIREMENTS}"]
-        ),
-        "runtime": resolve_benchmark_runtime(root),
-    })
+    """Identity of one whole-model accuracy measurement over exact compiled inputs."""
+    return _measurement_key(repository, model, build_profile_id, builds, "accuracy", runtime)

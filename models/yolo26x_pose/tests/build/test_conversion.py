@@ -95,7 +95,7 @@ def test_fixed_onnx_interface(tmp_path, case, converter: ModuleType):
 
 def test_source_must_be_the_pinned_checkpoint(converter: ModuleType):
     model = load_metadata(ROOT / "models/yolo26x_pose")
-    converter.validate_source(model["conversion"]["default"]["source"])
+    converter.validate_source(model["conversion"]["source"])
     for other in ("yolo26x.pt", "yolo26x-seg.pt"):
         with pytest.raises(ValueError, match="yolo26x-pose.pt"):
             converter.validate_source({"type": "file", "uri": f"hf://models/Ultralytics/YOLO26@main/{other}"})

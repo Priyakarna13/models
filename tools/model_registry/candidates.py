@@ -112,7 +112,7 @@ def publish_candidate(
         raise ValidationError("candidate output must be outside the compiler input tree")
     models = load_models(root)
     model = models.get(model_id)
-    if model is None or not model.get("build-on-demand", False):
+    if model is None or not model.get("build_on_demand", False):
         raise ValidationError("publish-candidate requires an on-demand model")
     invocations = [item for item in _head_matrix(root, models)
                    if item["model_id"] == model_id and item["build_profile_id"] == build_profile_id]

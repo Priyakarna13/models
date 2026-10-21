@@ -4,8 +4,6 @@ performance:
   run_tests: true
   expected:
     w8a8:
-      model:
-        throughput_fps: 1536.8
+      model.inference_rate: 1536.8
     w16a16:
-      model:
-        throughput_fps: 1167.5
+      model.inference_rate: 1167.5

@@ -47,50 +47,21 @@ def _compiled_component(tmp_path: Path) -> Path:
     return tmp_path / "compiled"
 
 
-def _model_with_resource(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, install_path: str
-) -> tuple[dict, dict]:
-    model = copy.deepcopy(
-        package_module.load_and_validate_model(
-            ROOT / "models" / "resnet_50", ROOT / "schemas" / "model.schema.json"
-        )
-    )
-    payload = tmp_path / "resource.json"
-    payload.write_bytes(b'{"fixture":true}\n')
-    resource_license = {
-        "spdx": "LicenseRef-Fixture-Resource",
-        "redistribution": "restricted",
-        "attribution": "Fixture resource attribution.",
-    }
-    resource = {
-        "id": "runtime_config",
-        "source": {
-            "type": "file",
-            "uri": "https://example.invalid/resource.json",
-            "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
-            "size_bytes": payload.stat().st_size,
-        },
-        "install_path": install_path,
-        "license": resource_license,
-    }
-    model["resources"] = [resource]
-    model["packages"][0]["resources"] = [resource["id"]]
-
-    class FakeFetcher:
-        def __init__(self, _cache_dir: str | Path | None) -> None:
-            pass
-
-        def fetch_source(self, _source: dict) -> tuple[Path, str, str, int]:
-            return (
-                payload,
-                resource["source"]["uri"],
-                resource["source"]["sha256"],
-                payload.stat().st_size,
-            )
-
+def _two_components(monkeypatch: pytest.MonkeyPatch, compiled: Path, *, duplicate_path: bool = False) -> None:
+    model = copy.deepcopy(package_module.load_and_validate_model(ROOT / "models/resnet_50"))
+    model["components"].append({**model["components"][0], "id": "aux"})
+    model["packages"][0]["components"].append("aux")
+    model["compositions"] = [{"id": "default", "type": "pipeline"}]
+    source = compiled / "resnet_50/w16a16/model"
+    target = source.with_name("aux")
+    target.mkdir()
+    name = MPK_NAME if duplicate_path else "resnet_50_w16a16_aux_mpk.tar.gz"
+    (target / name).write_bytes((source / MPK_NAME).read_bytes())
+    result = json.loads((source / "compile-result.json").read_text())
+    result["archive"] = name
+    result["provenance"]["component_id"] = "aux"
+    (target / "compile-result.json").write_text(json.dumps(result))
     monkeypatch.setattr(package_module, "load_and_validate_model", lambda *_args: model)
-    monkeypatch.setattr(package_module, "Fetcher", FakeFetcher)
-    return model, resource_license
 
 
 def test_single_component_package_is_the_compiled_mpk(tmp_path: Path) -> None:
@@ -117,11 +88,13 @@ def test_single_component_package_is_the_compiled_mpk(tmp_path: Path) -> None:
         "component": "model",
         "entrypoint": "default",
     }
-    assert manifest["files"] == [{
-        "path": MPK_NAME,
-        "sha256": hashlib.sha256(compiled_mpk.read_bytes()).hexdigest(),
-        "size_bytes": compiled_mpk.stat().st_size,
-    }]
+    assert manifest["files"] == [
+        {
+            "path": MPK_NAME,
+            "sha256": hashlib.sha256(compiled_mpk.read_bytes()).hexdigest(),
+            "size_bytes": compiled_mpk.stat().st_size,
+        }
+    ]
 
 
 def test_assemble_available_packages_skips_incomplete_builds(tmp_path: Path) -> None:
@@ -131,16 +104,12 @@ def test_assemble_available_packages_skips_incomplete_builds(tmp_path: Path) -> 
         compiled_dir=compiled,
         output_dir=tmp_path / "packages",
     )
-    assert [(item["model_id"], item["build_profile_id"]) for item in results] == [
-        ("resnet_50", "w16a16")
-    ]
+    assert [(item["model_id"], item["build_profile_id"]) for item in results] == [("resnet_50", "w16a16")]
 
 
-def test_package_with_resources_is_a_flat_deterministic_zip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, resource_license = _model_with_resource(monkeypatch, tmp_path, "resources/runtime.json")
+def test_multi_component_package_is_a_flat_deterministic_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     compiled = _compiled_component(tmp_path)
+    _two_components(monkeypatch, compiled)
     results = [
         assemble_package(
             repository=ROOT,
@@ -152,58 +121,22 @@ def test_package_with_resources_is_a_flat_deterministic_zip(
         )
         for output in ("packages-a", "packages-b")
     ]
-
     assert results[0]["sha256"] == results[1]["sha256"]
     assert results[0]["archive"] == "resnet_50_w16a16_default.zip"
-    bundle = tmp_path / "packages-a" / "resnet_50" / "w16a16" / "packages" / "default" / results[0]["archive"]
+    bundle = tmp_path / "packages-a/resnet_50/w16a16/packages/default" / results[0]["archive"]
     with zipfile.ZipFile(bundle) as stream:
-        assert stream.namelist() == [MPK_NAME, "resources/runtime.json"]
-    assert results[0]["manifest"]["resources"][0]["license"] == resource_license
+        assert stream.namelist() == ["resnet_50_w16a16_aux_mpk.tar.gz", MPK_NAME]
+    assert results[0]["manifest"]["composition"] == {"id": "default", "type": "pipeline"}
+    assert results[0]["manifest"]["resources"] == []
 
 
-def _declarative_composition() -> dict:
-    return {
-        "id": "default",
-        "type": "declarative",
-        "components": [{"id": "only", "component": "model", "entrypoint": "default"}],
-        "connections": [],
-        "inputs": [{"name": "input", "to": {"component": "only", "input": "input"}}],
-        "outputs": [{"name": "output", "from": {"component": "only", "output": "output"}}],
-    }
-
-
-def test_package_records_declarative_composition_without_shipping_a_document(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    model = copy.deepcopy(
-        package_module.load_and_validate_model(ROOT / "models" / "resnet_50", ROOT / "schemas" / "model.schema.json")
-    )
-    model["compositions"] = [_declarative_composition()]
-    monkeypatch.setattr(package_module, "load_and_validate_model", lambda *args: model)
-
-    result = assemble_package(
-        repository=ROOT,
-        compiled_dir=_compiled_component(tmp_path),
-        output_dir=tmp_path / "packages",
-        model_id="resnet_50",
-        build_profile_id="w16a16",
-        package_id="default",
-    )
-
-    assert result["archive"] == MPK_NAME
-    assert result["manifest"]["composition"] == {"id": "default", "type": "declarative"}
-    assert [item["path"] for item in result["manifest"]["files"]] == [MPK_NAME]
-
-
-def test_package_rejects_resource_path_that_collides_with_a_component_mpk(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _model_with_resource(monkeypatch, tmp_path, MPK_NAME)
-
-    with pytest.raises(ValidationError, match=f"package path is declared more than once: {MPK_NAME}"):
+def test_package_rejects_colliding_component_archive_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiled = _compiled_component(tmp_path)
+    _two_components(monkeypatch, compiled, duplicate_path=True)
+    with pytest.raises(ValidationError, match="distinct package paths"):
         assemble_package(
             repository=ROOT,
-            compiled_dir=_compiled_component(tmp_path),
+            compiled_dir=compiled,
             output_dir=tmp_path / "packages",
             model_id="resnet_50",
             build_profile_id="w16a16",

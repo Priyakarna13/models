@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from contract import DEFAULT_MODEL_SIZE
+from model_scripts import DEFAULT_MODEL_SIZE
 from torch import Tensor, nn
 from torchvision.ops import box_iou, nms
 

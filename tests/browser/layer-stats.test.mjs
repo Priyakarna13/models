@@ -47,15 +47,12 @@ test('missing or malformed data never produces a partially rendered misleading p
   }
 });
 
-test('adapters expose layer analysis for saved reports and historical core reports', () => {
+test('adapters expose optional component layer analysis', () => {
   const result = JSON.parse(readFileSync(new URL('../../artifact-browser/fixtures/performance-result.json', import.meta.url)));
-  result.benchmark_report.layer_stats = rows;
-  const current = adaptBenchmarkResult(result);
-  assert.equal(current.value.layerAnalysis.totalUs, 70);
-  const old = {...result, schema_version: 5, core_report: result.benchmark_report, metrics: {}};
-  assert.equal(adaptBenchmarkResult(old).value.layerAnalysis.totalUs, 70);
-  delete old.core_report.layer_stats;
-  assert.equal(adaptBenchmarkResult(old).value.layerAnalysis, null);
+  result.components.model.layer_stats = rows;
+  assert.equal(adaptBenchmarkResult(result).value.layerAnalysis.totalUs, 70);
+  delete result.components.model.layer_stats;
+  assert.equal(adaptBenchmarkResult(result).value.layerAnalysis, null);
 });
 
 test('timing bars have a fixed, finite microsecond axis independent of the search', () => {
