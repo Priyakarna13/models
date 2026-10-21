@@ -77,3 +77,4 @@ sima-cli models download --id resnet_50 --variant w8a8 --branch develop
 - [Model Registry architecture](design-doc/model-registry-architecture.md):
   components, repository layout, and the CI flow.
 - [Model taxonomy](docs/model-taxonomy.md): sanctioned category IDs.
+- [SSD-MobileNet precision matrix plan](design-doc/ssd-mobilenet-precision-matrix-plan.md).
