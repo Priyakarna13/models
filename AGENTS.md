@@ -66,8 +66,9 @@ and give a new job a new module named after what it does.
 Authored definitions use the shared loader in `model.py`: directory-derived ID,
 `architecture: <id>`, conventional recipes, `modalix` target, and one compile
 invocation and one `default` package per build profile, derived rather than
-declared. Dataset names retain immutable pins; Hugging Face file sets can share
-a repository/revision. Compile recipes call `load_model` instead of parsing
+declared. Each stage pins the Dataset Registry archive it uses, named by its
+source ID `<id>-<variant>`; Hugging Face file sets can share a
+repository/revision. Compile recipes call `load_model` instead of parsing
 YAML independently. A multi-component model lists its components in run order
 and may add a display-only `pipeline`. Preprocessing, decoding and surgery
 belong in executable code and the README; ownership belongs in `CODEOWNERS`.
@@ -85,7 +86,7 @@ script so customers can copy it and reproduce CI in the PyNeat environment,
 with `tools/model_report` on `PYTHONPATH` and without `model_registry` imports
 or YAML configuration. Keep its `--mpk` and `--output` CLI. `performance.py`
 and `accuracy.py` write `model-report.json` with `model_report.performance()`
-or `model_report.accuracy()`, the latter with one result per dataset name;
+or `model_report.accuracy()`, the latter with one result per dataset source ID;
 `schemas/model-report.schema.json` is the report
 contract, and `tools/model_report/metrics.json` names every metric a report may
 hold. Each benchmarked profile needs finite `tests.yaml` expectations covering its
