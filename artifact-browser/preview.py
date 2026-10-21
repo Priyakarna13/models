@@ -283,7 +283,7 @@ def _provenance(model: dict, build: dict, compiler: dict) -> dict[str, Any]:
     return {
         "inputs": [{
             "name": "source-component",
-            "input_type": source.get("media_type", "application/octet-stream").removeprefix("application/"),
+            "input_type": source.get("media_type", "application/onnx").removeprefix("application/"),
             "source_reference": source.get("uri"),
             "sha256": source.get("sha256"),
             "size_bytes": source.get("size_bytes"),
@@ -308,7 +308,6 @@ def _provenance(model: dict, build: dict, compiler: dict) -> dict[str, Any]:
             "build_fingerprint": build["compile_fingerprint"],
             "recipe": component.get("recipe"),
             "compile_parameters": binding.get("parameters", {}),
-            "shape_profile": binding.get("shape_profile"),
             "calibration": binding.get("calibration"),
         }},
     }
@@ -769,7 +768,7 @@ def _package_file(model: dict, package: dict) -> tuple[str, str]:
     if any(component["interface"]["format"] == "huggingface" for component in model["components"]):
         return "deployment/manifest.json", "application/json"
     declaration = next(item for item in model["packages"] if item["id"] == package["package_id"])
-    if len(declaration["components"]) == 1 and not declaration["resources"]:
+    if len(declaration["components"]) == 1:
         return mpk_filename(model, package["build_profile_id"], declaration["components"][0]), "application/gzip"
     return f"{model['id']}_{package['build_profile_id']}_{package['package_id']}.zip", "application/zip"
 

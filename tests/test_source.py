@@ -58,27 +58,9 @@ def test_redaction_removes_credentials_query_and_fragment() -> None:
     assert "secret" not in value
 
 
-def test_google_cloud_storage_object_is_an_approved_checksum_verified_source() -> None:
-    uri = "https://storage.googleapis.com/rfdetr/small_coco/checkpoint_best_regular.pth"
-    assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
-
-
-def test_python_package_artifact_is_an_approved_checksum_verified_source() -> None:
-    uri = (
-        "https://files.pythonhosted.org/packages/57/d4/"
-        "082da42f39a29acadd47f487b4186c0d6203eb8ce4d145baa72a12103b52/"
-        "rfdetr-1.9.4-py3-none-any.whl"
-    )
-    assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
-
-
 @pytest.mark.parametrize(
     "uri",
     [
-        "https://storage.googleapis.com/unrelated/model.pth",
-        "https://storage.googleapis.com/rfdetr/checkpoint.pth",
-        "https://files.pythonhosted.org/packages/rfdetr-1.9.4-py3-none-any.whl",
-        "https://files.pythonhosted.org/unrelated/package.whl",
         "https://artifacts.stg.neat.sima.ai/models-onnx/rf_detr_small/latest/model.onnx",
         f"https://artifacts.stg.neat.sima.ai/other/{DIGEST}/123-1/model.onnx",
     ],

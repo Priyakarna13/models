@@ -87,7 +87,6 @@ compilation:
     uri: hf://models/owner/repo@0123456789abcdef0123456789abcdef01234567/model.onnx
     sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     size_bytes: 123456
-    media_type: application/onnx
 ```
 
 The recipe is `scripts/compile.py` for `onnx` and `scripts/compile.sh` for

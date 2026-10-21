@@ -25,7 +25,6 @@ compilation:
     uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26l_pose/6ef7eb21a0548ad123ab3ed705fce26e6ad13704b794369f0c2899c24158ef1d/38162926775-1/model.onnx
     sha256: 6ef7eb21a0548ad123ab3ed705fce26e6ad13704b794369f0c2899c24158ef1d
     size_bytes: 104193652
-    media_type: application/onnx
 calibrations:
 - id: coco-2017-cal
   dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}

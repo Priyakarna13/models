@@ -19,7 +19,6 @@ compilation:
     uri: hf://models/example/model@0123456789abcdef0123456789abcdef01234567/model.onnx
     sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     size_bytes: 4
-    media_type: application/onnx
 build_profiles:
   fixture:
     components:

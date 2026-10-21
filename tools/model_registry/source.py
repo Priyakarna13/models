@@ -17,16 +17,10 @@ HF_URI_RE = re.compile(
     r"(?P<path>.+)$"
 )
 HF_RESOLVE_RE = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/resolve/[a-f0-9]{40}/.+$")
-PYPI_PACKAGE_RE = re.compile(
-    r"^/packages/[a-f0-9]{2}/[a-f0-9]{2}/[a-f0-9]{60}/[A-Za-z0-9_.+-]+\.whl$"
-)
-RFDETR_GCS_RE = re.compile(r"^/rfdetr/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx$")
 DEFAULT_HTTPS_HOSTS = {
     "artifacts.stg.neat.sima.ai",
-    "files.pythonhosted.org",
     "huggingface.co",
-    "storage.googleapis.com",
 }
 
 
@@ -117,10 +111,6 @@ class SourceSpec:
             raise SourcePolicyError(f"HTTPS source host is not approved: {hostname or '<missing>'}")
         if hostname == "huggingface.co" and not HF_RESOLVE_RE.fullmatch(parts.path):
             raise SourcePolicyError("Hugging Face HTTPS sources must use a full commit in a resolve URL")
-        if hostname == "files.pythonhosted.org" and not PYPI_PACKAGE_RE.fullmatch(parts.path):
-            raise SourcePolicyError("Python package sources must identify an immutable package artifact")
-        if hostname == "storage.googleapis.com" and not RFDETR_GCS_RE.fullmatch(parts.path):
-            raise SourcePolicyError("Google Cloud Storage sources must identify an RF-DETR model artifact")
         if hostname == "artifacts.stg.neat.sima.ai" and not VULCAN_ONNX_RE.fullmatch(parts.path):
             raise SourcePolicyError("Vulcan sources must identify a versioned ONNX file")
         return self.uri

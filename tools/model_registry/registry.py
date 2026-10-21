@@ -1516,7 +1516,6 @@ def publish_compilations(
             "recipe": component["recipe"],
             "compile_parameters": binding.get("parameters", {}),
             **({"compiled_parameters": compilation["compiled_parameters"]} if native else {}),
-            "shape_profile": binding.get("shape_profile"),
             "calibration": binding.get("calibration"),
             **({"llima_version": compilation["llima_version"]} if compilation["llima_version"] else {}),
         }

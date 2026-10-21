@@ -132,7 +132,6 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
                 }
                 for component_id in component_ids
             ],
-            "resources": [],
             "calibrations": authored.get("calibrations", []),
             "build_profiles": [],
         }
@@ -167,7 +166,7 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
             else {"id": DEFAULT_PACKAGE, "type": "declarative"}
         ]
         model["packages"] = [{
-            "id": DEFAULT_PACKAGE, "default": True, "components": list(component_ids), "resources": [],
+            "id": DEFAULT_PACKAGE, "default": True, "components": list(component_ids),
             "build_profiles": [profile["id"] for profile in model["build_profiles"]], "composition": DEFAULT_PACKAGE,
         }]
         if "accuracy" in model:

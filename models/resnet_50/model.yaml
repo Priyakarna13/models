@@ -20,7 +20,6 @@ compilation:
     uri: hf://models/onnx-community/resnet-50-ONNX@b6ef686fe842388c9449c7acb7269d02c69bacfb/onnx/model.onnx
     sha256: de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50
     size_bytes: 102182062
-    media_type: application/onnx
 calibrations:
 - id: imagenet-2012-mini
   dataset: {id: imagenet-2012, variant: mini, sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239, size_bytes: 356052889}
