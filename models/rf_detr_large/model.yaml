@@ -2,17 +2,22 @@ display_name: RF-DETR Large
 description: The largest RF-DETR transformer detector here, for COCO objects.
 model_type: vision
 tasks: [object_detection]
+
 modalities:
   inputs: [image]
   outputs: [bounding_boxes, class_scores]
+
 architecture: rf_detr
+
 license:
   spdx: Apache-2.0
   redistribution: allowed
   attribution: RF-DETR Large is distributed by Roboflow under Apache-2.0.
+
 upstream:
   repository: https://huggingface.co/Roboflow/rf-detr-large
   revision: f62f7dd5252b61097cbace33886045816dadbde9
+
 conversion:
   source:
     repository: Roboflow/rf-detr-large
@@ -22,6 +27,7 @@ conversion:
       model.safetensors: {sha256: 1ec604598aea748627eb5755a9989f3c80839fc7fb977a91bfba107ee76fcd7d, size_bytes: 135795376}
       config.json: {sha256: 6630951d97cc8dd2f32da43df7c79af153b032f6df196bbe9bf9e47bd7be0c0c, size_bytes: 5771}
       preprocessor_config.json: {sha256: 7bd6854cb9798f22bb0e1ec3c4e7ae4da9192623c4aee7c3a3991d5fbd9f28f7, size_bytes: 442}
+
 compilation:
   format: onnx
   source:
@@ -29,9 +35,11 @@ compilation:
     sha256: b618b08491b7a85ef3d6afc0d55e0bc85458fbfa5acb2446d80f8ca0d74308ef
     size_bytes: 121813393
   components: [backbone, decoder]
+
 calibrations:
 - id: coco-2017-cal
   dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
+
 build_profiles:
   w8a8_w16a16:
     calibration_dataset: coco-2017-cal
@@ -41,6 +49,7 @@ build_profiles:
       # Sin/Cos use INT8 lookup tables even at BF16, so the decoder needs calibrated ranges.
       decoder:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+
   w8a16_w16a16:
     # The decoder calibrates on this backbone's outputs; W8A16 skips backbone calibration.
     calibration_dataset: coco-2017-cal
@@ -50,22 +59,27 @@ build_profiles:
       # Sin/Cos use INT8 lookup tables even at BF16, so the decoder needs calibrated ranges.
       decoder:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+
 pipeline:
 - {component: backbone}
 - {cpu: Top 300 proposals}
 - {component: decoder}
+
 numerical_fidelity:
   # Reordered queries can lower numerical similarity for equivalent detections.
   status: diagnostic
   dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
   selection: {method: seeded_random_without_replacement, seed: 42, offset: 50, samples: 10}
   outputs: [dets, labels]
+
 accuracy:
   status: ready
   datasets:
   - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
+
 performance:
   required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
+
 reference_metrics:
 - source: https://github.com/roboflow/rf-detr/blob/56cdbbf57fc51c090f3aca398802d2cbc6703a05/README.md
   dataset: {id: coco-2017, split: val}

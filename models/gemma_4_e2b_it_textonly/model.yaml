@@ -3,18 +3,23 @@ display_name: Gemma 4 E2B Text
 description: Generates text from instructions and conversation history.
 model_type: llm
 tasks: [text_generation]
+
 modalities:
   inputs: [text]
   outputs: [text]
+
 architecture: gemma
+
 license:
   spdx: LicenseRef-Gemma
   redistribution: restricted
   attribution: Derived from google/gemma-4-E2B-it under the Gemma Terms of Use; text-only GPTQ checkpoint provided by SiMa.ai.
+
 upstream:
   repository: https://huggingface.co/simaai/Gemma-4-E2B-it-TextOnly-GPTQ-Safetensors
   revision: db99280a9577eb98fa639bfa362ef28750c1eb64
   derived_from: https://huggingface.co/google/gemma-4-E2B-it
+
 compilation:
   format: huggingface
   source:
@@ -29,6 +34,7 @@ compilation:
       tokenizer.json: {sha256: cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f, size_bytes: 32169626}
       tokenizer_config.json: {sha256: a284d1243b62be31faa9c13e1c28cece940c4abaa7bd9ad87b94f61b40687200, size_bytes: 2741}
   entrypoint: generate
+
 build_profiles:
   w4a16:
     runner_class: expensive

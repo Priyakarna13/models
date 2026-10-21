@@ -2,23 +2,29 @@ display_name: Fixture Model
 description: Minimal valid schema fixture.
 model_type: vision
 tasks: [image_classification]
+
 modalities:
   inputs: [image]
   outputs: [class_scores]
+
 architecture: resnet
+
 license:
   spdx: Apache-2.0
   redistribution: allowed
   attribution: Test fixture only.
+
 upstream:
   repository: https://huggingface.co/example/model
   revision: 0123456789abcdef0123456789abcdef01234567
+
 compilation:
   format: onnx
   source:
     uri: hf://models/example/model@0123456789abcdef0123456789abcdef01234567/model.onnx
     sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     size_bytes: 4
+
 build_profiles:
   fixture:
     components:

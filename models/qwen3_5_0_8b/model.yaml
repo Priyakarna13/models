@@ -3,18 +3,23 @@ display_name: Qwen3.5-0.8B
 description: Generates text from instructions, conversation history, and images.
 model_type: vlm
 tasks: [text_generation, visual_question_answering]
+
 modalities:
   inputs: [text, image]
   outputs: [text]
+
 architecture: qwen
+
 license:
   spdx: Apache-2.0
   redistribution: allowed
   attribution: Derived from Qwen/Qwen3.5-0.8B; AutoRound checkpoint provided by SiMa.ai under Apache-2.0.
+
 upstream:
   repository: https://huggingface.co/simaai/Qwen3.5-0.8B-Autoround-Safetensors
   revision: 368d99afc0f454d646d9b2c847b635a82a016e9a
   derived_from: https://huggingface.co/Qwen/Qwen3.5-0.8B
+
 compilation:
   format: huggingface
   source:
@@ -36,6 +41,7 @@ compilation:
       video_preprocessor_config.json: {sha256: 7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13, size_bytes: 385}
       vocab.json: {sha256: ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003, size_bytes: 6722759}
   entrypoint: generate
+
 build_profiles:
   w4a16:
     runner_class: expensive

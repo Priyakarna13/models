@@ -3,14 +3,18 @@ display_name: Whisper Small
 description: Transcribes spoken audio into text with optional automatic language detection.
 model_type: audio
 tasks: [automatic_speech_recognition]
+
 modalities:
   inputs: [audio]
   outputs: [text]
+
 architecture: whisper
+
 license:
   spdx: Apache-2.0
   redistribution: allowed
   attribution: Derived from openai/whisper-small under Apache-2.0.
+
 compilation:
   format: huggingface
   source:
@@ -30,6 +34,7 @@ compilation:
       tokenizer_config.json: {sha256: 2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce, size_bytes: 282683}
       vocab.json: {sha256: 8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9, size_bytes: 835550}
   entrypoint: transcribe
+
 build_profiles:
   w8a16:
     runner_class: expensive
