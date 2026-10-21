@@ -222,9 +222,9 @@ restrictions such as INT8-only accuracy.
 Fidelity is diagnostic numerical agreement, not task accuracy. `accuracy`
 names the datasets it evaluates, and each dataset's
 [requirements file](datasets.md#required-accuracy-metrics) lists the metrics
-its result must hold for the model's tasks. `performance` lists the
-`required_metrics` every report must hold. Decoder choices and measurement
-settings stay in the scripts. See [Quality and
+its result must hold for the model's tasks. Every `performance` report holds
+the metrics [`metrics.json`](../tools/model_report/metrics.json) marks
+`required`. Decoder choices and measurement settings stay in the scripts. See [Quality and
 performance](metadata-schema.md#quality-and-performance).
 
 Record the scores the source model's authors published under
@@ -274,7 +274,7 @@ is always benchmarked again.
 | a model's `performance.py` or `performance` declaration | that model's performance stages |
 | `accuracy.py`, its requirements, the `accuracy` datasets, or one of their pins | that model's accuracy stages |
 | a task's entry in `datasets/<id>.yaml` | the accuracy stages of models with that task that evaluate the dataset |
-| `accuracy.status` or `accuracy.build_profiles`, a new `datasets/` file, or an entry for a task no such model has | nothing; a newly measured profile runs because it has no run yet |
+| `accuracy.build_profiles`, a new `datasets/` file, or an entry for a task no such model has | nothing; a newly measured profile runs because it has no run yet |
 | `scripts/run_model_performance.sh` | every performance stage |
 | `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, or `scripts/install_dataset_registry.sh` | every accuracy stage |
 | the DevKit runtime pin, the benchmarking workflow, `tools/model_report`, `schemas/model-report.schema.json`, or `report_publication.py` | every performance and accuracy stage |

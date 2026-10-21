@@ -172,8 +172,8 @@ def test_hugging_face_model_is_one_component_compiled_from_its_config() -> None:
 RUN_TESTS = {"run_tests": True}
 DATASET = {"id": "imagenet-2012", "variant": "mini", "sha256": "a" * 64, "size_bytes": 1}
 BENCHMARK_DECLARATIONS = {
-    "accuracy": {"status": "ready", "datasets": [DATASET]},
-    "performance": {"required_metrics": ["latency_avg_ms", "throughput_fps"]},
+    "accuracy": {"datasets": [DATASET]},
+    "performance": {},
 }
 EXPECTED = {
     "accuracy": {"run_tests": True, "expected": {"fixture": {"imagenet-2012-mini": {"top1_accuracy": 0.5}}}},
@@ -208,7 +208,7 @@ def test_benchmarked_model_is_valid(tmp_path: Path) -> None:
 
     # datasets/imagenet-2012.yaml requires top-1 accuracy of image classification models.
     assert model["accuracy"] == {
-        "status": "ready", "datasets": {"imagenet-2012-mini": {**DATASET, "required_metrics": ["top1_accuracy"]}},
+        "datasets": {"imagenet-2012-mini": {**DATASET, "required_metrics": ["top1_accuracy"]}},
     }
     assert model["performance"] == BENCHMARK_DECLARATIONS["performance"]
 
@@ -230,7 +230,8 @@ def test_benchmark_declaration_requires_its_script(tmp_path: Path, stage: str) -
         ("accuracy", {"datasets": [DATASET, DATASET]}, "accuracy lists a dataset twice"),
         # Published scores live in the top-level reference_metrics.
         ("accuracy", {"reference": {"top1_accuracy": 0.5}}, "'reference' was unexpected"),
-        ("performance", {"required_metrics": ["top1_accuracy"]}, "does not define: top1_accuracy"),
+        # metrics.json says which metrics every performance report holds.
+        ("performance", {"required_metrics": ["latency_avg_ms"]}, "'required_metrics' was unexpected"),
         ("performance", {"unsupported_setting": True}, "'unsupported_setting' was unexpected"),
     ],
 )

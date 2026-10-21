@@ -383,7 +383,6 @@ def test_accuracy_fingerprint_covers_the_model_datasets_and_their_requirements(t
         ),
         "another dataset file": edit(tmp_path / "datasets" / "imagenet-2012.yaml",
                                      lambda d: d["required_metrics"]["image_classification"].append("top5_accuracy")),
-        "the status": edit(manifest, lambda d: d["accuracy"].update(status="provisional")),
         "the build profiles": edit(manifest, lambda d: d["accuracy"].update(build_profiles=["w8a8_w16a16"])),
     }
 
@@ -527,8 +526,8 @@ def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(model
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["performance"] = {"required_metrics": ["latency_avg_ms"]}
-    model["accuracy"] = {"status": "provisional", "datasets": [dict(DATASET)]}
+    model["performance"] = {}
+    model["accuracy"] = {"datasets": [dict(DATASET)]}
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     (manifest.parent / "scripts" / "performance.py").write_text("report = model.benchmark()\n", encoding="utf-8")
     (manifest.parent / "scripts" / "accuracy.py").write_text("score = 0.5\n", encoding="utf-8")

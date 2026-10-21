@@ -80,15 +80,17 @@ defines them. It also keeps Core's whole `telemetry` and, for each component,
 its execution plan and layer timings. `workload` is one line that says what
 ran, such as the selected decoder and postprocessing.
 
-`model.yaml` declares that the model is measured, which build profiles, and
-the metrics a report must hold:
+`model.yaml` declares that the model is measured and, optionally, which build
+profiles:
 
 ```yaml
-performance:
-  required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
+performance: {}
 ```
 
-Without `build_profiles`, every build profile is measured. Decoder and
+Without `build_profiles`, every build profile is measured. Every report must
+hold the metrics [`metrics.json`](../tools/model_report/metrics.json) marks
+`required`: average latency, throughput, average SoM power, and energy per
+inference. Decoder and
 measurement settings have one source of truth in `performance.py`; they are
 not repeated in YAML.
 
@@ -187,8 +189,8 @@ inference in a batch, so `model_report` derives energy per inference by
 dividing average power by throughput alone. Core writes 0 for a headline value
 it did not measure, and Sentinel provides 0 samples for a reading it did not
 take; those metrics are absent from the report and the browser shows them as
-unavailable. The `required_metrics` in `model.yaml` must be present, or the
-stage fails before publication.
+unavailable. A missing required metric fails the stage before
+publication.
 
 `model_report` reads these Sentinel metrics from the telemetry, each over the
 throughput pass:

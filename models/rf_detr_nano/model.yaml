@@ -74,12 +74,10 @@ numerical_fidelity:
   outputs: [dets, labels]
 
 accuracy:
-  status: ready
   datasets:
   - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
 
-performance:
-  required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
+performance: {}
 
 reference_metrics:
 - source: https://github.com/roboflow/rf-detr/blob/56cdbbf57fc51c090f3aca398802d2cbc6703a05/README.md

@@ -209,8 +209,7 @@ def benchmark_fingerprint(
     the build of every component, the stage's declaration, the model's script, and the shared tooling. An
     accuracy declaration holds each dataset it evaluates with the metrics its datasets/<id>.yaml requires for
     the model's tasks, so changing another task's entry or another dataset's file keeps this fingerprint. The
-    declaration's ``status`` and ``build_profiles`` are left out, so relabeling the stage or benchmarking
-    another profile keeps it too.
+    declaration's ``build_profiles`` are left out, so benchmarking another profile keeps it too.
     """
     root = Path(repository).expanduser().resolve()
     model_id = str(model["id"])
@@ -234,7 +233,7 @@ def benchmark_fingerprint(
             }
             for component_id in components
         },
-        stage: {key: value for key, value in model[stage].items() if key not in {"status", "build_profiles"}},
+        stage: {key: value for key, value in model[stage].items() if key != "build_profiles"},
         "files": _file_digests(root, required, optional),
         "runtime": resolve_benchmark_runtime(root),
     })

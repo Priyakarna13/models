@@ -140,6 +140,8 @@ def test_registered_builds_require_the_package_to_link_the_benchmarked_builds(tm
         ("resnet_50", "w8a8", "accuracy", performance_report(["model"]), "is a performance report, not accuracy"),
         ("resnet_50", "w8a8", "performance", performance_report(["model"], metrics={**PERFORMANCE_METRICS,
          "top1_accuracy": 0.7}), "unknown performance metrics: top1_accuracy"),
+        ("resnet_50", "w8a8", "performance", performance_report(["model"], metrics={"latency_avg_ms": 2.5}),
+         "required performance metrics were not measured: throughput_fps, avg_power_watts"),
         ("resnet_50", "w8a8", "accuracy", accuracy_report({IMAGENET: dataset_result(metrics={"top5_accuracy": 0.93})}),
          f"{IMAGENET}: required accuracy metrics were not measured: top1_accuracy"),
         ("resnet_50", "w8a8", "accuracy", accuracy_report({"other": dataset_result()}),

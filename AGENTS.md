@@ -76,10 +76,11 @@ Do not add maturity compatibility fields to new authored YAML.
 
 Performance and accuracy measure each build profile's whole model: every
 component's MPK and the CPU work between them. `model.yaml` declares only
-`performance.required_metrics`, `accuracy.datasets` (Dataset Registry pins) and
-optional `build_profiles`. The metrics an accuracy dataset requires live in
-`datasets/<registry id>.yaml`, per task; a model reports, on each dataset, the
-metrics listed for its `tasks`. Decoder selection, top-k,
+`performance`, `accuracy.datasets` (Dataset Registry pins) and optional
+`build_profiles`. Every performance report holds the metrics
+`tools/model_report/metrics.json` marks `required`. The metrics an accuracy
+dataset requires live in `datasets/<registry id>.yaml`, per task; a model
+reports, on each dataset, the metrics listed for its `tasks`. Decoder selection, top-k,
 sample count, duration and layer statistics belong in each model's
 `scripts/performance.py`. Every benchmarked model must include that standalone
 script so customers can copy it and reproduce CI in the PyNeat environment,

@@ -57,13 +57,12 @@ on a DevKit with PyNeat, on each dataset `accuracy` names:
 
 ```yaml
 accuracy:
-  status: ready
   datasets:
   - {id: imagenet-2012, variant: mini, sha256: d769e759…, size_bytes: 356052889}
 ```
 
-`status` is `ready` or `provisional`, and each `datasets` entry pins a Dataset
-Registry archive, which goes by its source ID, here `imagenet-2012-mini`. The metrics the report must hold come from
+Each `datasets` entry pins a Dataset Registry archive, which goes by its
+source ID, here `imagenet-2012-mini`. The metrics the report must hold come from
 `datasets/<registry id>.yaml` for the model's `tasks`; see
 [Required accuracy metrics](datasets.md#required-accuracy-metrics).
 Without `build_profiles`, every build profile is measured; see

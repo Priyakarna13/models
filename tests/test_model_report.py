@@ -159,6 +159,10 @@ def test_every_metric_names_its_stage_unit_direction_and_measurement():
         assert metric["stage"] in {"performance", "accuracy"}, name
         assert metric["direction"] in {"higher", "lower", "neutral"}, name
         assert metric["unit"] and metric["label"] and metric["registry_name"], name
+        assert not metric.get("required") or metric["stage"] == "performance", name
+    assert model_report.REQUIRED_PERFORMANCE_METRICS == [
+        "latency_avg_ms", "throughput_fps", "avg_power_watts", "energy_per_inference_joules"
+    ]
 
 
 def test_the_package_needs_only_the_standard_library():

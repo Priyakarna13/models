@@ -79,12 +79,6 @@ def validate_benchmark_declarations(model: dict[str, Any], directory: Path) -> N
         if unknown_profiles:
             names = ", ".join(sorted(unknown_profiles))
             raise ValidationError(f"{directory}: {stage} names unknown build profiles: {names}")
-        # Accuracy's required metrics come from datasets/<id>.yaml, checked as it is read.
-        required = declaration.get("required_metrics", ())
-        unknown = [name for name in required if METRICS.get(name, {}).get("stage") != stage]
-        if unknown:
-            names = ", ".join(unknown)
-            raise ValidationError(f"{directory}: {stage} requires metrics model_report does not define: {names}")
     _validate_reference_metrics(model.get("reference_metrics", []), directory)
 
 

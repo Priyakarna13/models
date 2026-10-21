@@ -22,6 +22,8 @@ REPORT_FILE = "model-report.json"
 # Core's own saved BenchmarkReport, kept beside the report as evidence.
 CORE_REPORT_FILE = "benchmark-report.json"
 METRICS: dict[str, dict[str, Any]] = json.loads(Path(__file__).with_name("metrics.json").read_text(encoding="utf-8"))
+# Every performance report must hold these; each accuracy dataset's datasets/<id>.yaml names its own.
+REQUIRED_PERFORMANCE_METRICS = [name for name, metric in METRICS.items() if metric.get("required")]
 # Derived from the measured power and rate rather than read from Core.
 ENERGY_PER_INFERENCE = "energy_per_inference_joules"
 

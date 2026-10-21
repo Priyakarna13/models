@@ -56,14 +56,12 @@ numerical_fidelity:
   outputs: [logits]
 
 accuracy:
-  status: provisional
   datasets:
   - {id: imagenet-2012, variant: mini, sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239, size_bytes: 356052889}
   # The BF16 build checks compilation; only INT8 has an accuracy qualification.
   build_profiles: [w8a8]
 
-performance:
-  required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
+performance: {}
 
 reference_metrics:
 - source: https://github.com/huggingface/pytorch-image-models/blob/c709c9a4a26af45d01221caadfdc6b00a9622630/results/results-imagenet.csv

@@ -50,12 +50,10 @@ build_profiles:
 
 accuracy:
   # The reference uses padded rectangular batches; accuracy.py runs a square 640x640 input.
-  status: ready
   datasets:
   - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
 
-performance:
-  required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
+performance: {}
 
 reference_metrics:
 - source: https://github.com/ultralytics/ultralytics/blob/f2d3aed634a5b0e4828024718d4a61ab2f83fb19/docs/en/models/yolo26.md

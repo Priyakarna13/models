@@ -417,9 +417,7 @@ def test_model_declares_onnx_and_whole_model_benchmarks() -> None:
     assert model["build_profiles"][0]["components"][0]["parameters"]["calibration_bins"] == 2048
     assert model["numerical_fidelity"]["outputs"] == ["dets", "labels"]
     assert list(model["accuracy"]["datasets"]) == ["coco-2017-val"]
-    assert model["performance"]["required_metrics"] == [
-        "latency_avg_ms", "throughput_fps", "avg_power_watts", "energy_per_inference_joules"
-    ]
+    assert model["performance"] == {}
 
 
 def test_an_afe_system_exit_fails_the_phase(

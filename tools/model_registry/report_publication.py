@@ -21,7 +21,7 @@ from typing import Any
 from urllib.parse import quote
 
 from jsonschema import Draft202012Validator
-from model_report import CORE_REPORT_FILE, METRICS, REPORT_FILE
+from model_report import CORE_REPORT_FILE, METRICS, REPORT_FILE, REQUIRED_PERFORMANCE_METRICS
 
 from .benchmark_declarations import benchmarked_profiles
 from .dependencies import resolve_benchmark_runtime
@@ -171,7 +171,7 @@ def check_report(
             measured = report["datasets"][name]["metrics"]
             _check_metrics(f"{report_path}: {name}", stage, measured, dataset["required_metrics"])
         return report
-    _check_metrics(str(report_path), stage, report["metrics"], model[stage]["required_metrics"])
+    _check_metrics(str(report_path), stage, report["metrics"], REQUIRED_PERFORMANCE_METRICS)
     components = [component["id"] for component in model["components"]]
     if list(report["components"]) != components:
         raise ValidationError(f"{report_path}: the report must describe the components {components}, in order")

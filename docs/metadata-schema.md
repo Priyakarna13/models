@@ -246,7 +246,6 @@ Measured on a DevKit by `scripts/accuracy.py` in the accuracy stage:
 
 ```yaml
 accuracy:
-  status: provisional
   datasets:
   - {id: imagenet-2012, variant: mini, sha256: d769e759…, size_bytes: 356052889}
   build_profiles: [w8a8]
@@ -254,7 +253,6 @@ accuracy:
 
 | Field | Meaning |
 | --- | --- |
-| `status` | `ready` or `provisional`. |
 | `datasets` | Dataset Registry pins; the stage resolves each on the DevKit and evaluates the model on all of them in one run. Each goes by its source ID, such as `imagenet-2012-mini`. |
 | `build_profiles` | Optional; the profiles measured. Omitted, every profile is measured. |
 
@@ -270,12 +268,12 @@ a missing expected measurement fails.
 Measured on a DevKit by `scripts/performance.py` in the performance stage:
 
 ```yaml
-performance:
-  required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
+performance: {}
 ```
 
-It takes `required_metrics`, the metrics every report must hold, and the
-optional `build_profiles`, as `accuracy` does. Decoder selection and measurement settings stay in the script, which
+It takes only the optional `build_profiles`, as `accuracy` does. Every report
+must hold the metrics
+[`metrics.json`](../tools/model_report/metrics.json) marks `required`. Decoder selection and measurement settings stay in the script, which
 customers can copy and run with PyNeat; YAML does not duplicate them.
 
 See [Accuracy and fidelity](local-accuracy-development.md) and [DevKit
