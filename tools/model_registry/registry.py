@@ -708,13 +708,11 @@ def publish_model_documentation(
         }
         run_fingerprint = canonical_sha256(parameters)
         environment_document = {
-            "schema_version": 1,
             "vulcan_environment": environment,
             "target_platform": "documentation",
             "publisher": "model-registry",
         }
         create_body = {
-            "schema_version": 1,
             "run_type": "model_documentation",
             "commit_sha": git_sha.lower(),
             "git_ref": f"refs/heads/{branch}",
@@ -746,7 +744,6 @@ def publish_model_documentation(
         client.request("PUT", f"/v1/runs/{run_id}/parameters", {
             "parameters": parameters,
             "canonical_sha256": canonical_sha256(parameters),
-            "canonicalization_version": 1,
         }, f"{stable_key}-parameters")
         client.request("PUT", f"/v1/runs/{run_id}/artifacts/readme", {
             "artifact_type": "model-readme",
@@ -1237,7 +1234,7 @@ def _publish_fidelity(
         },
         f"{stable_key}-fidelity-artifact",
     )
-    test: JsonObject = {"status": "passed", "version": str(fidelity["schema_version"]), "summary": fidelity}
+    test: JsonObject = {"status": "passed", "summary": fidelity}
     if artifact.get("artifact_id"):
         test["report_artifact_id"] = artifact["artifact_id"]
     client.request(
@@ -1502,7 +1499,6 @@ def publish_compilations(
         target = compilation["target"]
         source_sha = compilation["source_sha"]
         parameters = {
-            "schema_version": 2,
             "model_id": model_id,
             "build_profile_id": build_profile_id,
             "compile_invocation_id": compile_invocation_id,
@@ -1520,7 +1516,6 @@ def publish_compilations(
             **({"llima_version": compilation["llima_version"]} if compilation["llima_version"] else {}),
         }
         environment_document = {
-            "schema_version": 1,
             "vulcan_environment": environment,
             "toolchain_name": "sima-model-compiler",
             "toolchain_version": compiler_version,
@@ -1541,7 +1536,6 @@ def publish_compilations(
             "POST",
             "/v1/runs",
             {
-                "schema_version": 1,
                 "run_type": "model_compile",
                 "commit_sha": git_sha,
                 "git_ref": f"refs/heads/{branch}",
@@ -1604,7 +1598,7 @@ def publish_compilations(
         client.request(
             "PUT",
             f"/v1/runs/{run_id}/parameters",
-            {"parameters": parameters, "canonical_sha256": canonical_sha256(parameters), "canonicalization_version": 1},
+            {"parameters": parameters, "canonical_sha256": canonical_sha256(parameters)},
             f"{stable_key}-parameters",
         )
 
@@ -1656,7 +1650,6 @@ def publish_compilations(
             f"/v1/runs/{run_id}/test-results/compile/{validation}",
             {
                 "status": "passed",
-                "version": "1",
                 "summary": {"deployment_validated" if native else "archive_validated": True,
                             "checksum_verified": True},
             },
@@ -1812,7 +1805,6 @@ def publish_packages(
 
         manifest_sha = canonical_sha256(manifest)
         parameters = {
-            "schema_version": 1,
             "model_id": model_id,
             "build_profile_id": profile_id,
             "package_id": package_id,
@@ -1821,7 +1813,7 @@ def publish_packages(
         }
         run_fingerprint = canonical_sha256({**parameters, "artifact_sha256": artifact_sha})
         environment_document = {
-            "schema_version": 1, "vulcan_environment": environment,
+            "vulcan_environment": environment,
             "target_platform": manifest.get("target"), "packager": "model-registry",
         }
         stable_key = "model-package-" + hashlib.sha256(
@@ -1829,7 +1821,7 @@ def publish_packages(
              + (f":{candidate['deployment_id']}" if candidate else "")).encode()
         ).hexdigest()
         create = client.request("POST", "/v1/runs", {
-            "schema_version": 1, "run_type": "model_package", "commit_sha": git_sha,
+            "run_type": "model_package", "commit_sha": git_sha,
             "git_ref": f"refs/heads/{branch}", "ci_provider": "github-actions", "ci_run_url": github_run_url,
             "run_fingerprint": run_fingerprint,
             "environment": {
@@ -1859,7 +1851,7 @@ def publish_packages(
                 "metadata": {"component_id": component_id, "compile_run_id": component_run_id},
             }, f"{stable_key}-component-{component_id}")
         client.request("PUT", f"/v1/runs/{run_id}/parameters", {
-            "parameters": parameters, "canonical_sha256": canonical_sha256(parameters), "canonicalization_version": 1,
+            "parameters": parameters, "canonical_sha256": canonical_sha256(parameters),
         }, f"{stable_key}-parameters")
         artifact_metadata = {
             "model_id": model_id, "build_profile_id": profile_id, "package_id": package_id,

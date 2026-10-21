@@ -283,8 +283,6 @@ def publish_report(
     store = artifact_store or S3ArtifactStore(bucket, kms_key_id=kms_key_id)
 
     create_body: JsonObject = {
-        # The registry run-envelope schema version, not the report's.
-        "schema_version": 1,
         "run_type": run_type,
         "parent_run_id": package_run_id,
         "commit_sha": commit_sha,
@@ -329,7 +327,7 @@ def publish_report(
     client.request(
         "PUT",
         f"/v1/runs/{run_id}/parameters",
-        {"parameters": parameters, "canonical_sha256": canonical_sha256(parameters), "canonicalization_version": 1},
+        {"parameters": parameters, "canonical_sha256": canonical_sha256(parameters)},
         f"{stable_key}-parameters",
     )
 
@@ -348,7 +346,6 @@ def publish_report(
     }
     test_body: JsonObject = {
         "status": test_status,
-        "version": str(report["schema_version"]),
         # The model browser reads the whole report from here.
         "summary": report,
         "report_artifact_id": artifacts["model-report"]["artifact_id"],

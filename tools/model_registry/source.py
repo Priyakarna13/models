@@ -37,7 +37,7 @@ def source_identity(source: dict[str, Any]) -> str:
         }
         for member in sorted(source["files"], key=lambda item: item["path"])
     ]
-    document = {"schema_version": 1, "entrypoint": source["entrypoint"], "files": members}
+    document = {"entrypoint": source["entrypoint"], "files": members}
     return hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

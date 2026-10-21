@@ -203,7 +203,6 @@ class Fetcher:
                 except OSError:
                     shutil.copyfile(cached, destination)
             manifest = {
-                "schema_version": 1,
                 "identity": identity,
                 "entrypoint": source["entrypoint"],
                 "files": sorted(members, key=lambda item: str(item["path"])),
