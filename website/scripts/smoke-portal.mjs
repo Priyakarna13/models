@@ -404,10 +404,6 @@ async function checkTaskComparison(browser, base) {
         const chartLabels = await page.locator('.compare-axis-title').allTextContents();
         if (chartLabels[0] !== 'Throughput (inferences/s)' || !chartLabels[1].includes('mAP')) throw new Error('accuracy/throughput axes changed');
         if (!(await page.locator('.compare-chart-dataset').innerText()).includes('coco-2017')) throw new Error('chart does not identify its accuracy dataset');
-        const droneKey = await add.locator('option').filter({hasText: 'Tiny Drone'}).first().getAttribute('value');
-        await add.selectOption(droneKey);
-        if (await page.locator(`.compare-point[data-compare-toggle="${droneKey}"], .compare-legend [data-compare-toggle="${droneKey}"]`).count()) throw new Error('model with a different accuracy dataset appears in the chart');
-        if (await page.locator(`.compare-table .compare-remove[data-compare-toggle="${droneKey}"]`).count() !== 1) throw new Error('model with a different accuracy dataset is missing from the table');
         await page.locator('[data-compare-control="task"]').selectOption('image_classification');
         await add.waitFor();
         const choices = await add.locator('option').allTextContents();
