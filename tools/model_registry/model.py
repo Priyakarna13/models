@@ -156,6 +156,8 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
                 "target": "modalix",
                 **({"runner_class": profile["runner_class"]} if "runner_class" in profile else {}),
                 "components": bindings,
+                # One invocation compiles every component, so its ID is the profile ID. Vulcan's catalog and
+                # promotion contracts still name each build's compile_invocation_id.
                 "compile_invocations": [{"id": profile_id, "components": list(component_ids)}],
             })
 
