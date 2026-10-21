@@ -753,7 +753,6 @@ def _resolve_devkit_accuracy(args: argparse.Namespace) -> int:
     for name, dataset in model["accuracy"]["datasets"].items():
         print(json.dumps({
             "name": name,
-            "dataset_id": f"{dataset['id']}/{dataset['variant']}",
             "path": str(resolve_dataset(dataset, args.cache_dir)),
             "sha256": dataset["sha256"],
             "size_bytes": dataset["size_bytes"],

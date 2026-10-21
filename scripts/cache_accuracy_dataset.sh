@@ -39,9 +39,9 @@ if [[ -z "$results" ]]; then
   echo "$(basename "$MODEL_DIR") declares no DevKit accuracy for $BUILD_PROFILE_ID."
   exit 0
 fi
-# The DevKit has no jq; read each resolution with the registry Python.
-field() {
-  "$REGISTRY_PYTHON" -c 'import json, sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"
+# Print one field of the JSON on stdin; the DevKit has no jq.
+json_field() {
+  "$REGISTRY_PYTHON" -c 'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
 }
 {
   echo "### Accuracy datasets"
@@ -50,12 +50,12 @@ field() {
   echo "|---|---|---|---|---|"
 } >> "$SUMMARY"
 while IFS= read -r result; do
-  path="$(field "$result" path)"
+  path="$(json_field path <<< "$result")"
   cache="hit"
   if [[ "$(dirname "$path")/resolution-receipt.json" -nt "$started" ]]; then
     cache="downloaded"
   fi
-  row="| $(field "$result" name): $(field "$result" dataset_id) | \`$path\` | \`$(field "$result" sha256)\` | $(field "$result" size_bytes) | $cache |"
+  row="| $(json_field name <<< "$result") | \`$path\` | \`$(json_field sha256 <<< "$result")\` | $(json_field size_bytes <<< "$result") | $cache |"
   echo "$row"
   echo "$row" >> "$SUMMARY"
 done <<< "$results"
