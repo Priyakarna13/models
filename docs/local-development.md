@@ -84,11 +84,16 @@ model-registry validate-models --repository .
 ```
 
 Run the model's tests from a virtual environment with this checkout's
-development extra installed (`python -m pip install '.[dev]'`):
+development extra installed. The extra holds the test dependencies, such as
+pytest and OpenCV, and matches what CI installs:
 
 ```bash
-python -m pytest models/<model-id>/tests
+python3 -m venv .venv
+.venv/bin/python -m pip install '.[dev]'
+.venv/bin/python -m pytest models/<model-id>/tests
 ```
+
+`.venv/bin/python -m pytest` with no path runs the whole repository suite.
 
 Run a stage's tests on an output you produced with
 `scripts/run_model_tests.sh <stage> models/<model-id> <output> [<profile-id>]`,
