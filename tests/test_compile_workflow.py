@@ -638,7 +638,8 @@ def test_every_component_mpk_records_runner_and_input_provenance() -> None:
     assert compile_job["env"]["RUNNER_APPROVAL_SPEC_REVISION"] == (
         "${{ fromJSON(inputs.entry).runner_approval_spec_revision }}"
     )
-    assert 'for index in "${!components[@]}"' in verify
+    assert 'for component in "${components[@]}"' in verify
+    assert compile_job["env"]["RUNNER_APPROVAL_ID"] == "${{ fromJSON(inputs.entry).runner_approval_id }}"
     assert 'verify-artifact "$PROFILE_OUTPUT_DIR/$component"' in verify
     for option in (
         "--write-manifest",

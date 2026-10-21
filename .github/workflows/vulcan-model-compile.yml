@@ -83,7 +83,6 @@ jobs:
       REQUESTED_RUNNER_CLASS: ${{ fromJSON(inputs.entry).requested_runner_class }}
       RUNNER_CLASS: ${{ fromJSON(inputs.entry).runner_class }}
       RUNNER_APPROVAL_ID: ${{ fromJSON(inputs.entry).runner_approval_id }}
-      RUNNER_APPROVAL_IDS: ${{ toJSON(fromJSON(inputs.entry).runner_approval_ids) }}
       RUNNER_APPROVAL_SPEC_REVISION: ${{ fromJSON(inputs.entry).runner_approval_spec_revision }}
     steps:
       - name: Check out the trusted revision
@@ -197,8 +196,7 @@ jobs:
         run: |
           set -euo pipefail
           IFS=',' read -ra components <<< "$COMPONENT_IDS"
-          for index in "${!components[@]}"; do
-            component="${components[$index]}"
+          for component in "${components[@]}"; do
             # Cache hits from the compilation; each digest is verified again on read.
             source_sha256="$("$MODEL_COMPILER_PYTHON" -m model_registry fetch "$MODEL_DIR" \
               --component "$component" --cache-dir "$MODEL_REGISTRY_CACHE_DIR" --json | jq -er '.sha256')"
@@ -208,10 +206,6 @@ jobs:
             calibration_args=()
             if [[ -n "$calibration_sha256" ]]; then
               calibration_args=(--calibration-sha256 "$calibration_sha256")
-            fi
-            approval_id="$RUNNER_APPROVAL_ID"
-            if [[ "$RUNNER_APPROVAL_IDS" != "null" ]]; then
-              approval_id="$(jq -r ".[${index}] // \"\"" <<< "$RUNNER_APPROVAL_IDS")"
             fi
             "$MODEL_COMPILER_PYTHON" -m model_registry verify-artifact "$PROFILE_OUTPUT_DIR/$component" \
               --write-manifest \
@@ -228,7 +222,7 @@ jobs:
               --compile-fingerprint "$COMPILE_FINGERPRINT" \
               --requested-runner-class "$REQUESTED_RUNNER_CLASS" \
               --runner-class "$RUNNER_CLASS" \
-              --runner-approval-id "$approval_id" \
+              --runner-approval-id "$RUNNER_APPROVAL_ID" \
               --runner-approval-spec-revision "$RUNNER_APPROVAL_SPEC_REVISION"
           done
 

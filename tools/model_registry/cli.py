@@ -129,7 +129,6 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     authorize.add_argument("--matrix", type=Path, required=True)
     authorize.add_argument("--vulcan-spec", type=Path, required=True)
     authorize.add_argument("--repository-name", required=True)
-    authorize.add_argument("--environment", required=True)
 
     base = subcommands.add_parser("resolve-base", help="list the base branches whose catalogs builds may come from")
     base.add_argument("--repository", type=Path, default=Path.cwd())
@@ -587,12 +586,7 @@ def _authorize_runner_matrix(args: argparse.Namespace) -> int:
         raise ModelRegistryError(f"could not load runner authorization input: {exc}") from exc
     if not isinstance(matrix, dict) or not isinstance(vulcan_spec, dict):
         raise ModelRegistryError("runner authorization inputs must be JSON objects")
-    result = authorize_runner_matrix(
-        matrix,
-        vulcan_spec,
-        repository=args.repository_name,
-        environment=args.environment,
-    )
+    result = authorize_runner_matrix(matrix, vulcan_spec, repository=args.repository_name)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 
