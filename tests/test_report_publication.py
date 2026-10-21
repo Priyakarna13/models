@@ -85,11 +85,14 @@ def dataset_result(**changes: object) -> dict:
     }  # fmt: skip
 
 
-def accuracy_report(**datasets: dict) -> dict:
+IMAGENET = "imagenet-2012-mini"
+
+
+def accuracy_report(datasets: dict | None = None) -> dict:
     """ResNet-50's accuracy report, on its one dataset unless ``datasets`` names others."""
     return {
         "schema": "sima.model-report", "schema_version": 1, "stage": "accuracy",
-        "runtime": {"pyneat": "3.0.0", "build": {}}, "datasets": datasets or {"default": dataset_result()},
+        "runtime": {"pyneat": "3.0.0", "build": {}}, "datasets": datasets or {IMAGENET: dataset_result()},
     }  # fmt: skip
 
 
@@ -137,11 +140,11 @@ def test_registered_builds_require_the_package_to_link_the_benchmarked_builds(tm
         ("resnet_50", "w8a8", "accuracy", performance_report(["model"]), "is a performance report, not accuracy"),
         ("resnet_50", "w8a8", "performance", performance_report(["model"], metrics={**PERFORMANCE_METRICS,
          "top1_accuracy": 0.7}), "unknown performance metrics: top1_accuracy"),
-        ("resnet_50", "w8a8", "accuracy", accuracy_report(default=dataset_result(metrics={"top5_accuracy": 0.93})),
-         "default: required accuracy metrics were not measured: top1_accuracy"),
-        ("resnet_50", "w8a8", "accuracy", accuracy_report(other=dataset_result()),
-         r"must give exactly the datasets \['default'\]; missing \['default'\], undeclared \['other'\]"),
-        ("resnet_50", "w8a8", "accuracy", accuracy_report(default=dataset_result(), other=dataset_result()),
+        ("resnet_50", "w8a8", "accuracy", accuracy_report({IMAGENET: dataset_result(metrics={"top5_accuracy": 0.93})}),
+         f"{IMAGENET}: required accuracy metrics were not measured: top1_accuracy"),
+        ("resnet_50", "w8a8", "accuracy", accuracy_report({"other": dataset_result()}),
+         rf"must give exactly the datasets \['{IMAGENET}'\]; missing \['{IMAGENET}'\], undeclared \['other'\]"),
+        ("resnet_50", "w8a8", "accuracy", accuracy_report({IMAGENET: dataset_result(), "other": dataset_result()}),
          r"missing \[\], undeclared \['other'\]"),
         ("resnet_50", "w8a8", "accuracy", {**accuracy_report(), "metrics": {"top1_accuracy": 0.77}},
          "is not valid under any of the given schemas"),
@@ -242,16 +245,16 @@ def test_publish_report_measures_each_dataset_apart(tmp_path: Path) -> None:
         shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
     model_dir = repository / "models" / "resnet_50"
     authored = yaml.safe_load((model_dir / "model.yaml").read_text(encoding="utf-8"))
-    authored["datasets"]["second"] = authored["datasets"]["default"]
-    authored["accuracy"]["datasets"].append("second")
+    authored["accuracy"]["datasets"].append({**authored["accuracy"]["datasets"][0], "variant": "small"})
     (model_dir / "model.yaml").write_text(yaml.safe_dump(authored, sort_keys=False), encoding="utf-8")
     tests = yaml.safe_load((model_dir / "tests" / "tests.yaml").read_text(encoding="utf-8"))
-    tests["accuracy"]["expected"]["w8a8"]["second"] = tests["accuracy"]["expected"]["w8a8"]["default"]
+    tests["accuracy"]["expected"]["w8a8"]["imagenet-2012-small"] = tests["accuracy"]["expected"]["w8a8"][IMAGENET]
     (model_dir / "tests" / "tests.yaml").write_text(yaml.safe_dump(tests), encoding="utf-8")
     builds = registered_build(tmp_path / "_compiled", "resnet_50", "w8a8", ["model"])
-    report = accuracy_report(
-        default=dataset_result(), second=dataset_result(evaluated_samples=100, metrics={"top1_accuracy": 0.7}),
-    )
+    report = accuracy_report({
+        IMAGENET: dataset_result(),
+        "imagenet-2012-small": dataset_result(evaluated_samples=100, metrics={"top1_accuracy": 0.7}),
+    })
 
     calls, result = publish(tmp_path, "resnet_50", "w8a8", "accuracy", report, repository)
 
@@ -264,10 +267,10 @@ def test_publish_report_measures_each_dataset_apart(tmp_path: Path) -> None:
         (item["measurement_key"], item["name"], item["sample_count"], tuple(sorted(item["dimensions"].items())))
         for item in measurements
     ) == sorted([
-        (f"{fingerprint}-default-top1_accuracy", "model.accuracy.top1_accuracy", 500,
-         tuple(sorted({**subject, "dataset": "default"}.items()))),
-        (f"{fingerprint}-default-top5_accuracy", "model.accuracy.top5_accuracy", 500,
-         tuple(sorted({**subject, "dataset": "default"}.items()))),
-        (f"{fingerprint}-second-top1_accuracy", "model.accuracy.top1_accuracy", 100,
-         tuple(sorted({**subject, "dataset": "second"}.items()))),
+        (f"{fingerprint}-{IMAGENET}-top1_accuracy", "model.accuracy.top1_accuracy", 500,
+         tuple(sorted({**subject, "dataset": IMAGENET}.items()))),
+        (f"{fingerprint}-{IMAGENET}-top5_accuracy", "model.accuracy.top5_accuracy", 500,
+         tuple(sorted({**subject, "dataset": IMAGENET}.items()))),
+        (f"{fingerprint}-imagenet-2012-small-top1_accuracy", "model.accuracy.top1_accuracy", 100,
+         tuple(sorted({**subject, "dataset": "imagenet-2012-small"}.items()))),
     ])

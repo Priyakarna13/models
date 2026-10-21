@@ -21,12 +21,10 @@ compilation:
     sha256: de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50
     size_bytes: 102182062
     media_type: application/onnx
-datasets:
-  default:
-    id: imagenet-2012
-    variant: mini
-    sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239
-    size_bytes: 356052889
+calibrations:
+- id: imagenet-2012-mini
+  status: ready
+  dataset: {id: imagenet-2012, variant: mini, sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239, size_bytes: 356052889}
 build_profiles:
   w16a16:
     components:
@@ -36,7 +34,7 @@ build_profiles:
           input_name: pixel_values
           input_shape: [1, 3, 224, 224]
   w8a8:
-    calibration_dataset: default
+    calibration_dataset: imagenet-2012-mini
     components:
       model:
         parameters:
@@ -46,12 +44,13 @@ build_profiles:
           calibration_samples: 500
 numerical_fidelity:
   status: diagnostic
-  dataset: default
+  dataset: {id: imagenet-2012, variant: mini, sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239, size_bytes: 356052889}
   selection: {method: seeded_random_without_replacement, seed: 42, offset: 0, samples: 50}
   outputs: [logits]
 accuracy:
   status: provisional
-  datasets: [default]
+  datasets:
+  - {id: imagenet-2012, variant: mini, sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239, size_bytes: 356052889}
   # The BF16 build checks compilation; only INT8 has an accuracy qualification.
   build_profiles: [w8a8]
 performance:

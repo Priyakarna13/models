@@ -199,4 +199,4 @@ def test_model_preserves_compilation_and_quality_settings() -> None:
         "redistribution": "restricted",
         "attribution": "YOLO26 is developed by Ultralytics and distributed under AGPL-3.0.",
     }
-    assert list(model["accuracy"]["datasets"]) == ["validation"]
+    assert list(model["accuracy"]["datasets"]) == ["coco-2017-val"]

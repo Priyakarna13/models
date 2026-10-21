@@ -128,24 +128,24 @@ content-addressed cache and passes the main file to the recipe.
 
 ## Datasets and calibration
 
-Declare each Dataset Registry pin once under `datasets` and refer to it by
-name from calibration, fidelity, and accuracy:
+Each stage pins the Dataset Registry archive it uses. A pin gives the
+dataset `id`, `variant`, `sha256`, and `size_bytes`, and the archive goes by
+its Registry source ID, `<id>-<variant>`. Calibration archives are
+`calibrations` entries:
 
 ```yaml
-datasets:
-  default:
-    id: imagenet-2012
-    variant: mini
-    sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239
-    size_bytes: 356052889
+calibrations:
+- id: coco-2017-cal
+  status: ready
+  dataset: {id: coco-2017, variant: cal, sha256: 54c64d84…, size_bytes: 187510866}
 ```
 
-A build profile that needs calibration names it with `calibration_dataset`.
-The recipe receives the verified archive as `--dataset`, calibrates the first
-component, and calibrates later components on its outputs. Use `calibrations`
-only for a calibration archive that is not a registry dataset; it takes an
-`id`, `status: ready`, and a `source`. Calibration prepares quantization
-ranges; it is not a quality measurement. See [Datasets for local model
+A build profile that needs calibration names its entry with
+`calibration_dataset`. The recipe receives the verified archive as
+`--dataset`, calibrates the first component, and calibrates later components
+on its outputs. An archive that is not a registry dataset takes a `source`
+instead of a `dataset`. Calibration prepares quantization ranges; it is not a
+quality measurement. See [Datasets for local model
 development](datasets.md).
 
 ## Build profiles
@@ -156,7 +156,7 @@ build parameters:
 ```yaml
 build_profiles:
   w8a8_w16a16:
-    calibration_dataset: calibration
+    calibration_dataset: coco-2017-cal
     components:
       backbone:
         parameters: {precision: w8a8, calibration_samples: 50}
@@ -236,7 +236,7 @@ profile's MPKs. The package run publishes it.
 | Field | Meaning |
 | --- | --- |
 | `status` | `diagnostic`, `provisional`, or `ready`. |
-| `dataset` | A `datasets` name. |
+| `dataset` | The Dataset Registry pin it compares on. |
 | `selection` | `method: seeded_random_without_replacement`, with `seed`, `offset`, and `samples`. |
 | `outputs` | Output names of the model to compare. |
 
@@ -251,14 +251,15 @@ Measured on a DevKit by `scripts/accuracy.py` in the accuracy stage:
 ```yaml
 accuracy:
   status: provisional
-  datasets: [default]
+  datasets:
+  - {id: imagenet-2012, variant: mini, sha256: d769e759…, size_bytes: 356052889}
   build_profiles: [w8a8]
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `status` | `ready` or `provisional`. |
-| `datasets` | `datasets` names; the stage resolves each on the DevKit and evaluates the model on all of them in one run. |
+| `datasets` | Dataset Registry pins; the stage resolves each on the DevKit and evaluates the model on all of them in one run. Each goes by its source ID, such as `imagenet-2012-mini`. |
 | `build_profiles` | Optional; the profiles measured. Omitted, every profile is measured. |
 
 The metrics each dataset's result must hold come from

@@ -65,15 +65,15 @@ test('reads model report version 1 of the right stage and no other format', () =
 
 test('reads accuracy per dataset, in the order the run parameters declare them', () => {
   const report = fixture('accuracy');
-  const result = report.datasets.default;
+  const result = report.datasets['imagenet-2012-mini'];
   const coco = {split: 'val2017', evaluated_samples: 50, available_samples: 5000, metrics: {coco_map: 0.41}, details: {}};
   const parameters = {accuracy: {datasets: {
-    validation: {id: 'coco-2017', variant: 'val', required_metrics: ['coco_map']},
-    default: {id: 'imagenet-2012', variant: 'mini', sha256: 'abc', required_metrics: ['top1_accuracy']},
+    'coco-2017-val': {id: 'coco-2017', variant: 'val', required_metrics: ['coco_map']},
+    'imagenet-2012-mini': {id: 'imagenet-2012', variant: 'mini', sha256: 'abc', required_metrics: ['top1_accuracy']},
   }}};
-  const datasets = {default: {...result, metrics: {...result.metrics, extra: 'n/a'}}, validation: coco};
+  const datasets = {'imagenet-2012-mini': {...result, metrics: {...result.metrics, extra: 'n/a'}}, 'coco-2017-val': coco};
   const accuracy = readAccuracy({run, parameters, report: {...report, datasets}}).value;
-  assert.deepEqual(accuracy.datasets.map(({name}) => name), ['validation', 'default']);
+  assert.deepEqual(accuracy.datasets.map(({name}) => name), ['coco-2017-val', 'imagenet-2012-mini']);
   const [, imagenet] = accuracy.datasets;
   assert.deepEqual(imagenet.metrics, result.metrics);
   assert.deepEqual(imagenet.dataset, {

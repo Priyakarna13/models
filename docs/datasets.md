@@ -78,15 +78,16 @@ or bypass a checksum failure.
 
 ## Use the dataset through the model contract
 
-`model.yaml` declares each registered archive once under `datasets`, with a
-dataset ID, variant, SHA-256, and byte size. Three declarations name those
-entries:
+`model.yaml` pins each registered archive where a stage uses it, with a
+dataset ID, variant, SHA-256, and byte size. The archive goes by its Registry
+source ID, `<id>-<variant>` such as `coco-2017-val`. Three declarations hold
+pins:
 
 | Declaration | Used by | Resolved with |
 | --- | --- | --- |
-| a build profile's `calibration_dataset` | `compile.py --dataset` | `model-registry fetch-calibration` |
+| a `calibrations` entry, named by a build profile's `calibration_dataset` | `compile.py --dataset` | `model-registry fetch-calibration` |
 | `numerical_fidelity.dataset` | `compile.py --fidelity-dataset` | `model-registry fetch-fidelity-dataset` |
-| each name in `accuracy.datasets` | `accuracy.py --dataset <name>=<path>` | `scripts/run_model_accuracy.sh` |
+| each pin in `accuracy.datasets` | `accuracy.py --dataset <source id>=<path>` | `scripts/run_model_accuracy.sh` |
 
 Resolve the compile inputs for one component of a build:
 

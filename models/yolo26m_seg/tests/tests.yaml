@@ -6,7 +6,7 @@ accuracy:
   run_tests: true
   expected:
     w16a16:
-      validation:
+      coco-2017-val:
         coco_mask_map: 0.4378
         coco_mask_ap50: 0.6645
         coco_mask_ap75: 0.4743
@@ -22,7 +22,7 @@ accuracy:
         coco_box_map: 0.5230
         coco_box_ap50: 0.6938
     w8a8:
-      validation:
+      coco-2017-val:
         coco_mask_map: 0.4115
         coco_mask_ap50: 0.6323
         coco_mask_ap75: 0.4425

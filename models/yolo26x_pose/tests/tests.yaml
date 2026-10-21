@@ -6,7 +6,7 @@ accuracy:
   run_tests: true
   expected:
     w16a16:
-      validation:
+      coco-2017-val:
         coco_keypoint_map: 0.7133
         coco_keypoint_ap50: 0.9091
         coco_keypoint_ap75: 0.7831
@@ -20,7 +20,7 @@ accuracy:
         coco_person_box_map: 0.5735
         coco_person_box_ap50: 0.7232
     w8a8:
-      validation:
+      coco-2017-val:
         coco_keypoint_map: 0.6710
         coco_keypoint_ap50: 0.9041
         coco_keypoint_ap75: 0.7537

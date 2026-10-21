@@ -7,7 +7,7 @@
     "build": {}
   },
   "datasets": {
-    "default": {
+    "imagenet-2012-mini": {
       "split": "val",
       "evaluated_samples": 1000,
       "available_samples": 1000,

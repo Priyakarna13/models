@@ -53,21 +53,24 @@
       }
     },
     "calibrations": {
-      "description": "Calibration archives that are not registry datasets.",
+      "description": "What build profiles calibrate on: a Dataset Registry dataset, named by its source ID such as coco-2017-cal, or another archive.",
       "type": "array",
       "items": {
-        "type": "object", "additionalProperties": false, "required": ["id", "status", "source"],
-        "properties": {"id": {"$ref": "#/$defs/id"}, "status": {"const": "ready"}, "source": {"$ref": "#/$defs/source"}}
+        "type": "object", "additionalProperties": false, "required": ["id", "status"],
+        "oneOf": [{"required": ["dataset"]}, {"required": ["source"]}],
+        "properties": {
+          "id": {"$ref": "#/$defs/datasetId"}, "status": {"const": "ready"},
+          "dataset": {"$ref": "#/$defs/dataset"}, "source": {"$ref": "#/$defs/source"}
+        }
       }
     },
-    "datasets": {"type": "object", "propertyNames": {"$ref": "#/$defs/id"}, "additionalProperties": {"$ref": "#/$defs/dataset"}},
     "build_profiles": {
       "type": "object", "minProperties": 1, "propertyNames": {"$ref": "#/$defs/id"},
       "additionalProperties": {
         "type": "object", "additionalProperties": false, "required": ["components"],
         "properties": {
           "runner_class": {"$ref": "#/$defs/runnerClass"},
-          "calibration_dataset": {"description": "A datasets or calibrations entry.", "$ref": "#/$defs/id"},
+          "calibration_dataset": {"description": "A calibrations entry.", "$ref": "#/$defs/datasetId"},
           "components": {
             "description": "Each component's build parameters, keyed like compilation.components.",
             "type": "object", "minProperties": 1, "propertyNames": {"$ref": "#/$defs/id"},
@@ -92,7 +95,7 @@
       "type": "object", "additionalProperties": false, "required": ["status", "dataset", "selection", "outputs"],
       "properties": {
         "status": {"enum": ["diagnostic", "provisional", "ready"]},
-        "dataset": {"$ref": "#/$defs/id"},
+        "dataset": {"$ref": "#/$defs/dataset"},
         "selection": {
           "type": "object", "additionalProperties": false, "required": ["method", "seed", "offset", "samples"],
           "properties": {
@@ -109,7 +112,7 @@
       "type": "object", "additionalProperties": false, "required": ["status", "datasets"],
       "properties": {
         "status": {"enum": ["ready", "provisional"]},
-        "datasets": {"description": "Names of datasets entries.", "$ref": "#/$defs/idSet"},
+        "datasets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/dataset"}},
         "build_profiles": {"$ref": "#/$defs/profileIds"}
       }
     },

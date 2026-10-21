@@ -4,7 +4,7 @@ accuracy:
   run_tests: true
   expected:
     w8a8:
-      default:
+      imagenet-2012-mini:
         top1_accuracy: 0.7764
         top5_accuracy: 0.9356
 performance:

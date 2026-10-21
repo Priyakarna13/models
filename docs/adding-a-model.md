@@ -123,11 +123,12 @@ in build parameters. Core execution plans supply tensor details after compilatio
 
 ## 5. Declare datasets and calibration
 
-Declare immutable dataset pins once under `datasets` and refer to them by name
-from a build profile's `calibration_dataset`, from `numerical_fidelity`, and
-from `accuracy`. Each pin keeps the full dataset ID, variant, SHA-256 and size.
-Keep sample selections in their consuming stage. Use `calibrations` only for a
-calibration archive that is not a registry dataset.
+Each stage pins the Dataset Registry archive it uses: a `calibrations` entry,
+`numerical_fidelity.dataset`, and each `accuracy.datasets` entry. A pin gives
+the dataset ID, variant, SHA-256 and size. An archive goes by its Registry
+source ID, `<id>-<variant>` such as `coco-2017-val`. A build profile names its
+calibration with `calibration_dataset`. Keep sample selections in their
+consuming stage.
 
 Calibration is compiler input for quantization. It is not accuracy evidence.
 Calibration, fidelity, and accuracy datasets resolve through Dataset Registry
@@ -142,7 +143,7 @@ every component's compiler parameters, keyed by component ID:
 ```yaml
 build_profiles:
   w8a8:
-    calibration_dataset: default
+    calibration_dataset: imagenet-2012-mini
     components:
       model:
         parameters: {precision: w8a8}

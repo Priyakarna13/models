@@ -49,13 +49,6 @@ def parse_mpks(values: list[str]) -> Path:
     return Path(mpks["model"])
 
 
-def parse_datasets(values: list[str]) -> Path:
-    datasets = dict(value.split("=", 1) for value in values)
-    if set(datasets) != {"default"}:
-        raise SystemExit("--dataset must name exactly default=<path>")
-    return Path(datasets["default"])
-
-
 def log(*values: object) -> None:
     print(*values, file=sys.stderr, flush=True)
 
@@ -63,13 +56,12 @@ def log(*values: object) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="model=<path>")
-    parser.add_argument(
-        "--dataset", action="append", required=True, help="default=<extracted imagenet-2012/mini directory>"
-    )
+    parser.add_argument("--dataset", required=True, help="imagenet-2012-mini=<extracted directory>")
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure the first images only (local runs only)")
     args = parser.parse_args(argv)
-    dataset = parse_datasets(args.dataset)
+    dataset_id, dataset_dir = args.dataset.split("=", 1)
+    dataset = Path(dataset_dir)
 
     available = split_names(dataset, VALIDATION_SPLIT)
     labels = validation_labels(available)
@@ -94,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             log(f"{count}/{len(names)} images, {(time.monotonic() - started) / count * 1000:.0f} ms/image")
 
     report = model_report.accuracy({
-        "default": {
+        dataset_id: {
             "metrics": {
                 "top1_accuracy": top1 / len(names),
                 "top5_accuracy": top5 / len(names),
@@ -104,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         },
     })
     report.save(args.output)
-    measured = report.document["datasets"]["default"]["metrics"]
+    measured = report.document["datasets"][dataset_id]["metrics"]
     print(json.dumps({name: round(value, 4) for name, value in measured.items()}))
     return 0
 

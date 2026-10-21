@@ -66,7 +66,7 @@ def test_multi_component_model_compiles_and_packages_its_components_together() -
     for profile in model["build_profiles"]:
         assert profile["compile_invocations"] == [{"id": profile["id"], "components": ["backbone", "decoder"]}]
         # The recipe calibrates the backbone; the decoder calibrates on the backbone's outputs.
-        assert [binding.get("calibration") for binding in profile["components"]] == ["calibration", None]
+        assert [binding.get("calibration") for binding in profile["components"]] == ["coco-2017-cal", None]
     assert model["compositions"] == [{"id": "default", "type": "declarative"}]
     assert model["packages"][0]["components"] == ["backbone", "decoder"]
 
@@ -134,14 +134,12 @@ def test_normalization_preserves_existing_explicit_upstream_overrides() -> None:
         assert model["upstream"] == {"model_card": upstream["repository"], **upstream}, path.parent.name
 
 
-def test_dataset_aliases_keep_pins_and_measured_build_profiles() -> None:
+def test_accuracy_names_each_dataset_by_its_registry_source_and_keeps_measured_build_profiles() -> None:
     authored = _authored("resnet_50")
     model = normalize_model(authored, MODELS / "resnet_50")
-    pin = authored["datasets"]["default"]
+    [pin] = authored["accuracy"]["datasets"]
 
-    assert model["calibrations"][0] == {"id": "default", "status": "ready", "dataset": pin}
-    assert model["numerical_fidelity"] == {**authored["numerical_fidelity"], "dataset": pin}
-    assert model["accuracy"] == {**authored["accuracy"], "datasets": {"default": pin}}
+    assert model["accuracy"] == {**authored["accuracy"], "datasets": {"imagenet-2012-mini": pin}}
     assert benchmarked_profiles(model, "accuracy") == ["w8a8"]
     assert benchmarked_profiles(model, "performance") == ["w16a16", "w8a8"]
     unmeasured = normalize_model(_authored("ssd_mobilenet_v1"), MODELS / "ssd_mobilenet_v1")
@@ -154,10 +152,3 @@ def test_hugging_face_shorthand_rejects_a_mutable_revision() -> None:
     authored["compilation"]["source"]["revision"] = "main"
     with pytest.raises(ValidationError, match="compilation.source"):
         validate_model(MODELS / "qwen3_5_0_8b", authored, SCHEMA)
-
-
-def test_unknown_dataset_alias_has_an_actionable_error() -> None:
-    authored = _authored("resnet_50")
-    authored["accuracy"]["datasets"] = ["missing"]
-    with pytest.raises(ValidationError, match="accuracy: unknown dataset 'missing'"):
-        normalize_model(authored, MODELS / "resnet_50")

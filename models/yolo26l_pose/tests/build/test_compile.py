@@ -224,7 +224,6 @@ def test_model_preserves_compilation_and_quality_settings(load_script: Callable[
     }
     entry = model["accuracy"]
     for expected in load_model_tests(MODEL_DIR)["accuracy"]["expected"].values():
-        assert set(expected["validation"]) == set(load_script("accuracy").METRICS)
-    assert list(entry["datasets"]) == ["validation"]
-    assert (entry["datasets"]["validation"]["id"], entry["datasets"]["validation"]["variant"]) == ("coco-2017", "val")
+        assert set(expected["coco-2017-val"]) == set(load_script("accuracy").METRICS)
+    assert list(entry["datasets"]) == ["coco-2017-val"]
     assert model["calibrations"][0]["dataset"]["variant"] == "cal"

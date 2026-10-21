@@ -50,10 +50,10 @@
         "stage": {"const": "accuracy"},
         "schema": true, "schema_version": true, "runtime": true,
         "datasets": {
-          "description": "Each dataset model.yaml's accuracy lists, by name.",
+          "description": "Each dataset model.yaml's accuracy lists, by its Dataset Registry source ID such as coco-2017-val.",
           "type": "object",
           "minProperties": 1,
-          "propertyNames": {"pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+          "propertyNames": {"pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"},
           "additionalProperties": {
             "type": "object",
             "required": ["split", "evaluated_samples", "available_samples", "metrics", "details"],

@@ -26,31 +26,25 @@ compilation:
     sha256: 59ec8ab7ee4376e19aba92155c53fd68ee2924300028dbf25e866e3251d4e900
     size_bytes: 223247649
     media_type: application/onnx
-datasets:
-  calibration:
-    id: coco-2017
-    variant: cal
-    sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1
-    size_bytes: 187510866
-  validation:
-    id: coco-2017
-    variant: val
-    sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da
-    size_bytes: 898368520
+calibrations:
+- id: coco-2017-cal
+  status: ready
+  dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
 build_profiles:
   w16a16:
     components:
       model:
         parameters: {precision: w16a16}
   w8a8:
-    calibration_dataset: calibration
+    calibration_dataset: coco-2017-cal
     components:
       model:
         parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
 accuracy:
   # The reference uses padded rectangular batches; accuracy.py runs a square 640x640 input.
   status: ready
-  datasets: [validation]
+  datasets:
+  - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
 performance:
   required_metrics: [latency_avg_ms, throughput_fps, avg_power_watts, energy_per_inference_joules]
 reference_metrics:

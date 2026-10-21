@@ -117,11 +117,10 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
         compilation = authored.pop("compilation")
         component_ids = compilation.get("components", [SINGLE_COMPONENT])
         source = _expand_source(compilation["source"])
-        datasets = authored.get("datasets", {})
         calibrations = [
-            {**item, "source": _expand_source(item["source"])} for item in authored.pop("calibrations", [])
+            {**item, "source": _expand_source(item["source"])} if "source" in item else item
+            for item in authored.pop("calibrations", [])
         ]
-        declared_calibrations = {item["id"] for item in calibrations}
         model = {
             **authored,
             "id": directory.name,
@@ -153,11 +152,6 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
 
         for profile_id, profile in authored["build_profiles"].items():
             calibration = profile.get("calibration_dataset")
-            if calibration in datasets and calibration not in declared_calibrations:
-                model["calibrations"].append(
-                    {"id": calibration, "status": "ready", "dataset": deepcopy(datasets[calibration])}
-                )
-                declared_calibrations.add(calibration)
             bindings = [{"id": component_id, **binding} for component_id, binding in profile["components"].items()]
             # The compile recipe calibrates its first component; later components calibrate on its outputs.
             if calibration is not None and bindings:
@@ -180,26 +174,21 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
             "id": DEFAULT_PACKAGE, "default": True, "components": list(component_ids), "resources": [],
             "build_profiles": [profile["id"] for profile in model["build_profiles"]], "composition": DEFAULT_PACKAGE,
         }]
-        if "numerical_fidelity" in model:
-            fidelity = model["numerical_fidelity"]
-            model["numerical_fidelity"] = {
-                **fidelity, "dataset": _dataset(datasets, fidelity["dataset"], "numerical_fidelity")
-            }
         if "accuracy" in model:
-            # validate_model() adds each dataset's required_metrics from datasets/<id>.yaml.
-            names = model["accuracy"]["datasets"]
-            model["accuracy"] = {
-                **model["accuracy"], "datasets": {name: _dataset(datasets, name, "accuracy") for name in names}
-            }
+            # Each dataset goes by its Dataset Registry source ID; validate_model() adds its required_metrics.
+            pins = model["accuracy"]["datasets"]
+            datasets = {dataset_name(pin): pin for pin in pins}
+            if len(datasets) != len(pins):
+                raise ValidationError(f"{directory}: accuracy lists a dataset twice")
+            model["accuracy"] = {**model["accuracy"], "datasets": datasets}
         return model
     except (KeyError, TypeError, AttributeError, ValueError) as exc:
         raise ValidationError(f"{directory}: invalid model declaration: {exc}") from exc
 
 
-def _dataset(datasets: dict[str, Any], name: str, stage: str) -> dict[str, Any]:
-    if name not in datasets:
-        raise ValidationError(f"{stage}: unknown dataset {name!r}")
-    return deepcopy(datasets[name])
+def dataset_name(pin: dict[str, Any]) -> str:
+    """The Dataset Registry's source ID for a pinned dataset variant, such as coco-2017-val."""
+    return f"{pin['id']}-{pin['variant']}"
 
 
 def _expand_source(source: dict[str, Any]) -> dict[str, Any]:
@@ -293,7 +282,10 @@ def validate_model(
     except ValidationError as exc:
         raise ValidationError(f"{directory}: {exc}") from exc
 
-    sources = [authored["compilation"]["source"], *(item["source"] for item in authored.get("calibrations", []))]
+    sources = [
+        authored["compilation"]["source"],
+        *(item["source"] for item in authored.get("calibrations", []) if "source" in item),
+    ]
     if "conversion" in authored:
         sources.append(authored["conversion"]["source"])
     for source in sources:
@@ -317,7 +309,7 @@ def validate_model(
                 f"{directory}: a Hugging Face model is one component compiled from a checkpoint file set "
                 "whose main_file is config.json"
             )
-    available_calibrations = {item["id"] for item in model["calibrations"]} | set(authored.get("datasets", {}))
+    available_calibrations = {item["id"] for item in model["calibrations"]}
     for profile_id, profile in authored["build_profiles"].items():
         if sorted(profile["components"]) != sorted(component_ids):
             raise ValidationError(

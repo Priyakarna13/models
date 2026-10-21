@@ -279,13 +279,6 @@ def parse_mpks(values: list[str]) -> Path:
     return Path(mpks["model"])
 
 
-def parse_datasets(values: list[str]) -> Path:
-    datasets = dict(value.split("=", 1) for value in values)
-    if set(datasets) != {"validation"}:
-        raise SystemExit("--dataset must name exactly validation=<path>")
-    return Path(datasets["validation"])
-
-
 def log(*values: object) -> None:
     print(*values, file=sys.stderr, flush=True)
 
@@ -293,13 +286,12 @@ def log(*values: object) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="model=<path>")
-    parser.add_argument(
-        "--dataset", action="append", required=True, help="validation=<extracted coco-2017/val directory>"
-    )
+    parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure a seeded sample of images (local runs only)")
     args = parser.parse_args(argv)
-    dataset = parse_datasets(args.dataset)
+    dataset_id, dataset_dir = args.dataset.split("=", 1)
+    dataset = Path(dataset_dir)
 
     model = pyneat.Model(str(parse_mpks(args.mpk)), tensor_options())
     with contextlib.redirect_stdout(io.StringIO()):
@@ -356,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     scoring_seconds = time.monotonic() - started
 
     report = model_report.accuracy({
-        "validation": {
+        dataset_id: {
             "metrics": stats,
             "split": IMAGES, "evaluated_samples": len(image_ids), "available_samples": len(available),
             "details": {
@@ -367,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         },
     })
     report.save(args.output)
-    measured = report.document["datasets"]["validation"]["metrics"]
+    measured = report.document["datasets"][dataset_id]["metrics"]
     print(json.dumps({name: round(value, 4) for name, value in measured.items()}))
     return 0
 

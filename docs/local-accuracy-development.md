@@ -23,12 +23,12 @@ model with the source model on a fixed sample of a registered dataset:
 ```yaml
 numerical_fidelity:
   status: diagnostic
-  dataset: default
+  dataset: {id: imagenet-2012, variant: mini, sha256: d769e759…, size_bytes: 356052889}
   selection: {method: seeded_random_without_replacement, seed: 42, offset: 0, samples: 50}
   outputs: [logits]
 ```
 
-`dataset` names a `datasets` entry, `outputs` names outputs of the model, and
+`dataset` pins a Dataset Registry archive, `outputs` names outputs of the model, and
 `status` is `diagnostic`, `provisional`, or `ready`; see
 [`numerical_fidelity`](metadata-schema.md#numerical_fidelity). The section is
 a compile input: changing it recompiles the model's builds.
@@ -58,11 +58,12 @@ on a DevKit with PyNeat, on each dataset `accuracy` names:
 ```yaml
 accuracy:
   status: ready
-  datasets: [validation]
+  datasets:
+  - {id: imagenet-2012, variant: mini, sha256: d769e759…, size_bytes: 356052889}
 ```
 
-`status` is `ready` or `provisional`, and each `datasets` name is an entry of
-the model's `datasets`. The metrics the report must hold come from
+`status` is `ready` or `provisional`, and each `datasets` entry pins a Dataset
+Registry archive, which goes by its source ID, here `imagenet-2012-mini`. The metrics the report must hold come from
 `datasets/<registry id>.yaml` for the model's `tasks`; see
 [Required accuracy metrics](datasets.md#required-accuracy-metrics).
 Without `build_profiles`, every build profile is measured; see
@@ -79,17 +80,19 @@ into a separate folder beside PyNeat's environment, never into it.
 
 - `--mpk <component>=<path>` once for each component, `model=<path>` for a
   single-component model;
-- `--dataset <name>=<directory>` once for each dataset `accuracy` names, the
-  extracted dataset archive; and
+- `--dataset <source id>=<directory>` for each dataset `accuracy` pins, the
+  extracted archive; and
 - `--output <directory>`.
 
 It scores the whole model on each dataset and hands the scores to
-`tools/model_report`, keyed by the dataset names. `model_report` writes
+`tools/model_report`, keyed by the dataset source IDs. `model_report` writes
 `model-report.json` into the output directory:
 
 ```python
+dataset_id, dataset_dir = args.dataset.split("=", 1)  # imagenet-2012-mini, <directory>
+...
 report = model_report.accuracy({
-    "default": {
+    dataset_id: {
         "metrics": {"top1_accuracy": top1 / len(names), "top5_accuracy": top5 / len(names)},
         "split": VALIDATION_SPLIT,
         "evaluated_samples": len(names),
@@ -129,7 +132,7 @@ and the MPKs it lists. The script:
 3. extracts each dataset under `WORK_DIR` (default `/media/nvme/neat-tests/`)
    and removes that directory when it exits;
 4. installs `requirements-accuracy.txt` beside PyNeat;
-5. runs `accuracy.py` with `--dataset <name>=<directory>` for each dataset
+5. runs `accuracy.py` with `--dataset <source id>=<directory>` for each dataset
    and `PYTHONPATH` including `tools`, which writes
    `model-report.json`, and saves its output to `accuracy.log`; and
 6. runs `model-registry check-report`, which validates the report against
@@ -149,7 +152,7 @@ run the script directly:
 
 ```bash
 PYTHONPATH=tools ~/pyneat/bin/python models/resnet_50/scripts/accuracy.py \
-  --mpk model=<path to MPK> --dataset default=<extracted dataset> \
+  --mpk model=<path to MPK> --dataset imagenet-2012-mini=<extracted dataset> \
   --output /tmp/resnet50-accuracy --limit 500
 ```
 
@@ -160,8 +163,8 @@ ResNet-50's `calibration.py`, needs that file beside it.
 
 `model-report.json` follows
 [`model-report.schema.json`](../schemas/model-report.schema.json): the stage,
-the PyNeat version and build, and `datasets`, which gives for each dataset name
-its evaluated split and sample counts, one number per metric, and free-form
+the PyNeat version and build, and `datasets`, which gives for each dataset source
+ID its evaluated split and sample counts, one number per metric, and free-form
 `details`. The model, build profile, MPK
 digests, and board are not report fields; publication records them on the run.
 

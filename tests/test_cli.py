@@ -298,7 +298,7 @@ def test_resolve_devkit_accuracy_caches_each_accuracy_dataset_of_the_profile(
 
     # One JSON line per dataset model.yaml's accuracy names.
     assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [{
-        "name": "default",
+        "name": "imagenet-2012-mini",
         "dataset_id": "imagenet-2012/mini",
         "path": str(dataset),
         "sha256": "d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239",

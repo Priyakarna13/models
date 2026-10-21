@@ -192,12 +192,12 @@ def test_compile_fingerprint_invalidates_model_dependency_and_compiler_changes(m
 def test_calibrated_build_tracks_its_calibration_dataset_pin(model_repository: Path) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["datasets"] = {"default": dict(DATASET)}
-    model["build_profiles"]["fixture"]["calibration_dataset"] = "default"
+    model["calibrations"] = [{"id": "imagenet-2012-mini", "status": "ready", "dataset": dict(DATASET)}]
+    model["build_profiles"]["fixture"]["calibration_dataset"] = "imagenet-2012-mini"
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
-    model["datasets"]["default"]["sha256"] = "e" * 64
+    model["calibrations"][0]["dataset"]["sha256"] = "e" * 64
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
 
     assert _fingerprint(model_repository, "alpha", "2.1.3") != first
@@ -232,10 +232,9 @@ def test_numerical_fidelity_settings_invalidate_the_compile_fingerprint(model_re
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     _declare_components(model)
-    model["datasets"] = {"default": dict(DATASET)}
     model["numerical_fidelity"] = {
         "status": "diagnostic",
-        "dataset": "default",
+        "dataset": dict(DATASET),
         "selection": {"method": "seeded_random_without_replacement", "seed": 1, "offset": 0, "samples": 1},
         "outputs": ["output"],
     }
@@ -411,15 +410,14 @@ def test_accuracy_fingerprint_covers_the_model_datasets_and_their_requirements(t
         return fingerprint()
 
     def second_dataset(model: dict) -> None:
-        model["datasets"]["second"] = model["datasets"]["validation"]
-        model["accuracy"]["datasets"].append("second")
+        model["accuracy"]["datasets"].append({**model["accuracy"]["datasets"][0], "variant": "mini"})
 
     first = fingerprint()
     rerun = {
         "the model's task requirement": edit(
             coco, lambda d: d["required_metrics"]["object_detection"].append("coco_ap50")
         ),
-        "the dataset pin": edit(manifest, lambda d: d["datasets"]["validation"].update(sha256="e" * 64)),
+        "the dataset pin": edit(manifest, lambda d: d["accuracy"]["datasets"][0].update(sha256="e" * 64)),
         "the dataset list": edit(manifest, second_dataset),
     }
     unchanged = {
@@ -572,9 +570,8 @@ def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(model
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["datasets"] = {"validation": dict(DATASET)}
     model["performance"] = {"required_metrics": ["latency_avg_ms"]}
-    model["accuracy"] = {"status": "provisional", "datasets": ["validation"]}
+    model["accuracy"] = {"status": "provisional", "datasets": [dict(DATASET)]}
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     (manifest.parent / "scripts" / "performance.py").write_text("report = model.benchmark()\n", encoding="utf-8")
     (manifest.parent / "scripts" / "accuracy.py").write_text("score = 0.5\n", encoding="utf-8")

@@ -774,7 +774,7 @@ function accuracyResult({ name, metrics, dataset, details }, tool, scores, sourc
       <dl class="key-grid">${context}</dl>
       ${accuracyMetricTable(metrics, scores)}`;
   return `<div class="accuracy-dataset" data-accuracy-dataset="${escapeHtml(name)}">
-    ${titled ? `<div class="accuracy-dataset-title"><h4>${escapeHtml(humanize(name))}</h4>${coverageBadge(dataset)}</div>` : ""}
+    ${titled ? `<div class="accuracy-dataset-title"><h4>${escapeHtml(name)}</h4>${coverageBadge(dataset)}</div>` : ""}
     <p class="accuracy-scope"><strong>${escapeHtml(sampleText)}</strong> · ${escapeHtml(dataset.id || "Dataset unavailable")} ${escapeHtml(dataset.variant || "")} / ${escapeHtml(dataset.split || "")}${sourceMarkup}</p>
     <div class="accuracy-summary">${accuracyMetricTiles(metrics, scores)}</div>
     ${customerView ? "" : disclosure(`accuracy:${name}`, "Evaluation details", evaluation, coverageLabel)}
