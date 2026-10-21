@@ -444,7 +444,7 @@ def _fetch_calibration(args: argparse.Namespace) -> int:
     _, binding = profile_component_for(model, args.build_profile, args.component)
     calibration_id = binding.get("calibration")
     calibration = next((item for item in model["calibrations"] if item["id"] == calibration_id), None)
-    if calibration is None or calibration["status"] != "ready":
+    if calibration is None:
         result = {
             "kind": "none",
             "model_id": model["id"],
@@ -454,7 +454,7 @@ def _fetch_calibration(args: argparse.Namespace) -> int:
             "sha256": "",
             "size_bytes": 0,
         }
-    elif "dataset" in calibration:
+    else:
         dataset = calibration["dataset"]
         path = resolve_dataset(dataset, args.cache_dir)
         result = {
@@ -465,18 +465,6 @@ def _fetch_calibration(args: argparse.Namespace) -> int:
             "path": str(path),
             "sha256": dataset["sha256"],
             "size_bytes": dataset["size_bytes"],
-        }
-    else:
-        path, cache_hit, source_sha256, size_bytes = Fetcher(args.cache_dir).fetch_source(calibration["source"])
-        result = {
-            "kind": "source",
-            "cache_hit": cache_hit,
-            "model_id": model["id"],
-            "component_id": args.component,
-            "build_profile_id": args.build_profile,
-            "path": str(path),
-            "sha256": source_sha256,
-            "size_bytes": size_bytes,
         }
     if args.json_output:
         print(json.dumps(result, sort_keys=True))

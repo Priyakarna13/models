@@ -17,16 +17,6 @@ from .errors import ValidationError
 from .model import CONVERSION_FILES, SCRIPTS_DIR, compile_invocations_for, load_and_validate_model
 from .source import source_identity
 
-MODEL_COMPILE_INPUT_PATHS = {
-    "yolo26_tiny_drone": (
-        "training/yolo26_tiny_drone/compile.py",
-        "training/yolo26_tiny_drone/contract.py",
-        "training/yolo26_tiny_drone/dataset.py",
-        "training/yolo26_tiny_drone/onnx_audit.py",
-        "training/yolo26_tiny_drone/paths.py",
-    ),
-}
-
 # Shared code used by ONNX builds.
 COMPILE_TOOLING = ("scripts/run_model_compilation.sh", "tools/model_registry/model.py")
 
@@ -83,16 +73,13 @@ def _file_digests(root: Path, required: list[str], optional: list[str] = ()) -> 
 
 
 def _compile_input_files(root: Path, model_id: str) -> list[Path]:
-    """Code the compile runs: the shared runner, model scripts, and any declared training code."""
+    """Code the compile runs: the shared runner and the model's scripts."""
     candidates: list[Path] = []
-    for prefix in (*COMPILE_TOOLING, *MODEL_COMPILE_INPUT_PATHS.get(model_id, ())):
-        path = root / prefix.rstrip("/")
-        if path.is_file():
-            candidates.append(path)
-        elif path.is_dir():
-            candidates.extend(item for item in path.rglob("*") if item.is_file())
-        else:
+    for relative in COMPILE_TOOLING:
+        path = root / relative
+        if not path.is_file():
             raise ValidationError(f"model compile input not found: {path}")
+        candidates.append(path)
     model_dir = root / "models" / model_id
     candidates.extend(
         item

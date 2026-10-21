@@ -187,16 +187,3 @@ section: its first four metrics as tiles and the rest in a table, each with its
 reference score when `reference_metrics` records one for the same dataset, and
 the evaluated sample count. The catalog and the Compare page use the first
 declared dataset.
-
-## Qualification recorded elsewhere
-
-Qualification measured outside the registry stages, such as a held-out
-evaluation from training or a pending hardware qualification, goes under
-`qualification_evidence`. Each entry needs a `status`; other fields are
-free-form. No stage runs it and no fingerprint reads it. SSD-MobileNet uses such
-an entry to record its quantization evaluation.
-
-Compiler-enforced settings belong in the build profile's component `parameters`,
-which enter the compile fingerprint. SSD-MobileNet keeps its unchanged raw-head gates in
-`parameters.quantization_quality_thresholds`; its `qualification_evidence`
-entry retains the evaluation evidence.

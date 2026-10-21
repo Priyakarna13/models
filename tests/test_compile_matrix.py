@@ -192,7 +192,7 @@ def test_compile_fingerprint_invalidates_model_dependency_and_compiler_changes(m
 def test_calibrated_build_tracks_its_calibration_dataset_pin(model_repository: Path) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["calibrations"] = [{"id": "imagenet-2012-mini", "status": "ready", "dataset": dict(DATASET)}]
+    model["calibrations"] = [{"id": "imagenet-2012-mini", "dataset": dict(DATASET)}]
     model["build_profiles"]["fixture"]["calibration_dataset"] = "imagenet-2012-mini"
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     first = _fingerprint(model_repository, "alpha", "2.1.3")
@@ -255,50 +255,6 @@ def test_compile_fingerprint_includes_model_local_recipe_helpers(model_repositor
     helper.write_text("# changed calibration helper\n", encoding="utf-8")
 
     assert _fingerprint(model_repository, "alpha", "2.1.3") != first
-
-
-@pytest.mark.parametrize("model_id", ["ssd_mobilenet_v1", "ssd_mobilenet_v2", "ssd_mobilenet_v3"])
-def test_ssd_quality_thresholds_invalidate_only_the_selected_build(
-    model_repository: Path, model_id: str
-) -> None:
-    directory = model_repository / "models" / model_id
-    shutil.copytree(ROOT / "models" / model_id, directory)
-    manifest = directory / "model.yaml"
-    model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    before = {profile: compile_fingerprint(model_repository, model_id, profile, profile, "2.1.3")
-              for profile in ("w8a8", "w16a16")}
-
-    parameters = model["build_profiles"]["w8a8"]["components"]["model"]["parameters"]
-    parameters["quantization_quality_thresholds"]["minimum_cosine_similarity"] = 0.99
-    manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-
-    assert compile_fingerprint(model_repository, model_id, "w8a8", "w8a8", "2.1.3") != before["w8a8"]
-    assert compile_fingerprint(model_repository, model_id, "w16a16", "w16a16", "2.1.3") == before["w16a16"]
-
-
-def test_yolo26_compile_fingerprint_includes_its_training_subtree(
-    model_repository: Path,
-) -> None:
-    _write_model(model_repository, "yolo26_tiny_drone")
-    training_dir = model_repository / "training" / "yolo26_tiny_drone"
-    training_dir.mkdir(parents=True)
-    for name in ("compile.py", "contract.py", "dataset.py", "onnx_audit.py", "paths.py"):
-        (training_dir / name).write_text("# qualified helper\n", encoding="utf-8")
-    helper = training_dir / "compile.py"
-    first = _fingerprint(model_repository, "yolo26_tiny_drone", "2.1.3")
-
-    helper.write_text("# changed helper\n", encoding="utf-8")
-
-    assert _fingerprint(model_repository, "yolo26_tiny_drone", "2.1.3") != first
-
-
-def test_yolo26_compile_fingerprint_requires_its_training_subtree(
-    model_repository: Path,
-) -> None:
-    _write_model(model_repository, "yolo26_tiny_drone")
-
-    with pytest.raises(ValidationError, match="model compile input not found"):
-        _fingerprint(model_repository, "yolo26_tiny_drone", "2.1.3")
 
 
 def test_compile_fingerprint_ignores_non_transforming_registry_tooling_changes(
@@ -372,8 +328,9 @@ def test_a_whole_model_benchmark_fingerprint_covers_every_component_build(stage:
 
 
 def test_benchmark_fingerprint_requires_a_declared_stage() -> None:
-    model = load_and_validate_model(ROOT / "models" / "ssd_mobilenet_v1", SCHEMA)
-    with pytest.raises(ValidationError, match="ssd_mobilenet_v1 declares no accuracy"):
+    model = load_and_validate_model(ROOT / "models" / "yolo26n", SCHEMA)
+    del model["accuracy"]
+    with pytest.raises(ValidationError, match="yolo26n declares no accuracy"):
         benchmark_fingerprint(ROOT, model, "w8a8", {"model": RF_DETR_BUILDS["backbone"]}, "accuracy")
 
 

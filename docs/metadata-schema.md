@@ -14,13 +14,12 @@ model
 ├── conversion ───────────── optional upstream source for scripts/convert.py
 ├── compilation ──────────── the source the recipe compiles, and its components
 ├── datasets ─────────────── immutable dataset pins shared across stages
-├── calibrations ─────────── optional calibration archives that are not datasets
+├── calibrations ─────────── Dataset Registry archives build profiles calibrate on
 ├── build_profiles ───────── each variant's per-component build parameters
 ├── pipeline ─────────────── optional run order, for the model browser
 ├── numerical_fidelity ───── compiled outputs compared during compilation
 ├── accuracy ─────────────── whole-model DevKit accuracy
 ├── performance ──────────── whole-model DevKit performance
-├── qualification_evidence ─ qualification recorded outside the registry
 └── reference_metrics ────── scores the source model's authors published
 ```
 
@@ -66,7 +65,7 @@ catalog metadata only; it is excluded from compilation fingerprints. See
 ```yaml
 conversion:
   source:
-    uri: https://github.com/owner/repo/releases/download/v1.0/checkpoint.pth
+    uri: hf://models/owner/repo@0123456789abcdef0123456789abcdef01234567/checkpoint.pth
     sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     size_bytes: 123456
 ```
@@ -136,15 +135,13 @@ its Registry source ID, `<id>-<variant>`. Calibration archives are
 ```yaml
 calibrations:
 - id: coco-2017-cal
-  status: ready
   dataset: {id: coco-2017, variant: cal, sha256: 54c64d84…, size_bytes: 187510866}
 ```
 
 A build profile that needs calibration names its entry with
 `calibration_dataset`. The recipe receives the verified archive as
 `--dataset`, calibrates the first component, and calibrates later components
-on its outputs. An archive that is not a registry dataset takes a `source`
-instead of a `dataset`. Calibration prepares quantization ranges; it is not a
+on its outputs. Calibration prepares quantization ranges; it is not a
 quality measurement. See [Datasets for local model
 development](datasets.md).
 
@@ -286,13 +283,6 @@ See [Accuracy and fidelity](local-accuracy-development.md) and [DevKit
 performance](benchmarking.md) for the scripts and reports, and [what a change
 reruns](adding-a-model.md#9-know-what-a-change-reruns) for how each section
 feeds the fingerprints.
-
-### `qualification_evidence`
-
-Records qualification that happened outside the registry stages, such as a
-held-out evaluation from training, or a pending hardware qualification. Each
-entry needs a `status` and may carry any other fields. Nothing runs or
-publishes it.
 
 ## Reference metrics
 

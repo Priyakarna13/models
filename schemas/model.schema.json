@@ -53,15 +53,11 @@
       }
     },
     "calibrations": {
-      "description": "What build profiles calibrate on: a Dataset Registry dataset, named by its source ID such as coco-2017-cal, or another archive.",
+      "description": "What build profiles calibrate on: a Dataset Registry dataset, named by its source ID such as coco-2017-cal.",
       "type": "array",
       "items": {
-        "type": "object", "additionalProperties": false, "required": ["id", "status"],
-        "oneOf": [{"required": ["dataset"]}, {"required": ["source"]}],
-        "properties": {
-          "id": {"$ref": "#/$defs/datasetId"}, "status": {"const": "ready"},
-          "dataset": {"$ref": "#/$defs/dataset"}, "source": {"$ref": "#/$defs/source"}
-        }
+        "type": "object", "additionalProperties": false, "required": ["id", "dataset"],
+        "properties": {"id": {"$ref": "#/$defs/datasetId"}, "dataset": {"$ref": "#/$defs/dataset"}}
       }
     },
     "build_profiles": {
@@ -123,11 +119,6 @@
         "required_metrics": {"$ref": "#/$defs/metricNames"},
         "build_profiles": {"$ref": "#/$defs/profileIds"}
       }
-    },
-    "qualification_evidence": {
-      "description": "Qualification recorded outside the registry stages; nothing runs or publishes it.",
-      "type": "array",
-      "items": {"type": "object", "required": ["status"], "properties": {"status": {"$ref": "#/$defs/id"}}}
     },
     "reference_metrics": {
       "description": "Scores the source model's authors published for these weights, copied from a pinned page.",

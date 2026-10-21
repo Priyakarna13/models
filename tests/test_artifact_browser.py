@@ -308,7 +308,7 @@ def test_preview_measures_a_multi_component_model_as_one_report(tmp_path: Path) 
 
 def test_preview_leaves_a_profile_without_a_benchmark_run(tmp_path: Path) -> None:
     with _preview(tmp_path) as base:
-        unmeasured = _benchmark_run(base, "ssd_mobilenet_v1", "w16a16", "performance")
+        unmeasured = _benchmark_run(base, "yolo26n", "w16a16", "performance")
         no_accuracy = _benchmark_run(base, "resnet_50", "w16a16", "accuracy")
         on_demand = _benchmark_run(base, "whisper_small", "w8a16", "performance")
 
@@ -613,10 +613,10 @@ def test_model_card_markdown_resolves_safe_relative_links_at_the_source_commit()
       const {renderMarkdown, resolveDocumentationLink} = await import(moduleUrl);
       const documentation = {
         source_commit: 'a'.repeat(40),
-        source_path: 'models/ssd_mobilenet_v3/README.md',
+        source_path: 'models/rf_detr_nano/README.md',
       };
       const resolveLink = (source) => resolveDocumentationLink(documentation, source);
-      const markdown = '[QAT](qat/README.md) [section](#usage) [unsafe](javascript:alert(1))';
+      const markdown = '[surgery](scripts/surgery.py) [section](#usage) [unsafe](javascript:alert(1))';
       console.log(JSON.stringify({
         html: renderMarkdown(markdown, {resolveLink}),
         traversal: resolveLink('../../../../outside.md'),
@@ -632,8 +632,8 @@ def test_model_card_markdown_resolves_safe_relative_links_at_the_source_commit()
     )
     rendered = json.loads(result.stdout)
     source_url = "https://github.com/sima-neat/models/blob/" + "a" * 40
-    assert f'{source_url}/models/ssd_mobilenet_v3/qat/README.md' in rendered["html"]
-    assert f'{source_url}/models/ssd_mobilenet_v3/README.md#usage' in rendered["html"]
+    assert f'{source_url}/models/rf_detr_nano/scripts/surgery.py' in rendered["html"]
+    assert f'{source_url}/models/rf_detr_nano/README.md#usage' in rendered["html"]
     assert "javascript:" not in rendered["html"]
     assert rendered["traversal"] is None
     assert rendered["external"] is None

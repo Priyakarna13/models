@@ -72,7 +72,9 @@ sources](metadata-schema.md#compilation-and-sources). Exceptional members can
 keep explicit URIs.
 
 Hugging Face sources use a full 40-character repository commit. Approved HTTPS
-sources include pinned Hugging Face resources and GitHub release assets.
+sources include pinned Hugging Face resources and the ONNX files the registry
+converts. GitHub release assets are not sources; datasets come only from the
+Dataset Registry.
 Mutable branches, credentials, query parameters, fragments, and unapproved
 hosts are rejected.
 
@@ -216,7 +218,6 @@ restrictions such as INT8-only accuracy.
 | `numerical_fidelity` | `compile.py`, comparing the compiled graph with the source model | compile stage |
 | `accuracy` | `accuracy.py`, running the profile's compiled MPKs | accuracy stage |
 | `performance` | the model's standalone `performance.py` | performance stage |
-| `qualification_evidence` | nothing; records qualification done elsewhere | no stage |
 
 Fidelity is diagnostic numerical agreement, not task accuracy. `accuracy`
 names the datasets it evaluates, and each dataset's
@@ -249,7 +250,7 @@ builds](#on-demand-builds).
 
 | Stage | Fingerprint inputs |
 | --- | --- |
-| compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, declared training code, the Model Compiler version, `scripts/run_model_compilation.sh`, and the shared model loader |
+| compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, the Model Compiler version, `scripts/run_model_compilation.sh`, and the shared model loader |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
 | performance | the compile run and MPK digest of every component, the `performance` declaration, the model's `performance.py`, the shared benchmark tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
 | accuracy | the compile run and MPK digest of every component, each `accuracy` dataset's name, pin, and the metrics its `datasets/<id>.yaml` requires for the model's tasks, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
@@ -267,7 +268,7 @@ is always benchmarked again.
 
 | Change | Reruns |
 | --- | --- |
-| README, display metadata, `pipeline`, `qualification_evidence`, `reference_metrics`, `runner_class`, `convert.py`, registry tooling outside a stage's tooling | nothing |
+| README, display metadata, `pipeline`, `reference_metrics`, `runner_class`, `convert.py`, registry tooling outside a stage's tooling | nothing |
 | `build-on-demand` | nothing; changes scheduling and catalog metadata only |
 | a model's tests under `tests/`, or `scripts/run_model_tests.sh` | nothing; a changed test applies the next time its stage runs |
 | a model's `performance.py` or `performance` declaration | that model's performance stages |
@@ -302,7 +303,7 @@ output of its stage by taking that output's fixture from the root
 | File | Exercises | Stage-output fixture | That test runs in CI |
 | --- | --- | --- | --- |
 | `build/test_conversion.py` | `convert.py` | `converted`: the ONNX path | after conversion, before the ONNX upload |
-| `build/test_compile.py` | `compile.py`, calibration, surgery, declared training code | `compiled`: the build's output directory | after compilation, before the build is published |
+| `build/test_compile.py` | `compile.py`, calibration, surgery | `compiled`: the build's output directory | after compilation, before the build is published |
 | `measure/test_accuracy.py` | `accuracy.py` | `accuracy`: the build profile's accuracy report | after the DevKit accuracy stage, before publication |
 | `measure/test_performance.py` | `performance.py` | `performance`: the build profile's performance report | after the DevKit performance stage, before publication |
 

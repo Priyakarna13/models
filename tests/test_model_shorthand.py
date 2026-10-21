@@ -98,7 +98,7 @@ def test_hugging_face_mapping_preserves_layout_media_and_content_identity() -> N
 @pytest.mark.parametrize("exception_first", [True, False])
 @pytest.mark.parametrize("uri", [
     f"hf://models/example/tokenizer@{'a' * 40}/chat_template.jinja",
-    "https://github.com/example/tokenizer/releases/download/v1/chat_template.jinja",
+    f"https://huggingface.co/example/tokenizer/resolve/{'b' * 40}/chat_template.jinja",
 ])
 def test_upstream_defaults_to_the_declared_checkpoint_with_exceptional_members(uri: str, exception_first: bool) -> None:
     authored = _authored("qwen3_5_0_8b")
@@ -142,7 +142,9 @@ def test_accuracy_names_each_dataset_by_its_registry_source_and_keeps_measured_b
     assert model["accuracy"] == {**authored["accuracy"], "datasets": {"imagenet-2012-mini": pin}}
     assert benchmarked_profiles(model, "accuracy") == ["w8a8"]
     assert benchmarked_profiles(model, "performance") == ["w16a16", "w8a8"]
-    unmeasured = normalize_model(_authored("ssd_mobilenet_v1"), MODELS / "ssd_mobilenet_v1")
+    authored = _authored("yolo26n")
+    del authored["accuracy"]
+    unmeasured = normalize_model(authored, MODELS / "yolo26n")
     assert "accuracy" not in unmeasured
     assert benchmarked_profiles(unmeasured, "accuracy") == []
 

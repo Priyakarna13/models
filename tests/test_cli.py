@@ -123,7 +123,7 @@ def test_validate_models_checks_every_manifest(capsys) -> None:
     assert result == 0
     output = capsys.readouterr().out
     assert f'"model_count": {len(list((ROOT / "models").glob("*/model.yaml")))}' in output
-    assert '"ssd_mobilenet_v3"' in output
+    assert '"yolo26n"' in output
     assert '"valid": true' in output
 
 
@@ -238,7 +238,7 @@ def test_fetch_fidelity_dataset_skips_model_without_fidelity(monkeypatch, capsys
     result = main(
         [
             "fetch-fidelity-dataset",
-            str(ROOT / "models" / "ssd_mobilenet_v1"),
+            str(ROOT / "models" / "yolo26n"),
             "--build-profile",
             "w16a16",
             "--component",
@@ -283,7 +283,7 @@ def test_reference_metrics_writes_each_models_published_scores(tmp_path: Path) -
     assert main(["reference-metrics", "--repository", str(ROOT), "--output", str(output)]) == 0
 
     reference = json.loads(output.read_text(encoding="utf-8"))
-    assert "yolo26_tiny_drone" not in reference
+    assert "whisper_small" not in reference
     assert reference["resnet_50"][0]["dataset"] == {"id": "imagenet-2012", "split": "val"}
     assert reference["resnet_50"][0]["metrics"] == {"top1_accuracy": 0.80382, "top5_accuracy": 0.94598}
 
@@ -359,7 +359,7 @@ def test_matrix_rejects_unknown_manual_model(capsys) -> None:
     assert "unknown model id" in capsys.readouterr().err
 
 
-def test_matrix_selects_one_ssd_build_profile(capsys) -> None:
+def test_matrix_selects_one_build_profile(capsys) -> None:
     profile = "w8a8"
     result = main(
         [
@@ -367,7 +367,7 @@ def test_matrix_selects_one_ssd_build_profile(capsys) -> None:
             "--repository",
             str(ROOT),
             "--models",
-            "ssd_mobilenet_v1",
+            "yolo26n",
             "--profiles",
             profile,
         ]
@@ -375,7 +375,7 @@ def test_matrix_selects_one_ssd_build_profile(capsys) -> None:
     assert result == 0
     output = capsys.readouterr().out
     assert f'"build_profile_id":"{profile}"' in output
-    assert '"model_id":"ssd_mobilenet_v1"' in output
+    assert '"model_id":"yolo26n"' in output
 
 
 def test_publish_writes_one_receipt_per_component(monkeypatch, tmp_path: Path) -> None:

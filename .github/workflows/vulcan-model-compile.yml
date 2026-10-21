@@ -177,8 +177,6 @@ jobs:
             --target "$RUNNER_TEMP/model-test-tools" 'pytest>=8,<9'
 
       - name: Compile the invocation with its model's compile script
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bash --noprofile --norc <<'BASH'
@@ -191,8 +189,6 @@ jobs:
           BASH
 
       - name: Verify every MPK and record its provenance
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           IFS=',' read -ra components <<< "$COMPONENT_IDS"

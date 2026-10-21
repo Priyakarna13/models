@@ -45,7 +45,6 @@ taxonomies/                Sanctioned model categories and display labels
 tests/                     Repository-wide unit and contract tests and their fixtures
 tools/model_registry/      Shared CLI and lifecycle implementation
 tools/model_report/        Board-side model report writer and metric vocabulary
-training/                  Declared training code that is a compile input of its model
 website/                   Developer documentation site
 ```
 
@@ -113,7 +112,7 @@ and accuracy stages are the build's benchmarks.
 
 The ONNX compile fingerprint covers the profile's `model.yaml` projection, the
 `numerical_fidelity` section, the model's compile scripts, shared model loader,
-declared training code, and the compiler version. The LLiMa compile fingerprint
+and the compiler version. The LLiMa compile fingerprint
 covers checkpoint content, target, declared graph parameters and pinned
 compiler identity; scripts and registry helpers are not compile inputs. The
 benchmark fingerprints cover the compile run and MPK digest of every component,

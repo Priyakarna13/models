@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 from model_registry.errors import SourcePolicyError
 from model_registry.source import SourceSpec, redact_url
 
 DIGEST = "a" * 64
 REVISION = "0123456789abcdef0123456789abcdef01234567"
+ROOT = Path(__file__).resolve().parents[1]
+GITHUB_RELEASE_DOWNLOAD = re.compile(r"github\.com/(?:repos/)?[\w.-]+/[\w.-]+/releases/(?:download|assets)/")
 
 
 def test_hugging_face_uri_resolves_full_commit() -> None:
@@ -53,19 +58,6 @@ def test_redaction_removes_credentials_query_and_fragment() -> None:
     assert "secret" not in value
 
 
-@pytest.mark.parametrize(
-    "uri",
-    [
-        "https://api.github.com/repos/sima-neat/models/releases/assets/508126877",
-        "https://github.com/sima-neat/models/releases/download/source-v1/model.onnx",
-        "https://github.com/owner/repository/releases/download/calibration-v1/data.npz",
-        "https://api.github.com/repos/owner/repository/releases/assets/123456",
-    ],
-)
-def test_github_release_assets_are_immutable_sources(uri: str) -> None:
-    assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
-
-
 def test_google_cloud_storage_object_is_an_approved_checksum_verified_source() -> None:
     uri = "https://storage.googleapis.com/rfdetr/small_coco/checkpoint_best_regular.pth"
     assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
@@ -99,16 +91,27 @@ def test_approved_hosts_reject_sources_outside_bounded_paths(uri: str) -> None:
 @pytest.mark.parametrize(
     "uri",
     [
-        "https://api.github.com/repos/sima-neat/models/releases/latest",
+        "https://api.github.com/repos/sima-neat/models/releases/assets/508126877",
+        "https://github.com/sima-neat/models/releases/download/source-v1/model.onnx",
         "https://github.com/sima-neat/models/raw/main/model.onnx",
-        "https://github.com/owner/repository/raw/main/data.npz",
-        "https://github.com/owner/repository/releases/latest/download/data.npz",
-        "https://api.github.com/repos/owner/repository/releases/latest",
     ],
 )
-def test_non_asset_github_urls_fail(uri: str) -> None:
-    with pytest.raises(SourcePolicyError):
+def test_github_release_assets_are_not_sources(uri: str) -> None:
+    with pytest.raises(SourcePolicyError, match="host is not approved"):
         SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url()
+
+
+def test_models_and_shared_tooling_download_nothing_from_github_releases() -> None:
+    # Sources are pinned in model.yaml and datasets come from the Dataset Registry, so no file fetches a release.
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for top in ("models", "scripts", "tools")
+        for path in sorted((ROOT / top).rglob("*"))
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and GITHUB_RELEASE_DOWNLOAD.search(path.read_text(encoding="utf-8", errors="ignore"))
+    ]
+    assert offenders == []
 
 
 def test_vulcan_onnx_source() -> None:

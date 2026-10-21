@@ -117,7 +117,7 @@ def model_dir(request: pytest.FixtureRequest) -> Path:
 
 @pytest.fixture
 def load_script(model_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], ModuleType]:
-    """Import one of the model's scripts by its path under scripts/, such as "compile" or "qat/contract"."""
+    """Import one of the model's scripts by its path under scripts/, such as "compile" or "calibration"."""
     for name in MISSING_MODULES:
         monkeypatch.setitem(sys.modules, name, MagicMock())
 

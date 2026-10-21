@@ -92,7 +92,7 @@ def test_build_profile_calibrates_its_first_component_on_a_declared_dataset() ->
     with pytest.raises(ValidationError, match="names unknown calibration_dataset 'missing'"):
         validate_model(FIXTURE, authored, SCHEMA)
 
-    calibration = {"id": "fixture-set-cal", "status": "ready",
+    calibration = {"id": "fixture-set-cal",
                    "dataset": {"id": "fixture-set", "variant": "cal", "sha256": "a" * 64, "size_bytes": 1}}
     authored["calibrations"] = [calibration]
     authored["build_profiles"]["fixture"]["calibration_dataset"] = "fixture-set-cal"

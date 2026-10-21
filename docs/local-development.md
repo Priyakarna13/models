@@ -127,7 +127,7 @@ export MODEL_REGISTRY_CACHE="$PWD/.model-registry-cache"
 model-registry fetch models/<model-id> --cache-dir "$PWD/.model-registry-cache"
 ```
 
-`HF_TOKEN` and `GITHUB_TOKEN` are used when present and never printed. Do not
+`HF_TOKEN` is used when present and never printed. Do not
 put tokens, signed URLs, or cache content in model metadata or Git.
 
 ## Inspect builds and fingerprints
@@ -205,9 +205,8 @@ For several components, fetch the source with the first component and
 resolve the datasets for each component; the runner script does this and
 rejects a profile whose components resolve different datasets.
 
-A calibration resolves to either a registered dataset archive or the
-immutable file of a calibration `source`; either way the recipe receives it as
-`--dataset`. An empty path means the build needs no such input. Then invoke the
+A calibration resolves to a registered dataset archive, which the recipe
+receives as `--dataset`. An empty path means the build needs no such input. Then invoke the
 recipe once for the profile, with a new output directory:
 
 ```bash
@@ -360,7 +359,7 @@ When this checklist passes, continue to [Submit for review](contributing.md).
 | `id must match directory name` | Rename the directory or correct `id`; both use the same snake-case value. |
 | Unknown or incompatible taxonomy ID | Select an ID from the canonical taxonomy or propose a reviewed taxonomy change. |
 | `source.sha256` or size mismatch | Hash and measure the exact immutable bytes addressed by `source.uri`. |
-| Source host or URL rejected | Use a full-commit Hugging Face resource, an approved GitHub release asset, or another approved checksum-verified host. |
+| Source host or URL rejected | Use a full-commit Hugging Face resource or another approved checksum-verified host; GitHub release assets are not accepted. |
 | Referenced file does not exist | Keep recipe and surgery paths under the model's `scripts/`; a declared `conversion` also needs `scripts/convert.py` and `scripts/requirements-convert.txt`. |
 | Unexpected file in the model directory | A model directory holds only `model.yaml`, `README.md`, `hero.png`, `scripts/`, and `tests/`. |
 | `set up exactly the stages this model has` or `unexpected test files` | Give `tests/tests.yaml` one entry per stage the model has, and keep only `tests.yaml`, the stage test files, and `fixtures/` under `tests/` ([write the model's tests](adding-a-model.md#10-write-the-models-tests)). |

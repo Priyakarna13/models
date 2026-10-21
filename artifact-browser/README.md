@@ -77,7 +77,7 @@ layer names include fused operations, nested reshapes, segmentation helpers,
 outputs and zero-time entries. Input placeholders are omitted, matching the
 benchmark API. These names do not describe the selected model's actual graph.
 `fixtures/model-report-accuracy.json` gives each accuracy run its shape; the
-preview fills in the metrics the model's tests expect. SSD MobileNet v1 W16A16
+preview fills in the metrics the model's tests expect. YOLO26n W16A16
 keeps its benchmark fingerprint without a run, so its page shows **Not measured at
 this revision.** Edit the fixtures to exercise other metric values or
 availability states.

@@ -117,10 +117,6 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
         compilation = authored.pop("compilation")
         component_ids = compilation.get("components", [SINGLE_COMPONENT])
         source = _expand_source(compilation["source"])
-        calibrations = [
-            {**item, "source": _expand_source(item["source"])} if "source" in item else item
-            for item in authored.pop("calibrations", [])
-        ]
         model = {
             **authored,
             "id": directory.name,
@@ -137,7 +133,7 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
                 for component_id in component_ids
             ],
             "resources": [],
-            "calibrations": calibrations,
+            "calibrations": authored.get("calibrations", []),
             "build_profiles": [],
         }
         if "conversion" in authored:
@@ -282,10 +278,7 @@ def validate_model(
     except ValidationError as exc:
         raise ValidationError(f"{directory}: {exc}") from exc
 
-    sources = [
-        authored["compilation"]["source"],
-        *(item["source"] for item in authored.get("calibrations", []) if "source" in item),
-    ]
+    sources = [authored["compilation"]["source"]]
     if "conversion" in authored:
         sources.append(authored["conversion"]["source"])
     for source in sources:
@@ -294,9 +287,6 @@ def validate_model(
     try:
         for component in model["components"][:1]:
             source_members(component["source"])
-        for calibration in model["calibrations"]:
-            if "source" in calibration:
-                source_members(calibration["source"])
         for conversion in model.get("conversion", {}).values():
             source_members(conversion["source"])
     except (KeyError, TypeError, ValueError, SourcePolicyError) as exc:

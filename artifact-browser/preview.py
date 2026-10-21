@@ -476,7 +476,7 @@ def _fidelity_test(model: dict, package: dict) -> dict[str, Any] | None:
     }
 
 
-_UNBENCHMARKED = {("ssd_mobilenet_v1", "w16a16")}
+_UNBENCHMARKED = {("yolo26n", "w16a16")}
 
 
 @cache
