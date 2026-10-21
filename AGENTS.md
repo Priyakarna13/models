@@ -1,19 +1,43 @@
 # SiMa Neat Models
 
 This repository is the source of truth for model definitions and for how each
-model is compiled, measured, and published. `model.yaml` declares a model, the
+model is compiled, benchmarked, and published. `model.yaml` declares a model, the
 model's `scripts/` hold code specific to that model, and `tools/model_registry`
 holds the shared lifecycle.
 
-## Stages and stage keys
+## Vocabulary
 
 A **build** is one build profile of one model, compiled in one compile
-invocation named after the profile. Each build passes through up to three
-**stages**. Each stage has a **stage key**, a
-SHA-256 of everything its result depends on. The registry run of a stage
-carries its key, and CI runs a stage only when no completed run carries the
-current key. A change therefore reruns exactly the stages whose inputs it
-touches.
+invocation named after the profile. Use these names in code, CI, and docs:
+
+| Concept | Name |
+|---|---|
+| stage | `compile`, `performance`, or `accuracy`; each build passes through up to three |
+| benchmark | the performance and accuracy stages, which run on a DevKit |
+| model component | a separately compiled part of a model; a single-component model has one, with ID `model` |
+| model package | what a build profile ships |
+| registry runs | `model_compile`, `model_package`, `model_performance`, `model_accuracy`; a package's `component_run_ids` hold its compile run IDs |
+| fingerprint | a SHA-256 of every input that decides a result: `compile_fingerprint`, `benchmark_fingerprint` (Vulcan stores it as `run_fingerprint`) |
+| sha256 | the SHA-256 of one file |
+| metric | what is measured, with its unit and better direction (`tools/model_report/metrics.json`) |
+| measurement | one measured value of a metric |
+
+These names are exceptions, because a file format or another system owns them:
+
+- MPK names only the file format: `--mpk`, `mpk_path`, `mpk_sha256`,
+  `mpk_filename`, `compiled_mpks`, `verify-mpk`, and the Vulcan artifact
+  `mpk`. Call what an MPK holds a model component.
+- Vulcan's `/measurements` API and its per-value `measurement_key`.
+- Vulcan's compile-run parameter `build_fingerprint`, which carries the
+  compile fingerprint.
+- `package_fingerprint`, which equals the package manifest's sha256 (a Vulcan
+  contract).
+- Core's speed-only `Model.benchmark`, `BenchmarkReport`, `BenchmarkOptions`,
+  and `core-benchmark-report`.
+
+Each stage's registry run carries its fingerprint, and CI runs a stage only
+when no completed run carries the current fingerprint. A change therefore
+reruns exactly the stages whose inputs it touches.
 
 | Stage | Venue | Model entry point | Runner script |
 |---|---|---|---|
@@ -22,14 +46,14 @@ touches.
 | performance | DevKit | `scripts/performance.py` | `scripts/run_model_performance.sh` |
 | accuracy | DevKit | `scripts/accuracy.py` + `requirements-accuracy.txt` | `scripts/run_model_accuracy.sh` |
 
-`compile_key` and `measurement_key` in `tools/model_registry/stage_keys.py`
-compute the keys. Their inputs, and what
+`compile_fingerprint` and `benchmark_fingerprint` in
+`tools/model_registry/fingerprints.py` compute the fingerprints. Their inputs, and what
 each kind of change reruns, are listed once in
 [what a change reruns](docs/adding-a-model.md#9-know-what-a-change-reruns);
 read both before changing what a stage depends on. Conversion
 (`scripts/convert.py`, run by `scripts/run_model_conversion.sh`) produces the
 ONNX that `model.yaml` pins as the source; only that pin enters the compile
-key.
+fingerprint.
 
 The shared tooling is one module per job. The
 [module map](design-doc/model-registry-architecture.md#shared-tooling) says
@@ -50,14 +74,14 @@ Performance and accuracy measure each build profile's whole model: every
 component's MPK and the CPU work between them. `model.yaml` declares only
 `required_metrics` and optional `build_profiles`. Decoder selection, top-k,
 sample count, duration and layer statistics belong in each model's
-`scripts/performance.py`. Every measured model must include that standalone
+`scripts/performance.py`. Every benchmarked model must include that standalone
 script so customers can copy it and reproduce CI in the PyNeat environment,
 with `tools/model_report` on `PYTHONPATH` and without `model_registry` imports
 or YAML configuration. Keep its `--mpk` and `--output` CLI. `performance.py`
 and `accuracy.py` write `model-report.json` with `model_report.performance()`
 or `model_report.accuracy()`; `schemas/model-report.schema.json` is the report
 contract, and `tools/model_report/metrics.json` names every metric a report may
-hold. Each measured profile needs finite `tests.yaml` expectations covering its
+hold. Each benchmarked profile needs finite `tests.yaml` expectations covering its
 required metrics (performance: `throughput_fps`); optional expectations and
 the shared regression thresholds remain gates.
 
@@ -80,20 +104,20 @@ Start with one 4K profile per LLM/VLM. Declare `max_num_tokens: 4096` and
 `language_group_size` in its component parameters. Image dimensions are optional
 overrides for configurable VLMs; omit them for LLMs and fixed-resolution VLMs.
 Recipes forward the runner's compiler options rather than duplicating these values.
-LLiMa compile keys cover checkpoint content, the target, graph parameters and
+LLiMa compile fingerprints cover checkpoint content, the target, graph parameters and
 the pinned compiler identity. Keep graph-changing options in component
 `parameters`; script edits, job counts, logging and runner classes do not
 invalidate LLiMa builds.
 
 Any expensive model may set top-level `build-on-demand: true` (default `false`).
 Pushes still validate it and publish catalog metadata, but never compile or
-measure it. A manual **Vulcan Model Orchestrator** dispatch must select its
+benchmark it. A manual **Vulcan Model Orchestrator** dispatch must select its
 `models` and `profiles`; the planner also requires `--include-on-demand`.
-The flag changes scheduling and catalog metadata only, never stage keys.
+The flag changes scheduling and catalog metadata only, never fingerprints.
 Staging publication uses `publish-candidate` once per complete model/profile;
 it binds every required compile/package run before registering on-demand
 artifacts. Ordinary catalog documentation remains branch-retained. Publish
-target `build_requirements` using existing compile keys and consume server-owned
+target `build_requirements` using existing compile fingerprints and consume server-owned
 `approved_deployments`. After finalization, `publish-branch-deployment` selects
 the candidate in its feature catalog; readers consume server-owned
 `branch_deployments` before inherited approvals. Never synthesize approval. See
@@ -142,13 +166,13 @@ A test's fixtures decide where it runs:
 | no stage output | `python -m pytest`, on every pull request and push | blocks the merge |
 | `converted` | after `convert.py`, in `vulcan-model-convert.yml` | stops the ONNX upload |
 | `compiled` | after compilation, in `vulcan-model-compile.yml` | leaves the build unpublished |
-| `accuracy` or `performance` | after measurement, in `vulcan-model-benchmarking.yml` | publishes the report with test status `failed`, then fails the run |
+| `accuracy` or `performance` | after the benchmark, in `vulcan-model-benchmarking.yml` | publishes the report with test status `failed`, then fails the run |
 
 `scripts/run_model_tests.sh <stage> <model_dir> <stage_output> [<profile>]`
-runs one stage's file on that output (the measure stages also take the build
+runs one stage's file on that output (the benchmarks also take the build
 profile their `model-report.json` measured) and prints `passed`, `failed`, or `skipped` (the
 stage's `run_tests` is `false`); a plain `pytest` deselects every test that
-takes stage output. No stage key reads `models/<id>/tests/` or
+takes stage output. No fingerprint reads `models/<id>/tests/` or
 `run_model_tests.sh`, so a changed test reruns nothing and applies the next
 time its stage runs. To apply it now, dispatch `Vulcan Model Orchestrator`
 with `models` set to the model and `force_rebuild_all`, which recompiles and
@@ -161,13 +185,13 @@ in the same commit.
 
 | When you change | Also change |
 |---|---|
-| what a stage depends on: a `model.yaml` field its key reads, or a shared file it runs | the key function or the `BOARD_STAGE_TOOLING`/`PERFORMANCE_TOOLING`/`ACCURACY_TOOLING` list in `stage_keys.py`, the tables in [what a change reruns](docs/adding-a-model.md#9-know-what-a-change-reruns), and a test in `tests/test_compile_matrix.py` or `tests/test_stage_plan.py` |
-| the set of model scripts a DevKit stage or conversion runs | `SCRIPTS` in `measurement.py` or `CONVERSION_FILES` in `model.py`, which make up `NON_COMPILE_SCRIPTS` in `stage_keys.py`; every other `.py`/`.sh` under `scripts/` is an ONNX compile input |
+| what a stage depends on: a `model.yaml` field its fingerprint reads, or a shared file it runs | the fingerprint function or the `BOARD_STAGE_TOOLING`/`PERFORMANCE_TOOLING`/`ACCURACY_TOOLING` list in `fingerprints.py`, the tables in [what a change reruns](docs/adding-a-model.md#9-know-what-a-change-reruns), and a test in `tests/test_compile_matrix.py` or `tests/test_stage_plan.py` |
+| the set of model scripts a benchmark or conversion runs | `SCRIPTS` in `benchmark_declarations.py` or `CONVERSION_FILES` in `model.py`, which make up `NON_COMPILE_SCRIPTS` in `fingerprints.py`; every other `.py`/`.sh` under `scripts/` is an ONNX compile input |
 | board-only code | keep it inside `performance.py` or `accuracy.py`; a helper module under `scripts/` is an ONNX compile input, so editing it recompiles and then remeasures the model |
-| a custom `performance.py` | start from the [canonical script](docs/benchmarking.md#the-performance-script), and for several MPKs the [multi-component script](docs/benchmarking.md#multi-component-models): hand Core's `BenchmarkReport`, board telemetry, and each component's Model to `model_report.performance()` |
-| a metric: a Core benchmark reading or an accuracy score the registry should publish | a row in `tools/model_report/metrics.json` with its Vulcan measurement name, and its entry in the browser's `metrics.js` or `accuracy-metrics.js`, and for a telemetry reading in `TELEMETRY_METRICS` in `model-report.js`, which tests keep in step; for a performance metric, its row in `DETAIL_CARDS` in `model-view.js` when a Benchmark details card should show it, and the metric table in [benchmarking](docs/benchmarking.md#workload-and-measurements) |
+| a custom `performance.py` | start from the [canonical script](docs/benchmarking.md#the-performance-script), and for a multi-component model the [multi-component script](docs/benchmarking.md#multi-component-models): hand Core's `BenchmarkReport`, board telemetry, and each component's Model to `model_report.performance()` |
+| a metric: a Core benchmark reading or an accuracy score the registry should publish | a row in `tools/model_report/metrics.json` with its Vulcan measurement name (`registry_name`), and its entry in the browser's `metrics.js` or `accuracy-metrics.js`, and for a telemetry reading in `TELEMETRY_METRICS` in `model-report.js`, which tests keep in step; for a performance metric, its row in `DETAIL_CARDS` in `model-view.js` when a Performance details card should show it, and the metric table in [benchmarking](docs/benchmarking.md#workload-and-measurements) |
 | a field of the model report | `schemas/model-report.schema.json`, `tools/model_report/__init__.py`, the checks in `report_publication.py`, and the browser code that reads the report |
-| a compile input outside `models/<id>/`, such as declared training code | `MODEL_COMPILE_INPUT_PATHS` in `stage_keys.py` |
+| a compile input outside `models/<id>/`, such as declared training code | `MODEL_COMPILE_INPUT_PATHS` in `fingerprints.py` |
 | a model's category: `model_type`, `tasks`, `modalities`, or the family in `architecture.id` | pick existing IDs from `taxonomies/model-taxonomy.yaml`; when none fits, add the entry there and follow [Model categorization taxonomy](docs/model-taxonomy.md) |
 | the model folder layout | `MODEL_FOLDER_ENTRIES` in `model.py` and [the directory step](docs/adding-a-model.md#2-create-the-directory) |
 | a model script | the model's test of that behavior under `tests/build/` or `tests/measure/` |
@@ -192,24 +216,24 @@ in the same commit.
 - **Push.** Every push runs `Vulcan Model Orchestrator`. Its `portal` job builds and smoke-tests the model browser (`developer-docs.yml`); `plan` waits for it, so a portal failure stops the run. On `main` and `develop`, `publish-model-browser` publishes that checked portal to staging. The `plan` job runs `model-registry plan-stages`, which reads the
   branch's prior catalog (its own, merged with its base branches' on a feature
   branch; see `design-doc/model-registry-architecture.md`) and resolves each
-  stage key against the registry. `compile` calls
+  fingerprint against the registry. `compile` calls
   `.github/workflows/vulcan-model-compile.yml` once per build to compile,
-  run the model's compile tests, publish, and start the build's board
-  stages. `publish-catalog` writes the final catalog snapshot, and `measure`
-  starts the board stages a reused build still lacks.
-- **Board stages.** `vulcan-model-benchmarking.yml` runs the requested
+  run the model's compile tests, publish, and start the build's
+  benchmarks. `publish-catalog` writes the final catalog snapshot, and
+  `benchmark` starts the benchmarks a reused build still lacks.
+- **Benchmarks.** `vulcan-model-benchmarking.yml` runs the requested
   `stages` of one build profile on a DevKit, runs the model's measure tests on
-  each `model-report.json`, and publishes performance (`model_benchmark` runs)
+  each `model-report.json`, and publishes performance (`model_performance` runs)
   and accuracy (`model_accuracy` runs) separately with `model-registry
   publish-report`, each under the profile's `model_package` run with its test
   outcome. A failed test fails the run after publication; the completed run is
-  not measured again. On-demand builds are not measured.
+  not benchmarked again. On-demand builds are not benchmarked.
 - Workflow YAML only orchestrates: triggers, jobs, permissions, inputs, and
   the order of steps. A step that needs more than one command calls a named,
   executable script with a usage header: under `scripts/`, or beside the code
   it serves, as `packaging/model-registry/build.sh` does. Registry logic
   belongs in a `model-registry` command. A new script under `scripts/` is not
-  a stage-key input unless `stage_keys.py` lists it.
+  a fingerprint input unless `fingerprints.py` lists it.
 - A newer push cancels the branch's running orchestrator; builds that
   already published stay and are reused. How branch catalogs, merges, and the
   model browser interact is in
@@ -238,7 +262,7 @@ Conventions the code relies on:
 
 - Model scripts receive verified local paths (`--model`, `--dataset`,
   `--fidelity-dataset`, `--mpk`); data enters only through the dataset registry
-  declared in `model.yaml`. Board stage scripts run without registry
+  declared in `model.yaml`. Benchmark scripts run without registry
   credentials.
 - Schemas under `schemas/` reject unknown fields. Published reports keep
   their `schema_version` (model report 1, numerical fidelity 1) because the
@@ -330,7 +354,7 @@ Write the README for an application developer:
 Keep maintainer explanations next to what they explain: in `model.yaml`
 comments, or in the docstrings of `convert.py`, `performance.py`, and
 `accuracy.py`. For ONNX models, every other file under `models/<id>/scripts/`
-is part of the compile key, so a comment there recompiles the model. Procedures
+is part of the compile fingerprint, so a comment there recompiles the model. Procedures
 that apply to every model belong in `docs/`. Maintainer guides inside a model directory, such
 as `scripts/qat/README.md`, use whatever structure suits their workflow.
 
@@ -351,4 +375,4 @@ style and accent color, and labels use the same size on every hero.
 When a change alters what the model detects, its input, its outputs, or its
 components, update the README and the hero in the same change. A README- or
 hero-only edit is documentation or catalog metadata; it must not change
-compilation, validation, benchmark, or artifact fingerprints.
+a compile or benchmark fingerprint.

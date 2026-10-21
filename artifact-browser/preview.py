@@ -27,14 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 BROWSER = ROOT / "artifact-browser"
 sys.path.insert(0, str(ROOT / "tools"))
 
+from model_registry.benchmark_declarations import benchmarked_profiles, reference_metrics_by_model  # noqa: E402
 from model_registry.compile_matrix import build_matrix  # noqa: E402
 from model_registry.dependencies import resolve_benchmark_runtime, resolve_model_compiler  # noqa: E402
 from model_registry.documentation import load_model_documentation  # noqa: E402
-from model_registry.measurement import measured_profiles, reference_metrics_by_model  # noqa: E402
+from model_registry.fingerprints import BENCHMARK_RUN_TYPES  # noqa: E402
 from model_registry.model import component_pipelines, load_models, mpk_filename, profile_component_for  # noqa: E402
 from model_registry.model_tests import load_model_tests  # noqa: E402
 from model_registry.registry import build_catalog_snapshot  # noqa: E402
-from model_registry.stage_keys import MEASUREMENT_RUNS  # noqa: E402
 
 UI_MODE = os.environ.get("MODEL_BROWSER_UI_MODE", "developer")
 BRANCH = "main" if UI_MODE == "customer" else "develop"
@@ -104,7 +104,7 @@ def _documentation_receipt(model_id: str, documentation: dict[str, Any], sha: st
 
 
 def _published_builds(models: dict, matrix: list[dict], sha: str) -> dict[str, Any]:
-    """A previous catalog whose builds match every compile key, as if each invocation had been published."""
+    """A previous catalog whose builds match every compile fingerprint, as if each invocation had been published."""
     builds: dict[str, list[dict]] = {model_id: [] for model_id in models}
     packages: dict[str, list[dict]] = {model_id: [] for model_id in models}
     for entry in matrix:
@@ -112,7 +112,7 @@ def _published_builds(models: dict, matrix: list[dict], sha: str) -> dict[str, A
             builds[entry["model_id"]].append({
                 "build_profile_id": entry["build_profile_id"],
                 "component_id": component_id,
-                "compile_fingerprint": entry["build_fingerprint"],
+                "compile_fingerprint": entry["compile_fingerprint"],
                 "compile_invocation_id": entry["compile_invocation_id"],
                 "run_id": _id("compile", sha, entry["model_id"], entry["build_profile_id"], component_id),
                 "artifact_sha256": _sha256("mpk", sha, entry["model_id"], entry["build_profile_id"], component_id),
@@ -241,7 +241,8 @@ def _models_list(document: dict, runs: dict[str, dict], compiler: str) -> list[d
             **_model_fields(model),
             "documentation": model["documentation"],
             **({"build_on_demand": True} if model.get("build_on_demand") else {}),
-            **({"measurements": model["measurements"]} if model.get("measurements") else {}),
+            **({"benchmark_fingerprints": model["benchmark_fingerprints"]}
+               if model.get("benchmark_fingerprints") else {}),
             "catalog_revision": document["catalog_revision"],
             "taxonomy_sha256": document["taxonomy_sha256"],
             "builds": builds,
@@ -406,13 +407,13 @@ def _accuracy_report(model: dict, profile_id: str) -> dict[str, Any]:
     return report
 
 
-def _measurement_parameters(model: dict, measurement: dict) -> dict[str, Any]:
-    """The run parameters report publication stores: the stage's declaration, the builds it measured, and the
+def _benchmark_parameters(model: dict, benchmark: dict) -> dict[str, Any]:
+    """The run parameters report publication stores: the stage's declaration, the builds it benchmarked, and the
     runtime it ran on."""
     return {
-        measurement["stage"]: model[measurement["stage"]],
+        benchmark["stage"]: model[benchmark["stage"]],
         "builds": {build["component_id"]: {"run_id": build["run_id"], "artifact_sha256": build["artifact_sha256"]}
-                   for build in measurement["builds"]},
+                   for build in benchmark["builds"]},
         "runtime": resolve_benchmark_runtime(ROOT),
     }
 
@@ -449,7 +450,7 @@ def _fidelity_test(model: dict, package: dict) -> dict[str, Any] | None:
     }
 
 
-_UNMEASURED = {("ssd_mobilenet_v1", "w16a16")}
+_UNBENCHMARKED = {("ssd_mobilenet_v1", "w16a16")}
 
 
 @cache
@@ -457,7 +458,7 @@ def _index() -> dict[str, Any]:
     """Lookups from every identifier the API serves to what it describes."""
     repository = _repository()
     runs = {run["id"]: run for run in repository["runs"]}
-    builds, packages, documentation, measurements = {}, {}, {}, {}
+    builds, packages, documentation, benchmarks = {}, {}, {}, {}
     for revision in repository["revisions"]:
         for model in revision["document"]["models"]:
             source = repository["models"][model["id"]]
@@ -466,15 +467,16 @@ def _index() -> dict[str, Any]:
                 builds[build["run_id"]] = (source, build)
             for package in model["packages"]:
                 packages[package["run_id"]] = (source, package)
-            # Each stage of a profile the catalog lists a measurement key for is one DevKit run, except one the
-            # DevKit has not measured yet, which the browser shows as not measured.
-            for profile_id, keys in model.get("measurements", {}).items():
-                for stage, key in keys.items():
-                    if profile_id not in measured_profiles(source, stage) or (model["id"], profile_id) in _UNMEASURED:
+            # Each stage of a profile the catalog lists a benchmark fingerprint for is one DevKit run, except one
+            # the DevKit has not benchmarked yet, which the browser shows as not measured.
+            for profile_id, fingerprints in model.get("benchmark_fingerprints", {}).items():
+                for stage, fingerprint in fingerprints.items():
+                    if (profile_id not in benchmarked_profiles(source, stage)
+                            or (model["id"], profile_id) in _UNBENCHMARKED):
                         continue
                     profile_builds = [build for build in model["builds"] if build["build_profile_id"] == profile_id]
                     package = next((item for item in model["packages"] if item["build_profile_id"] == profile_id), None)
-                    measurements[key] = {
+                    benchmarks[fingerprint] = {
                         "model": source, "profile": profile_id, "stage": stage, "builds": profile_builds,
                         "parent_run_id": (package or profile_builds[0])["run_id"],
                     }
@@ -483,30 +485,32 @@ def _index() -> dict[str, Any]:
         "builds": builds,
         "packages": packages,
         "documentation": documentation,
-        "measurements": measurements,
-        "measurement_runs": {_id(entry["stage"], key): key for key, entry in measurements.items()},
+        "benchmarks": benchmarks,
+        "benchmark_run_fingerprints": {
+            _id(entry["stage"], fingerprint): fingerprint for fingerprint, entry in benchmarks.items()
+        },
     }
 
 
-def _measurement_run(run_id: str) -> dict:
-    """A DevKit run that measured a profile at the latest revision, as CI measures a reused build, under the
+def _benchmark_run(run_id: str) -> dict:
+    """A DevKit run that benchmarked a profile at the latest revision, as CI benchmarks a reused build, under the
     profile's package run."""
-    key = _index()["measurement_runs"][run_id]
-    measurement = _index()["measurements"][key]
-    run_type, fingerprint_version = MEASUREMENT_RUNS[measurement["stage"]]
+    fingerprint = _index()["benchmark_run_fingerprints"][run_id]
+    benchmark = _index()["benchmarks"][fingerprint]
+    run_type, fingerprint_version = BENCHMARK_RUN_TYPES[benchmark["stage"]]
     workflow = int(_fraction("workflow", run_id) * 10**11)
     return {
-        **_index()["runs"][measurement["parent_run_id"]],
+        **_index()["runs"][benchmark["parent_run_id"]],
         "id": run_id,
         "run_type": run_type,
-        "parent_run_id": measurement["parent_run_id"],
+        "parent_run_id": benchmark["parent_run_id"],
         "fingerprint_version": fingerprint_version,
-        "run_fingerprint": key,
+        "run_fingerprint": fingerprint,
         "commit_sha": _repository()["revisions"][-1]["sha"],
         "ci_run_url": f"https://github.com/sima-neat/models/actions/runs/{workflow}",
         "metadata": {
-            "model_id": measurement["model"]["id"], "build_profile_id": measurement["profile"],
-            "stage": measurement["stage"], "package_run_id": measurement["parent_run_id"], "measurement_key": key,
+            "model_id": benchmark["model"]["id"], "build_profile_id": benchmark["profile"],
+            "stage": benchmark["stage"], "package_run_id": benchmark["parent_run_id"],
         },
     }
 
@@ -606,11 +610,11 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                     "git_ref": GIT_REF, "catalog_revision": match["sha"], "document": match["document"],
                 }})
         elif path == "/resolve":
-            key = query.get("fingerprint", [""])[0]
-            measurement = _index()["measurements"].get(key)
+            fingerprint = query.get("fingerprint", [""])[0]
+            benchmark = _index()["benchmarks"].get(fingerprint)
             requested = (query.get("run_type", [""])[0], int(query.get("fingerprint_version", ["1"])[0]))
-            if measurement and MEASUREMENT_RUNS[measurement["stage"]] == requested:
-                self._json({"run": {"id": _id(measurement["stage"], key), "run_type": requested[0]}})
+            if benchmark and BENCHMARK_RUN_TYPES[benchmark["stage"]] == requested:
+                self._json({"run": {"id": _id(benchmark["stage"], fingerprint), "run_type": requested[0]}})
             else:
                 self._not_found("fingerprint_not_found")
         elif path in {"/models", "/resolve"} or path.startswith("/catalogs/"):
@@ -630,8 +634,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             name, media_type = files[rest[1]]
             self._bytes((ROOT / "models" / model_id / name).read_bytes(), media_type)
-        elif run_id in index["measurement_runs"]:
-            self._measurement_run_api(run_id, rest)
+        elif run_id in index["benchmark_run_fingerprints"]:
+            self._benchmark_run_api(run_id, rest)
         elif run_id in index["builds"]:
             self._compile_run_api(run_id, rest, *index["builds"][run_id], compiler)
         elif run_id in index["packages"] and not rest:
@@ -667,18 +671,18 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         else:
             self._not_found("run_not_found")
 
-    def _measurement_run_api(self, run_id: str, rest: list[str]) -> None:
-        measurement = _index()["measurements"][_index()["measurement_runs"][run_id]]
-        model, stage = measurement["model"], measurement["stage"]
-        run = _measurement_run(run_id)
+    def _benchmark_run_api(self, run_id: str, rest: list[str]) -> None:
+        benchmark = _index()["benchmarks"][_index()["benchmark_run_fingerprints"][run_id]]
+        model, stage = benchmark["model"], benchmark["stage"]
+        run = _benchmark_run(run_id)
         if not rest:
             self._json({"run": run, "artifacts": []})
         elif rest == ["provenance"]:
-            parameters = _measurement_parameters(model, measurement)
+            parameters = _benchmark_parameters(model, benchmark)
             self._json({"run": run, "inputs": [], "parameters": {"parameters": parameters}})
         elif rest == ["test-results"]:
             read = _performance_report if stage == "performance" else _accuracy_report
-            report = read(model, measurement["profile"])
+            report = read(model, benchmark["profile"])
             # The model browser reads the whole report from the stage's model test result.
             self._json({"run_id": run_id, "test_results": [
                 {"suite": stage, "name": "model", "status": "passed", "version": "1", "summary": report},
@@ -737,7 +741,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
 
 
 def _package_file(model: dict, package: dict) -> tuple[str, str]:
-    """The published path and media type of a native folder index, lone MPK, or ZIP."""
+    """The published path and media type of a native folder index, a single-component model's MPK, or ZIP."""
     if any(component["interface"]["format"] == "huggingface" for component in model["components"]):
         return "deployment/manifest.json", "application/json"
     declaration = next(item for item in model["packages"] if item["id"] == package["package_id"])

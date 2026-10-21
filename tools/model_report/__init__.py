@@ -3,7 +3,7 @@
 A model's scripts/performance.py and scripts/accuracy.py measure the whole model their own way, then hand
 Core's results to performance() or accuracy(). Report.save() writes model-report.json, which the registry
 publishes unchanged and the model browser reads. metrics.json names every metric a report may hold, with
-its unit, direction, and the Vulcan measurement it is published as.
+its unit, direction, and the Vulcan measurement name (registry_name) it is published under.
 
 Needs only the Python standard library, so it runs in PyNeat's environment on a DevKit:
 ``PYTHONPATH=tools ~/pyneat/bin/python models/<model>/scripts/performance.py --mpk ... --output out``.

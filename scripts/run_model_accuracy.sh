@@ -48,7 +48,7 @@ if [[ "$(json_field kind <<< "$resolution")" == "none" ]]; then
 fi
 
 # The script takes each MPK as <component>=<path>.
-listed="$("$REGISTRY_PYTHON" -m model_registry measurement-inputs "$COMPILED_DIR" \
+listed="$("$REGISTRY_PYTHON" -m model_registry model-component-mpks "$COMPILED_DIR" \
   --repository "$REPOSITORY" --model "$MODEL_ID" --build-profile "$BUILD_PROFILE_ID")"
 mpks=()
 while IFS= read -r input; do mpks+=(--mpk "$input"); done <<< "$listed"

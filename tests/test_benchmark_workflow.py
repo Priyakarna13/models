@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 import yaml
-from model_registry.stage_keys import ACCURACY_TOOLING, PERFORMANCE_TOOLING
+from model_registry.fingerprints import ACCURACY_TOOLING, PERFORMANCE_TOOLING
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_WORKFLOW = ROOT / ".github" / "workflows" / "vulcan-model-benchmarking.yml"
-MEASURE_PERFORMANCE = "${{ contains(format(',{0},', inputs.stages), ',performance,') }}"
-MEASURE_ACCURACY = "${{ contains(format(',{0},', inputs.stages), ',accuracy,') }}"
+BENCHMARK_PERFORMANCE = "${{ contains(format(',{0},', inputs.stages), ',performance,') }}"
+BENCHMARK_ACCURACY = "${{ contains(format(',{0},', inputs.stages), ',accuracy,') }}"
 PUBLISH_PERFORMANCE = "${{ !cancelled() && needs.benchmark-dispatched-model.outputs.performance == 'success' }}"
 PUBLISH_ACCURACY = "${{ !cancelled() && needs.benchmark-dispatched-model.outputs.accuracy == 'success' }}"
 # Model code from the source revision runs only through these steps' scripts.
@@ -100,10 +100,10 @@ def test_dispatched_benchmark_stages_only_its_compiled_artifact() -> None:
     restore = step(stage["steps"], "Restore the current immutable compilation from the registry")
     assert restore["if"] == "inputs.source_run_id == ''"
     assert "model-registry stage-registry-build" in restore["run"]
-    # A measurement runs under the profile's published package; the stage never registers a build itself.
+    # A benchmark runs under the profile's published package; the stage never registers a build itself.
     registered = step(stage["steps"], "Verify the registered build and its package")
     assert "if" not in registered
-    assert "model-registry measurement-inputs _compiled --repository _source" in registered["run"]
+    assert "model-registry model-component-mpks _compiled --repository _source" in registered["run"]
     assert '--model "$MODEL_ID" --build-profile "$BUILD_PROFILE_ID"' in registered["run"]
     assert (
         'test -f "_compiled/$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"'
@@ -198,46 +198,46 @@ def test_performance_runs_the_model_owned_script() -> None:
     script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
     assert '"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"' in script
     assert '"${mpks[@]}" --output "$OUTPUT_DIR"' in script
-    assert "model_registry measurement-inputs" in script
+    assert "model_registry model-component-mpks" in script
     assert script.index('scripts/performance.py"') < script.index("model_registry check-report")
 
-def test_devkit_stages_run_only_when_requested() -> None:
+def test_benchmarks_run_only_when_requested() -> None:
     benchmark = load_workflow()["jobs"]["benchmark-dispatched-model"]
     steps = benchmark["steps"]
     artifact_suffix = "${{ inputs.model_id }}-${{ inputs.build_profile_id }}-${{ inputs.compile_invocation_id }}"
 
-    assert benchmark["env"]["MEASURE_PERFORMANCE"] == MEASURE_PERFORMANCE
-    assert benchmark["env"]["MEASURE_ACCURACY"] == MEASURE_ACCURACY
+    assert benchmark["env"]["BENCHMARK_PERFORMANCE"] == BENCHMARK_PERFORMANCE
+    assert benchmark["env"]["BENCHMARK_ACCURACY"] == BENCHMARK_ACCURACY
     performance = step(steps, "Measure performance on DevKit")
     assert performance["if"] == (
-        "${{ !cancelled() && steps.core.outcome == 'success' && env.MEASURE_PERFORMANCE == 'true' }}"
+        "${{ !cancelled() && steps.core.outcome == 'success' && env.BENCHMARK_PERFORMANCE == 'true' }}"
     )
     assert performance["run"] == (
         'scripts/run_model_performance.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _performance'
     )
     performance_evidence = step(steps, "Retain performance evidence")
-    assert performance_evidence["if"] == "always() && env.MEASURE_PERFORMANCE == 'true'"
+    assert performance_evidence["if"] == "always() && env.BENCHMARK_PERFORMANCE == 'true'"
     assert performance_evidence["with"]["name"] == f"performance-{artifact_suffix}"
     assert performance_evidence["with"]["if-no-files-found"] == "error"
 
     accuracy = step(steps, "Measure accuracy on DevKit")
     assert accuracy["if"] == (
         "${{ !cancelled() && steps.core.outcome == 'success' && steps.dataset-cache.outcome == 'success' "
-        "&& env.MEASURE_ACCURACY == 'true' }}"
+        "&& env.BENCHMARK_ACCURACY == 'true' }}"
     )
     assert accuracy["run"] == (
         'scripts/run_model_accuracy.sh "_source/models/$MODEL_ID" "$BUILD_PROFILE_ID" _compiled _accuracy'
     )
     accuracy_evidence = step(steps, "Retain accuracy evidence")
-    assert accuracy_evidence["if"] == "always() && env.MEASURE_ACCURACY == 'true'"
+    assert accuracy_evidence["if"] == "always() && env.BENCHMARK_ACCURACY == 'true'"
     assert accuracy_evidence["with"]["name"] == f"accuracy-{artifact_suffix}"
     assert accuracy_evidence["with"]["if-no-files-found"] == "error"
     for name in ("Install trusted dataset tooling", "Configure dataset reader credentials",
                  "Cache the accuracy dataset on NVMe"):
-        assert step(steps, name)["if"] == "env.MEASURE_ACCURACY == 'true'", name
+        assert step(steps, name)["if"] == "env.BENCHMARK_ACCURACY == 'true'", name
 
 
-def test_each_devkit_stage_runs_and_publishes_on_its_own_outcome() -> None:
+def test_each_benchmark_runs_and_publishes_on_its_own_outcome() -> None:
     workflow = load_workflow()
     benchmark = workflow["jobs"]["benchmark-dispatched-model"]
     publish = workflow["jobs"]["publish-dispatched-benchmark"]
@@ -485,7 +485,7 @@ def test_cleanup_removes_input_and_both_evidence_artifacts() -> None:
 
 @pytest.mark.parametrize("relative", [
     "tools/model_registry/report_publication.py", "tools/model_report/metrics.json",
-    "tools/model_registry/measurement.py", "tools/model_registry/model.py",
+    "tools/model_registry/benchmark_declarations.py", "tools/model_registry/model.py",
 ])
 def test_board_runs_require_the_measured_revisions_tooling(tmp_path, relative) -> None:
     stage = load_workflow()["jobs"]["stage-dispatched-benchmark"]
@@ -493,7 +493,7 @@ def test_board_runs_require_the_measured_revisions_tooling(tmp_path, relative) -
     assert guard["run"] == "scripts/require_source_board_tooling.sh _source"
     source = tmp_path / "_source"
     for item in {*PERFORMANCE_TOOLING, *ACCURACY_TOOLING,
-                 "tools/model_registry/measurement.py", "tools/model_registry/model.py"}:
+                 "tools/model_registry/benchmark_declarations.py", "tools/model_registry/model.py"}:
         (source / item).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / item, source / item)
     python_bin = tmp_path / "bin"

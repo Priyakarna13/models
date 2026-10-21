@@ -1,6 +1,6 @@
 // Registry API requests, local caches, and catalog build selection.
 import { deploymentCatalog, runProfile, variantBuildKey, variantBuildRuns } from "./branch-builds.js";
-import { MEASUREMENT_RUNS } from "./model-report.js";
+import { BENCHMARK_RUN_TYPES } from "./model-report.js";
 import { DEFAULT_BRANCH, state, elements, categoryFilters } from "./state.js";
 
 export async function api(path) {
@@ -17,13 +17,13 @@ export async function api(path) {
   return payload;
 }
 
-// Each DevKit stage of a build profile is its own registry run, found by the measurement key the catalog
-// records for that profile. No run means the stage has not measured this build.
-async function loadMeasurement(stage, measurementKey) {
-  if (!measurementKey) return null;
-  const [runType, fingerprintVersion] = MEASUREMENT_RUNS[stage];
+// Each benchmark stage of a build profile is its own registry run, found by the benchmark fingerprint the
+// catalog records for that profile. No run means the stage has not benchmarked this build.
+async function loadBenchmarkRun(stage, benchmarkFingerprint) {
+  if (!benchmarkFingerprint) return null;
+  const [runType, fingerprintVersion] = BENCHMARK_RUN_TYPES[stage];
   const repo = state.repository;
-  const query = new URLSearchParams({ run_type: runType, fingerprint: measurementKey, fingerprint_version: String(fingerprintVersion) });
+  const query = new URLSearchParams({ run_type: runType, fingerprint: benchmarkFingerprint, fingerprint_version: String(fingerprintVersion) });
   let resolved;
   try {
     ({ run: resolved } = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/resolve?${query}`));
@@ -44,14 +44,14 @@ async function loadMeasurement(stage, measurementKey) {
   };
 }
 
-// The catalog records each build profile's measurement keys on the model. A build missing from the
+// The catalog records each build profile's benchmark fingerprints on the model. A build missing from the
 // current catalog, as in history mode, takes them from the catalog at the build's revision; a catalog
 // that does not list the build has none for it.
-async function measurementKeys(runs, profile) {
+async function benchmarkFingerprints(runs, profile) {
   const lists = (model) => runs.every((run) => model?.builds?.some((build) => build.run_id === run.id));
   const current = state.catalogMode === "runs" ? null : catalogModelForRun(runs[0]);
   const model = lists(current) ? current : await loadHistoricalCatalogModel(runs[0]);
-  return lists(model) ? model.measurements?.[profile] || {} : {};
+  return lists(model) ? model.benchmark_fingerprints?.[profile] || {} : {};
 }
 
 export async function apiText(path) {
@@ -322,10 +322,10 @@ export async function loadVariant(anchor) {
   const details = await mapWithConcurrency(componentRuns, 6, (run) => loadRunDetail(run.id));
   const runs = details.map((detail) => detail.summary.run);
   const packageRun = variantPackage(componentRuns);
-  const keys = await measurementKeys(runs, runProfile(anchor));
+  const fingerprints = await benchmarkFingerprints(runs, runProfile(anchor));
   const [performance, accuracy, [packageSummary, packageTests], pipeline, reference] = await Promise.all([
-    loadMeasurement("performance", keys.performance),
-    loadMeasurement("accuracy", keys.accuracy),
+    loadBenchmarkRun("performance", fingerprints.performance),
+    loadBenchmarkRun("accuracy", fingerprints.accuracy),
     packageRun ? loadPackageRun(packageRun.run_id) : [null, null],
     loadComponentPipeline(anchor.metadata?.model_id),
     loadReferenceMetrics(anchor.metadata?.model_id),

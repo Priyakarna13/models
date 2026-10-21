@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 from model_registry.errors import ValidationError
+from model_registry.fingerprints import benchmark_fingerprint
 from model_registry.model import load_and_validate_model
 from model_registry.registry import S3Object
 from model_registry.report_publication import (
     _registered_builds,
     check_report,
     compiled_mpks,
-    measurement_inputs,
+    model_component_mpks,
     publish_report,
 )
-from model_registry.stage_keys import measurement_key
 from model_report import METRICS, REPORT_FILE
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_RUN = "00000000-0000-4000-8000-00000000000a"
-MEASUREMENT_RUN = "00000000-0000-4000-8000-00000000000b"
+BENCHMARK_RUN = "00000000-0000-4000-8000-00000000000b"
 PERFORMANCE_METRICS = {
     "latency_avg_ms": 2.5, "throughput_fps": 400.0, "avg_power_watts": 8.0, "energy_per_inference_joules": 0.02,
 }
@@ -85,7 +85,7 @@ def accuracy_report(**changes: object) -> dict:
     }  # fmt: skip
 
 
-def test_measurement_inputs_name_each_components_verified_mpk_in_model_order(tmp_path: Path) -> None:
+def test_model_component_mpks_name_each_components_verified_mpk_in_model_order(tmp_path: Path) -> None:
     builds = registered_build(tmp_path, "rf_detr_nano", "w8a8_w16a16", ["decoder", "backbone"])
     profile_dir = tmp_path / "rf_detr_nano" / "w8a8_w16a16"
 
@@ -95,7 +95,7 @@ def test_measurement_inputs_name_each_components_verified_mpk_in_model_order(tmp
     assert {component: mpk["sha256"] for component, mpk in mpks.items()} == {
         component: build["artifact_sha256"] for component, build in builds.items()
     }
-    assert measurement_inputs(tmp_path, ROOT, "rf_detr_nano", "w8a8_w16a16") == [
+    assert model_component_mpks(tmp_path, ROOT, "rf_detr_nano", "w8a8_w16a16") == [
         f"backbone={profile_dir / 'backbone' / 'backbone_mpk.tar.gz'}",
         f"decoder={profile_dir / 'decoder' / 'decoder_mpk.tar.gz'}",
     ]
@@ -109,17 +109,17 @@ def test_compiled_mpks_reject_an_mpk_that_does_not_match_its_recorded_digest(tmp
         compiled_mpks(tmp_path, model("rf_detr_nano"), "w8a8_w16a16")
 
 
-def test_registered_builds_require_the_package_to_link_the_measured_builds(tmp_path: Path) -> None:
+def test_registered_builds_require_the_package_to_link_the_benchmarked_builds(tmp_path: Path) -> None:
     builds = registered_build(tmp_path, "rf_detr_nano", "w8a8_w16a16", ["backbone", "decoder"])
     assert _registered_builds(tmp_path, model("rf_detr_nano"), "w8a8_w16a16") == (builds, PACKAGE_RUN)
 
     receipt = tmp_path / "rf_detr_nano" / "w8a8_w16a16" / "packages" / "default" / "registry-publication.json"
     document = json.loads(receipt.read_text(encoding="utf-8"))
-    # A package published from an earlier backbone build does not cover this measurement.
+    # A package published from an earlier backbone build does not cover this benchmark.
     document["packages"][0]["component_run_ids"]["backbone"] = "00000000-0000-4000-8000-000000000099"
     write_json(receipt, document)
 
-    with pytest.raises(ValidationError, match="the package does not link the measured component builds"):
+    with pytest.raises(ValidationError, match="the package does not link the benchmarked component builds"):
         _registered_builds(tmp_path, model("rf_detr_nano"), "w8a8_w16a16")
 
 
@@ -159,7 +159,7 @@ def publish(tmp_path: Path, model_id: str, profile_id: str, stage: str, report: 
     def request(method: str, path: str, body: dict | None, key: str) -> dict:
         calls.append((method, path, body))
         if path == "/v1/runs":
-            return {"run_id": MEASUREMENT_RUN}
+            return {"run_id": BENCHMARK_RUN}
         return {"artifact_id": f"artifact-{len(calls)}"} if "/artifacts/" in path else {}
 
     result = publish_report(
@@ -177,15 +177,15 @@ def test_publish_report_publishes_one_whole_model_run_under_the_package_run(tmp_
 
     calls, result = publish(tmp_path, "rf_detr_nano", "w8a8_w16a16", "performance", report)
 
-    key = measurement_key(ROOT, model("rf_detr_nano"), "w8a8_w16a16", builds, "performance")
+    fingerprint = benchmark_fingerprint(ROOT, model("rf_detr_nano"), "w8a8_w16a16", builds, "performance")
     paths = [path for _, path, _ in calls]
     create = calls[0][2]
-    assert create["run_type"] == "model_benchmark"
+    assert create["run_type"] == "model_performance"
     # Vulcan /resolve finds the run only under the version planning asks for.
     assert create["environment"]["fingerprint_version"] == 3
     assert create["parent_run_id"] == PACKAGE_RUN
-    assert create["run_fingerprint"] == key
-    assert result["measurement_key"] == key and result["package_run_id"] == PACKAGE_RUN
+    assert create["run_fingerprint"] == fingerprint
+    assert result["benchmark_fingerprint"] == fingerprint and result["package_run_id"] == PACKAGE_RUN
     # Each component's compile run is an input of the one whole-model run.
     inputs = {path.rsplit("/", 1)[1]: body for _, path, body in calls if "/inputs/" in path}
     assert {name: body["source_reference"] for name, body in inputs.items()} == {
@@ -193,17 +193,19 @@ def test_publish_report_publishes_one_whole_model_run_under_the_package_run(tmp_
         for component, build in builds.items()
     }
     assert {body["sha256"] for body in inputs.values()} == {build["artifact_sha256"] for build in builds.values()}
-    test_path = f"/v1/runs/{MEASUREMENT_RUN}/test-results/performance/model"
+    test_path = f"/v1/runs/{BENCHMARK_RUN}/test-results/performance/model"
     test_result = next(body for _, path, body in calls if path == test_path)
     assert test_result["status"] == "failed"
     assert test_result["summary"] == report
     assert test_result["report_artifact_id"] and test_result["log_artifact_id"]
     measurements = next(body for _, path, body in calls if path.endswith("/measurements/batch"))["measurements"]
     assert {item["name"]: item["value"] for item in measurements} == {
-        METRICS[name]["measurement"]: value for name, value in PERFORMANCE_METRICS.items()
+        METRICS[name]["registry_name"]: value for name, value in PERFORMANCE_METRICS.items()
     }
-    assert all(item["measurement_key"].startswith(f"{key}-") and item["sample_count"] == 1 for item in measurements)
-    assert paths[-1] == f"/v1/runs/{MEASUREMENT_RUN}/finalize"
+    assert all(
+        item["measurement_key"].startswith(f"{fingerprint}-") and item["sample_count"] == 1 for item in measurements
+    )
+    assert paths[-1] == f"/v1/runs/{BENCHMARK_RUN}/finalize"
 
 
 def test_publish_report_counts_each_evaluated_accuracy_sample(tmp_path: Path) -> None:

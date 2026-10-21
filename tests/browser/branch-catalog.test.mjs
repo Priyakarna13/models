@@ -212,24 +212,24 @@ test('deployment-only catalogs resolve inherited builds and keep the selected pa
 });
 
 
-test('only a profile showing the catalog build keeps its measurement keys', () => {
-  const measurements = {int8: {performance: 'performance-key', accuracy: 'accuracy-key'}};
-  const [model] = branchModels([resnet], [], [{...catalog[0], measurements}]);
-  assert.deepEqual(model.measurements, measurements);
-  // The keys name the catalog build's MPKs, so a newer build compiled on the branch has none.
+test('only a profile showing the catalog build keeps its benchmark fingerprints', () => {
+  const benchmark_fingerprints = {int8: {performance: 'performance-fingerprint', accuracy: 'accuracy-fingerprint'}};
+  const [model] = branchModels([resnet], [], [{...catalog[0], benchmark_fingerprints}]);
+  assert.deepEqual(model.benchmark_fingerprints, benchmark_fingerprints);
+  // The fingerprints name the catalog build's MPKs, so a newer build compiled on the branch has none.
   const branchResnet = run('resnet-feature', 'resnet_50', feature, '2026-10-02T00:00:00Z');
-  const [rebuilt] = branchModels([branchResnet, resnet], [], [{...catalog[0], measurements}]);
+  const [rebuilt] = branchModels([branchResnet, resnet], [], [{...catalog[0], benchmark_fingerprints}]);
   assert.equal(rebuilt.builds[0].run_id, branchResnet.id);
-  assert.deepEqual(rebuilt.measurements, {});
+  assert.deepEqual(rebuilt.benchmark_fingerprints, {});
 });
 
 for (const field of ['branch_deployments', 'approved_deployments']) {
-  test(`${field} keep the measurement keys of the selected build's profile`, () => {
+  test(`${field} keep the benchmark fingerprints of the selected build's profile`, () => {
     const selection = {artifacts: [{run_id: resnet.id, component_id: 'model', artifact_name: 'mpk'}]};
-    const measurements = {int8: {performance: 'performance-key'}};
-    const definition = {model_id: 'resnet_50', builds: [], measurements, [field]: {int8: selection}};
+    const benchmark_fingerprints = {int8: {performance: 'performance-fingerprint'}};
+    const definition = {model_id: 'resnet_50', builds: [], benchmark_fingerprints, [field]: {int8: selection}};
     const [model] = branchModels([resnet], [], [definition]);
     assert.equal(model.builds[0].run_id, resnet.id);
-    assert.deepEqual(model.measurements, measurements);
+    assert.deepEqual(model.benchmark_fingerprints, benchmark_fingerprints);
   });
 }

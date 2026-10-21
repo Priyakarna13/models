@@ -93,7 +93,7 @@ compilation:
 
 The recipe is `scripts/compile.py` for `onnx` and `scripts/compile.sh` for
 `huggingface`. A single-component model produces one component, `model`. A
-recipe that splits the source into several MPKs lists them in run order:
+multi-component model lists its components in run order:
 
 ```yaml
 compilation:
@@ -284,7 +284,7 @@ customers can copy and run with PyNeat; YAML does not duplicate them.
 See [Accuracy and fidelity](local-accuracy-development.md) and [DevKit
 performance](benchmarking.md) for the scripts and reports, and [what a change
 reruns](adding-a-model.md#9-know-what-a-change-reruns) for how each section
-feeds the stage keys.
+feeds the fingerprints.
 
 ### `qualification_evidence`
 
@@ -321,7 +321,7 @@ names `accuracy.py` reports, and every value is a ratio from 0 to 1. Record
 only numbers the source prints, not values derived from them. Two entries may
 not give the same metric for the same dataset. A reference score appears
 beside a measured one only when both name the same dataset `id`. The field
-feeds no stage key, so editing it reruns nothing.
+feeds no fingerprint, so editing it reruns nothing.
 
 ## Validation
 

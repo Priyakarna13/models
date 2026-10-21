@@ -141,7 +141,7 @@ const RAILS = {
   power_rail_platform_1v8_watts: ["SoM platform (1.8 V)", "Supplies other SoM circuits.", "color-mix(in srgb, var(--blue) 50%, var(--surface-raised))"],
   power_rail_platform_3v3_watts: ["SoM platform (3.3 V)", "Supplies other SoM circuits.", "color-mix(in srgb, var(--green) 50%, var(--surface-raised))"],
 };
-// Benchmark details: one row per reading, with its label, its metrics, and a short explanation shown
+// Performance details: one row per reading, with its label, its metrics, and a short explanation shown
 // behind an (i) mark, one line per value when a row has several. A row names a rail when its colour should match that rail in the power bar,
 // and a depth when it is part of the row above it.
 const DETAIL_CARDS = [
@@ -286,31 +286,31 @@ function telemetryText(telemetry) {
   return `Sentinel ${telemetry.sentinelVersion} · ${telemetry.samples} samples${interval}`;
 }
 
-function benchmarkDetails(benchmark, run) {
-  const { measurements } = benchmark;
+function performanceDetails(performance, run) {
+  const { measurements } = performance;
   const additions = {
-    cpu: { note: benchmark.cpuCores.length > 0 && `${benchmark.cpuCores.length} cores`, extra: coreLoad(benchmark.cpuCores) },
+    cpu: { note: performance.cpuCores.length > 0 && `${performance.cpuCores.length} cores`, extra: coreLoad(performance.cpuCores) },
     power: { lead: railSplit(measurements) },
   };
   const cards = DETAIL_CARDS.map((card) => detailCard(measurements, card, additions[card[0]])).filter(Boolean);
   const otherRows = Object.keys(measurements).filter((key) => !PLACED_METRICS.has(key)).sort()
     .map((key) => measuredValue(key, measurements[key])).filter(Boolean).map(metricRow);
   if (otherRows.length) {
-    cards.push({ id: "other", title: "Other", markup: `<div class="detail-card"><h4><i aria-hidden="true">${icons.benchmark}</i>Other measurements</h4><dl>${otherRows.join("")}</dl></div>` });
+    cards.push({ id: "other", title: "Other", markup: `<div class="detail-card"><h4><i aria-hidden="true">${icons.performance}</i>Other measurements</h4><dl>${otherRows.join("")}</dl></div>` });
   }
   const column = (right) => `<div class="detail-column">${cards
     .filter((card) => RIGHT_COLUMN_CARDS.has(card.id) === right)
     .map((card) => card.markup).join("")}</div>`;
   const provenance = [
-    ["Telemetry", telemetryText(benchmark.telemetry)],
-    ["Runtime", benchmark.tool],
+    ["Telemetry", telemetryText(performance.telemetry)],
+    ["Runtime", performance.tool],
   ].filter(([, text]) => text).map(([term, text]) => `<div><dt>${term}</dt><dd>${escapeHtml(text)}</dd></div>`).join("");
-  const raw = `<button class="benchmark-action" type="button" data-download="model-report" data-run-id="${escapeHtml(run.id)}">${icons.download}Raw result</button>`;
-  const csv = `<a class="benchmark-action" href="${escapeHtml(csvDataUrl(benchmarkCsv(benchmark)))}" download="${escapeHtml(csvFileName(benchmark))}">${icons.download}Download CSV</a>`;
+  const raw = `<button class="performance-action" type="button" data-download="model-report" data-run-id="${escapeHtml(run.id)}">${icons.download}Raw result</button>`;
+  const csv = `<a class="performance-action" href="${escapeHtml(csvDataUrl(performanceCsv(performance)))}" download="${escapeHtml(csvFileName(performance))}">${icons.download}Download CSV</a>`;
   return {
     titles: cards.map((card) => card.title),
     markup: `<div class="detail-cards">${column(false)}${column(true)}</div>
-    <footer class="benchmark-footer"><dl class="benchmark-provenance">${provenance}</dl><div class="benchmark-actions">${raw}${csv}</div></footer>`,
+    <footer class="performance-footer"><dl class="performance-provenance">${provenance}</dl><div class="performance-actions">${raw}${csv}</div></footer>`,
   };
 }
 
@@ -318,19 +318,19 @@ function benchmarkDetails(benchmark, run) {
 // metrics, every SoM rail, every CPU core, the remaining measurements, and the MLA layers of each component.
 const CSV_EXTRA_METRICS = { power: ["energy_per_inference_joules"] };
 
-function benchmarkCsv(benchmark) {
+function performanceCsv(performance) {
   const rows = [["Section", "Metric", "Value", "Unit", "Key", "Note"]];
   const add = (section, metric, value, unit = "", key = "", note = "") => rows.push([section, metric, value ?? "", unit, key, note]);
-  const telemetry = benchmark.telemetry;
+  const telemetry = performance.telemetry;
   const seconds = (milliseconds) => Number.isFinite(milliseconds) && (milliseconds / 1000).toFixed(1);
   [
-    ["Model", benchmark.modelId], ["Build", benchmark.buildProfileId], ["Workload", benchmark.workload],
-    ["CPU cores", benchmark.cpuCores.length], ["Measured", benchmark.timestamp], ["Board telemetry", telemetry?.status],
+    ["Model", performance.modelId], ["Build", performance.buildProfileId], ["Workload", performance.workload],
+    ["CPU cores", performance.cpuCores.length], ["Measured", performance.timestamp], ["Board telemetry", telemetry?.status],
     ["Sentinel", telemetry?.sentinelVersion], ["Telemetry samples", telemetry?.samples],
-    ["Telemetry interval", seconds(telemetry?.intervalMs), "s"], ["Runtime", benchmark.tool],
+    ["Telemetry interval", seconds(telemetry?.intervalMs), "s"], ["Runtime", performance.tool],
   ].filter(([, value]) => value || value === 0).forEach(([name, value, unit]) => add("Context", name, value, unit));
   const metric = (section, key) => {
-    const shown = measuredValue(key, benchmark.measurements[key]);
+    const shown = measuredValue(key, performance.measurements[key]);
     if (shown) add(section, shown.label, shown.text, shown.unit, key);
   };
   const placed = new Set();
@@ -338,17 +338,17 @@ function benchmarkCsv(benchmark) {
     [...cardRows.flatMap(([, keys]) => (Array.isArray(keys) ? keys : [])), ...(CSV_EXTRA_METRICS[id] || [])]
       .forEach((key) => { placed.add(key); metric(title, key); });
   });
-  namedRails(benchmark.measurements).forEach((rail) => {
+  namedRails(performance.measurements).forEach((rail) => {
     add("Power rails", `${rail.name}, average`, rail.mean.toFixed(2), "W", rail.key);
     if (Number.isFinite(rail.maximum)) add("Power rails", `${rail.name}, peak`, rail.maximum.toFixed(2), "W", rail.key);
   });
-  benchmark.cpuCores.forEach((core, index) => {
+  performance.cpuCores.forEach((core, index) => {
     add("CPU cores", `Core ${index}, average`, core.mean.toFixed(1), "%");
     if (Number.isFinite(core.maximum)) add("CPU cores", `Core ${index}, peak`, core.maximum.toFixed(1), "%");
   });
-  Object.keys(benchmark.measurements).filter((key) => !placed.has(key)).sort().forEach((key) => metric("Other", key));
-  const named = benchmark.components.length > 1;
-  benchmark.components.forEach(({ id, layerAnalysis }) => {
+  Object.keys(performance.measurements).filter((key) => !placed.has(key)).sort().forEach((key) => metric("Other", key));
+  const named = performance.components.length > 1;
+  performance.components.forEach(({ id, layerAnalysis }) => {
     layerAnalysis?.layers.forEach((layer) => add(
       named ? `${humanize(id)} MLA layers` : "MLA layers", layer.name, layer.timeUs, "µs",
       `stage:${layer.stage}/layer:${layer.order}`, "Separate profiling pass; compiler order",
@@ -363,15 +363,15 @@ function csvDataUrl(csv) {
   return `data:text/csv;charset=utf-8,${encodeURIComponent(`\uFEFF${csv}\r\n`)}`;
 }
 
-function csvFileName(benchmark) {
-  const name = [benchmark.modelId, benchmark.buildProfileId].filter(Boolean).join("-") || "model";
-  return `${name.replace(/[^A-Za-z0-9._-]+/g, "_")}-benchmark.csv`;
+function csvFileName(performance) {
+  const name = [performance.modelId, performance.buildProfileId].filter(Boolean).join("-") || "model";
+  return `${name.replace(/[^A-Za-z0-9._-]+/g, "_")}-performance.csv`;
 }
 
-function benchmarkContext(benchmark) {
+function performanceContext(performance) {
   return [
-    benchmark.workload,
-    benchmark.timestamp && `Measured ${formatDate(benchmark.timestamp, false)}`,
+    performance.workload,
+    performance.timestamp && `Measured ${formatDate(performance.timestamp, false)}`,
   ].filter(Boolean).join(" · ");
 }
 
@@ -569,13 +569,13 @@ export function highlightLayerLegend(event) {
   });
 }
 
-// The KPI tiles, the context line, and Benchmark details of one benchmark result.
-function benchmarkSummary(benchmark, run, modelId) {
-  const tiles = KPI_METRICS.map((key) => kpiTile(key, benchmark.measurements[key])).join("");
-  const details = benchmarkDetails(benchmark, run);
+// The KPI tiles, the context line, and Performance details of one performance result.
+function performanceSummary(performance, run, modelId) {
+  const tiles = KPI_METRICS.map((key) => kpiTile(key, performance.measurements[key])).join("");
+  const details = performanceDetails(performance, run);
   return `${tiles ? `<div class="kpis">${tiles}</div>` : ""}
-    <p class="benchmark-context">${escapeHtml(benchmarkContext(benchmark))}${measurementSource(run, modelId)}</p>
-    ${disclosure(`benchmark:${run.id}`, "Benchmark details", details.markup, details.titles.join(" · "))}`;
+    <p class="performance-context">${escapeHtml(performanceContext(performance))}${measurementSource(run, modelId)}</p>
+    ${disclosure(`performance:${run.id}`, "Performance details", details.markup, details.titles.join(" · "))}`;
 }
 
 // Component and role ids read as words: "feature_extractor" becomes "Feature extractor".
@@ -602,14 +602,14 @@ function pipelineStrip(pipeline) {
 }
 
 // The build profile's numbers for the whole model, with each component's layer analysis and execution graph.
-function modelPerformance(measurement, modelId) {
-  const result = readPerformance(measurement);
+function modelPerformance(benchmarkRun, modelId) {
+  const result = readPerformance(benchmarkRun);
   if (result.kind === "missing") return `<p class="muted-message">Not measured at this revision.</p>`;
   if (result.kind === "unsupported") return `<p class="muted-message">This result format is not supported by this browser.</p>`;
-  const { run } = measurement;
+  const { run } = benchmarkRun;
   const components = result.value.components.map((component) => ({ ...component, label: humanize(component.id) }));
   return `<div class="component-performance">
-    ${benchmarkSummary(result.value, run, modelId)}
+    ${performanceSummary(result.value, run, modelId)}
     ${layerAnalysisSection(components.map(({ label, layerAnalysis }) => ({ label, analysis: layerAnalysis })), run.id)}
     ${executionGraphSection(components.map(({ id, label, executionGraph }) => ({ id: `${run.id}:${id}`, label, graph: executionGraph })), run.id)}
   </div>`;
@@ -706,7 +706,7 @@ function accuracyMetricTable(metrics, scores) {
     `<tr><th scope="row">${escapeHtml(accuracyMetricLabel(name))}</th><td>${escapeHtml(percentage(value))}</td><td>${escapeHtml(percentage(scores[name]))}</td></tr>`
   )).join("");
   if (!rows) return "";
-  return `<div class="benchmark-measurements"><h4>Additional metrics</h4><div class="benchmark-measurements-wrap"><table><thead><tr><th scope="col">Metric</th><th scope="col">Value</th><th scope="col">Published</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  return `<div class="metric-table"><h4>Additional metrics</h4><div class="metric-table-wrap"><table><thead><tr><th scope="col">Metric</th><th scope="col">Value</th><th scope="col">Published</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 // Conditions are written as a phrase, such as "640x640, FP32"; notes may already end a sentence.
@@ -723,9 +723,9 @@ function referenceTables(reference) {
     )).join("");
     const source = trustedHttpsUrl(entry.source);
     const link = source ? ` <a class="measurement-link" href="${escapeHtml(source.href)}" target="_blank" rel="noreferrer">Source${icons.external}</a>` : "";
-    return `<div class="benchmark-measurements published-scores"><h4>${escapeHtml(`${entry.dataset?.id || ""} ${entry.dataset?.split || ""}`.trim())}</h4>
+    return `<div class="metric-table published-scores"><h4>${escapeHtml(`${entry.dataset?.id || ""} ${entry.dataset?.split || ""}`.trim())}</h4>
       <p class="disclosure-text">${escapeHtml(sentence(entry.conditions))}${entry.note ? ` ${escapeHtml(sentence(entry.note))}` : ""}${link}</p>
-      <div class="benchmark-measurements-wrap"><table><thead><tr><th scope="col">Metric</th><th scope="col">Published</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      <div class="metric-table-wrap"><table><thead><tr><th scope="col">Metric</th><th scope="col">Published</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   }).join("");
 }
 
@@ -774,13 +774,13 @@ function fidelityPanel(tests, runId) {
   const report = result?.summary;
   if (!report) return "";
   const metrics = (report.metrics || []).map((metric) => `
-    <div class="benchmark-metric"><span>${escapeHtml(metric.name)} · Cosine similarity</span><strong>${Number(metric.cosine_similarity).toFixed(4)}</strong></div>
-    <div class="benchmark-metric"><span>${escapeHtml(metric.name)} · Normalized RMSE</span><strong>${Number(metric.normalized_rmse).toFixed(4)}</strong></div>
+    <div class="fidelity-metric"><span>${escapeHtml(metric.name)} · Cosine similarity</span><strong>${Number(metric.cosine_similarity).toFixed(4)}</strong></div>
+    <div class="fidelity-metric"><span>${escapeHtml(metric.name)} · Normalized RMSE</span><strong>${Number(metric.normalized_rmse).toFixed(4)}</strong></div>
   `).join("");
   return `<div class="fidelity-panel">
     <div class="group-title"><h4>Numerical fidelity</h4><button class="action-button" type="button" data-download="numerical-fidelity" data-run-id="${escapeHtml(runId)}">${icons.download}<span>Download JSON</span></button></div>
     <p class="fidelity-scope">${escapeHtml(report.status)} · ${Number(report.samples).toLocaleString()} samples · ${escapeHtml(report.dataset?.id || "Dataset unavailable")} ${escapeHtml(report.dataset?.variant || "")}</p>
-    <div class="benchmark-summary">${metrics}</div>
+    <div class="fidelity-metrics">${metrics}</div>
     <dl class="key-grid">${keyValue("Reference", report.reference)}${keyValue("Candidate", report.candidate)}</dl>
     <p class="muted-message">Output similarity, not task accuracy. Output reordering can affect these metrics.</p>
   </div>`;

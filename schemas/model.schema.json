@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.neat.sima.ai/model-registry/model.schema.json",
   "title": "SiMa Neat Model Registry model.yaml",
-  "description": "What a model is and what its build and measurement stages must produce. Each build profile compiles every component in one compile.py call; scripts/performance.py and scripts/accuracy.py measure the whole model.",
+  "description": "What a model is and what its compile stage and benchmarks must produce. Each build profile compiles every component in one compile.py call; scripts/performance.py and scripts/accuracy.py measure the whole model.",
   "type": "object",
   "additionalProperties": false,
   "required": [

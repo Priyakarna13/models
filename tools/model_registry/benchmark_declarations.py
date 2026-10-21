@@ -1,4 +1,4 @@
-"""A model's whole-model measurements: what scripts/performance.py and scripts/accuracy.py must report, and for
+"""A model's benchmark declarations: what scripts/performance.py and scripts/accuracy.py must report, and for
 which build profiles, plus the reference scores its authors published."""
 
 from __future__ import annotations
@@ -10,22 +10,22 @@ from model_report import METRICS
 
 from .errors import ValidationError
 
-MEASUREMENT_STAGES = ("performance", "accuracy")
+BENCHMARK_STAGES = ("performance", "accuracy")
 SCRIPTS = {"performance": "scripts/performance.py", "accuracy": "scripts/accuracy.py"}
 ACCURACY_REQUIREMENTS = "scripts/requirements-accuracy.txt"
 
 
-def measured_profiles(model: dict[str, Any], stage: str) -> list[str]:
-    """The build profiles the stage measures, in model.yaml order."""
+def benchmarked_profiles(model: dict[str, Any], stage: str) -> list[str]:
+    """The build profiles the stage benchmarks, in model.yaml order."""
     declaration = model.get(stage)
     if declaration is None:
         return []
     return declaration.get("build_profiles", [profile["id"] for profile in model["build_profiles"]])
 
 
-def validate_measurements(model: dict[str, Any], directory: Path) -> None:
+def validate_benchmark_declarations(model: dict[str, Any], directory: Path) -> None:
     profiles = [profile["id"] for profile in model["build_profiles"]]
-    for stage in MEASUREMENT_STAGES:
+    for stage in BENCHMARK_STAGES:
         declaration = model.get(stage)
         if declaration is None:
             continue

@@ -1,7 +1,7 @@
-"""Stage keys: what a compile, a DevKit performance run, or a DevKit accuracy run depends on.
+"""Fingerprints: what a compile, a performance benchmark, or an accuracy benchmark depends on.
 
-A key hashes everything a stage's result depends on. Each published run carries its key as the run
-fingerprint, so a registry run with the same key means that stage need not run again.
+A fingerprint hashes everything a stage's result depends on. Each published run carries its fingerprint as
+the run fingerprint, so a registry run with the same fingerprint means that stage need not run again.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .benchmark_declarations import ACCURACY_REQUIREMENTS, SCRIPTS
 from .dependencies import resolve_benchmark_runtime
 from .errors import ValidationError
-from .measurement import ACCURACY_REQUIREMENTS, SCRIPTS
 from .model import CONVERSION_FILES, SCRIPTS_DIR, compile_invocations_for, load_and_validate_model
 from .source import source_identity
 
@@ -32,13 +32,13 @@ COMPILE_TOOLING = ("scripts/run_model_compilation.sh", "tools/model_registry/mod
 
 _IGNORED_BUILD_PARTS = {".git", "__pycache__"}
 _IGNORED_BUILD_SUFFIXES = {".pyc", ".pyo"}
-# Conversion produces the pinned source, and the board stages consume the MPK; none changes compilation.
+# Conversion produces the pinned source, and the benchmarks consume the MPK; none changes compilation.
 NON_COMPILE_SCRIPTS = {*SCRIPTS.values(), *CONVERSION_FILES}
 
-# Each DevKit stage's registry run type and fingerprint version. Vulcan stores a run's fingerprint version
+# Each benchmark stage's registry run type and fingerprint version. Vulcan stores a run's fingerprint version
 # from its environment and resolves version 1 by default.
-MEASUREMENT_RUNS = {"performance": ("model_benchmark", 3), "accuracy": ("model_accuracy", 2)}
-# The workflow runs the board stage, model_report writes its report, and report_publication checks and publishes it.
+BENCHMARK_RUN_TYPES = {"performance": ("model_performance", 3), "accuracy": ("model_accuracy", 2)}
+# The workflow runs the benchmark, model_report writes its report, and report_publication checks and publishes it.
 BOARD_STAGE_TOOLING = (
     ".github/workflows/vulcan-model-benchmarking.yml",
     "tools/model_report/__init__.py",
@@ -65,7 +65,7 @@ def _hash_files(digest: Any, root: Path, paths: set[Path] | list[Path]) -> None:
         digest.update(payload)
 
 
-def _key(identity: dict[str, Any]) -> str:
+def _fingerprint(identity: dict[str, Any]) -> str:
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return hashlib.sha256(payload).hexdigest()
 
@@ -148,7 +148,7 @@ def _binding_compile_projection(
     }
 
 
-def compile_key(
+def compile_fingerprint(
     repository: str | Path,
     model_id: str,
     profile_id: str,
@@ -174,7 +174,7 @@ def compile_key(
     bindings = {item["id"]: item for item in profile["components"]}
     if any(components[item]["interface"]["format"] == "huggingface" for item in invocation["components"]):
         # LLiMa recipes orchestrate a pinned compiler; graph options belong in parameters.
-        return _key({
+        return _fingerprint({
             "compiler_version": compiler,
             "target": profile["target"],
             "components": [
@@ -211,18 +211,19 @@ def compile_key(
     return digest.hexdigest()
 
 
-def measurement_key(
+def benchmark_fingerprint(
     repository: str | Path,
     model: dict[str, Any],
     build_profile_id: str,
     builds: dict[str, dict[str, Any]],
     stage: str,
 ) -> str:
-    """Identity of a build profile's whole-model measurement on a DevKit.
+    """Identity of a build profile's whole-model benchmark on a DevKit.
 
-    ``builds`` maps each component ID to its compile ``run_id`` and ``artifact_sha256``; the key covers the
-    build of every component, the stage's declaration, the model's script, and the shared tooling. The
-    declaration's ``build_profiles`` list is left out, so measuring another profile keeps this one's key.
+    ``builds`` maps each component ID to its compile ``run_id`` and ``artifact_sha256``; the fingerprint covers
+    the build of every component, the stage's declaration, the model's script, and the shared tooling. The
+    declaration's ``build_profiles`` list is left out, so benchmarking another profile keeps this one's
+    fingerprint.
     """
     root = Path(repository).expanduser().resolve()
     model_id = str(model["id"])
@@ -235,7 +236,7 @@ def measurement_key(
     model_dir = f"models/{model_id}"
     required = [f"{model_dir}/{SCRIPTS[stage]}", *(PERFORMANCE_TOOLING if stage == "performance" else ACCURACY_TOOLING)]
     optional = [f"{model_dir}/{ACCURACY_REQUIREMENTS}"] if stage == "accuracy" else []
-    return _key({
+    return _fingerprint({
         "stage": stage,
         "model_id": model_id,
         "build_profile_id": build_profile_id,

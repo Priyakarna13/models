@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start Vulcan Model Benchmarking for each build and print one line per build with its run link.
 #
-# Usage: start_devkit_stages.sh <builds_json> [source_run_id]
+# Usage: start_benchmarks.sh <builds_json> [source_run_id]
 #
 # <builds_json> is one plan entry or a matrix ({"include": [...]}); each entry names model_id,
 # build_profile_id, compile_invocation_id, and stages. A source run ID names

@@ -27,10 +27,10 @@ from .dependencies import resolve_model_compiler
 from .documentation import load_model_documentation
 from .errors import ModelRegistryError, ValidationError
 from .fetch import sha256_file
+from .fingerprints import benchmark_fingerprint, compile_fingerprint
 from .model import compile_invocations_for, load_and_validate_model, load_models, mpk_filename
 from .package import FIDELITY_FILE
 from .source import source_identity
-from .stage_keys import compile_key, measurement_key
 from .stage_plan import merge_catalog_sources, read_catalog_sources, read_current_catalog
 from .taxonomy import (
     TAXONOMY_RELATIVE_PATH,
@@ -409,12 +409,12 @@ def build_catalog_snapshot(
     selected_profiles = {(model_id, profile_id) for model_id, profile_id, _ in selected_invocations}
     previous_builds: dict[tuple[str, str, str], JsonObject] = {}
     previous_packages: dict[tuple[str, str, str], JsonObject] = {}
-    previous_measurements: dict[tuple[str, str], JsonObject] = {}
+    previous_benchmark_fingerprints: dict[tuple[str, str], JsonObject] = {}
     for model in (previous or {}).get("models", []):
         if not isinstance(model, dict) or not isinstance(model.get("id"), str):
             continue
-        for profile_id, keys in (model.get("measurements") or {}).items():
-            previous_measurements[(model["id"], profile_id)] = keys
+        for profile_id, fingerprints in (model.get("benchmark_fingerprints") or {}).items():
+            previous_benchmark_fingerprints[(model["id"], profile_id)] = fingerprints
         for build in model.get("builds", []):
             if not isinstance(build, dict):
                 continue
@@ -430,18 +430,18 @@ def build_catalog_snapshot(
     expected_keys: set[tuple[str, str, str]] = set()
     builds_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in models}
     packages_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in models}
-    measurements_by_model: dict[str, dict[str, JsonObject]] = {model_id: {} for model_id in models}
+    benchmark_fingerprints_by_model: dict[str, dict[str, JsonObject]] = {model_id: {} for model_id in models}
     pending_builds: list[JsonObject] = []
 
     def carry_forward(keys: list[tuple[str, str, str]]) -> None:
-        """Keep a profile's prior builds and their measurement keys visible."""
+        """Keep a profile's prior builds and their benchmark fingerprints visible."""
         for key in keys:
             prior = previous_builds.get(key)
             if prior is not None:
                 builds_by_model[key[0]].append(prior)
-        measurements = previous_measurements.get(keys[0][:2])
-        if measurements is not None and any(key in previous_builds for key in keys):
-            measurements_by_model[keys[0][0]][keys[0][1]] = measurements
+        fingerprints = previous_benchmark_fingerprints.get(keys[0][:2])
+        if fingerprints is not None and any(key in previous_builds for key in keys):
+            benchmark_fingerprints_by_model[keys[0][0]][keys[0][1]] = fingerprints
 
     for invocation in matrix:
         keys = [
@@ -464,7 +464,7 @@ def build_catalog_snapshot(
                 f"{invocation['compile_invocation_id']}"
             )
         requires_pending = not any(invocation_receipts) and any(
-            previous_builds.get(key, {}).get("compile_fingerprint") != invocation["build_fingerprint"]
+            previous_builds.get(key, {}).get("compile_fingerprint") != invocation["compile_fingerprint"]
             for key in keys
         )
         if requires_pending:
@@ -472,7 +472,7 @@ def build_catalog_snapshot(
                 model_id, profile_id, component_id = keys[0]
                 raise ValidationError(
                     f"no immutable compile run matches {model_id}/{profile_id}/{component_id} "
-                    f"fingerprint {invocation['build_fingerprint']}"
+                    f"fingerprint {invocation['compile_fingerprint']}"
                 )
             pending_builds.append(
                 {
@@ -480,7 +480,7 @@ def build_catalog_snapshot(
                     "build_profile_id": invocation["build_profile_id"],
                     "compile_invocation_id": invocation["compile_invocation_id"],
                     "component_ids": invocation["component_ids"],
-                    "compile_fingerprint": invocation["build_fingerprint"],
+                    "compile_fingerprint": invocation["compile_fingerprint"],
                 }
             )
             # Preserve prior, verified builds while the replacement invocation
@@ -494,7 +494,7 @@ def build_catalog_snapshot(
             key = (invocation["model_id"], invocation["build_profile_id"], component_id)
             receipt = receipts.get(key)
             prior = previous_builds.get(key)
-            if receipt is not None and receipt.get("compile_fingerprint") != invocation["build_fingerprint"]:
+            if receipt is not None and receipt.get("compile_fingerprint") != invocation["compile_fingerprint"]:
                 raise ValidationError(
                     f"publication receipt fingerprint does not match {key[0]}/{key[1]}/{key[2]}"
                 )
@@ -503,14 +503,14 @@ def build_catalog_snapshot(
             if (
                 run_id is None
                 and prior is not None
-                and prior.get("compile_fingerprint") == invocation["build_fingerprint"]
+                and prior.get("compile_fingerprint") == invocation["compile_fingerprint"]
             ):
                 run_id = prior.get("run_id")
                 artifact_sha256 = prior.get("artifact_sha256")
             if not isinstance(run_id, str) or not run_id:
                 raise ValidationError(
                     f"no immutable compile run matches {key[0]}/{key[1]}/{key[2]} "
-                    f"fingerprint {invocation['build_fingerprint']}"
+                    f"fingerprint {invocation['compile_fingerprint']}"
                 )
             if not isinstance(artifact_sha256, str) or len(artifact_sha256) != 64:
                 raise ValidationError(
@@ -521,19 +521,19 @@ def build_catalog_snapshot(
                     "build_profile_id": key[1],
                     "compile_invocation_id": invocation["compile_invocation_id"],
                     "component_id": key[2],
-                    "compile_fingerprint": invocation["build_fingerprint"],
+                    "compile_fingerprint": invocation["compile_fingerprint"],
                     "artifact_sha256": artifact_sha256,
                     "run_id": run_id,
                 }
             )
         by_component = {build["component_id"]: build for build in invocation_builds}
-        # Each stage key names the profile's whole-model run over every component build.
-        measurements = {
-            stage: measurement_key(root, model, invocation["build_profile_id"], by_component, stage)
+        # Each benchmark fingerprint names the profile's whole-model run over every component build.
+        fingerprints = {
+            stage: benchmark_fingerprint(root, model, invocation["build_profile_id"], by_component, stage)
             for stage in invocation["stages"]
         }
-        if measurements:
-            measurements_by_model[invocation["model_id"]][invocation["build_profile_id"]] = measurements
+        if fingerprints:
+            benchmark_fingerprints_by_model[invocation["model_id"]][invocation["build_profile_id"]] = fingerprints
         builds_by_model[invocation["model_id"]].extend(invocation_builds)
     unexpected = sorted(set(receipts) - expected_keys)
     if unexpected:
@@ -601,8 +601,8 @@ def build_catalog_snapshot(
                 packages_by_model[model_id], key=lambda item: (item["build_profile_id"], item["package_id"])
             ),
         }
-        if measurements_by_model[model_id]:
-            entry["measurements"] = dict(sorted(measurements_by_model[model_id].items()))
+        if benchmark_fingerprints_by_model[model_id]:
+            entry["benchmark_fingerprints"] = dict(sorted(benchmark_fingerprints_by_model[model_id].items()))
         if model.get("build-on-demand", False):
             entry["build_on_demand"] = True
             components = {item["id"]: item for item in model["components"]}
@@ -621,7 +621,7 @@ def build_catalog_snapshot(
                     "version": 1, "compiler_version": resolve_model_compiler(root)["version"],
                     "invocations": [
                         {"id": item["compile_invocation_id"], "component_ids": sorted(item["component_ids"]),
-                         "compile_fingerprint": item["build_fingerprint"]}
+                         "compile_fingerprint": item["compile_fingerprint"]}
                         for item in matrix if item["model_id"] == model_id
                         and item["build_profile_id"] == profile["id"]
                     ],
@@ -1102,7 +1102,7 @@ def stage_catalog_build(
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    # A measurement runs under the profile's package run, as after a fresh build's publish-package.
+    # A benchmark runs under the profile's package run, as after a fresh build's publish-package.
     for package in catalog_model.get("packages", []):
         if isinstance(package, dict) and (package.get("build_profile_id"), package.get("package_id")) == (
             build_profile_id, "default"
@@ -1419,12 +1419,12 @@ def _preflight_compilations(
         source_sha = _require_sha256(provenance.get("source_sha256"), "source_sha256")
         if source_sha != source_identity(component["source"]):
             raise ValidationError(f"{result_path}: source_sha256 does not match the component source contract")
-        build_fingerprint = _require_sha256(provenance.get("build_fingerprint"), "build_fingerprint")
-        expected_build_fingerprint = compile_key(
+        recorded_fingerprint = _require_sha256(provenance.get("compile_fingerprint"), "compile_fingerprint")
+        expected_fingerprint = compile_fingerprint(
             root, model_id, build_profile_id, invocation_by_result[result_path], compiler_identity
         )
-        if build_fingerprint != expected_build_fingerprint:
-            raise ValidationError(f"{result_path}: build_fingerprint does not match semantic compile inputs")
+        if recorded_fingerprint != expected_fingerprint:
+            raise ValidationError(f"{result_path}: compile_fingerprint does not match semantic compile inputs")
         prepared.append(
             {
                 "result_path": result_path,
@@ -1446,7 +1446,7 @@ def _preflight_compilations(
                 "llima_version": provenance.get("llima_version"),
                 "target": target,
                 "source_sha": source_sha,
-                "build_fingerprint": build_fingerprint,
+                "compile_fingerprint": recorded_fingerprint,
             }
         )
     return prepared
@@ -1513,7 +1513,6 @@ def publish_compilations(
         compiler_label = compilation["compiler_label"]
         target = compilation["target"]
         source_sha = compilation["source_sha"]
-        build_fingerprint = compilation["build_fingerprint"]
         parameters = {
             "schema_version": 2,
             "model_id": model_id,
@@ -1524,7 +1523,8 @@ def publish_compilations(
             "compiler_version": compiler_version,
             "compiler_label": compiler_label,
             "source_sha256": source_sha,
-            "build_fingerprint": build_fingerprint,
+            # Vulcan promotion reads the compile fingerprint under this parameter name.
+            "build_fingerprint": compilation["compile_fingerprint"],
             "recipe": component["recipe"],
             "compile_parameters": binding.get("parameters", {}),
             **({"compiled_parameters": compilation["compiled_parameters"]} if native else {}),
@@ -1688,7 +1688,7 @@ def publish_compilations(
                 "build_profile_id": build_profile_id,
                 "component_id": component_id,
                 "run_id": run_id,
-                "compile_fingerprint": build_fingerprint,
+                "compile_fingerprint": compilation["compile_fingerprint"],
                 "artifact_sha256": artifact_sha,
                 "s3_key": stored.key,
             }
@@ -1701,7 +1701,7 @@ def publish_compilations(
 
 
 def _package_media_type(archive_name: str) -> str | None:
-    """Return the media type of a lone-MPK or ZIP package, or None for any other file."""
+    """Return the media type of a single-component model's MPK package or a ZIP package, or None otherwise."""
     if archive_name.endswith("_mpk.tar.gz"):
         return "application/gzip"
     if archive_name.endswith(".zip"):

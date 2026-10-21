@@ -234,31 +234,32 @@ models](benchmarking.md#multi-component-models).
 
 ## 9. Know what a change reruns
 
-Each stage has a stage key, a SHA-256 of everything its result depends on. CI
-compiles a build only when neither the branch's catalog nor, on a feature
-branch, a base branch's catalog records a build with its current compile key.
-It runs a DevKit stage only when no completed registry run carries that stage's
-current key. Models with `build-on-demand: true` compile only when a manual
-dispatch selects them, and their builds are not measured; see [on-demand
+Each stage has a fingerprint, a SHA-256 of every input that decides its result.
+CI compiles a build only when neither the branch's catalog nor, on a feature
+branch, a base branch's catalog records a build with its current compile
+fingerprint. It runs a benchmark (the performance or accuracy stage) only when
+no completed registry run carries its current benchmark fingerprint. Models
+with `build-on-demand: true` compile only when a manual dispatch selects them,
+and their builds are not benchmarked; see [on-demand
 builds](#on-demand-builds).
 
-| Stage | Key inputs |
+| Stage | Fingerprint inputs |
 | --- | --- |
 | compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, declared training code, the Model Compiler version, `scripts/run_model_compilation.sh`, and the shared model loader |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
-| performance | the compile run and MPK digest of every component, the `performance` declaration, the model's `performance.py`, the shared board-stage tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
-| accuracy | the compile run and MPK digest of every component, the `accuracy` declaration with its dataset pin, `accuracy.py` and `requirements-accuracy.txt`, the shared board-stage tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
+| performance | the compile run and MPK digest of every component, the `performance` declaration, the model's `performance.py`, the shared benchmark tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
+| accuracy | the compile run and MPK digest of every component, the `accuracy` declaration with its dataset pin, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
 
 ONNX compile code includes every `.py` and `.sh` under `scripts/` except
 `performance.py`, `accuracy.py`, `convert.py` and `requirements-convert.txt`.
-The shared model loader is an input to every ONNX compile key; descriptive
-preprocessing and surgery declarations are not. The shared board-stage tooling
-is `BOARD_STAGE_TOOLING`: the benchmarking workflow, `tools/model_report`
+The shared model loader is an input to every ONNX compile fingerprint;
+descriptive preprocessing and surgery declarations are not. The shared
+benchmark tooling is `BOARD_STAGE_TOOLING`: the benchmarking workflow, `tools/model_report`
 (`__init__.py` and `metrics.json`), `schemas/model-report.schema.json`, and
 `tools/model_registry/report_publication.py`.
 
-A new compile run changes the performance and accuracy keys too, so a
-recompiled build is always remeasured.
+A new compile run changes the benchmark fingerprints too, so a recompiled build
+is always benchmarked again.
 
 | Change | Reruns |
 | --- | --- |
@@ -270,15 +271,15 @@ recompiled build is always remeasured.
 | `scripts/run_model_performance.sh` | every performance stage |
 | `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, or `scripts/install_dataset_registry.sh` | every accuracy stage |
 | the DevKit runtime pin, the benchmarking workflow, `tools/model_report`, `schemas/model-report.schema.json`, or `report_publication.py` | every performance and accuracy stage |
-| a source, a component's `parameters`, the profile's calibration, or `numerical_fidelity` | that model's affected builds, then their DevKit stages |
-| an ONNX compile script or other ONNX compile input | that model's affected builds, then their DevKit stages |
-| the Model Compiler pin | every build, then every DevKit stage |
-| `scripts/run_model_compilation.sh` | ONNX builds, then their DevKit stages |
-| the shared model loader | ONNX builds, then their DevKit stages |
+| a source, a component's `parameters`, the profile's calibration, or `numerical_fidelity` | that model's affected builds, then their benchmarks |
+| an ONNX compile script or other ONNX compile input | that model's affected builds, then their benchmarks |
+| the Model Compiler pin | every build, then every benchmark |
+| `scripts/run_model_compilation.sh` | ONNX builds, then their benchmarks |
+| the shared model loader | ONNX builds, then their benchmarks |
 | LLiMa scripts, registry helpers, checkpoint repository name, job count, logging or runner class | no LLiMa compilation |
 
-The keys are computed by `compile_key` and `measurement_key` in
-`tools/model_registry/stage_keys.py`.
+The fingerprints are computed by `compile_fingerprint` and `benchmark_fingerprint` in
+`tools/model_registry/fingerprints.py`.
 
 To apply a changed test at once, dispatch **Vulcan Model Orchestrator** with
 `models` set to the model and `force_rebuild_all`: it recompiles the model's
@@ -381,7 +382,7 @@ def test_performance_records_the_execution_plan_the_browser_draws(performance: d
 
 Update `expected` when a reviewed change moves a published value, such as a
 new compiler or a faster script, in the same pull request or right after its
-reports publish. No stage key reads `tests/`, so editing `tests.yaml` reruns
+reports publish. No fingerprint reads `tests/`, so editing `tests.yaml` reruns
 nothing; the new values apply the next time the stage runs. To apply them
 now, dispatch `Vulcan Model Orchestrator` with `models` set to the model and
 `force_rebuild_all`, which recompiles and remeasures it.

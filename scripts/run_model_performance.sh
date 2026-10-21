@@ -23,7 +23,7 @@ REPOSITORY="$(cd "$MODEL_DIR/../.." && pwd)"
 MODEL_ID="$(basename "$MODEL_DIR")"
 
 # A single-component model takes its MPK; a multi-component model takes each as <component>=<path>.
-listed="$("$REGISTRY_PYTHON" -m model_registry measurement-inputs "$COMPILED_DIR" \
+listed="$("$REGISTRY_PYTHON" -m model_registry model-component-mpks "$COMPILED_DIR" \
   --repository "$REPOSITORY" --model "$MODEL_ID" --build-profile "$BUILD_PROFILE_ID")"
 mapfile -t inputs <<< "$listed"
 mpks=()

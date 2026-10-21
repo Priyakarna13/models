@@ -115,7 +115,7 @@ and the MPKs it lists. The script:
 1. resolves the declared dataset into `DATASET_CACHE` (default
    `/media/nvme/datasets/artifacts`), holding a lock so concurrent runs share
    one download;
-2. lists each component's MPK with `model-registry measurement-inputs`;
+2. lists each component's MPK with `model-registry model-component-mpks`;
 3. extracts the dataset under `WORK_DIR` (default `/media/nvme/neat-tests/`)
    and removes that directory when it exits;
 4. installs `requirements-accuracy.txt` beside PyNeat;
@@ -157,8 +157,8 @@ On the DevKit, `scripts/run_model_tests.sh` runs the model's
 with the build profile's expected value in `tests/tests.yaml` ([set up
 `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). CI publishes the
 report with `model-registry publish-report` as one `model_accuracy` registry
-run under the build profile's `model_package` run. The run fingerprint is the
-accuracy measurement key, and the run carries one `compiled-model-<component>`
+run under the build profile's `model_package` run. Its `run_fingerprint` is the
+accuracy benchmark fingerprint, and the run carries one `compiled-model-<component>`
 input per component, the `model-report` and log artifacts, an `accuracy/model`
 test result whose summary is the whole report and whose status is the test
 outcome (`passed`, `failed`, or `skipped`), and one measurement per metric. A
@@ -173,7 +173,7 @@ records one for the same dataset, and the evaluated sample count.
 Qualification measured outside the registry stages, such as a held-out
 evaluation from training or a pending hardware qualification, goes under
 `qualification_evidence`. Each entry needs a `status`; other fields are
-free-form. No stage runs it and it has no stage key. SSD-MobileNet uses such
+free-form. No stage runs it and no fingerprint reads it. SSD-MobileNet uses such
 an entry to record its quantization evaluation.
 
 Compiler-enforced settings belong in the build profile's component `parameters`,

@@ -1,7 +1,7 @@
 """Each model's tests: one file per stage under models/<id>/tests/, set up by tests/tests.yaml.
 
 build/ checks conversion and compilation; measure/ checks DevKit accuracy and performance. tests.yaml says
-whether each stage's tests run and what the model is expected to deliver. No stage key reads these files, so
+whether each stage's tests run and what the model is expected to deliver. No fingerprint reads these files, so
 changing a test reruns nothing.
 """
 
@@ -16,8 +16,8 @@ import yaml
 from jsonschema import Draft202012Validator
 from model_report import METRICS
 
+from .benchmark_declarations import benchmarked_profiles
 from .errors import ValidationError
-from .measurement import measured_profiles
 
 # How far a measured value may fall below the value tests.yaml expects and still pass, relative to that value.
 ACCURACY_ALLOWED_DROP = 0.05
@@ -30,7 +30,7 @@ TESTS_SCHEMA = "model-tests.schema.json"
 TEST_GROUPS = {"build": ("conversion", "compile"), "measure": ("accuracy", "performance")}
 STAGE_GROUP = {stage: group for group, stages in TEST_GROUPS.items() for stage in stages}
 TESTS_DIR_ENTRIES = {TESTS_FILE, *TEST_GROUPS, "fixtures"}
-# What scripts/run_model_tests.sh prints for a stage's tests; a measurement publishes it as its test status.
+# What scripts/run_model_tests.sh prints for a stage's tests; a benchmark publishes it as its test status.
 TEST_OUTCOMES = ("passed", "failed", "skipped")
 
 
@@ -144,7 +144,7 @@ def _require_expected_values(path: Path, stage: str, expected: dict[str, Any], m
     """Every measured build profile expects its required metrics (performance: its throughput), and nothing
     else."""
     required = model[stage]["required_metrics"] if stage == "accuracy" else ["throughput_fps"]
-    profiles = measured_profiles(model, stage)
+    profiles = benchmarked_profiles(model, stage)
     unknown_profiles = set(expected) - set(profiles)
     if unknown_profiles:
         names = ", ".join(sorted(unknown_profiles))

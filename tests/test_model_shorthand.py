@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 from jsonschema import Draft202012Validator
+from model_registry.benchmark_declarations import benchmarked_profiles
 from model_registry.errors import ValidationError
-from model_registry.measurement import measured_profiles
 from model_registry.model import normalize_model, validate_model
 from model_registry.source import source_identity
 
@@ -143,11 +143,11 @@ def test_dataset_aliases_keep_pins_and_measured_build_profiles() -> None:
     assert model["calibrations"][0] == {"id": "default", "status": "ready", "dataset": pin}
     for stage in ("numerical_fidelity", "accuracy"):
         assert model[stage] == {**authored[stage], "dataset": pin}
-    assert measured_profiles(model, "accuracy") == ["w8a8"]
-    assert measured_profiles(model, "performance") == ["w16a16", "w8a8"]
+    assert benchmarked_profiles(model, "accuracy") == ["w8a8"]
+    assert benchmarked_profiles(model, "performance") == ["w16a16", "w8a8"]
     unmeasured = normalize_model(_authored("ssd_mobilenet_v1"), MODELS / "ssd_mobilenet_v1")
     assert "accuracy" not in unmeasured
-    assert measured_profiles(unmeasured, "accuracy") == []
+    assert benchmarked_profiles(unmeasured, "accuracy") == []
 
 
 def test_hugging_face_shorthand_rejects_a_mutable_revision() -> None:

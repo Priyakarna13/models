@@ -16,8 +16,8 @@ from pathlib import Path
 
 import yaml
 from jsonschema import Draft202012Validator
+from model_registry.fingerprints import BENCHMARK_RUN_TYPES
 from model_registry.model import load_models
-from model_registry.stage_keys import MEASUREMENT_RUNS
 
 ROOT = Path(__file__).resolve().parents[1]
 BROWSER = ROOT / "artifact-browser"
@@ -238,49 +238,49 @@ def test_preview_serves_full_packages_as_the_publisher_records_them(tmp_path: Pa
     assert 'item.artifact_type === "model-package"' in _browser_source("app.js")
 
 
-def _measurement(base: str, model_id: str, profile: str, stage: str) -> dict | None:
-    """What the browser loads for one stage of a build profile: the catalog key, resolved to its run's report."""
+def _benchmark_run(base: str, model_id: str, profile: str, stage: str) -> dict | None:
+    """What the browser loads for one stage of a build profile: the catalog's benchmark fingerprint, resolved to its
+    run's report."""
     api = "/v1/repositories/sima-neat/models"
     catalog = _get_json(f"{base}{api}/catalogs/current?git_ref=refs/heads/develop")
     model = next(model for model in catalog["catalog"]["document"]["models"] if model["id"] == model_id)
-    key = model.get("measurements", {}).get(profile, {}).get(stage)
-    if key is None:
+    fingerprint = model.get("benchmark_fingerprints", {}).get(profile, {}).get(stage)
+    if fingerprint is None:
         return None
-    run_type, version = MEASUREMENT_RUNS[stage]
-    query = f"run_type={run_type}&fingerprint={key}&fingerprint_version={version}"
+    run_type, version = BENCHMARK_RUN_TYPES[stage]
+    query = f"run_type={run_type}&fingerprint={fingerprint}&fingerprint_version={version}"
     try:
         run = _get_json(f"{base}{api}/resolve?{query}")["run"]
     except urllib.error.HTTPError as error:
         assert error.code == 404
-        return {"key": key, "run": None}
+        return {"fingerprint": fingerprint, "run": None}
     summary = _get_json(f"{base}/v1/runs/{run['id']}")["run"]
     parameters = _get_json(f"{base}/v1/runs/{run['id']}/provenance")["parameters"]["parameters"]
     tests = _get_json(f"{base}/v1/runs/{run['id']}/test-results")["test_results"]
-    return {"key": key, "run": summary, "parameters": parameters, "tests": tests, "model": model}
+    return {"fingerprint": fingerprint, "run": summary, "parameters": parameters, "tests": tests, "model": model}
 
 
-def test_preview_resolves_each_measurement_key_to_a_model_report(tmp_path: Path) -> None:
+def test_preview_resolves_each_benchmark_fingerprint_to_a_model_report(tmp_path: Path) -> None:
     validator = Draft202012Validator(json.loads((ROOT / "schemas" / "model-report.schema.json").read_text("utf-8")))
     with _preview(tmp_path) as base:
-        performance = _measurement(base, "resnet_50", "w8a8", "performance")
-        accuracy = _measurement(base, "resnet_50", "w8a8", "accuracy")
+        performance = _benchmark_run(base, "resnet_50", "w8a8", "performance")
+        accuracy = _benchmark_run(base, "resnet_50", "w8a8", "accuracy")
         wrong_version = _get_status(
-            f"{base}/v1/repositories/sima-neat/models/resolve?run_type=model_benchmark"
-            f"&fingerprint={performance['key']}&fingerprint_version=2"
+            f"{base}/v1/repositories/sima-neat/models/resolve?run_type=model_performance"
+            f"&fingerprint={performance['fingerprint']}&fingerprint_version=2"
         )
         wrong_type = _get_status(
             f"{base}/v1/repositories/sima-neat/models/resolve?run_type=model_accuracy"
-            f"&fingerprint={performance['key']}&fingerprint_version=2"
+            f"&fingerprint={performance['fingerprint']}&fingerprint_version=2"
         )
 
     for stage, measured in (("performance", performance), ("accuracy", accuracy)):
         run = measured["run"]
         package = next(item for item in measured["model"]["packages"] if item["build_profile_id"] == "w8a8")
-        assert (run["run_type"], run["fingerprint_version"]) == MEASUREMENT_RUNS[stage]
-        assert run["run_fingerprint"] == measured["key"]
+        assert (run["run_type"], run["fingerprint_version"]) == BENCHMARK_RUN_TYPES[stage]
+        assert run["run_fingerprint"] == measured["fingerprint"]
         assert run["metadata"] == {
-            "model_id": "resnet_50", "build_profile_id": "w8a8", "stage": stage,
-            "package_run_id": package["run_id"], "measurement_key": measured["key"],
+            "model_id": "resnet_50", "build_profile_id": "w8a8", "stage": stage, "package_run_id": package["run_id"],
         }
         assert re.fullmatch(r"[a-f0-9]{40}", run["commit_sha"]) and run["ci_run_url"]
         assert set(measured["parameters"]) == {stage, "builds", "runtime"}
@@ -296,7 +296,7 @@ def test_preview_resolves_each_measurement_key_to_a_model_report(tmp_path: Path)
 
 def test_preview_measures_a_multi_component_model_as_one_report(tmp_path: Path) -> None:
     with _preview(tmp_path) as base:
-        measured = _measurement(base, "rf_detr_nano", "w8a8_w16a16", "performance")
+        measured = _benchmark_run(base, "rf_detr_nano", "w8a8_w16a16", "performance")
 
     report = measured["tests"][0]["summary"]
     builds = [build for build in measured["model"]["builds"] if build["build_profile_id"] == "w8a8_w16a16"]
@@ -310,13 +310,13 @@ def test_preview_measures_a_multi_component_model_as_one_report(tmp_path: Path) 
     }
 
 
-def test_preview_leaves_a_profile_without_a_measurement_run(tmp_path: Path) -> None:
+def test_preview_leaves_a_profile_without_a_benchmark_run(tmp_path: Path) -> None:
     with _preview(tmp_path) as base:
-        unmeasured = _measurement(base, "ssd_mobilenet_v1", "w16a16", "performance")
-        no_accuracy = _measurement(base, "resnet_50", "w16a16", "accuracy")
-        on_demand = _measurement(base, "whisper_small", "w8a16", "performance")
+        unmeasured = _benchmark_run(base, "ssd_mobilenet_v1", "w16a16", "performance")
+        no_accuracy = _benchmark_run(base, "resnet_50", "w16a16", "accuracy")
+        on_demand = _benchmark_run(base, "whisper_small", "w8a16", "performance")
 
-    # A key without a run reads as not measured at this revision; ResNet measures accuracy on W8A8 only.
+    # A fingerprint without a run reads as not measured at this revision; ResNet measures accuracy on W8A8 only.
     assert unmeasured["run"] is None
     assert no_accuracy is None
     assert on_demand is None
@@ -470,13 +470,13 @@ def test_browser_telemetry_readings_match_the_model_report_metrics() -> None:
     assert readings == {name: metric["telemetry"][:2] for name, metric in metrics.items() if "telemetry" in metric}
 
 
-def test_browser_measurement_runs_match_the_registry_stage_keys() -> None:
+def test_browser_benchmark_run_types_match_the_registry() -> None:
     source = (BROWSER / "model-report.js").read_text(encoding="utf-8")
-    table = re.search(r"MEASUREMENT_RUNS = \{(.*?)\n\};", source, re.S)
+    table = re.search(r"BENCHMARK_RUN_TYPES = \{(.*?)\n\};", source, re.S)
     assert table is not None
     runs = {stage: (run_type, int(version))
             for stage, run_type, version in re.findall(r'(\w+): \["(\w+)", (\d+)\]', table.group(1))}
-    assert runs == MEASUREMENT_RUNS
+    assert runs == BENCHMARK_RUN_TYPES
 
 
 def test_portal_assembly_rejects_relative_imports_it_does_not_deploy(tmp_path: Path) -> None:
@@ -1138,7 +1138,7 @@ def test_performance_and_accuracy_name_the_commit_and_workflow_that_measured_the
     assert r"/^[a-f0-9]{40}$/i.test(commit)" in measurement_source
     assert 'target="_blank" rel="noreferrer"' in measurement_source
     assert "${measurementSource(run, modelId)}</p>" in script
-    assert "${benchmarkSummary(result.value, run, modelId)}" in script
+    assert "${performanceSummary(result.value, run, modelId)}" in script
     assert "measurementSource(variant.accuracy.run, modelId)" in script
     assert "${escapeHtml(dataset.split || \"\")}${sourceMarkup}</p>" in script
     assert ".measurement-link {" in styles
@@ -1259,7 +1259,7 @@ def test_detail_links_to_the_original_model_whatever_was_compiled() -> None:
     assert ".external-model-link svg { fill: none; stroke: currentColor;" in styles
 
 
-def test_benchmark_rendering_reads_the_model_report_and_is_charted() -> None:
+def test_performance_rendering_reads_the_model_report_and_is_charted() -> None:
     script = _browser_source("metrics.js", "api.js", "model-view.js")
     browser = _browser_source()
     reports = (BROWSER / "model-report.js").read_text(encoding="utf-8")
@@ -1271,9 +1271,9 @@ def test_benchmark_rendering_reads_the_model_report_and_is_charted() -> None:
     assert 'item.suite === stage && item.name === "model"' in script
     assert "This result format is not supported by this browser." in script
     assert '<p class="muted-message">Not measured at this revision.</p>' in script
-    # Each headline tile shows one number; Benchmark details has three cards on the left and two on the right.
-    assert "KPI_METRICS.map((key) => kpiTile(key, benchmark.measurements[key]))" in script
-    assert 'disclosure(`benchmark:${run.id}`, "Benchmark details", details.markup' in script
+    # Each headline tile shows one number; Performance details has three cards on the left and two on the right.
+    assert "KPI_METRICS.map((key) => kpiTile(key, performance.measurements[key]))" in script
+    assert 'disclosure(`performance:${run.id}`, "Performance details", details.markup' in script
     for card in ['["performance", "Performance"', '["heat", "Heat"', '["cpu", "CPU"', '["power", "Power"',
                  '["memory", "Memory"']:
         assert card in script
@@ -1283,14 +1283,14 @@ def test_benchmark_rendering_reads_the_model_report_and_is_charted() -> None:
     assert "batchSize" not in browser
     assert "cpuCores: cpuCores(report.telemetry)" in reports
     assert "telemetry?.cpu_cores_usage_pct" in reports
-    assert "coreLoad(benchmark.cpuCores)" in script
+    assert "coreLoad(performance.cpuCores)" in script
     assert '<p class="metric-caption core-legend"><span><b></b>Average</span><span><i></i>Peak</span></p>' in script
     assert ".core-load {" in styles
     assert '<span class="qualifier">' in script
     assert '["Latency (p50 / p95 / p99)", ["latency_p50_ms", "latency_p95_ms", "latency_p99_ms"]' in script
-    assert "`${benchmark.cpuCores.length} cores`" in script
+    assert "`${performance.cpuCores.length} cores`" in script
     assert 'const rows = [["Section", "Metric", "Value", "Unit", "Key", "Note"]];' in script
-    assert 'download="${escapeHtml(csvFileName(benchmark))}">${icons.download}Download CSV' in script
+    assert 'download="${escapeHtml(csvFileName(performance))}">${icons.download}Download CSV' in script
     assert "data:text/csv;charset=utf-8," in script
     # SoC power is the sum of its MLA and Non-MLA rails, nested under SoM; its peak is an upper bound.
     assert '["SoC", "soc", "MLA plus Non-MLA.' in script
@@ -1313,15 +1313,15 @@ def test_benchmark_rendering_reads_the_model_report_and_is_charted() -> None:
     assert ".rail-split" in styles
     assert ".detail-cards" in styles
     assert ".info-mark::after { content: attr(data-tooltip);" in styles
-    assert "telemetryText(benchmark.telemetry)" in script
+    assert "telemetryText(performance.telemetry)" in script
     assert "metric-group" not in browser
     assert "Other measurements</h4>" in script
     assert "FrequencyHz" not in browser and "FrequencyKhz" not in browser
     assert 'tool: pyneatVersion(report),' in reports
-    assert '["Runtime", benchmark.tool]' in script
-    assert '<footer class="benchmark-footer"><dl class="benchmark-provenance">' in script
-    assert ".benchmark-action {" in styles
-    # Raw result downloads the report the measurement run published.
+    assert '["Runtime", performance.tool]' in script
+    assert '<footer class="performance-footer"><dl class="performance-provenance">' in script
+    assert ".performance-action {" in styles
+    # Raw result downloads the report the performance run published.
     assert 'data-download="model-report" data-run-id="${escapeHtml(run.id)}">${icons.download}Raw result' in script
     assert "data-trial-metric" not in browser
     assert "trialChart" not in browser
@@ -1342,8 +1342,7 @@ def test_accuracy_result_is_rendered_with_coverage_and_reference_comparison() ->
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
 
     # The accuracy run's report is the only accuracy source.
-    assert 'loadMeasurement("accuracy", keys.accuracy)' in script
-    assert "accuracy/latest" not in browser
+    assert 'loadBenchmarkRun("accuracy", fingerprints.accuracy)' in script
     assert 'id="accuracy-section"' in script
     assert "dataset.evaluated_samples.toLocaleString()" in script
     # The coverage is a plain badge; its explanation sits in the Evaluation details row.
@@ -1362,16 +1361,18 @@ def test_accuracy_result_is_rendered_with_coverage_and_reference_comparison() ->
     assert ".accuracy-explainer" not in styles
 
 
-def test_measurements_are_resolved_from_the_catalog_keys_and_accuracy_is_rendered_per_metric() -> None:
+def test_benchmark_runs_are_resolved_from_catalog_fingerprints_and_accuracy_is_rendered_per_metric() -> None:
     script = _browser_source("api.js", "model-view.js", "accuracy-metrics.js")
 
-    # The catalog records each build profile's measurement keys on the model; each names every MPK it measured.
-    assert "const keys = await measurementKeys(runs, runProfile(anchor));" in script
-    assert "return lists(model) ? model.measurements?.[profile] || {} : {};" in script
-    # History mode has no catalog loaded, so the keys come from the catalog at the build's own revision.
+    # The catalog records each build profile's benchmark fingerprints on the model; each names every MPK it measured.
+    assert "const fingerprints = await benchmarkFingerprints(runs, runProfile(anchor));" in script
+    assert "return lists(model) ? model.benchmark_fingerprints?.[profile] || {} : {};" in script
+    # History mode has no catalog loaded, so the fingerprints come from the catalog at the build's own revision.
     assert 'const current = state.catalogMode === "runs" ? null : catalogModelForRun(runs[0]);' in script
     assert "const model = lists(current) ? current : await loadHistoricalCatalogModel(runs[0]);" in script
-    assert "run_type: runType, fingerprint: measurementKey, fingerprint_version: String(fingerprintVersion)" in script
+    assert (
+        "run_type: runType, fingerprint: benchmarkFingerprint, fingerprint_version: String(fingerprintVersion)"
+    ) in script
     assert "if (error.status === 404) return null;" in script
     assert "api(`/v1/runs/${resolved.id}/provenance`)" in script
     assert "api(`/v1/runs/${resolved.id}/test-results`)" in script
@@ -1398,12 +1399,12 @@ def test_numerical_fidelity_is_rendered_from_correctness_results() -> None:
     assert "fidelityPanel(variant.packageTests?.test_results || [], fullPackage.run_id)" in script
     assert 'data-download="numerical-fidelity"' in script
     panel = script.split("function fidelityPanel(", 1)[1].split("function licensePanel(", 1)[0]
-    assert '<div class="benchmark-summary">${metrics}</div>' in panel
-    assert panel.count('class="benchmark-metric"') == 2
+    assert '<div class="fidelity-metrics">${metrics}</div>' in panel
+    assert panel.count('class="fidelity-metric"') == 2
     assert '<span>${escapeHtml(metric.name)} · Cosine similarity</span>' in panel
     assert '<span>${escapeHtml(metric.name)} · Normalized RMSE</span>' in panel
     assert '<table>' not in panel
-    assert panel.index('class="benchmark-summary"') < panel.index('class="muted-message"')
+    assert panel.index('class="fidelity-metrics"') < panel.index('class="muted-message"')
     assert "<details" not in panel
     assert "${icons.download}<span>Download JSON</span>" in panel
     assert 'Number(metric.cosine_similarity).toFixed(4)' in panel
@@ -1637,7 +1638,7 @@ const old = [run('old-backbone', 'rf_detr_small', 'backbone', 'workflow-1', '2.1
 const catalog = [{model_id: 'rf_detr_small', display_name: 'RF-DETR', builds: [
   {run_id: 'stale-backbone', build_profile_id: 'w8a8_w16a16', component_id: 'backbone'},
   {run_id: 'stale-decoder', build_profile_id: 'w8a8_w16a16', component_id: 'decoder'},
-], measurements: {w8a8_w16a16: {performance: 'stale-performance-key'}}},
+], benchmark_fingerprints: {w8a8_w16a16: {performance: 'stale-performance-fingerprint'}}},
                  {model_id: 'ssd_mobilenet', display_name: 'SSD', builds: [{run_id: 'inherited', build_profile_id: 'w8a8_w16a16'}]}];
 const packageRun = (id, components) => ({id, run_type: 'model_package', status: 'completed',
   git_ref: 'refs/heads/perf/rfdetr-attention-layout', commit_sha: 'workflow-2', metadata: {
@@ -1649,11 +1650,13 @@ const models = branchModels([...old, ...current], packages, catalog);
 assert.deepEqual(models.map(model => model.model_id), ['rf_detr_small']);
 assert.deepEqual(models[0].builds.map(build => build.run_id), ['backbone', 'decoder']);
 assert.equal(models[0].builds[0].run.git_ref, 'refs/heads/perf/rfdetr-attention-layout');
-// Only a profile showing the catalog's own build keeps its measurement keys.
-assert.deepEqual(models[0].measurements, {});
+// Only a profile showing the catalog's own build keeps its benchmark fingerprints.
+assert.deepEqual(models[0].benchmark_fingerprints, {});
 const matched = [{...catalog[0], builds: ['backbone', 'decoder'].map(id => ({run_id: id,
-  build_profile_id: 'w8a8_w16a16', component_id: id})), measurements: {w8a8_w16a16: {accuracy: 'accuracy-key'}}}];
-assert.deepEqual(branchModels(current, [], matched)[0].measurements, {w8a8_w16a16: {accuracy: 'accuracy-key'}});
+  build_profile_id: 'w8a8_w16a16', component_id: id})),
+  benchmark_fingerprints: {w8a8_w16a16: {accuracy: 'accuracy-fingerprint'}}}];
+assert.deepEqual(branchModels(current, [], matched)[0].benchmark_fingerprints,
+                 {w8a8_w16a16: {accuracy: 'accuracy-fingerprint'}});
 assert.deepEqual(models[0].packages.map(item => item.run_id), ['good']);
 assert.deepEqual(branchModels([...old, ...current], packages, catalog, '2.1')[0].builds.map(build => build.run_id),
                  ['old-backbone', 'old-decoder']);
@@ -1662,7 +1665,8 @@ const sameCompilerOld = [run('same-old-backbone', 'rf_detr_small', 'backbone', '
 assert.deepEqual(branchModels([...sameCompilerOld, ...current], packages, catalog, '3.0')[0].builds.map(build => build.run_id),
                  ['backbone', 'decoder']);
 assert.deepEqual(branchModels([], packages, catalog), []);
-assert.deepEqual(branchModels([{...run('benchmark', 'inherited', 'model', 'workflow-2'), run_type: 'model_benchmark'}], [], catalog), []);
+const performanceRun = {...run('benchmark', 'inherited', 'model', 'workflow-2'), run_type: 'model_performance'};
+assert.deepEqual(branchModels([performanceRun], [], catalog), []);
 const develop = ['ssd_mobilenet', 'resnet50', 'yolov8', 'mobilenet', 'rf_detr_small', 'unet']
   .map(model => run(model, model, 'model', model));
 assert.equal(branchModels(develop, [], catalog).length, 6);
@@ -1716,7 +1720,7 @@ def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None
         "({ label, analysis: layerAnalysis })), run.id)"
     ) in model_performance
     assert "executionGraphSection(components.map(" in model_performance
-    assert "benchmarkSummary(result.value, run, modelId)" in model_performance
+    assert "performanceSummary(result.value, run, modelId)" in model_performance
     graphs = script.split("function executionGraphSection(", 1)[1].split("\nexport function ", 1)[0]
     assert 'disclosure(`graphs:${key}`, "Execution graph"' in graphs
     assert 'componentSwitch(graphed.map(({ label }) => label), 0, "data-graph-component")' in graphs

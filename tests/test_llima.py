@@ -25,6 +25,7 @@ from model_registry.artifact import (
 from model_registry.candidates import DEPLOYMENTS, publish_candidate
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
+from model_registry.fingerprints import COMPILE_TOOLING, compile_fingerprint
 from model_registry.model import load_and_validate_model, load_models
 from model_registry.registry import (
     RegistryPublicationError,
@@ -37,7 +38,6 @@ from model_registry.registry import (
     stage_catalog_build,
 )
 from model_registry.source import source_identity
-from model_registry.stage_keys import COMPILE_TOOLING, compile_key
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "qwen3_5_0_8b"
@@ -164,7 +164,7 @@ def compiled(tmp_path):
         "source_sha256": source_identity(model["components"][0]["source"]),
         "git_sha": "a" * 40, "environment": "staging", "compiler_version": compiler["version"],
         "compiler_label": compiler["label"],
-        "build_fingerprint": compile_key(ROOT, MODEL, PROFILE, PROFILE, compiler["identity"]),
+        "compile_fingerprint": compile_fingerprint(ROOT, MODEL, PROFILE, PROFILE, compiler["identity"]),
     }
     verify_artifact(component, write_manifest=True, provenance=provenance)
     record_compile_outputs(
@@ -434,7 +434,7 @@ shutil.copytree(os.environ["DEPLOYMENT_SOURCE"], sys.argv[2])
         "source_sha256": source_identity(model["components"][0]["source"]),
         "git_sha": "a" * 40, "environment": "staging", "compiler_version": compiler["version"],
         "compiler_label": compiler["label"],
-        "build_fingerprint": compile_key(root, MODEL, PROFILE, PROFILE, compiler["identity"]),
+        "compile_fingerprint": compile_fingerprint(root, MODEL, PROFILE, PROFILE, compiler["identity"]),
     })
     prepared = _preflight_compilations(root, output, load_models(root), environment="staging", git_sha="a" * 40)
     assert prepared[0]["compiled_parameters"] == {
@@ -536,7 +536,7 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
     }
     path.write_text(yaml.safe_dump(model, sort_keys=False))
     compiler = resolve_model_compiler(root)
-    key = compile_key(root, "fixture_model", "fixture", "fixture", compiler["identity"])
+    key = compile_fingerprint(root, "fixture_model", "fixture", "fixture", compiler["identity"])
     registry = Registry()
     # The profile's one compile invocation compiles both components.
     invocation = tmp_path / "invocations" / "fixture" / "fixture_model/fixture"
@@ -554,7 +554,7 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
             "model_id": "fixture_model", "build_profile_id": "fixture", "component_id": component,
             "target": "modalix", "source_sha256": "a" * 64, "git_sha": "a" * 40,
             "environment": "staging", "compiler_version": compiler["version"], "compiler_label": compiler["label"],
-            "build_fingerprint": key,
+            "compile_fingerprint": key,
         })
         outputs.append({"component_id": component, "mpk_path": f"{component}/{archive.name}",
                         "mpk_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
@@ -589,7 +589,7 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
                if path.startswith("/v1/runs/") and path.endswith("/finalize"))
 
 
-def test_llima_compile_key_names_no_compile_invocation():
+def test_llima_compile_fingerprint_names_no_compile_invocation():
     """A LLiMa key covers the compiler, target, and each component's source and parameters, as it always has."""
     model = load_and_validate_model(ROOT / "models" / MODEL)
     profile = model["build_profiles"][0]
@@ -604,7 +604,7 @@ def test_llima_compile_key_names_no_compile_invocation():
     }
 
     assert profile["compile_invocations"] == [{"id": PROFILE, "components": ["model"]}]
-    assert compile_key(ROOT, MODEL, PROFILE, PROFILE, compiler) == hashlib.sha256(
+    assert compile_fingerprint(ROOT, MODEL, PROFILE, PROFILE, compiler) == hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     ).hexdigest()
 

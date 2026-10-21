@@ -2,9 +2,10 @@
 
 The performance stage measures each build profile's whole model on a Modalix
 DevKit: every compiled MPK and the CPU work between them. Each model's
-standalone `scripts/performance.py` contains its benchmark setup.
-Single-MPK scripts load the MPK with `pyneat.Model` and call Neat Core's
-benchmark API; RF-DETR's script times its two-MPK pipeline itself. Core owns
+standalone `scripts/performance.py` contains its benchmark setup. Scripts of
+single-component models load the MPK with `pyneat.Model` and call Neat Core's
+benchmark API; RF-DETR, a multi-component model, times its pipeline itself in
+its script. Core owns
 ordinary synthetic inputs, warmup, latency and throughput measurement, board
 telemetry, and runner lifetime. The scripts hand Core's results to
 `tools/model_report`, which writes the one report the registry publishes.
@@ -56,9 +57,9 @@ PYTHONPATH=tools ~/pyneat/bin/python models/resnet_50/scripts/performance.py \
 The script contains the exact model selection and measurement settings. For
 example, YOLO26 boxes explicitly selects `BoxDecodeType.YoloV26` and top 100
 results; pose and segmentation use their corresponding decoders. The current
-single-MPK scripts request 1000 samples, a 60000 ms minimum duration and layer
-statistics. Customers can read or adapt these settings directly in the model's
-script.
+scripts of single-component models request 1000 samples, a 60000 ms minimum
+duration and layer statistics. Customers can read or adapt these settings
+directly in the model's script.
 
 The script hands what Core returned to `model_report.performance()`:
 
@@ -210,12 +211,12 @@ individual temperature sensors and CPU cores are not registry metrics; they
 stay in the report's `telemetry`, where the browser reads the per-core load.
 
 `tools/model_report/metrics.json` is the one metric vocabulary: each metric's
-label, unit, direction, Vulcan measurement name, and the Core report field or
+label, unit, direction, Vulcan measurement name (`registry_name`), and the Core report field or
 telemetry statistic it comes from. Add a reading by adding a row there and its
 display entry in the browser's `metrics.js`; a test keeps the labels, units,
 and directions of the two in step. It appears under **Other measurements**
-until `DETAIL_CARDS` in `model-view.js` gives it a row in one of the Benchmark
-details cards.
+until `DETAIL_CARDS` in `model-view.js` gives it a row in one of the
+Performance details cards.
 
 Initialization timings and MLA memory before and after the run are not exported
 by this Core API, so reports do not carry them. Adding them belongs in Core
@@ -226,14 +227,14 @@ before Models consumes them.
 Model authors do not publish benchmark results directly. After a build profile's
 package publishes, **Vulcan Model Compile** starts **Vulcan Model
 Benchmarking** on the same branch for each build profile whose performance or
-accuracy measurement key has no completed run. On-demand builds are not
-measured. The DevKit has no publication credentials.
+accuracy benchmark fingerprint has no completed run. On-demand builds are not
+benchmarked. The DevKit has no publication credentials.
 
 On the DevKit, the workflow first checks that the profile's components are
 registered and its package receipt is present. `scripts/run_model_performance.sh`
 then:
 
-1. lists each component's MPK with `model-registry measurement-inputs`;
+1. lists each component's MPK with `model-registry model-component-mpks`;
 2. sets the MLA and CPU clocks;
 3. runs the model's `performance.py`, which writes `model-report.json` and
    `benchmark-report.json`, and copies its output to `performance.log`;
@@ -250,26 +251,27 @@ throughput with the expected value for that build profile in
 `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)).
 
 A hosted job then runs `model-registry publish-report`, which publishes the
-report as one `model_benchmark` run under the build profile's `model_package`
-run. The run fingerprint is the performance measurement key. The run has one
-`compiled-model-<component>` input per component, the `model-report`, Core
-report, and log artifacts, a `performance/model` test result whose summary is
-the whole report and whose status is the test outcome, and one measurement per
-metric. The board's clocks and installation go in the run environment. A
+report as one `model_performance` run under the build profile's `model_package`
+run. Its `run_fingerprint` is the performance benchmark fingerprint. The run
+has one `compiled-model-<component>` input per component, the `model-report`,
+Core report, and log artifacts, a `performance/model` test result whose summary
+is the whole report and whose status is the test outcome, and one measurement
+per metric. The board's clocks and installation go in the run environment. A
 failed test still publishes the report and completes its run, then fails the
 workflow run. A failed measurement keeps its workflow evidence and is not
 published. Performance and accuracy publish on their own outcomes: when one
 stage fails, the other's report is still published, and the next push reruns
 only the stage that has no run. A dispatched run stops before measuring when
-its branch has since changed the tooling the measurement keys hash; the newer
-push measures that build instead.
+its branch has since changed the tooling the benchmark fingerprints hash; the
+newer push benchmarks that build instead.
 
-The catalog lists each build profile's measurement keys under
-`measurements`, and the model browser resolves the runs by those keys. A
-build profile with no completed run shows "Not measured at this revision."
+The catalog lists each build profile's benchmark fingerprints under
+`benchmark_fingerprints`, and the model browser resolves the runs by those
+fingerprints. A build profile with no completed run shows "Not measured at this
+revision."
 
-Because the performance stage has its own key, editing the model's
+Because the performance stage has its own fingerprint, editing the model's
 `performance.py`, its `performance` declaration, the shared report and
-publication tooling, or the DevKit runtime pin remeasures performance from the
-published MPKs without recompiling. See [what a change
+publication tooling, or the DevKit runtime pin reruns the performance benchmark
+from the published MPKs without recompiling. See [what a change
 reruns](adding-a-model.md#9-know-what-a-change-reruns).

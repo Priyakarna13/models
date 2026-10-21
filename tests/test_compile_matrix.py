@@ -10,9 +10,9 @@ import yaml
 from model_registry.compile_matrix import build_matrix
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
+from model_registry.fingerprints import COMPILE_TOOLING, benchmark_fingerprint, compile_fingerprint
 from model_registry.model import load_and_validate_model, load_models
 from model_registry.registry import RegistryPublicationError, publish_catalog
-from model_registry.stage_keys import COMPILE_TOOLING, compile_key, measurement_key
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "fixture_model"
@@ -25,7 +25,7 @@ COMPILER_VERSION = resolve_model_compiler(ROOT)["identity"]
 def _fingerprint(repository: Path, model_id: str, compiler_version: str) -> str:
     model = yaml.safe_load((repository / "models" / model_id / "model.yaml").read_text(encoding="utf-8"))
     profile_id = next(iter(model["build_profiles"]))
-    return compile_key(repository, model_id, profile_id, profile_id, compiler_version)
+    return compile_fingerprint(repository, model_id, profile_id, profile_id, compiler_version)
 
 
 def _write_model(repository: Path, model_id: str) -> None:
@@ -92,7 +92,7 @@ def test_discovery_and_matrix_are_stable(model_repository: Path) -> None:
     assert matrix["include"][0]["component_ids"] == ["model"]
     assert matrix["include"][0]["component_id"] == "model"
     assert matrix["include"][0]["stages"] == []
-    assert "build_fingerprint" not in matrix["include"][0]
+    assert "compile_fingerprint" not in matrix["include"][0]
 
 
 def test_matrix_entries_carry_the_stages_each_profile_measures() -> None:
@@ -171,7 +171,7 @@ def test_unknown_requested_build_profile_fails(model_repository: Path) -> None:
         build_matrix(load_models(model_repository), ["alpha"], ["missing"])
 
 
-def test_build_fingerprint_invalidates_model_dependency_and_compiler_changes(model_repository: Path) -> None:
+def test_compile_fingerprint_invalidates_model_dependency_and_compiler_changes(model_repository: Path) -> None:
     manifest = model_repository / "deps" / "manifest.json"
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
@@ -201,7 +201,7 @@ def test_calibrated_build_tracks_its_calibration_dataset_pin(model_repository: P
     assert _fingerprint(model_repository, "alpha", "2.1.3") != first
 
 
-def test_onnx_loader_changes_invalidate_the_compile_key(model_repository: Path) -> None:
+def test_onnx_loader_changes_invalidate_the_compile_fingerprint(model_repository: Path) -> None:
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
     loader = model_repository / "tools/model_registry/model.py"
@@ -217,15 +217,15 @@ def test_compile_invocation_fingerprint_includes_every_component_binding(
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     _declare_components(model)
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    first = compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3")
+    first = compile_fingerprint(model_repository, "alpha", "fixture", "fixture", "2.1.3")
 
     model["build_profiles"]["fixture"]["components"]["decoder"]["parameters"]["output_name"] = "second"
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
 
-    assert compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3") != first
+    assert compile_fingerprint(model_repository, "alpha", "fixture", "fixture", "2.1.3") != first
 
 
-def test_numerical_fidelity_settings_invalidate_the_compile_key(model_repository: Path) -> None:
+def test_numerical_fidelity_settings_invalidate_the_compile_fingerprint(model_repository: Path) -> None:
     """scripts/compile.py measures numerical fidelity, so its settings are compile inputs."""
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
@@ -238,15 +238,15 @@ def test_numerical_fidelity_settings_invalidate_the_compile_key(model_repository
         "outputs": ["output"],
     }
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    first = compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3")
+    first = compile_fingerprint(model_repository, "alpha", "fixture", "fixture", "2.1.3")
 
     model["numerical_fidelity"]["selection"]["samples"] = 2
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
 
-    assert compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3") != first
+    assert compile_fingerprint(model_repository, "alpha", "fixture", "fixture", "2.1.3") != first
 
 
-def test_build_fingerprint_includes_model_local_recipe_helpers(model_repository: Path) -> None:
+def test_compile_fingerprint_includes_model_local_recipe_helpers(model_repository: Path) -> None:
     helper = model_repository / "models" / "alpha" / "scripts" / "calibration.py"
     helper.write_text("# calibration helper\n", encoding="utf-8")
     first = _fingerprint(model_repository, "alpha", "2.1.3")
@@ -264,18 +264,18 @@ def test_ssd_quality_thresholds_invalidate_only_the_selected_build(
     shutil.copytree(ROOT / "models" / model_id, directory)
     manifest = directory / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    before = {profile: compile_key(model_repository, model_id, profile, profile, "2.1.3")
+    before = {profile: compile_fingerprint(model_repository, model_id, profile, profile, "2.1.3")
               for profile in ("w8a8", "w16a16")}
 
     parameters = model["build_profiles"]["w8a8"]["components"]["model"]["parameters"]
     parameters["quantization_quality_thresholds"]["minimum_cosine_similarity"] = 0.99
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
 
-    assert compile_key(model_repository, model_id, "w8a8", "w8a8", "2.1.3") != before["w8a8"]
-    assert compile_key(model_repository, model_id, "w16a16", "w16a16", "2.1.3") == before["w16a16"]
+    assert compile_fingerprint(model_repository, model_id, "w8a8", "w8a8", "2.1.3") != before["w8a8"]
+    assert compile_fingerprint(model_repository, model_id, "w16a16", "w16a16", "2.1.3") == before["w16a16"]
 
 
-def test_yolo26_build_fingerprint_includes_its_training_subtree(
+def test_yolo26_compile_fingerprint_includes_its_training_subtree(
     model_repository: Path,
 ) -> None:
     _write_model(model_repository, "yolo26_tiny_drone")
@@ -291,7 +291,7 @@ def test_yolo26_build_fingerprint_includes_its_training_subtree(
     assert _fingerprint(model_repository, "yolo26_tiny_drone", "2.1.3") != first
 
 
-def test_yolo26_build_fingerprint_requires_its_training_subtree(
+def test_yolo26_compile_fingerprint_requires_its_training_subtree(
     model_repository: Path,
 ) -> None:
     _write_model(model_repository, "yolo26_tiny_drone")
@@ -300,7 +300,7 @@ def test_yolo26_build_fingerprint_requires_its_training_subtree(
         _fingerprint(model_repository, "yolo26_tiny_drone", "2.1.3")
 
 
-def test_build_fingerprint_ignores_non_transforming_registry_tooling_changes(
+def test_compile_fingerprint_ignores_non_transforming_registry_tooling_changes(
     model_repository: Path,
 ) -> None:
     first = _fingerprint(model_repository, "alpha", "2.1.3")
@@ -321,7 +321,7 @@ def test_build_fingerprint_ignores_non_transforming_registry_tooling_changes(
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
 
-def test_build_fingerprint_ignores_model_documentation_and_board_stage_scripts(model_repository: Path) -> None:
+def test_compile_fingerprint_ignores_model_documentation_and_board_stage_scripts(model_repository: Path) -> None:
     first = _fingerprint(model_repository, "alpha", "2.1.3")
     model_dir = model_repository / "models" / "alpha"
     (model_dir / "README.md").write_text("documentation only\n", encoding="utf-8")
@@ -331,7 +331,7 @@ def test_build_fingerprint_ignores_model_documentation_and_board_stage_scripts(m
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
 
-def test_build_fingerprint_ignores_display_name_and_description(model_repository: Path) -> None:
+def test_compile_fingerprint_ignores_display_name_and_description(model_repository: Path) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     first = _fingerprint(model_repository, "alpha", "2.1.3")
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
@@ -349,56 +349,56 @@ RF_DETR_BUILDS = {
 
 
 @pytest.mark.parametrize("stage", ["performance", "accuracy"])
-def test_measurement_keys_ignore_display_name_and_description(stage: str) -> None:
+def test_benchmark_fingerprints_ignore_display_name_and_description(stage: str) -> None:
     model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
     renamed = {**model, "display_name": "Renamed", "description": "A rewritten one-line catalog description."}
 
-    assert measurement_key(ROOT, renamed, "w8a8_w16a16", RF_DETR_BUILDS, stage) == measurement_key(
+    assert benchmark_fingerprint(ROOT, renamed, "w8a8_w16a16", RF_DETR_BUILDS, stage) == benchmark_fingerprint(
         ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, stage
     )
 
 
 @pytest.mark.parametrize("stage", ["performance", "accuracy"])
-def test_a_whole_model_measurement_key_covers_every_component_build(stage: str) -> None:
+def test_a_whole_model_benchmark_fingerprint_covers_every_component_build(stage: str) -> None:
     model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
     rebuilt = {**RF_DETR_BUILDS, "backbone": {"run_id": "run-backbone-2", "artifact_sha256": "b" * 64}}
-    key = measurement_key(ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, stage)
+    fingerprint = benchmark_fingerprint(ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, stage)
 
-    assert measurement_key(ROOT, model, "w8a8_w16a16", rebuilt, stage) != key
-    assert measurement_key(ROOT, model, "w8a16_w16a16", RF_DETR_BUILDS, stage) != key
+    assert benchmark_fingerprint(ROOT, model, "w8a8_w16a16", rebuilt, stage) != fingerprint
+    assert benchmark_fingerprint(ROOT, model, "w8a16_w16a16", RF_DETR_BUILDS, stage) != fingerprint
     with pytest.raises(ValidationError, match="needs compiled component 'decoder'"):
-        measurement_key(ROOT, model, "w8a8_w16a16", {"backbone": RF_DETR_BUILDS["backbone"]}, stage)
+        benchmark_fingerprint(ROOT, model, "w8a8_w16a16", {"backbone": RF_DETR_BUILDS["backbone"]}, stage)
 
 
-def test_measurement_key_requires_a_declared_stage() -> None:
+def test_benchmark_fingerprint_requires_a_declared_stage() -> None:
     model = load_and_validate_model(ROOT / "models" / "ssd_mobilenet_v1", SCHEMA)
     with pytest.raises(ValidationError, match="ssd_mobilenet_v1 declares no accuracy"):
-        measurement_key(ROOT, model, "w8a8", {"model": RF_DETR_BUILDS["backbone"]}, "accuracy")
+        benchmark_fingerprint(ROOT, model, "w8a8", {"model": RF_DETR_BUILDS["backbone"]}, "accuracy")
 
 
-def test_stage_keys_ignore_the_models_tests(tmp_path: Path) -> None:
+def test_fingerprints_ignore_the_models_tests(tmp_path: Path) -> None:
     """A changed test applies the next time its stage runs; it reruns no stage by itself."""
     repository = tmp_path / "repository"
     for relative in ("schemas", "taxonomies", "deps", "scripts", "tools", ".github/workflows", "models/rf_detr_small"):
         shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
     model_dir = repository / "models" / "rf_detr_small"
 
-    def keys() -> list[str]:
+    def fingerprints() -> list[str]:
         model = load_and_validate_model(model_dir, repository / "schemas" / "model.schema.json")
         return [
-            compile_key(repository, "rf_detr_small", "w8a8_w16a16", "w8a8_w16a16", COMPILER_VERSION),
-            measurement_key(repository, model, "w8a8_w16a16", RF_DETR_BUILDS, "performance"),
-            measurement_key(repository, model, "w8a8_w16a16", RF_DETR_BUILDS, "accuracy"),
+            compile_fingerprint(repository, "rf_detr_small", "w8a8_w16a16", "w8a8_w16a16", COMPILER_VERSION),
+            benchmark_fingerprint(repository, model, "w8a8_w16a16", RF_DETR_BUILDS, "performance"),
+            benchmark_fingerprint(repository, model, "w8a8_w16a16", RF_DETR_BUILDS, "accuracy"),
         ]
 
-    first = keys()
+    first = fingerprints()
     for path in sorted((model_dir / "tests").rglob("*")):
         if path.is_file():
             path.write_text(path.read_text(encoding="utf-8") + "\n# revised\n", encoding="utf-8")
     (model_dir / "tests" / "fixtures").mkdir()
     (model_dir / "tests" / "fixtures" / "detections.json").write_text("[]\n", encoding="utf-8")
 
-    assert keys() == first
+    assert fingerprints() == first
 
 
 def test_matrix_records_fingerprints_without_catalog_carry_forward(model_repository: Path) -> None:
@@ -411,7 +411,7 @@ def test_matrix_records_fingerprints_without_catalog_carry_forward(model_reposit
     )
 
     assert {entry["model_id"] for entry in matrix["include"]} == {"alpha", "bravo"}
-    assert all(len(entry["build_fingerprint"]) == 64 for entry in matrix["include"])
+    assert all(len(entry["compile_fingerprint"]) == 64 for entry in matrix["include"])
 
 @pytest.mark.parametrize("source", ["base", "target", "stale", "missing", "forbidden"])
 def test_publish_fresh_branch_reuses_only_compatible_catalog_runs(model_repository: Path, source: str) -> None:
@@ -426,7 +426,7 @@ def test_publish_fresh_branch_reuses_only_compatible_catalog_runs(model_reposito
         {"id": model_id, "builds": [
             {
                 "build_profile_id": entry["build_profile_id"], "component_id": component_id,
-                "compile_fingerprint": entry["build_fingerprint"], "artifact_sha256": "a" * 64,
+                "compile_fingerprint": entry["compile_fingerprint"], "artifact_sha256": "a" * 64,
                 "run_id": f"run-{model_id}-{component_id}",
             }
             for entry in matrix["include"] if entry["model_id"] == model_id
@@ -499,7 +499,7 @@ def test_publish_fresh_branch_reuses_only_compatible_catalog_runs(model_reposito
         "scripts/requirements-convert.txt",
     ],
 )
-def test_compile_key_ignores_board_stage_and_conversion_files(model_repository: Path, relative: str) -> None:
+def test_compile_fingerprint_ignores_board_stage_and_conversion_files(model_repository: Path, relative: str) -> None:
     path = model_repository / "models" / "alpha" / relative
     path.write_text("# initial\n", encoding="utf-8")
     first = _fingerprint(model_repository, "alpha", "2.1.3")
@@ -509,7 +509,7 @@ def test_compile_key_ignores_board_stage_and_conversion_files(model_repository: 
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
 
-def test_compile_key_ignores_performance_and_accuracy_declarations(model_repository: Path) -> None:
+def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(model_repository: Path) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
@@ -552,16 +552,16 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
     for name in (native_id, "resnet_50"):
         shutil.copytree(ROOT / "models" / name, repository / "models" / name)
 
-    def keys():
+    def fingerprints():
         return [
-            compile_key(repository, name, profile, profile, "compiler")
+            compile_fingerprint(repository, name, profile, profile, "compiler")
             for name, profile in ((native_id, "w4a16"), ("resnet_50", "w16a16"))
         ]
 
-    before = keys()
+    before = fingerprints()
     path = repository / relative
     path.write_text(path.read_text() + "\n# tooling change\n")
-    after = keys()
+    after = fingerprints()
     assert before[0] == after[0]
     assert (before[1] != after[1]) == onnx_changed
 
@@ -569,18 +569,18 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
 @pytest.mark.parametrize(("model_id", "profile_id"), [
     ("qwen3_5_0_8b", "w4a16"), ("resnet_50", "w16a16"),
 ])
-def test_checkpoint_repository_name_does_not_change_compile_key(tmp_path, model_id, profile_id):
+def test_checkpoint_repository_name_does_not_change_compile_fingerprint(tmp_path, model_id, profile_id):
     for folder in ("schemas", "taxonomies", "deps", "scripts", "tools", f"models/{model_id}"):
         shutil.copytree(ROOT / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
     manifest = tmp_path / "models" / model_id / "model.yaml"
     model = yaml.safe_load(manifest.read_text())
-    before = compile_key(tmp_path, model_id, profile_id, profile_id, "compiler")
+    before = compile_fingerprint(tmp_path, model_id, profile_id, profile_id, "compiler")
     # A Hugging Face checkpoint names its repository in its source; an ONNX model names it as upstream.
     repository = model["upstream"] if "upstream" in model else model["compilation"]["source"]
     repository["repository"] += "-renamed"
     manifest.write_text(yaml.safe_dump(model, sort_keys=False))
 
-    assert compile_key(tmp_path, model_id, profile_id, profile_id, "compiler") == before
+    assert compile_fingerprint(tmp_path, model_id, profile_id, profile_id, "compiler") == before
 
 
 @pytest.mark.parametrize(("setting", "value"), [
@@ -592,14 +592,14 @@ def test_checkpoint_repository_name_does_not_change_compile_key(tmp_path, model_
     ("input_height", 512),
     ("input_width", 640),
 ])
-def test_llima_compile_key_tracks_source_compiler_and_graph_settings(tmp_path, setting, value):
+def test_llima_compile_fingerprint_tracks_source_compiler_and_graph_settings(tmp_path, setting, value):
     model_id = "qwen3_5_0_8b"
     for folder in ("schemas", "taxonomies", f"models/{model_id}"):
         shutil.copytree(ROOT / folder, tmp_path / folder)
     manifest = tmp_path / "models" / model_id / "model.yaml"
     model = yaml.safe_load(manifest.read_text())
     compiler = "3.0.0+develop.000000000000"
-    before = compile_key(tmp_path, model_id, "w4a16", "w4a16", compiler)
+    before = compile_fingerprint(tmp_path, model_id, "w4a16", "w4a16", compiler)
     if setting == "source":
         next(iter(model["compilation"]["source"]["files"].values()))["sha256"] = value
     elif setting == "compiler":
@@ -608,4 +608,4 @@ def test_llima_compile_key_tracks_source_compiler_and_graph_settings(tmp_path, s
         model["build_profiles"]["w4a16"]["components"]["model"]["parameters"][setting] = value
     manifest.write_text(yaml.safe_dump(model, sort_keys=False))
 
-    assert compile_key(tmp_path, model_id, "w4a16", "w4a16", compiler) != before
+    assert compile_fingerprint(tmp_path, model_id, "w4a16", "w4a16", compiler) != before

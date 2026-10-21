@@ -125,7 +125,7 @@ model-registry fetch models/<model-id> --cache-dir "$PWD/.model-registry-cache"
 `HF_TOKEN` and `GITHUB_TOKEN` are used when present and never printed. Do not
 put tokens, signed URLs, or cache content in model metadata or Git.
 
-## Inspect builds and stage keys
+## Inspect builds and fingerprints
 
 Confirm the repository compiler pin and the builds `model.yaml` declares:
 
@@ -137,20 +137,20 @@ model-registry matrix --repository . --models <model-id>
 `resolve-compiler` prints the pinned compiler `identity`, `label`, and
 `version`. The matrix is deterministic JSON with one entry per build profile.
 Each entry names its `compile_invocation_id`, which is the profile ID, its
-`component_ids`, and the DevKit `stages` that measure it. Narrow it with
+`component_ids`, and the benchmark `stages` that measure it. Narrow it with
 `--profiles` and `--components`.
 
-Pass the compiler identity to see each build's compile key:
+Pass the compiler identity to see each build's compile fingerprint:
 
 ```bash
 model-registry matrix --repository . --models <model-id> \
   --compiler-version <identity>
 ```
 
-The key appears as `build_fingerprint`. Compare it before and after an edit:
-an unchanged key means CI reuses the published compilation. [What a change
-reruns](adding-a-model.md#9-know-what-a-change-reruns) lists the inputs of each
-stage key.
+The fingerprint appears as `compile_fingerprint`. Compare it before and after
+an edit: an unchanged fingerprint means CI reuses the published compilation.
+[What a change reruns](adding-a-model.md#9-know-what-a-change-reruns) lists the
+inputs of each fingerprint.
 
 ## Compile locally from `model.yaml`
 
@@ -278,8 +278,9 @@ access to it before continuing; validation alone is not enough to submit.
 ## Benchmark locally on a Modalix DevKit
 
 The performance stage runs the model's standalone `scripts/performance.py`
-once per measured build profile, with every component's MPK, and measures the
-whole model. Single-MPK scripts use Neat Core's default synthetic workload;
+once per benchmarked build profile, with every component's MPK, and measures
+the whole model. Scripts of single-component models use Neat Core's default
+synthetic workload;
 the stage does not measure accuracy or application preprocessing.
 
 Complete the DevKit setup in [DevKit performance](benchmarking.md#set-up-a-devkit)

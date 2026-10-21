@@ -23,7 +23,7 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
 @pytest.mark.parametrize(
     "command",
     [
-        "measurement-inputs",
+        "model-component-mpks",
         "check-report",
         "publish",
         "promotion",
@@ -48,7 +48,7 @@ def test_repository_cli_retains_ci_only_commands() -> None:
     parser = cli._parser()
     subcommands = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
 
-    assert {"publish", "measurement-inputs", "check-report", "publish-report", "publish-catalog"} <= set(
+    assert {"publish", "model-component-mpks", "check-report", "publish-report", "publish-catalog"} <= set(
         subcommands.choices
     )
     assert {"package", "fetch-previous"}.isdisjoint(subcommands.choices)
@@ -262,7 +262,7 @@ def test_matrix_emits_workflow_json(capsys) -> None:
     assert result == 0
     entries = json.loads(capsys.readouterr().out)["include"]
     assert {entry["model_id"] for entry in entries} == {"resnet_50"}
-    assert all(len(entry["build_fingerprint"]) == 64 for entry in entries)
+    assert all(len(entry["compile_fingerprint"]) == 64 for entry in entries)
 
 
 def test_component_pipelines_writes_each_declared_pipeline(tmp_path: Path) -> None:
@@ -318,17 +318,17 @@ def test_resolve_devkit_accuracy_skips_a_profile_without_accuracy(monkeypatch, c
     }  # fmt: skip
 
 
-def test_measurement_inputs_prints_one_component_mpk_per_line(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_model_component_mpks_prints_one_component_mpk_per_line(monkeypatch, tmp_path: Path, capsys) -> None:
     calls = []
 
     def inputs(*args):
         calls.append(args)
         return ["backbone=/c/backbone.tar.gz", "decoder=/c/decoder.tar.gz"]
 
-    monkeypatch.setattr("model_registry.report_publication.measurement_inputs", inputs)
+    monkeypatch.setattr("model_registry.report_publication.model_component_mpks", inputs)
 
     assert main([
-        "measurement-inputs", str(tmp_path), "--repository", str(ROOT), "--model", "rf_detr_nano",
+        "model-component-mpks", str(tmp_path), "--repository", str(ROOT), "--model", "rf_detr_nano",
         "--build-profile", "w8a8_w16a16",
     ]) == 0  # fmt: skip
     assert calls == [(tmp_path, ROOT, "rf_detr_nano", "w8a8_w16a16")]
@@ -438,7 +438,9 @@ def publish_report(monkeypatch, stage: str, *extra: str) -> list[dict]:
 
     def publish(**kwargs):
         calls.append(kwargs)
-        return {"measurement_key": "k", "model_id": kwargs["model_id"], "build_profile_id": kwargs["build_profile_id"]}
+        return {
+            "benchmark_fingerprint": "k", "model_id": kwargs["model_id"], "build_profile_id": kwargs["build_profile_id"],
+        }
 
     monkeypatch.setattr("model_registry.report_publication.publish_report", publish)
     main([

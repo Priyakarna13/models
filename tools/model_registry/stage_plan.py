@@ -1,6 +1,6 @@
-"""The stage plan: which builds compile, and which DevKit stages a reused build still has to run.
+"""The stage plan: which builds compile, and which benchmarks a reused build still has to run.
 
-A stage runs when no completed registry run carries its current key; see stage_keys.
+A stage runs when no completed registry run carries its current fingerprint; see fingerprints.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from urllib.parse import quote
 
 from .compile_matrix import build_matrix
 from .errors import ModelRegistryError, ValidationError
+from .fingerprints import BENCHMARK_RUN_TYPES, benchmark_fingerprint
 from .model import load_models
-from .stage_keys import MEASUREMENT_RUNS, measurement_key
 
 REPOSITORY_API_PATH = "/v1/repositories/sima-neat/models"
 DEFAULT_BRANCH = "develop"
@@ -145,7 +145,7 @@ def read_catalog_sources(
 
 
 def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
-    """Index a models document's builds, packages and measurement keys by (model, build profile)."""
+    """Index a models document's builds, packages and benchmark fingerprints by (model, build profile)."""
     profiles: dict[tuple[str, str], dict[str, Any]] = {}
     for model in document.get("models", []):
         if not isinstance(model, dict) or not isinstance(model.get("id"), str):
@@ -157,55 +157,57 @@ def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]
                         (model["id"], item["build_profile_id"]), {"builds": [], "packages": []}
                     )
                     profile[kind].append(item)
-        for profile_id, keys in (model.get("measurements") or {}).items():
+        for profile_id, fingerprints in (model.get("benchmark_fingerprints") or {}).items():
             if (model["id"], profile_id) in profiles:
-                profiles[(model["id"], profile_id)]["measurements"] = keys
+                profiles[(model["id"], profile_id)]["benchmark_fingerprints"] = fingerprints
     return profiles
 
 
-def _carries_keys(builds: list[dict[str, Any]], keys: dict[str, str]) -> bool:
-    """Whether the builds include every component at its head compile key."""
+def _carries_fingerprints(builds: list[dict[str, Any]], fingerprints: dict[str, str]) -> bool:
+    """Whether the builds include every component at its head compile fingerprint."""
     published = {build.get("component_id"): build.get("compile_fingerprint") for build in builds}
-    return all(published.get(component_id) == key for component_id, key in keys.items())
+    return all(published.get(component_id) == fingerprint for component_id, fingerprint in fingerprints.items())
 
 
 def merge_catalog_sources(documents: list[dict[str, Any]], matrix: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Combine source catalogs into the one prior catalog a revision is planned and published against.
 
-    Each model build profile takes its builds, packages and measurement keys together from the first source
-    whose builds carry every compile key the head declares for that profile, else from the first source that
-    has the profile at all, so its prior builds and their measurements stay visible while the replacement
-    compiles.
+    Each model build profile takes its builds, packages and benchmark fingerprints together from the first
+    source whose builds carry every compile fingerprint the head declares for that profile, else from the first
+    source that has the profile at all, so its prior builds and their benchmarks stay visible while the
+    replacement compiles.
     """
     if not documents:
         return None
-    head_keys: dict[tuple[str, str], dict[str, str]] = {}
+    head_fingerprints: dict[tuple[str, str], dict[str, str]] = {}
     for entry in matrix:
-        profile_keys = head_keys.setdefault((entry["model_id"], entry["build_profile_id"]), {})
+        profile_fingerprints = head_fingerprints.setdefault((entry["model_id"], entry["build_profile_id"]), {})
         for component_id in entry["component_ids"]:
-            profile_keys[component_id] = entry["build_fingerprint"]
+            profile_fingerprints[component_id] = entry["compile_fingerprint"]
 
     sources = [_profiles(document) for document in documents]
     models: dict[str, dict[str, Any]] = {}
-    for (model_id, profile_id), keys in sorted(head_keys.items()):
+    for (model_id, profile_id), fingerprints in sorted(head_fingerprints.items()):
         present = [source[(model_id, profile_id)] for source in sources if (model_id, profile_id) in source]
-        matching = [profile for profile in present if _carries_keys(profile["builds"], keys)]
+        matching = [profile for profile in present if _carries_fingerprints(profile["builds"], fingerprints)]
         chosen = matching or present
         if chosen:
             model = models.setdefault(model_id, {"builds": [], "packages": []})
             model["builds"].extend(chosen[0]["builds"])
             model["packages"].extend(chosen[0]["packages"])
-            if "measurements" in chosen[0]:
-                model.setdefault("measurements", {})[profile_id] = chosen[0]["measurements"]
+            if "benchmark_fingerprints" in chosen[0]:
+                model.setdefault("benchmark_fingerprints", {})[profile_id] = chosen[0]["benchmark_fingerprints"]
     return {"models": [{"id": model_id, **entries} for model_id, entries in sorted(models.items())]}
 
 
-def stage_run_exists(read: ReadRequest, read_api_url: str, run_type: str, key: str, fingerprint_version: int) -> bool:
-    """Whether a completed, unsuperseded registry run of this type carries the key."""
+def stage_run_exists(
+    read: ReadRequest, read_api_url: str, run_type: str, fingerprint: str, fingerprint_version: int
+) -> bool:
+    """Whether a completed, unsuperseded registry run of this type carries the fingerprint."""
     try:
         read(
             f"{read_api_url.rstrip('/')}{REPOSITORY_API_PATH}/resolve?"
-            f"run_type={run_type}&fingerprint={key}&fingerprint_version={fingerprint_version}"
+            f"run_type={run_type}&fingerprint={fingerprint}&fingerprint_version={fingerprint_version}"
         )
     except ModelRegistryError as exc:
         if _is_not_found(exc, "fingerprint_not_found"):
@@ -243,7 +245,7 @@ def plan_stages(
     force_rebuild_all: bool = False,
     include_on_demand: bool = False,
 ) -> dict[str, Any]:
-    """Select compile invocations whose compile key changed, and the board stages reused builds lack.
+    """Select compile invocations whose compile fingerprint changed, and the benchmarks reused builds lack.
 
     On-demand models require explicit model/profile selection and include_on_demand.
     Without a reader, every selected automatic invocation compiles.
@@ -271,7 +273,7 @@ def plan_stages(
     builds = catalog_builds(document)
 
     compile_entries: list[dict[str, Any]] = []
-    measure_entries: list[dict[str, Any]] = []
+    benchmark_entries: list[dict[str, Any]] = []
     for entry in head:
         if entry.get("build_on_demand", False) and not include_on_demand:
             continue
@@ -280,7 +282,7 @@ def plan_stages(
             for component_id in entry["component_ids"]
         }
         if force_rebuild_all or any(
-            build is None or build.get("compile_fingerprint") != entry["build_fingerprint"]
+            build is None or build.get("compile_fingerprint") != entry["compile_fingerprint"]
             for build in prior.values()
         ):
             compile_entries.append(entry)
@@ -292,16 +294,16 @@ def plan_stages(
             if not stage_run_exists(
                 read,
                 read_api_url,
-                MEASUREMENT_RUNS[stage][0],
-                measurement_key(root, model, entry["build_profile_id"], prior, stage),
-                MEASUREMENT_RUNS[stage][1],
+                BENCHMARK_RUN_TYPES[stage][0],
+                benchmark_fingerprint(root, model, entry["build_profile_id"], prior, stage),
+                BENCHMARK_RUN_TYPES[stage][1],
             )
         ]
         if stages:
-            measure_entries.append({**entry, "stages": stages})
-    measure_entries = [item for item in measure_entries if not item.get("build_on_demand", False)]
+            benchmark_entries.append({**entry, "stages": stages})
+    benchmark_entries = [item for item in benchmark_entries if not item.get("build_on_demand", False)]
     return {
         "compile": {"include": compile_entries},
-        "measure": {"include": measure_entries},
+        "benchmark": {"include": benchmark_entries},
         "catalog_found": document is not None,
     }

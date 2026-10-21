@@ -1,6 +1,6 @@
 name: Vulcan Model Compile
 
-# Compile and publish one authorized invocation, update approved builds, and start its DevKit stages.
+# Compile and publish one authorized invocation, update approved builds, and start its benchmarks.
 # vulcan-model-orchestrator.yml calls this once per selected invocation, so one build never waits on another.
 
 on:
@@ -79,7 +79,7 @@ jobs:
       EXPECTED_COMPILER_VERSION: ${{ inputs.model_compiler_version }}
       MODEL_COMPILER_LABEL: ${{ inputs.model_compiler_label }}
       VULCAN_ENVIRONMENT: ${{ inputs.vulcan_environment }}
-      BUILD_FINGERPRINT: ${{ fromJSON(inputs.entry).build_fingerprint }}
+      COMPILE_FINGERPRINT: ${{ fromJSON(inputs.entry).compile_fingerprint }}
       REQUESTED_RUNNER_CLASS: ${{ fromJSON(inputs.entry).requested_runner_class }}
       RUNNER_CLASS: ${{ fromJSON(inputs.entry).runner_class }}
       RUNNER_APPROVAL_ID: ${{ fromJSON(inputs.entry).runner_approval_id }}
@@ -225,7 +225,7 @@ jobs:
               "${calibration_args[@]}" \
               --git-sha "$GITHUB_SHA" \
               --environment "$VULCAN_ENVIRONMENT" \
-              --build-fingerprint "$BUILD_FINGERPRINT" \
+              --compile-fingerprint "$COMPILE_FINGERPRINT" \
               --requested-runner-class "$REQUESTED_RUNNER_CLASS" \
               --runner-class "$RUNNER_CLASS" \
               --runner-approval-id "$approval_id" \
@@ -400,12 +400,12 @@ jobs:
             --github-run-attempt "$GITHUB_RUN_ATTEMPT" \
             --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --json > "$RUNNER_TEMP/package-publication.json"
-          # The DevKit stages measure the profile's package, so its receipt travels with the build.
+          # The benchmarks measure the profile's package, so its receipt travels with the build.
           receipt="$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"
           mkdir -p "$(dirname "_compiled/$receipt")"
           cp "_packages/$receipt" "_compiled/$receipt"
 
-      - name: Retain the published model output for the DevKit stages
+      - name: Retain the published model output for the benchmarks
         if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand
         uses: actions/upload-artifact@v7
         with:
@@ -414,7 +414,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Start the DevKit stages
+      - name: Start the benchmarks
         if: >-
           inputs.publishable && !fromJSON(inputs.entry).build_on_demand &&
           steps.packages.outputs.count != '0' &&
@@ -425,7 +425,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ENTRY: ${{ inputs.entry }}
-        run: scripts/start_devkit_stages.sh "$ENTRY" "$GITHUB_RUN_ID"
+        run: scripts/start_benchmarks.sh "$ENTRY" "$GITHUB_RUN_ID"
 
       - name: Publish this build in the catalog
         if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand

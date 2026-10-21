@@ -259,7 +259,7 @@ def assemble_package(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         return result
-    # A lone MPK is the package itself; anything more ships as a flat ZIP of the installed files.
+    # A single-component model's MPK is the package itself; anything more ships as a flat ZIP of the installed files.
     if len(packaged_files) == 1:
         bundle_name = packaged_files[0][0]
     else:

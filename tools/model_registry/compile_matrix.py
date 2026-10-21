@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .benchmark_declarations import BENCHMARK_STAGES, benchmarked_profiles
 from .errors import ValidationError
-from .measurement import MEASUREMENT_STAGES, measured_profiles
+from .fingerprints import compile_fingerprint
 from .model import compile_invocations_for, effective_runner_class
-from .stage_keys import compile_key
 
 
 def build_matrix(
@@ -63,9 +63,9 @@ def build_matrix(
                     "build_profile_id": profile["id"],
                     "requested_runner_class": effective_runner_class(profile, bindings[first_component_id]),
                     "target": profile["target"],
-                    # The DevKit stages measure the whole model once this profile's package is published.
+                    # The benchmarks measure the whole model once this profile's package is published.
                     "stages": [
-                        stage for stage in MEASUREMENT_STAGES if profile["id"] in measured_profiles(model, stage)
+                        stage for stage in BENCHMARK_STAGES if profile["id"] in benchmarked_profiles(model, stage)
                     ],
                 }
                 if model["components"][0]["interface"]["format"] == "huggingface":
@@ -73,7 +73,7 @@ def build_matrix(
                 if model.get("build-on-demand", False):
                     entry["build_on_demand"] = True
                 if repository is not None and compiler_version is not None:
-                    entry["build_fingerprint"] = compile_key(
+                    entry["compile_fingerprint"] = compile_fingerprint(
                         repository, model_id, profile["id"], invocation["id"], compiler_version
                     )
                 include.append(entry)

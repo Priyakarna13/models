@@ -1,10 +1,10 @@
-"""Check a build profile's model report on the DevKit and publish it as one whole-model measurement run.
+"""Check a build profile's model report on the DevKit and publish it as one whole-model benchmark run.
 
 scripts/performance.py and scripts/accuracy.py write model-report.json with tools/model_report. On the board,
 check_report() holds the report to model.yaml and records the board it ran on. publish_report() then publishes
 it unchanged under the profile's package run: the report, Core's evidence and the log as artifacts, the model's
-test outcome, and one measurement per metric. The run fingerprint is the stage's measurement key, so a
-registry run with the same key means the stage need not run again.
+test outcome, and one measurement per metric. The run fingerprint is the stage's benchmark fingerprint, so a
+registry run with the same fingerprint means the stage need not run again.
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ from urllib.parse import quote
 from jsonschema import Draft202012Validator
 from model_report import CORE_REPORT_FILE, METRICS, REPORT_FILE
 
+from .benchmark_declarations import benchmarked_profiles
 from .dependencies import resolve_benchmark_runtime
 from .errors import ValidationError
 from .fetch import sha256_file
-from .measurement import measured_profiles
+from .fingerprints import BENCHMARK_RUN_TYPES, benchmark_fingerprint
 from .model import load_and_validate_model
 from .model_tests import require_test_outcome
 from .registry import S3ArtifactStore, SigV4RegistryClient, canonical_sha256
-from .stage_keys import MEASUREMENT_RUNS, measurement_key
 
 JsonObject = dict[str, Any]
 Request = Callable[[str, str, JsonObject | None, str], JsonObject]
@@ -63,7 +63,7 @@ def compiled_mpks(compiled_dir: str | Path, model: JsonObject, build_profile_id:
     for component in model["components"]:
         matches = [item for item in outputs if isinstance(item, dict) and item.get("component_id") == component["id"]]
         if len(matches) != 1 or "mpk_path" not in matches[0]:
-            raise ValidationError(f"{profile_dir}: the measurement needs exactly one compiled {component['id']} MPK")
+            raise ValidationError(f"{profile_dir}: the benchmark needs exactly one compiled {component['id']} MPK")
         path = profile_dir / matches[0]["mpk_path"]
         if sha256_file(path)[0] != matches[0].get("mpk_sha256"):
             raise ValidationError(f"{path}: MPK SHA-256 does not match compile-outputs.json")
@@ -71,7 +71,7 @@ def compiled_mpks(compiled_dir: str | Path, model: JsonObject, build_profile_id:
     return mpks
 
 
-def measurement_inputs(
+def model_component_mpks(
     compiled_dir: str | Path, repository: str | Path, model_id: str, build_profile_id: str
 ) -> list[str]:
     """``component=path`` for each MPK the model's script runs, in model.yaml order."""
@@ -99,9 +99,9 @@ def _registered_builds(
         == (model["id"], build_profile_id, "default")
     ]
     if len(packages) != 1:
-        raise ValidationError(f"{path}: a measurement needs the profile's published package")
+        raise ValidationError(f"{path}: a benchmark needs the profile's published package")
     if packages[0].get("component_run_ids") != {component: build["run_id"] for component, build in builds.items()}:
-        raise ValidationError(f"{path}: the package does not link the measured component builds")
+        raise ValidationError(f"{path}: the package does not link the benchmarked component builds")
     return builds, _run_id(packages[0].get("run_id"), path)
 
 
@@ -148,7 +148,7 @@ def check_report(
     root = Path(repository).expanduser().resolve()
     report_path = Path(path).expanduser().resolve()
     model = _model(root, model_id)
-    if build_profile_id not in measured_profiles(model, stage):
+    if build_profile_id not in benchmarked_profiles(model, stage):
         raise ValidationError(f"{model_id} does not measure {stage} of {build_profile_id}")
     report = _read_json(report_path, "model report")
     schema = _read_json(root / "schemas" / "model-report.schema.json", "schema")
@@ -223,7 +223,7 @@ def publish_report(
     request: Request | None = None,
     artifact_store: S3ArtifactStore | None = None,
 ) -> JsonObject:
-    """Publish a profile's checked model report as a whole-model measurement run under its package run.
+    """Publish a profile's checked model report as a whole-model benchmark run under its package run.
 
     ``output_dir`` holds model-report.json, environment.json, any Core evidence, and ``<stage>.log``.
     The test result carries ``test_status``, the outcome of the model's tests on the report; the run still
@@ -240,14 +240,14 @@ def publish_report(
     report = check_report(output / REPORT_FILE, root, model_id, build_profile_id, stage)
     model = _model(root, model_id)
     builds, package_run_id = _registered_builds(Path(compiled_dir).expanduser().resolve(), model, build_profile_id)
-    stage_key = measurement_key(root, model, build_profile_id, builds, stage)
-    run_type, fingerprint_version = MEASUREMENT_RUNS[stage]
+    fingerprint = benchmark_fingerprint(root, model, build_profile_id, builds, stage)
+    run_type, fingerprint_version = BENCHMARK_RUN_TYPES[stage]
     board = {**_read_json(output / ENVIRONMENT_FILE, "runner environment"), "pyneat": report["runtime"]["pyneat"]}
     runtime = resolve_benchmark_runtime(root)
     report_digest = canonical_sha256(report)
-    stable_digest = hashlib.sha256(f"{package_run_id}:{stage_key}:{report_digest}".encode()).hexdigest()
+    stable_digest = hashlib.sha256(f"{package_run_id}:{fingerprint}:{report_digest}".encode()).hexdigest()
     stable_key = f"models-{stage}-{stable_digest}"
-    prefix = f"models/{quote(branch, safe='')}/{commit_sha[:12]}/{model_id}/{build_profile_id}/{stage}/{stage_key}"
+    prefix = f"models/{quote(branch, safe='')}/{commit_sha[:12]}/{model_id}/{build_profile_id}/{stage}/{fingerprint}"
     subject = {"model_id": model_id, "build_profile_id": build_profile_id}
     client = SigV4RegistryClient(api_url, aws_region, request=request)
     store = artifact_store or S3ArtifactStore(bucket, kms_key_id=kms_key_id)
@@ -259,7 +259,7 @@ def publish_report(
         "parent_run_id": package_run_id,
         "commit_sha": commit_sha,
         "git_ref": f"refs/heads/{branch}",
-        "run_fingerprint": stage_key,
+        "run_fingerprint": fingerprint,
         "environment": {
             "fingerprint": canonical_sha256(board),
             "fingerprint_version": fingerprint_version,
@@ -274,7 +274,7 @@ def publish_report(
                                                "cpu_frequency_khz")},
             },
         },
-        "metadata": {**subject, "stage": stage, "package_run_id": package_run_id, "measurement_key": stage_key},
+        "metadata": {**subject, "stage": stage, "package_run_id": package_run_id},
     }
     if github_run_url:
         create_body.update({"ci_provider": "github-actions", "ci_run_url": github_run_url})
@@ -330,8 +330,8 @@ def publish_report(
     sample_count = report["dataset"]["evaluated_samples"] if stage == "accuracy" else 1
     measurements = [
         {
-            "measurement_key": f"{stage_key}-{name}",
-            "name": METRICS[name]["measurement"],
+            "measurement_key": f"{fingerprint}-{name}",
+            "name": METRICS[name]["registry_name"],
             "unit": METRICS[name]["unit"],
             "value": value,
             "direction": METRICS[name]["direction"],
@@ -351,6 +351,6 @@ def publish_report(
         "run_type": run_type,
         "package_run_id": package_run_id,
         **subject,
-        "measurement_key": stage_key,
+        "benchmark_fingerprint": fingerprint,
         "test_status": test_status,
     }

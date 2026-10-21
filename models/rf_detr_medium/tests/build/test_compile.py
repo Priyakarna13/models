@@ -404,7 +404,7 @@ def test_surgery_simplifies_only_the_decoder_partition() -> None:
     assert "full, valid = simplify(" not in source
 
 
-def test_model_declares_onnx_and_whole_model_measurements() -> None:
+def test_model_declares_onnx_and_whole_model_benchmarks() -> None:
     model = load_metadata(MODEL_DIR)
     invocation = model["build_profiles"][0]["compile_invocations"][0]
 

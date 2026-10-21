@@ -148,7 +148,7 @@ def test_every_metric_names_its_stage_unit_direction_and_measurement():
     for name, metric in model_report.METRICS.items():
         assert metric["stage"] in {"performance", "accuracy"}, name
         assert metric["direction"] in {"higher", "lower", "neutral"}, name
-        assert metric["unit"] and metric["label"] and metric["measurement"], name
+        assert metric["unit"] and metric["label"] and metric["registry_name"], name
 
 
 def test_the_package_needs_only_the_standard_library():
@@ -164,8 +164,8 @@ def test_the_package_needs_only_the_standard_library():
     assert result.stdout.strip() == "[]"
 
 
-def single_mpk_performance_scripts():
-    """Scripts that benchmark one MPK with Model.benchmark; each multi-component model's tests check its pipeline."""
+def single_component_performance_scripts():
+    """Single-component models' scripts, which run Model.benchmark; multi-component models test their pipeline."""
     scripts = []
     for path in sorted(REPOSITORY.glob("models/*/model.yaml")):
         model = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -175,8 +175,8 @@ def single_mpk_performance_scripts():
     return scripts
 
 
-@pytest.mark.parametrize("script", single_mpk_performance_scripts(), ids=lambda path: path.parents[1].name)
-def test_every_single_mpk_script_saves_a_report_from_its_benchmark(script, monkeypatch, tmp_path):
+@pytest.mark.parametrize("script", single_component_performance_scripts(), ids=lambda path: path.parents[1].name)
+def test_every_single_component_script_saves_a_report_from_its_benchmark(script, monkeypatch, tmp_path):
     loaded, requests = [], []
 
     class ScriptModel(Model):

@@ -1,11 +1,11 @@
-// Reads the whole-model reports a build profile's DevKit measurement runs publish
+// Reads the whole-model reports a build profile's benchmark runs publish
 // (schemas/model-report.schema.json, written by tools/model_report).
 import { analyzeLayers } from "./layer-stats.js";
 
-// Each DevKit stage's registry run type and fingerprint version, as tools/model_registry/stage_keys.py
-// MEASUREMENT_RUNS records them.
-export const MEASUREMENT_RUNS = {
-  performance: ["model_benchmark", 3],
+// Each benchmark stage's registry run type and fingerprint version, as tools/model_registry/fingerprints.py
+// BENCHMARK_RUN_TYPES records them.
+export const BENCHMARK_RUN_TYPES = {
+  performance: ["model_performance", 3],
   accuracy: ["model_accuracy", 2],
 };
 
@@ -45,12 +45,12 @@ function supported(report, stage) {
     && report.metrics && typeof report.metrics === "object";
 }
 
-// A measurement of one build profile: the run that measured it and its report. No measurement reads as
+// A benchmark run of one build profile: the registry run and its report. No benchmark run reads as
 // missing, and another report format as unsupported.
-function read(measurement, stage, adapt) {
-  if (!measurement?.report) return { kind: "missing" };
-  if (!supported(measurement.report, stage)) return { kind: "unsupported" };
-  return { kind: "supported", value: adapt(measurement) };
+function read(benchmarkRun, stage, adapt) {
+  if (!benchmarkRun?.report) return { kind: "missing" };
+  if (!supported(benchmarkRun.report, stage)) return { kind: "unsupported" };
+  return { kind: "supported", value: adapt(benchmarkRun) };
 }
 
 // A report metric is a plain number in the unit metrics.js gives it. A telemetry metric also keeps the range and
@@ -92,8 +92,8 @@ function cpuCores(telemetry) {
 
 // A performance report measures the whole model, however many components it runs, and records each
 // component's layer timings and execution plan in the order the model runs them.
-export function readPerformance(measured) {
-  return read(measured, "performance", ({ run, report }) => {
+export function readPerformance(benchmarkRun) {
+  return read(benchmarkRun, "performance", ({ run, report }) => {
     const telemetry = report.telemetry || {};
     return {
       measurements: Object.fromEntries(Object.entries(report.metrics)
@@ -117,8 +117,8 @@ export function readPerformance(measured) {
 
 // An accuracy report scores the whole model as ratios over the evaluated part of the dataset the run's
 // parameters name.
-export function readAccuracy(measured) {
-  return read(measured, "accuracy", ({ parameters, report }) => ({
+export function readAccuracy(benchmarkRun) {
+  return read(benchmarkRun, "accuracy", ({ parameters, report }) => ({
     metrics: Object.fromEntries(Object.entries(report.metrics).filter(([, value]) => Number.isFinite(value))),
     dataset: { ...parameters?.accuracy?.dataset, ...report.dataset },
     details: report.details && typeof report.details === "object" ? report.details : {},

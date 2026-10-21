@@ -169,13 +169,13 @@ export function branchModels(compileRuns, packageRuns, catalogModels, compiler =
   const models = new Map();
   for (const group of latest.values()) {
     const definition = definitions.get(group.modelId) || { model_id: group.modelId, display_name: group.modelId };
-    if (!models.has(group.modelId)) models.set(group.modelId, { ...definition, measurements: {}, builds: [], packages: [] });
+    if (!models.has(group.modelId)) models.set(group.modelId, { ...definition, benchmark_fingerprints: {}, builds: [], packages: [] });
     const model = models.get(group.modelId);
     const exactBuilds = group.runs.map((run) => definition.builds?.find((build) => build.run_id === run.id
       && build.build_profile_id === group.profile && build.component_id === (run.metadata?.component_id || "model")));
-    // A measurement key names the MPKs it measured, so only a profile showing the catalog's own build keeps it.
-    if (exactBuilds.every(Boolean) && definition.measurements?.[group.profile]) {
-      model.measurements[group.profile] = definition.measurements[group.profile];
+    // A benchmark fingerprint names the MPKs it measured, so only a profile showing the catalog's own build keeps it.
+    if (exactBuilds.every(Boolean) && definition.benchmark_fingerprints?.[group.profile]) {
+      model.benchmark_fingerprints[group.profile] = definition.benchmark_fingerprints[group.profile];
     }
     group.runs.forEach((run, index) => {
       model.builds.push({

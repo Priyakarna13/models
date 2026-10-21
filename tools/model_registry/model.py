@@ -16,8 +16,8 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
+from .benchmark_declarations import validate_benchmark_declarations
 from .errors import SourcePolicyError, ValidationError
-from .measurement import validate_measurements
 from .model_tests import TESTS_DIR, TESTS_SCHEMA, validate_model_tests
 from .source import SourceSpec
 from .taxonomy import find_taxonomy, load_taxonomy, validate_model_categorization
@@ -331,7 +331,7 @@ def validate_model(
         candidate = (directory / relative).resolve()
         if not candidate.is_relative_to(directory) or not candidate.is_file():
             raise ValidationError(f"{directory}: referenced file does not exist inside model directory: {relative}")
-    validate_measurements(model, directory)
+    validate_benchmark_declarations(model, directory)
     validate_model_tests(directory, model, schema_file.parent / TESTS_SCHEMA)
     return model
 

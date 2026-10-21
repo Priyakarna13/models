@@ -169,7 +169,7 @@ def test_hugging_face_model_is_one_component_compiled_from_its_config() -> None:
 
 RUN_TESTS = {"run_tests": True}
 DATASET = {"id": "fixture-set", "variant": "mini", "sha256": "a" * 64, "size_bytes": 1}
-MEASUREMENTS = {
+BENCHMARK_DECLARATIONS = {
     "accuracy": {"status": "ready", "dataset": "fixture", "required_metrics": ["top1_accuracy"]},
     "performance": {"required_metrics": ["latency_avg_ms", "throughput_fps"]},
 }
@@ -183,8 +183,8 @@ def _write_model_tests(directory: Path, tests: dict) -> None:
     (directory / "tests" / "tests.yaml").write_text(yaml.safe_dump(tests), encoding="utf-8")
 
 
-def _measured_model(tmp_path: Path, *stages: str) -> tuple[Path, dict]:
-    """A copy of the fixture that measures the given stages, with their scripts, test files and expected values."""
+def _benchmarked_model(tmp_path: Path, *stages: str) -> tuple[Path, dict]:
+    """A copy of the fixture that benchmarks the given stages, with their scripts, test files and expected values."""
     directory = tmp_path / "fixture_model"
     shutil.copytree(FIXTURE, directory)
     (directory / "tests" / "measure").mkdir()
@@ -194,24 +194,24 @@ def _measured_model(tmp_path: Path, *stages: str) -> tuple[Path, dict]:
     for stage in stages:
         (directory / "scripts" / f"{stage}.py").write_text("", encoding="utf-8")
         (directory / "tests" / "measure" / f"test_{stage}.py").write_text("", encoding="utf-8")
-        authored[stage] = copy.deepcopy(MEASUREMENTS[stage])
+        authored[stage] = copy.deepcopy(BENCHMARK_DECLARATIONS[stage])
         tests[stage] = EXPECTED[stage]
     _write_model_tests(directory, tests)
     return directory, authored
 
 
-def test_measured_model_is_valid(tmp_path: Path) -> None:
-    directory, authored = _measured_model(tmp_path, "accuracy", "performance")
+def test_benchmarked_model_is_valid(tmp_path: Path) -> None:
+    directory, authored = _benchmarked_model(tmp_path, "accuracy", "performance")
 
     model = validate_model(directory, authored, SCHEMA)
 
-    assert model["accuracy"] == {**MEASUREMENTS["accuracy"], "dataset": DATASET}
-    assert model["performance"] == MEASUREMENTS["performance"]
+    assert model["accuracy"] == {**BENCHMARK_DECLARATIONS["accuracy"], "dataset": DATASET}
+    assert model["performance"] == BENCHMARK_DECLARATIONS["performance"]
 
 
 @pytest.mark.parametrize("stage", ["accuracy", "performance"])
-def test_measurement_requires_its_script(tmp_path: Path, stage: str) -> None:
-    directory, authored = _measured_model(tmp_path, stage)
+def test_benchmark_declaration_requires_its_script(tmp_path: Path, stage: str) -> None:
+    directory, authored = _benchmarked_model(tmp_path, stage)
     (directory / "scripts" / f"{stage}.py").unlink()
     with pytest.raises(ValidationError, match=f"{stage} needs scripts/{stage}.py"):
         validate_model(directory, authored, SCHEMA)
@@ -235,8 +235,8 @@ def test_measurement_requires_its_script(tmp_path: Path, stage: str) -> None:
         ("performance", {"unsupported_setting": True}, "'unsupported_setting' was unexpected"),
     ],
 )
-def test_measurement_is_validated(tmp_path: Path, stage: str, settings: dict, expected: str) -> None:
-    directory, authored = _measured_model(tmp_path, stage)
+def test_benchmark_declaration_is_validated(tmp_path: Path, stage: str, settings: dict, expected: str) -> None:
+    directory, authored = _benchmarked_model(tmp_path, stage)
     authored[stage].update(settings)
     with pytest.raises(ValidationError, match=expected):
         validate_model(directory, authored, SCHEMA)
@@ -418,7 +418,7 @@ def test_model_tests_follow_their_tests_file(tmp_path: Path, change, expected: s
 
 
 def test_model_tests_set_up_every_stage_the_model_has(tmp_path: Path) -> None:
-    directory, authored = _measured_model(tmp_path, "accuracy", "performance")
+    directory, authored = _benchmarked_model(tmp_path, "accuracy", "performance")
     _write_model_tests(directory, {"compile": RUN_TESTS, "accuracy": EXPECTED["accuracy"]})
     with pytest.raises(ValidationError, match="set up exactly the stages this model has: missing performance"):
         validate_model(directory, authored, SCHEMA)
@@ -467,7 +467,7 @@ def test_model_tests_set_up_every_stage_the_model_has(tmp_path: Path) -> None:
 def test_measured_stages_state_what_the_model_must_deliver(
     tmp_path: Path, stage: str, entry: dict, expected: str
 ) -> None:
-    directory, authored = _measured_model(tmp_path, "accuracy", "performance")
+    directory, authored = _benchmarked_model(tmp_path, "accuracy", "performance")
     validate_model(directory, authored, SCHEMA)
 
     _write_model_tests(directory, {"compile": RUN_TESTS, **EXPECTED, stage: entry})

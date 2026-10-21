@@ -52,7 +52,7 @@ taken from the model directory:
 Keep the name short and leave input sizes out of it; the build profile carries
 them. Write the description as one plain sentence about what the model does.
 Changing the name, description, or hero does not recompile or remeasure any
-build, because none of them is part of a stage key.
+build, because none of them is part of a fingerprint.
 
 The search field matches model, build-profile, and component names and the taxonomy
 labels. Task and model family filters sit beside the cards. Developer view also
@@ -116,9 +116,9 @@ in this order:
    power, and energy per inference. The line below them names the workload the
    report records, such as **YoloV26 box decoder, top 100**, and when it was
    measured. Its commit and GitHub workflow are those of the run that measured
-   the profile. A measurement is reused until its
-   [stage key](benchmarking.md#ci-and-registry-publication) changes, so that commit can be
-   later than the build's. A profile with no result shows **Not measured at
+   the profile. A benchmark run is reused until its
+   [benchmark fingerprint](benchmarking.md#ci-and-registry-publication) changes, so that
+   commit can be later than the build's. A profile with no result shows **Not measured at
    this revision.**
    When the report includes layer stats, **Runtime Layer Analysis**
    shows one full-width table with **Compiled layer / Execution time (µs) / Share (%)**
@@ -156,7 +156,7 @@ in this order:
    denominator. These timings come from a separate profiling pass; they are not
    a partition of headline latency. Compiled layer names may differ from ONNX
    operators. Historical reports without stats omit this section.
-   **Benchmark details** has three cards on the left:
+   **Performance details** has three cards on the left:
    **Performance** with the throughput, the mean latency, and the p50, p95,
    and p99 latency in one row; **Heat** with the SoC and SoM temperatures;
    and **CPU** with the core count, the load over all cores and on the
@@ -178,7 +178,7 @@ in this order:
    every metric, every SoM rail, every CPU core, and all compiled layer timings.
    A metric the browser does not place in the tiles or the cards appears under **Other measurements**,
    so a new metric shows up without a browser change.
-   Runtime Layer Analysis sits below Benchmark details, followed by an **Execution graph** disclosure that
+   Runtime Layer Analysis sits below Performance details, followed by an **Execution graph** disclosure that
    draws the steps the component runs, from input to output, each tagged with the
    processor it runs on; the step on the MLA is the **Compiled Model**. Its summary
    lists those processors. The diagram uses the available width, with equal-width
@@ -191,7 +191,7 @@ in this order:
    multi-component model whose `model.yaml` declares a `pipeline` first shows
    the order its components run in, from input to output: numbered components,
    with any CPU step between them, such as RF-DETR's **Top 300 proposals**.
-   The tiles, context line, and **Benchmark details** are the
+   The tiles, context line, and **Performance details** are the
    [whole-model result](benchmarking.md#multi-component-models), with the
    components and CPU step running together. **Runtime Layer Analysis** and
    **Execution graph** each switch between the components, and **Download CSV**

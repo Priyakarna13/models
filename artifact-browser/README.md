@@ -65,7 +65,7 @@ this checkout defines; a model added or removed there appears or disappears
 without changes to the preview. Only what a board or the registry would produce
 is synthetic: run IDs, timestamps, sizes, and measured values. Two catalog
 revisions give every variant an older build in its history.
-The preview resolves each measurement key the catalog records to a DevKit run
+The preview resolves each benchmark fingerprint the catalog records to a DevKit run
 whose model report starts from a fixture. `fixtures/model-report-performance.json`
 is a ResNet-50 DevKit Core benchmark converted to a model report, so its board
 telemetry and power rails are real readings; the preview varies only speed,
@@ -78,7 +78,7 @@ outputs and zero-time entries. Input placeholders are omitted, matching the
 benchmark API. These names do not describe the selected model's actual graph.
 `fixtures/model-report-accuracy.json` gives each accuracy run its shape; the
 preview fills in the metrics the model's tests expect. SSD MobileNet v1 W16A16
-keeps its measurement key without a run, so its page shows **Not measured at
+keeps its benchmark fingerprint without a run, so its page shows **Not measured at
 this revision.** Edit the fixtures to exercise other metric values or
 availability states.
 
@@ -183,7 +183,7 @@ everything longer sits in one expandable row.
   inference for the whole model, one number per tile, from the build profile's
   performance run. A multi-component model is measured with its components
   running together, and its layer analysis and execution graph switch between
-  the components. **Benchmark details** is
+  the components. **Performance details** is
   performance, heat, and CPU cards, with power (SoM; SoC as the sum of its
   MLA and Non-MLA rails; and each other power rail) and memory cards beside
   them,
@@ -205,8 +205,9 @@ everything longer sits in one expandable row.
 - **License** is one line with the SPDX identifier and redistribution, plus
   the attribution.
 
-The catalog records each build profile's measurement keys. A key without a
-run, or a profile without a key, shows **Not measured at this revision.**
+The catalog records each build profile's benchmark fingerprints. A fingerprint
+without a run, or a profile without one, shows **Not measured at this
+revision.**
 
 ## Compare page
 

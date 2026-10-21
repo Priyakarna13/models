@@ -8,12 +8,12 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from .artifact import record_compile_outputs, validate_compile_outputs, verify_artifact, verify_mpk
+from .benchmark_declarations import BENCHMARK_STAGES, benchmarked_profiles, reference_metrics_by_model
 from .compile_matrix import build_matrix
 from .dependencies import resolve_benchmark_runtime, resolve_model_compiler
 from .documentation import load_model_documentation
 from .errors import ModelRegistryError
 from .fetch import Fetcher, resolve_dataset
-from .measurement import MEASUREMENT_STAGES, measured_profiles, reference_metrics_by_model
 from .model import component_for, component_pipelines, load_and_validate_model, load_models, profile_component_for
 from .model_tests import TEST_OUTCOMES
 from .runner_approval import authorize_runner_matrix
@@ -108,7 +108,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     reference.add_argument("--output", type=Path, required=True)
 
     stages = subcommands.add_parser(
-        "plan-stages", help="select changed compile invocations and the board stages reused builds still need"
+        "plan-stages", help="select changed compile invocations and the benchmarks reused builds still need"
     )
     stages.add_argument("--repository", type=Path, default=Path.cwd())
     stages.add_argument("--compiler-version", required=True)
@@ -154,7 +154,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     devkit_accuracy.add_argument("--build-profile", required=True)
 
     inputs = subcommands.add_parser(
-        "measurement-inputs", help="print component=path for each MPK a build profile's measurement runs"
+        "model-component-mpks", help="print component=path for each component MPK a build profile's benchmarks run"
     )
     inputs.add_argument("compiled_dir", type=Path, help="root holding <model>/<profile>/compile-outputs.json")
     inputs.add_argument("--repository", type=Path, default=Path.cwd())
@@ -166,7 +166,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     )
     check.add_argument("output_dir", type=Path, help="the stage output holding model-report.json")
     check.add_argument("--repository", type=Path, default=Path.cwd())
-    check.add_argument("--stage", choices=MEASUREMENT_STAGES, required=True)
+    check.add_argument("--stage", choices=BENCHMARK_STAGES, required=True)
     check.add_argument("--model", required=True)
     check.add_argument("--build-profile", required=True)
 
@@ -186,7 +186,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     mpk.add_argument("--calibration-sha256")
     mpk.add_argument("--git-sha")
     mpk.add_argument("--environment")
-    mpk.add_argument("--build-fingerprint")
+    mpk.add_argument("--compile-fingerprint")
     mpk.add_argument("--requested-runner-class")
     mpk.add_argument("--runner-class")
     mpk.add_argument("--runner-approval-id")
@@ -287,10 +287,10 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     publish_package.add_argument("--json", action="store_true", dest="json_output")
 
     publish_report = subcommands.add_parser(
-        "publish-report", help="publish a checked model report as a whole-model measurement run"
+        "publish-report", help="publish a checked model report as a whole-model benchmark run"
     )
     publish_report.add_argument("output_dir", type=Path, help="the stage output check-report accepted")
-    publish_report.add_argument("--stage", choices=MEASUREMENT_STAGES, required=True)
+    publish_report.add_argument("--stage", choices=BENCHMARK_STAGES, required=True)
     publish_report.add_argument(
         "--repository", type=Path, required=True, help="models checkout at the measured revision"
     )
@@ -630,7 +630,7 @@ def _verify_mpk(args: argparse.Namespace) -> int:
         "calibration_sha256",
         "git_sha",
         "environment",
-        "build_fingerprint",
+        "compile_fingerprint",
         "requested_runner_class",
         "runner_class",
         "runner_approval_id",
@@ -768,7 +768,7 @@ def _publish_candidate(args: argparse.Namespace) -> int:
 
 def _resolve_devkit_accuracy(args: argparse.Namespace) -> int:
     model = load_and_validate_model(args.model_dir, args.schema)
-    if args.build_profile not in measured_profiles(model, "accuracy"):
+    if args.build_profile not in benchmarked_profiles(model, "accuracy"):
         result = {"kind": "none", "model_id": model["id"], "build_profile_id": args.build_profile}
     else:
         dataset = model["accuracy"]["dataset"]
@@ -821,7 +821,8 @@ def _publish_report(args: argparse.Namespace) -> int:
     message = (
         json.dumps(result, sort_keys=True)
         if args.json_output
-        else f"Published {args.stage} {result['measurement_key']} for {result['model_id']}/{result['build_profile_id']}"
+        else f"Published {args.stage} {result['benchmark_fingerprint']} "
+        f"for {result['model_id']}/{result['build_profile_id']}"
     )
     print(message)
     return 0
@@ -919,10 +920,10 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
             return _resolve_benchmark_runtime(args)
         if args.command == "resolve-devkit-accuracy":
             return _resolve_devkit_accuracy(args)
-        if args.command == "measurement-inputs":
-            from .report_publication import measurement_inputs
+        if args.command == "model-component-mpks":
+            from .report_publication import model_component_mpks
 
-            print("\n".join(measurement_inputs(args.compiled_dir, args.repository, args.model, args.build_profile)))
+            print("\n".join(model_component_mpks(args.compiled_dir, args.repository, args.model, args.build_profile)))
             return 0
         if args.command == "check-report":
             return _check_report(args)

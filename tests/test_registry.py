@@ -9,6 +9,7 @@ import pytest
 from model_registry.compile_matrix import build_matrix
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
+from model_registry.fingerprints import benchmark_fingerprint, compile_fingerprint
 from model_registry.model import load_model, load_models
 from model_registry.package import assemble_package
 from model_registry.registry import (
@@ -26,7 +27,6 @@ from model_registry.registry import (
     publish_packages,
     stage_catalog_build,
 )
-from model_registry.stage_keys import compile_key, measurement_key
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPILER = resolve_model_compiler(ROOT)
@@ -160,7 +160,7 @@ def _packaged_result(tmp_path: Path) -> Path:
             "source_sha256": "de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50",
             "git_sha": "a" * 40,
             "environment": "staging",
-            "build_fingerprint": compile_key(ROOT, "resnet_50", "w16a16", "w16a16", COMPILER_IDENTITY),
+            "compile_fingerprint": compile_fingerprint(ROOT, "resnet_50", "w16a16", "w16a16", COMPILER_IDENTITY),
         },
     }
     (output / "compile-result.json").write_text(json.dumps(result), encoding="utf-8")
@@ -481,8 +481,8 @@ def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatc
     )
     resnet = next(model for model in snapshot["models"] if model["id"] == "resnet_50")
     assert resnet["builds"][0]["artifact_sha256"] == artifact["artifact_sha256"]
-    # The fresh build carries the key of the profile's whole-model performance run; w16a16 has no accuracy.
-    assert resnet["measurements"] == {"w16a16": {"performance": measurement_key(
+    # The fresh build carries its profile's whole-model performance fingerprint; w16a16 has no accuracy.
+    assert resnet["benchmark_fingerprints"] == {"w16a16": {"performance": benchmark_fingerprint(
         ROOT, models["resnet_50"], "w16a16", {"model": resnet["builds"][0]}, "performance",
     )}}
     package_dir = tmp_path / "packages" / "resnet_50/w16a16/packages/default"
@@ -625,7 +625,7 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
                         {
                             "build_profile_id": entry["build_profile_id"],
                             "component_id": component_id,
-                            "compile_fingerprint": entry["build_fingerprint"],
+                            "compile_fingerprint": entry["compile_fingerprint"],
                             "artifact_sha256": "e" * 64,
                             "run_id": f"00000000-0000-4000-8000-{index:012d}",
                         }
@@ -649,7 +649,7 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
     assert all("taxonomy_version" not in model["categories"] for model in first["models"])
 
 
-def test_catalog_records_measurement_keys_bound_to_their_compile_runs() -> None:
+def test_catalog_records_benchmark_fingerprints_bound_to_their_compile_runs() -> None:
     models = load_models(ROOT)
     model = models["resnet_50"]
     matrix = build_matrix(
@@ -661,7 +661,7 @@ def test_catalog_records_measurement_keys_bound_to_their_compile_runs() -> None:
             {
                 "build_profile_id": entry["build_profile_id"],
                 "component_id": component_id,
-                "compile_fingerprint": entry["build_fingerprint"],
+                "compile_fingerprint": entry["compile_fingerprint"],
                 "artifact_sha256": "e" * 64,
                 "run_id": f"{run_prefix}-{index:012d}",
             }
@@ -674,25 +674,28 @@ def test_catalog_records_measurement_keys_bound_to_their_compile_runs() -> None:
 
     resnet = snapshot("00000000-0000-4000-8000")
     builds = {build["build_profile_id"]: {"model": build} for build in resnet["builds"]}
-    assert all("benchmark_fingerprint" not in build["model"] for build in builds.values())
-    # Each profile records one key per stage it measures; only w8a8 declares accuracy.
-    assert resnet["measurements"] == {
-        "w16a16": {"performance": measurement_key(ROOT, model, "w16a16", builds["w16a16"], "performance")},
+    assert all(set(build["model"]) == {
+        "build_profile_id", "compile_invocation_id", "component_id", "compile_fingerprint", "artifact_sha256", "run_id",
+    } for build in builds.values())
+    # Each profile records one fingerprint per stage it benchmarks; only w8a8 declares accuracy.
+    assert resnet["benchmark_fingerprints"] == {
+        "w16a16": {"performance": benchmark_fingerprint(ROOT, model, "w16a16", builds["w16a16"], "performance")},
         "w8a8": {
-            "performance": measurement_key(ROOT, model, "w8a8", builds["w8a8"], "performance"),
-            "accuracy": measurement_key(ROOT, model, "w8a8", builds["w8a8"], "accuracy"),
+            "performance": benchmark_fingerprint(ROOT, model, "w8a8", builds["w8a8"], "performance"),
+            "accuracy": benchmark_fingerprint(ROOT, model, "w8a8", builds["w8a8"], "accuracy"),
         },
     }
-    assert resnet["measurements"]["w8a8"]["performance"] != resnet["measurements"]["w8a8"]["accuracy"]
+    w8a8 = resnet["benchmark_fingerprints"]["w8a8"]
+    assert w8a8["performance"] != w8a8["accuracy"]
 
-    # A new compile run of identical inputs still needs its own board measurements.
+    # A new compile run of identical inputs still needs its own benchmarks.
     rebuilt = snapshot("00000000-0000-4000-9000")
     assert [build["compile_fingerprint"] for build in rebuilt["builds"]] == [
         build["compile_fingerprint"] for build in resnet["builds"]
     ]
-    for profile_id, keys in resnet["measurements"].items():
-        for stage, key in keys.items():
-            assert rebuilt["measurements"][profile_id][stage] != key
+    for profile_id, fingerprints in resnet["benchmark_fingerprints"].items():
+        for stage, fingerprint in fingerprints.items():
+            assert rebuilt["benchmark_fingerprints"][profile_id][stage] != fingerprint
 
 
 def test_incremental_catalog_keeps_prior_builds_for_missing_changed_invocations(monkeypatch) -> None:
@@ -701,7 +704,7 @@ def test_incremental_catalog_keeps_prior_builds_for_missing_changed_invocations(
     invocation = build_matrix(
         models, ["resnet_50"], ["w16a16"], repository=ROOT, compiler_version=compiler_version,
     )["include"][0]
-    changed = dict(invocation, build_fingerprint="f" * 64)
+    changed = dict(invocation, compile_fingerprint="f" * 64)
     monkeypatch.setattr("model_registry.registry.build_matrix", lambda *args, **kwargs: {"include": [changed]})
     prior_build = {
         "build_profile_id": "w16a16",
@@ -711,20 +714,22 @@ def test_incremental_catalog_keeps_prior_builds_for_missing_changed_invocations(
         "artifact_sha256": "d" * 64,
         "run_id": "00000000-0000-4000-8000-000000000001",
     }
-    prior_measurements = {"w16a16": {"performance": "a" * 64}}
+    prior_benchmark_fingerprints = {"w16a16": {"performance": "a" * 64}}
 
     snapshot = build_catalog_snapshot(
         repository=ROOT,
         branch="develop",
         git_sha="a" * 40,
-        previous={"models": [{"id": "resnet_50", "builds": [prior_build], "measurements": prior_measurements}]},
+        previous={"models": [
+            {"id": "resnet_50", "builds": [prior_build], "benchmark_fingerprints": prior_benchmark_fingerprints},
+        ]},
         incremental=True,
     )
 
     resnet = next(model for model in snapshot["models"] if model["id"] == "resnet_50")
     assert resnet["builds"] == [prior_build]
-    # The prior build's measurement keys stay visible with it while the replacement is pending.
-    assert resnet["measurements"] == prior_measurements
+    # The prior build's benchmark fingerprints stay visible with it while the replacement is pending.
+    assert resnet["benchmark_fingerprints"] == prior_benchmark_fingerprints
     assert snapshot["pending_builds"] == [{
         "model_id": "resnet_50",
         "build_profile_id": "w16a16",
@@ -749,7 +754,7 @@ def test_selected_same_fingerprint_rebuild_replaces_package_after_component_publ
         "build_profile_id": "w16a16",
         "compile_invocation_id": invocation["compile_invocation_id"],
         "component_id": "model",
-        "compile_fingerprint": invocation["build_fingerprint"],
+        "compile_fingerprint": invocation["compile_fingerprint"],
         "artifact_sha256": "a" * 64,
         "run_id": old_run_id,
     }
@@ -776,7 +781,7 @@ def test_selected_same_fingerprint_rebuild_replaces_package_after_component_publ
 
     resnet = next(model for model in initial["models"] if model["id"] == "resnet_50")
     assert resnet["builds"][0]["run_id"] == old_run_id
-    assert resnet["builds"][0]["compile_fingerprint"] == invocation["build_fingerprint"]
+    assert resnet["builds"][0]["compile_fingerprint"] == invocation["compile_fingerprint"]
     assert resnet["packages"] == []
     assert initial["pending_builds"] == []
 
@@ -789,7 +794,7 @@ def test_selected_same_fingerprint_rebuild_replaces_package_after_component_publ
         "component_id": "model",
         "run_id": new_run_id,
         "artifact_sha256": "d" * 64,
-        "compile_fingerprint": invocation["build_fingerprint"],
+        "compile_fingerprint": invocation["compile_fingerprint"],
     }]}), encoding="utf-8")
     component_published = build_catalog_snapshot(
         repository=ROOT,
@@ -1083,7 +1088,7 @@ def test_stage_catalog_build_writes_the_receipt_of_the_profile_default_package(t
 
     profile = _stage_catalog_build(tmp_path, [other_profile, package])
 
-    # The DevKit stages read the package run from the same receipt publish-package writes.
+    # The benchmarks read the package run from the same receipt publish-package writes.
     receipt = profile / "packages" / "default" / "registry-publication.json"
     assert json.loads(receipt.read_text(encoding="utf-8")) == {"packages": [{"model_id": "resnet_50", **package}]}
 
