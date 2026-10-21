@@ -1,5 +1,6 @@
 // Registry API requests, local caches, and catalog build selection.
 import { deploymentCatalog, runProfile, variantBuildKey, variantBuildRuns } from "./branch-builds.js";
+import { MEASUREMENT_RUNS } from "./model-report.js";
 import { DEFAULT_BRANCH, state, elements, categoryFilters } from "./state.js";
 
 export async function api(path) {
@@ -16,34 +17,41 @@ export async function api(path) {
   return payload;
 }
 
-// DevKit accuracy is its own registry run, keyed by the accuracy key the catalog records on the
-// build that reports the result.
-async function devkitAccuracy(accuracyKey) {
-  if (!accuracyKey) return null;
+// Each DevKit stage of a build profile is its own registry run, found by the measurement key the catalog
+// records for that profile. No run means the stage has not measured this build.
+async function loadMeasurement(stage, measurementKey) {
+  if (!measurementKey) return null;
+  const [runType, fingerprintVersion] = MEASUREMENT_RUNS[stage];
   const repo = state.repository;
-  const query = new URLSearchParams({ run_type: "model_accuracy", fingerprint: accuracyKey, fingerprint_version: "1" });
+  const query = new URLSearchParams({ run_type: runType, fingerprint: measurementKey, fingerprint_version: String(fingerprintVersion) });
+  let resolved;
   try {
-    const { run } = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/resolve?${query}`);
-    // The resolved run omits its workflow; the full run gives the Accuracy section both commit and workflow.
-    const [payload, summary] = await Promise.all([
-      api(`/v1/runs/${run.id}/accuracy/latest`), api(`/v1/runs/${run.id}`).catch(() => null),
-    ]);
-    return { ...payload, run: summary?.run || run };
+    ({ run: resolved } = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/resolve?${query}`));
   } catch (error) {
     if (error.status === 404) return null;
     throw error;
   }
+  // The resolved run omits its workflow; the full run gives the result both commit and workflow.
+  const [summary, provenance, tests] = await Promise.all([
+    api(`/v1/runs/${resolved.id}`).catch(() => null),
+    api(`/v1/runs/${resolved.id}/provenance`),
+    api(`/v1/runs/${resolved.id}/test-results`),
+  ]);
+  return {
+    run: summary?.run || resolved,
+    parameters: provenance.parameters?.parameters || {},
+    report: (tests.test_results || []).find((item) => item.suite === stage && item.name === "model")?.summary || null,
+  };
 }
 
-// Only the build of the component that reports the result carries the key. A build missing from the
-// current catalog, as in history mode, takes it from the catalog at the build's revision.
-async function accuracyKeyForRuns(runs) {
-  const runIds = new Set(runs.map((run) => run.id));
-  const keyIn = (model) => model?.builds?.find((build) => runIds.has(build.run_id) && build.validation_fingerprint)
-    ?.validation_fingerprint;
+// The catalog records each build profile's measurement keys on the model. A build missing from the
+// current catalog, as in history mode, takes them from the catalog at the build's revision; a catalog
+// that does not list the build has none for it.
+async function measurementKeys(runs, profile) {
+  const lists = (model) => runs.every((run) => model?.builds?.some((build) => build.run_id === run.id));
   const current = state.catalogMode === "runs" ? null : catalogModelForRun(runs[0]);
-  if (current?.builds?.some((build) => runIds.has(build.run_id))) return keyIn(current);
-  return keyIn(await loadHistoricalCatalogModel(runs[0]));
+  const model = lists(current) ? current : await loadHistoricalCatalogModel(runs[0]);
+  return lists(model) ? model.measurements?.[profile] || {} : {};
 }
 
 export async function apiText(path) {
@@ -256,24 +264,10 @@ export async function mapWithConcurrency(items, limit, mapper) {
 
 export async function loadRunDetail(runId) {
   if (state.detailCache.has(runId)) return state.detailCache.get(runId);
-  const optional = (request) => request.catch((error) => {
-    if (error.status === 404) return null;
-    throw error;
-  });
-  const [summary, provenance, tests, benchmark, accuracy] = await Promise.all([
+  const [summary, provenance, tests] = await Promise.all([
     api(`/v1/runs/${runId}`), api(`/v1/runs/${runId}/provenance`), api(`/v1/runs/${runId}/test-results`),
-    optional(api(`/v1/runs/${runId}/benchmarks/latest`)), optional(api(`/v1/runs/${runId}/accuracy/latest`)),
   ]);
-  // Builds measured before accuracy became its own run carry it on the benchmark run. A reused build is
-  // measured at a later commit than it was built, so the benchmark run's own commit and workflow are kept.
-  const benchmarkRunId = benchmark?.benchmark_run?.id;
-  const [benchmarkTests, benchmarkRun] = benchmarkRunId
-    ? await Promise.all([
-      api(`/v1/runs/${benchmarkRunId}/test-results`).catch(() => null),
-      api(`/v1/runs/${benchmarkRunId}`).then((benchmarkSummary) => benchmarkSummary.run).catch(() => null),
-    ])
-    : [null, null];
-  const detail = { summary, provenance, tests, benchmark, benchmarkTests, benchmarkRun, accuracy };
+  const detail = { summary, provenance, tests };
   state.detailCache.set(runId, detail);
   return detail;
 }
@@ -304,14 +298,23 @@ function loadComponentPipeline(modelId) {
 
 // The scores each source model's authors published, generated from model.yaml when the portal is built.
 // Without it the accuracy section shows measurements alone, so a failed fetch is not an error.
-let publishedMetrics = null;
-function loadPublishedMetrics(modelId) {
-  publishedMetrics ||= fetch(new URL("./published-metrics.json", import.meta.url))
+let referenceMetrics = null;
+function loadReferenceMetrics(modelId) {
+  referenceMetrics ||= fetch(new URL("./reference-metrics.json", import.meta.url))
     .then((response) => (response.ok ? response.json() : {}))
     .catch(() => ({}));
-  return publishedMetrics.then((published) => published[modelId] || []);
+  return referenceMetrics.then((reference) => reference[modelId] || []);
 }
 
+// The package run's summary and test results: its artifacts and its numerical fidelity.
+export function loadPackageRun(runId) {
+  return Promise.all([
+    api(`/v1/runs/${runId}`).catch(() => null),
+    api(`/v1/runs/${runId}/test-results`).catch(() => null),
+  ]);
+}
+
+// A variant's performance and accuracy each measure the whole model, once per build profile.
 export async function loadVariant(anchor) {
   const key = variantBuildKey(anchor);
   if (state.variantCache.has(key)) return state.variantCache.get(key);
@@ -319,15 +322,17 @@ export async function loadVariant(anchor) {
   const details = await mapWithConcurrency(componentRuns, 6, (run) => loadRunDetail(run.id));
   const runs = details.map((detail) => detail.summary.run);
   const packageRun = variantPackage(componentRuns);
-  const [devkit, packageSummary, pipeline, published] = await Promise.all([
-    accuracyKeyForRuns(runs).then(devkitAccuracy),
-    packageRun ? api(`/v1/runs/${packageRun.run_id}`).catch(() => null) : null,
+  const keys = await measurementKeys(runs, runProfile(anchor));
+  const [performance, accuracy, [packageSummary, packageTests], pipeline, reference] = await Promise.all([
+    loadMeasurement("performance", keys.performance),
+    loadMeasurement("accuracy", keys.accuracy),
+    packageRun ? loadPackageRun(packageRun.run_id) : [null, null],
     loadComponentPipeline(anchor.metadata?.model_id),
-    loadPublishedMetrics(anchor.metadata?.model_id),
+    loadReferenceMetrics(anchor.metadata?.model_id),
   ]);
   const variant = {
-    key, modelId: anchor.metadata?.model_id, profile: runProfile(anchor), anchor, runs, details, devkit, packageSummary,
-    requestedPackageId: packageRun?.run_id || null, pipeline, published,
+    key, modelId: anchor.metadata?.model_id, profile: runProfile(anchor), anchor, runs, details, performance, accuracy,
+    packageSummary, packageTests, requestedPackageId: packageRun?.run_id || null, pipeline, reference,
   };
   state.variantCache.set(key, variant);
   return variant;

@@ -12,13 +12,7 @@ from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
 from model_registry.model import load_and_validate_model, load_models
 from model_registry.registry import RegistryPublicationError, publish_catalog
-from model_registry.stage_keys import (
-    COMPILE_TOOLING,
-    _compile_consumed_fidelity,
-    accuracy_key,
-    compile_key,
-    performance_key,
-)
+from model_registry.stage_keys import COMPILE_TOOLING, compile_key, measurement_key
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "fixture_model"
@@ -30,28 +24,39 @@ COMPILER_VERSION = resolve_model_compiler(ROOT)["identity"]
 
 def _fingerprint(repository: Path, model_id: str, compiler_version: str) -> str:
     model = yaml.safe_load((repository / "models" / model_id / "model.yaml").read_text(encoding="utf-8"))
-    return compile_key(repository, model_id, model["build_profiles"][0]["id"], "model", compiler_version)
+    profile_id = next(iter(model["build_profiles"]))
+    return compile_key(repository, model_id, profile_id, profile_id, compiler_version)
 
 
-def _write_model(repository: Path, model_id: str, *, declared_id: str | None = None) -> None:
+def _write_model(repository: Path, model_id: str) -> None:
     model_dir = repository / "models" / model_id
     model_dir.mkdir(parents=True)
-    model = yaml.safe_load((FIXTURE / "model.yaml").read_text(encoding="utf-8"))
-    model["id"] = declared_id or model_id
-    (model_dir / "model.yaml").write_text(yaml.safe_dump(model), encoding="utf-8")
+    shutil.copyfile(FIXTURE / "model.yaml", model_dir / "model.yaml")
     (model_dir / "scripts").mkdir()
     (model_dir / "scripts" / "compile.py").write_text("# fixture\n", encoding="utf-8")
     shutil.copytree(FIXTURE / "tests", model_dir / "tests")
 
 
 def _declare_grouped_invocation(model: dict) -> None:
+    """Make the loaded fixture compile two components in its profile's one invocation."""
     second = copy.deepcopy(model["components"][0])
     second["id"] = "second_model"
     model["components"].append(second)
     model["build_profiles"][0]["components"].append({"id": "second_model", "parameters": {}})
     model["build_profiles"][0]["compile_invocations"] = [
-        {"id": "combined", "components": ["model", "second_model"]}
+        {"id": "fixture", "components": ["model", "second_model"]}
     ]
+
+
+def _declare_components(model: dict) -> None:
+    """Make the authored fixture compile two components."""
+    model["compilation"]["components"] = ["backbone", "decoder"]
+    model["build_profiles"]["fixture"]["components"] = {
+        "backbone": {"parameters": {}}, "decoder": {"parameters": {}},
+    }
+
+
+DATASET = {"id": "imagenet-2012", "variant": "mini", "sha256": "d" * 64, "size_bytes": 1}
 
 
 @pytest.fixture
@@ -63,7 +68,6 @@ def model_repository(tmp_path: Path) -> Path:
     (tmp_path / "taxonomies" / "model-taxonomy.yaml").write_text(
         TAXONOMY.read_text(encoding="utf-8"), encoding="utf-8"
     )
-    shutil.copyfile(ROOT / "taxonomies/accuracy-metrics.yaml", tmp_path / "taxonomies/accuracy-metrics.yaml")
     (tmp_path / "deps").mkdir()
     (tmp_path / "deps" / "manifest.json").write_text(
         (ROOT / "deps" / "manifest.json").read_text(encoding="utf-8"), encoding="utf-8"
@@ -83,20 +87,28 @@ def test_discovery_and_matrix_are_stable(model_repository: Path) -> None:
     assert "compiler_label" not in matrix["include"][0]
     assert "compiler_version" not in matrix["include"][0]
     assert matrix["include"][0]["requested_runner_class"] == "default"
-    assert matrix["include"][0]["compile_invocation_id"] == "model"
+    # The one compile invocation of a build profile is named after the profile.
+    assert matrix["include"][0]["compile_invocation_id"] == "fixture"
     assert matrix["include"][0]["component_ids"] == ["model"]
     assert matrix["include"][0]["component_id"] == "model"
-    assert matrix["include"][0]["benchmark_component_ids"] == []
-    assert matrix["include"][0]["accuracy_id"] is None
+    assert matrix["include"][0]["stages"] == []
     assert "build_fingerprint" not in matrix["include"][0]
 
 
-def test_mismatched_directory_id_fails(model_repository: Path) -> None:
-    model = yaml.safe_load((model_repository / "models" / "alpha" / "model.yaml").read_text(encoding="utf-8"))
-    model["id"] = "bravo"
-    (model_repository / "models" / "alpha" / "model.yaml").write_text(yaml.safe_dump(model), encoding="utf-8")
-    with pytest.raises(ValidationError, match="id must match directory name"):
-        load_models(model_repository)
+def test_matrix_entries_carry_the_stages_each_profile_measures() -> None:
+    models = {model_id: load_and_validate_model(ROOT / "models" / model_id, SCHEMA)
+              for model_id in ("resnet_50", "rf_detr_small", "qwen3_5_0_8b")}
+
+    matrix = build_matrix(models, sorted(models))
+
+    assert [(entry["model_id"], entry["compile_invocation_id"], entry["component_ids"], entry["stages"])
+            for entry in matrix["include"]] == [
+        ("qwen3_5_0_8b", "w4a16", ["model"], []),
+        ("resnet_50", "w16a16", ["model"], ["performance"]),
+        ("resnet_50", "w8a8", ["model"], ["performance", "accuracy"]),
+        ("rf_detr_small", "w8a16_w16a16", ["backbone", "decoder"], ["performance", "accuracy"]),
+        ("rf_detr_small", "w8a8_w16a16", ["backbone", "decoder"], ["performance", "accuracy"]),
+    ]
 
 
 def test_missing_taxonomy_blocks_models_before_matrix(model_repository: Path) -> None:
@@ -106,21 +118,6 @@ def test_missing_taxonomy_blocks_models_before_matrix(model_repository: Path) ->
     path.write_text(yaml.safe_dump(model), encoding="utf-8")
 
     with pytest.raises(ValidationError, match="tasks.*required"):
-        load_models(model_repository)
-
-
-def test_duplicate_model_ids_fail_before_matrix(model_repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from model_registry import model as model_module
-
-    original = model_module.load_and_validate_model
-
-    def duplicate_id(directory: Path, schema: Path):
-        model = copy.deepcopy(original(directory, schema))
-        model["id"] = "duplicate"
-        return model
-
-    monkeypatch.setattr(model_module, "load_and_validate_model", duplicate_id)
-    with pytest.raises(ValidationError, match="duplicate model id"):
         load_models(model_repository)
 
 
@@ -152,21 +149,9 @@ def test_matrix_emits_one_row_per_declared_compile_invocation(model_repository: 
     matrix = build_matrix(models, ["alpha"])
 
     assert len(matrix["include"]) == 1
-    assert matrix["include"][0]["compile_invocation_id"] == "combined"
+    assert matrix["include"][0]["compile_invocation_id"] == "fixture"
     assert matrix["include"][0]["component_id"] == "model"
     assert matrix["include"][0]["component_ids"] == ["model", "second_model"]
-
-
-def test_explicit_singleton_uses_invocation_recipe_contract(model_repository: Path) -> None:
-    models = load_models(model_repository)
-    models["alpha"]["build_profiles"][0]["compile_invocations"] = [
-        {"id": "export_and_compile", "components": ["model"]}
-    ]
-
-    entry = build_matrix(models, ["alpha"])["include"][0]
-
-    assert entry["compile_invocation_id"] == "export_and_compile"
-    assert entry["component_ids"] == ["model"]
 
 
 @pytest.mark.parametrize("component_id", ["model", "second_model"])
@@ -179,33 +164,6 @@ def test_component_filter_selects_the_full_compile_invocation(
     matrix = build_matrix(models, ["alpha"], component_ids=[component_id])
 
     assert [entry["component_ids"] for entry in matrix["include"]] == [["model", "second_model"]]
-
-
-def test_matrix_excludes_explicitly_unsupported_component_builds(model_repository: Path) -> None:
-    models = load_models(model_repository)
-    unsupported = copy.deepcopy(models["alpha"]["build_profiles"][0])
-    unsupported["id"] = "unsupported"
-    unsupported["components"][0].update({"status": "unsupported", "reason": "compiler limitation"})
-    models["alpha"]["build_profiles"].append(unsupported)
-    matrix = build_matrix(models, ["alpha"])
-    assert [entry["build_profile_id"] for entry in matrix["include"]] == ["fixture"]
-
-
-def test_explicit_unsupported_component_is_excluded(model_repository: Path) -> None:
-    models = load_models(model_repository)
-    models["alpha"]["build_profiles"][0]["components"][0].update(
-        {"status": "unsupported", "reason": "compiler zeroed weights"}
-    )
-    assert build_matrix(models, ["alpha"], ["fixture"])["include"] == []
-
-
-def test_requested_profile_builds_supported_models_and_skips_unsupported_components(model_repository: Path) -> None:
-    models = load_models(model_repository)
-    models["alpha"]["build_profiles"][0]["components"][0].update(
-        {"status": "unsupported", "reason": "compiler limitation"}
-    )
-    matrix = build_matrix(models, ["alpha", "bravo"], ["fixture"])
-    assert [(entry["model_id"], entry["build_profile_id"]) for entry in matrix["include"]] == [("bravo", "fixture")]
 
 
 def test_unknown_requested_build_profile_fails(model_repository: Path) -> None:
@@ -229,51 +187,21 @@ def test_build_fingerprint_invalidates_model_dependency_and_compiler_changes(mod
     assert _fingerprint(model_repository, "alpha", "2.1.4") != dependency_changed
 
 
-def test_calibrated_build_tracks_dataset_pins_and_ignores_descriptive_preprocessing(
-    model_repository: Path,
-) -> None:
+def test_calibrated_build_tracks_its_calibration_dataset_pin(model_repository: Path) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["calibrations"] = [{
-        "id": "default",
-        "status": "ready",
-        "dataset": {
-            "id": "imagenet-2012",
-            "variant": "mini",
-            "sha256": "d" * 64,
-            "size_bytes": 1,
-        },
-    }]
-    model["build_profiles"][0]["components"][0]["calibration"] = "default"
+    model["datasets"] = {"default": dict(DATASET)}
+    model["build_profiles"]["fixture"]["calibration_dataset"] = "default"
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-
     first = _fingerprint(model_repository, "alpha", "2.1.3")
-    model["components"][0]["preprocessing"]["pipeline"].append({
-        "op": "normalize",
-        "parameters": {"mean": [0.5], "std": [0.25]},
-    })
-    manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
-    for field in ("preprocessing", "postprocessing", "surgery", "recipe"):
-        model["components"][0].pop(field)
+    model["datasets"]["default"]["sha256"] = "e" * 64
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
-    model["calibrations"][0]["dataset"]["sha256"] = "e" * 64
-    manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     assert _fingerprint(model_repository, "alpha", "2.1.3") != first
 
 
-@pytest.mark.parametrize("keep_surgery", [False, True])
-def test_onnx_loader_changes_invalidate_with_or_without_legacy_fields(
-    model_repository: Path, keep_surgery: bool
-) -> None:
-    manifest = model_repository / "models/alpha/model.yaml"
-    model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    if not keep_surgery:
-        model["components"][0].pop("surgery")
-        manifest.write_text(yaml.safe_dump(model), encoding="utf-8")
+def test_onnx_loader_changes_invalidate_the_compile_key(model_repository: Path) -> None:
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
     loader = model_repository / "tools/model_registry/model.py"
@@ -287,61 +215,35 @@ def test_compile_invocation_fingerprint_includes_every_component_binding(
 ) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    _declare_grouped_invocation(model)
+    _declare_components(model)
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    first = compile_key(model_repository, "alpha", "fixture", "combined", "2.1.3")
+    first = compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3")
 
-    model["build_profiles"][0]["components"][1]["parameters"]["output_name"] = "second"
+    model["build_profiles"]["fixture"]["components"]["decoder"]["parameters"]["output_name"] = "second"
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
 
-    assert (
-        compile_key(model_repository, "alpha", "fixture", "combined", "2.1.3")
-        != first
-    )
+    assert compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3") != first
 
 
-def test_recipe_owned_correctness_inputs_invalidate_grouped_compile(
-    model_repository: Path,
-) -> None:
+def test_numerical_fidelity_settings_invalidate_the_compile_key(model_repository: Path) -> None:
+    """scripts/compile.py measures numerical fidelity, so its settings are compile inputs."""
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    _declare_grouped_invocation(model)
-    model["fidelity"] = [{
-        "id": "recipe_fidelity",
-        "scope": {"type": "package", "package": "default"},
-        "build_profiles": ["fixture"],
+    _declare_components(model)
+    model["datasets"] = {"default": dict(DATASET)}
+    model["numerical_fidelity"] = {
         "status": "diagnostic",
-        "result_component": "model",
-        "dataset": {"id": "fixture-data", "variant": "mini", "sha256": "d" * 64, "size_bytes": 1},
+        "dataset": "default",
         "selection": {"method": "seeded_random_without_replacement", "seed": 1, "offset": 0, "samples": 1},
         "outputs": ["output"],
-    }]
+    }
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    first = compile_key(model_repository, "alpha", "fixture", "combined", "2.1.3")
+    first = compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3")
 
-    model["fidelity"][0]["selection"]["samples"] = 2
+    model["numerical_fidelity"]["selection"]["samples"] = 2
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
 
-    assert compile_key(model_repository, "alpha", "fixture", "combined", "2.1.3") != first
-
-
-def _consumed_ids(model: dict, profile_id: str) -> list[str]:
-    consumed = _compile_consumed_fidelity(model, profile_id)
-    assert all("scope" not in entry and "build_profiles" not in entry for entry in consumed)
-    return [entry["id"] for entry in consumed]
-
-
-def test_compile_consumes_only_fidelity_settings_of_its_build_profile() -> None:
-    resnet = load_and_validate_model(ROOT / "models" / "resnet_50", SCHEMA)
-    assert _consumed_ids(resnet, "w8a8") == ["logits_fidelity"]
-    assert _consumed_ids(resnet, "w16a16") == ["logits_fidelity"]
-
-    rf_detr = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
-    assert _consumed_ids(rf_detr, rf_detr["build_profiles"][0]["id"]) == ["full_pipeline_fidelity"]
-
-    ssd = load_and_validate_model(ROOT / "models" / "ssd_mobilenet_v1", SCHEMA)
-    for profile in ssd["build_profiles"]:
-        assert _consumed_ids(ssd, profile["id"]) == []
+    assert compile_key(model_repository, "alpha", "fixture", "fixture", "2.1.3") != first
 
 
 def test_build_fingerprint_includes_model_local_recipe_helpers(model_repository: Path) -> None:
@@ -362,15 +264,15 @@ def test_ssd_quality_thresholds_invalidate_only_the_selected_build(
     shutil.copytree(ROOT / "models" / model_id, directory)
     manifest = directory / "model.yaml"
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    before = {profile: compile_key(model_repository, model_id, profile, "model", "2.1.3")
+    before = {profile: compile_key(model_repository, model_id, profile, profile, "2.1.3")
               for profile in ("w8a8", "w16a16")}
 
-    thresholds = model["build_profiles"][0]["components"][0]["parameters"]["quantization_quality_thresholds"]
-    thresholds["minimum_cosine_similarity"] = 0.99
+    parameters = model["build_profiles"]["w8a8"]["components"]["model"]["parameters"]
+    parameters["quantization_quality_thresholds"]["minimum_cosine_similarity"] = 0.99
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
 
-    assert compile_key(model_repository, model_id, "w8a8", "model", "2.1.3") != before["w8a8"]
-    assert compile_key(model_repository, model_id, "w16a16", "model", "2.1.3") == before["w16a16"]
+    assert compile_key(model_repository, model_id, "w8a8", "w8a8", "2.1.3") != before["w8a8"]
+    assert compile_key(model_repository, model_id, "w16a16", "w16a16", "2.1.3") == before["w16a16"]
 
 
 def test_yolo26_build_fingerprint_includes_its_training_subtree(
@@ -440,51 +342,38 @@ def test_build_fingerprint_ignores_display_name_and_description(model_repository
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
 
-def test_devkit_stage_keys_ignore_display_name_and_description() -> None:
+RF_DETR_BUILDS = {
+    component_id: {"run_id": f"run-{component_id}", "artifact_sha256": "a" * 64}
+    for component_id in ("backbone", "decoder")
+}
+
+
+@pytest.mark.parametrize("stage", ["performance", "accuracy"])
+def test_measurement_keys_ignore_display_name_and_description(stage: str) -> None:
     model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
     renamed = {**model, "display_name": "Renamed", "description": "A rewritten one-line catalog description."}
-    builds = {
-        component_id: {"run_id": f"run-{component_id}", "artifact_sha256": "a" * 64}
-        for component_id in ("backbone", "decoder")
-    }
 
-    assert performance_key(ROOT, renamed, "w8a8_w16a16", "decoder", builds) == performance_key(
-        ROOT, model, "w8a8_w16a16", "decoder", builds
-    )
-    assert accuracy_key(ROOT, renamed, "w8a8_w16a16", builds) == accuracy_key(
-        ROOT, model, "w8a8_w16a16", builds
+    assert measurement_key(ROOT, renamed, "w8a8_w16a16", RF_DETR_BUILDS, stage) == measurement_key(
+        ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, stage
     )
 
 
-def test_a_package_benchmark_runs_under_its_last_component_and_covers_every_build() -> None:
+@pytest.mark.parametrize("stage", ["performance", "accuracy"])
+def test_a_whole_model_measurement_key_covers_every_component_build(stage: str) -> None:
     model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
-    matrix = build_matrix({"rf_detr_small": model}, ["rf_detr_small"], ["w8a8_w16a16"])
-    builds = {
-        component_id: {"run_id": f"run-{component_id}", "artifact_sha256": "a" * 64}
-        for component_id in ("backbone", "decoder")
-    }
-    rebuilt = {**builds, "backbone": {"run_id": "run-backbone-2", "artifact_sha256": "b" * 64}}
+    rebuilt = {**RF_DETR_BUILDS, "backbone": {"run_id": "run-backbone-2", "artifact_sha256": "b" * 64}}
+    key = measurement_key(ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, stage)
 
-    assert [entry["benchmark_component_ids"] for entry in matrix["include"]] == [["decoder"]]
-    assert performance_key(ROOT, model, "w8a8_w16a16", "decoder", rebuilt) != performance_key(
-        ROOT, model, "w8a8_w16a16", "decoder", builds
-    )
-    with pytest.raises(ValidationError, match="no benchmark entry applies"):
-        performance_key(ROOT, model, "w8a8_w16a16", "backbone", builds)
+    assert measurement_key(ROOT, model, "w8a8_w16a16", rebuilt, stage) != key
+    assert measurement_key(ROOT, model, "w8a16_w16a16", RF_DETR_BUILDS, stage) != key
+    with pytest.raises(ValidationError, match="needs compiled component 'decoder'"):
+        measurement_key(ROOT, model, "w8a8_w16a16", {"backbone": RF_DETR_BUILDS["backbone"]}, stage)
 
 
-def test_a_package_benchmark_key_covers_the_component_order() -> None:
-    model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
-    reordered = copy.deepcopy(model)
-    reordered["packages"][0]["components"] = ["decoder", "backbone"]
-    builds = {
-        component_id: {"run_id": f"run-{component_id}", "artifact_sha256": "a" * 64}
-        for component_id in ("backbone", "decoder")
-    }
-
-    assert performance_key(ROOT, reordered, "w8a8_w16a16", "backbone", builds) != performance_key(
-        ROOT, model, "w8a8_w16a16", "decoder", builds
-    )
+def test_measurement_key_requires_a_declared_stage() -> None:
+    model = load_and_validate_model(ROOT / "models" / "ssd_mobilenet_v1", SCHEMA)
+    with pytest.raises(ValidationError, match="ssd_mobilenet_v1 declares no accuracy"):
+        measurement_key(ROOT, model, "w8a8", {"model": RF_DETR_BUILDS["backbone"]}, "accuracy")
 
 
 def test_stage_keys_ignore_the_models_tests(tmp_path: Path) -> None:
@@ -493,17 +382,13 @@ def test_stage_keys_ignore_the_models_tests(tmp_path: Path) -> None:
     for relative in ("schemas", "taxonomies", "deps", "scripts", "tools", ".github/workflows", "models/rf_detr_small"):
         shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
     model_dir = repository / "models" / "rf_detr_small"
-    components = ("backbone", "decoder")
-    builds = {
-        component_id: {"run_id": f"run-{component_id}", "artifact_sha256": "a" * 64} for component_id in components
-    }
 
     def keys() -> list[str]:
         model = load_and_validate_model(model_dir, repository / "schemas" / "model.schema.json")
         return [
-            compile_key(repository, "rf_detr_small", "w8a8_w16a16", "rf_detr", COMPILER_VERSION),
-            performance_key(repository, model, "w8a8_w16a16", "decoder", builds),
-            accuracy_key(repository, model, "w8a8_w16a16", builds),
+            compile_key(repository, "rf_detr_small", "w8a8_w16a16", "w8a8_w16a16", COMPILER_VERSION),
+            measurement_key(repository, model, "w8a8_w16a16", RF_DETR_BUILDS, "performance"),
+            measurement_key(repository, model, "w8a8_w16a16", RF_DETR_BUILDS, "accuracy"),
         ]
 
     first = keys()
@@ -514,22 +399,6 @@ def test_stage_keys_ignore_the_models_tests(tmp_path: Path) -> None:
     (model_dir / "tests" / "fixtures" / "detections.json").write_text("[]\n", encoding="utf-8")
 
     assert keys() == first
-
-
-def _declare_benchmark(manifest: Path, note: str) -> None:
-    model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["benchmark"] = [
-        {
-            "id": "latency",
-            "scope": {"type": "component", "component": "model"},
-            "build_profiles": ["fixture"],
-            "status": "qualified_reference",
-            "metrics": ["latency_avg_ms"],
-            "note": note,
-        }
-    ]
-    manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    (manifest.parent / "scripts/performance.py").touch()
 
 
 def test_matrix_records_fingerprints_without_catalog_carry_forward(model_repository: Path) -> None:
@@ -640,23 +509,16 @@ def test_compile_key_ignores_board_stage_and_conversion_files(model_repository: 
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
 
-def test_compile_key_ignores_benchmark_and_accuracy_declarations(model_repository: Path) -> None:
+def test_compile_key_ignores_performance_and_accuracy_declarations(model_repository: Path) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
-    _declare_benchmark(manifest, "revised metric profile")
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["accuracy"] = [{
-        "id": "devkit_accuracy",
-        "scope": {"type": "component", "component": "model"},
-        "build_profiles": ["fixture"],
-        "engine": "devkit_script",
-        "status": "provisional",
-        "result_component": "model",
-        "dataset": {"id": "fixture-set", "variant": "mini", "sha256": "a" * 64, "size_bytes": 1},
-        "metrics": ["top1_accuracy"],
-    }]
+    model["datasets"] = {"validation": dict(DATASET)}
+    model["performance"] = {"required_metrics": ["latency_avg_ms"]}
+    model["accuracy"] = {"status": "provisional", "dataset": "validation", "required_metrics": ["top1_accuracy"]}
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
+    (manifest.parent / "scripts" / "performance.py").write_text("report = model.benchmark()\n", encoding="utf-8")
     (manifest.parent / "scripts" / "accuracy.py").write_text("score = 0.5\n", encoding="utf-8")
     skipped = {"run_tests": False, "skip_reason": "fixture"}
     (manifest.parent / "tests" / "tests.yaml").write_text(
@@ -683,7 +545,7 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
     native = load_and_validate_model(ROOT / "models" / native_id)
     entry = build_matrix({native_id: native}, [native_id])["include"][0]
     assert entry["runner_script"] == "scripts/run_llima_compilation.sh"
-    assert entry["benchmark_component_ids"] == [] and entry["accuracy_id"] is None
+    assert entry["stages"] == []
     repository = tmp_path / "repository"
     for folder in ("schemas", "taxonomies", "deps", "scripts", "tools"):
         shutil.copytree(ROOT / folder, repository / folder, ignore=shutil.ignore_patterns("__pycache__"))
@@ -692,7 +554,7 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
 
     def keys():
         return [
-            compile_key(repository, name, profile, "model", "compiler")
+            compile_key(repository, name, profile, profile, "compiler")
             for name, profile in ((native_id, "w4a16"), ("resnet_50", "w16a16"))
         ]
 
@@ -712,11 +574,13 @@ def test_checkpoint_repository_name_does_not_change_compile_key(tmp_path, model_
         shutil.copytree(ROOT / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
     manifest = tmp_path / "models" / model_id / "model.yaml"
     model = yaml.safe_load(manifest.read_text())
-    before = compile_key(tmp_path, model_id, profile_id, "model", "compiler")
-    model["upstream"]["repository"] += "-renamed"
+    before = compile_key(tmp_path, model_id, profile_id, profile_id, "compiler")
+    # A Hugging Face checkpoint names its repository in its source; an ONNX model names it as upstream.
+    repository = model["upstream"] if "upstream" in model else model["compilation"]["source"]
+    repository["repository"] += "-renamed"
     manifest.write_text(yaml.safe_dump(model, sort_keys=False))
 
-    assert compile_key(tmp_path, model_id, profile_id, "model", "compiler") == before
+    assert compile_key(tmp_path, model_id, profile_id, profile_id, "compiler") == before
 
 
 @pytest.mark.parametrize(("setting", "value"), [
@@ -735,13 +599,13 @@ def test_llima_compile_key_tracks_source_compiler_and_graph_settings(tmp_path, s
     manifest = tmp_path / "models" / model_id / "model.yaml"
     model = yaml.safe_load(manifest.read_text())
     compiler = "3.0.0+develop.000000000000"
-    before = compile_key(tmp_path, model_id, "w4a16", "model", compiler)
+    before = compile_key(tmp_path, model_id, "w4a16", "w4a16", compiler)
     if setting == "source":
-        next(iter(model["components"][0]["source"]["files"].values()))["sha256"] = value
+        next(iter(model["compilation"]["source"]["files"].values()))["sha256"] = value
     elif setting == "compiler":
         compiler = value
     else:
-        model["build_profiles"][0]["components"][0]["parameters"][setting] = value
+        model["build_profiles"]["w4a16"]["components"]["model"]["parameters"][setting] = value
     manifest.write_text(yaml.safe_dump(model, sort_keys=False))
 
-    assert compile_key(tmp_path, model_id, "w4a16", "model", compiler) != before
+    assert compile_key(tmp_path, model_id, "w4a16", "w4a16", compiler) != before

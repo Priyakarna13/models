@@ -78,14 +78,15 @@ or bypass a checksum failure.
 
 ## Use the dataset through the model contract
 
-`model.yaml` names registered data in three places, each with a dataset ID,
-variant, SHA-256, and byte size:
+`model.yaml` declares each registered archive once under `datasets`, with a
+dataset ID, variant, SHA-256, and byte size. Three declarations name one of
+those entries:
 
 | Declaration | Used by | Resolved with |
 | --- | --- | --- |
-| a `calibrations` entry with a `dataset` | `compile.py --dataset` | `model-registry fetch-calibration` |
-| a `fidelity` entry | `compile.py --fidelity-dataset` | `model-registry fetch-fidelity-dataset` |
-| an `accuracy` entry with `engine: devkit_script` | `accuracy.py --dataset` | `scripts/run_model_accuracy.sh` |
+| a build profile's `calibration_dataset` | `compile.py --dataset` | `model-registry fetch-calibration` |
+| `numerical_fidelity.dataset` | `compile.py --fidelity-dataset` | `model-registry fetch-fidelity-dataset` |
+| `accuracy.dataset` | `accuracy.py --dataset` | `scripts/run_model_accuracy.sh` |
 
 Resolve the compile inputs for one component of a build:
 

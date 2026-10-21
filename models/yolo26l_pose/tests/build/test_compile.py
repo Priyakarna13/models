@@ -222,7 +222,7 @@ def test_model_preserves_compilation_and_quality_settings(load_script: Callable[
         "redistribution": "restricted",
         "attribution": "YOLO26 is developed by Ultralytics and distributed under AGPL-3.0.",
     }
-    entry = model["accuracy"][0]
+    entry = model["accuracy"]
     for expected in load_model_tests(MODEL_DIR)["accuracy"]["expected"].values():
         assert set(expected) == set(load_script("accuracy").METRICS)
     assert entry["required_metrics"] == ["coco_keypoint_map"]

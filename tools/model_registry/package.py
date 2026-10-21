@@ -17,6 +17,8 @@ from .fetch import Fetcher, sha256_file
 from .model import load_and_validate_model
 from .source import source_identity
 
+# scripts/compile.py writes the profile's numerical fidelity here; the package run publishes it.
+FIDELITY_FILE = "fidelity.json"
 
 def _load_json(path: Path, description: str) -> dict[str, Any]:
     try:
@@ -234,6 +236,9 @@ def assemble_package(
     manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
     package_dir = output_root / model_id / build_profile_id / "packages" / package_id
     package_dir.mkdir(parents=True, exist_ok=True)
+    fidelity = compiled / model_id / build_profile_id / FIDELITY_FILE
+    if fidelity.is_file():
+        shutil.copyfile(fidelity, package_dir / FIDELITY_FILE)
     if native_deployment is not None:
         deployment = package_dir / "deployment"
         if deployment.resolve().is_relative_to(native_deployment.resolve()):

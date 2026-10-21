@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Run a model's scripts/accuracy.py on the DevKit with its compiled MPKs and record an accuracy result.
+# Measure a build profile's whole-model accuracy on the DevKit with the model's scripts/accuracy.py.
 #
 # Usage: run_model_accuracy.sh <model_dir> <build_profile> <compiled_dir> <output_dir>
 #
 # <compiled_dir> holds <model_id>/<build_profile>/compile-outputs.json and the MPKs it lists. The declared
-# dataset resolves into DATASET_CACHE, one resolution at a time per board.
+# dataset resolves into DATASET_CACHE, one resolution at a time per board. The script writes model-report.json
+# into <output_dir> with tools/model_report; check-report then holds it to model.yaml and records the board in
+# environment.json.
 
 set -euo pipefail
 
@@ -29,18 +31,10 @@ SCRIPT="$MODEL_DIR/scripts/accuracy.py"
 REQUIREMENTS="$MODEL_DIR/scripts/requirements-accuracy.txt"
 REPOSITORY="$(cd "$MODEL_DIR/../.." && pwd)"
 MODEL_ID="$(basename "$MODEL_DIR")"
-SOURCE_SHA="${SOURCE_SHA:-$(git -C "$REPOSITORY" rev-parse HEAD)}"
-OUTPUTS="$COMPILED_DIR/$MODEL_ID/$BUILD_PROFILE_ID/compile-outputs.json"
 
-# Print one field of the JSON on stdin; lists print comma-separated.
+# Print one field of the JSON on stdin; the DevKit has no jq.
 json_field() {
-  "$REGISTRY_PYTHON" -c '
-import json, sys
-value = json.load(sys.stdin)
-for key in sys.argv[1].split("."):
-    value = value[key]
-print(",".join(value) if isinstance(value, list) else value)
-' "$1"
+  "$REGISTRY_PYTHON" -c 'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
 }
 
 mkdir -p "$DATASET_CACHE" "$(dirname "$DATASET_LOCK")"
@@ -53,21 +47,11 @@ if [[ "$(json_field kind <<< "$resolution")" == "none" ]]; then
   exit 0
 fi
 
+# The script takes each MPK as <component>=<path>.
+listed="$("$REGISTRY_PYTHON" -m model_registry measurement-inputs "$COMPILED_DIR" \
+  --repository "$REPOSITORY" --model "$MODEL_ID" --build-profile "$BUILD_PROFILE_ID")"
 mpks=()
-IFS=',' read -ra components <<< "$(json_field components <<< "$resolution")"
-for component in "${components[@]}"; do
-  mpk="$("$REGISTRY_PYTHON" -c '
-import json, sys
-from pathlib import Path
-
-outputs = Path(sys.argv[1])
-paths = [item["mpk_path"] for item in json.loads(outputs.read_text())["outputs"] if item["component_id"] == sys.argv[2]]
-if len(paths) != 1:
-    raise SystemExit(f"DevKit accuracy needs the compiled {sys.argv[2]} MPK, but {outputs} does not list it")
-print(outputs.parent / paths[0])
-' "$OUTPUTS" "$component")"
-  mpks+=(--mpk "$component=$mpk")
-done
+while IFS= read -r input; do mpks+=(--mpk "$input"); done <<< "$listed"
 
 # Unpack the cached archive, looking through a single top-level directory.
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -87,15 +71,7 @@ if [[ -f "$REQUIREMENTS" ]]; then
     --target "$site" -r "$REQUIREMENTS"
 fi
 
-PYTHONPATH="$site" PYTHONDONTWRITEBYTECODE=1 "$PYNEAT_PYTHON" "$SCRIPT" "${mpks[@]}" \
-  --dataset "$dataset" --output "$OUTPUT_DIR/script-output.json" \
-  2>&1 | tee "$OUTPUT_DIR/accuracy.log"
-
-"$REGISTRY_PYTHON" -m model_registry import-accuracy \
-  --repository "$REPOSITORY" \
-  --model-id "$MODEL_ID" \
-  --build-profile-id "$BUILD_PROFILE_ID" \
-  --script-output "$OUTPUT_DIR/script-output.json" \
-  --compiled-dir "$COMPILED_DIR" \
-  --git-sha "$SOURCE_SHA" \
-  --output "$OUTPUT_DIR/accuracy-result.json"
+PYTHONPATH="$REPOSITORY/tools:$site" PYTHONDONTWRITEBYTECODE=1 "$PYNEAT_PYTHON" "$SCRIPT" "${mpks[@]}" \
+  --dataset "$dataset" --output "$OUTPUT_DIR" 2>&1 | tee "$OUTPUT_DIR/accuracy.log"
+"$REGISTRY_PYTHON" -m model_registry check-report "$OUTPUT_DIR" --repository "$REPOSITORY" \
+  --stage accuracy --model "$MODEL_ID" --build-profile "$BUILD_PROFILE_ID"

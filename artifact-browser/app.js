@@ -11,7 +11,7 @@ import { icons, escapeHtml, branchName, showToast, profileLabel, variantLabel } 
 import { formatBytes } from "./metrics.js";
 import {
   api, readBranchPreference, writeBranchPreference, readCachedBranches, readCachedCatalog,
-  writeCachedCatalog, runFromCatalogBuild, loadRunDetail, variantPackage, loadVariant,
+  writeCachedCatalog, runFromCatalogBuild, loadRunDetail, variantPackage, loadVariant, loadPackageRun,
   loadHistoricalCatalogModel, selectedCatalogBuild,
 } from "./api.js";
 import {
@@ -110,7 +110,7 @@ async function selectRun(runId, { updateUrl = true, expand = false } = {}) {
     // A cached variant may gain package context later; avoid retrying a fetch from this selection.
     if (currentPackage && variant.packageSummary?.run?.id !== currentPackage.run_id
       && (cached || currentPackage.run_id !== variant.requestedPackageId)) {
-      variant.packageSummary = await api(`/v1/runs/${currentPackage.run_id}`).catch(() => null);
+      [variant.packageSummary, variant.packageTests] = await loadPackageRun(currentPackage.run_id);
     }
     if (state.catalogMode === "runs") await loadHistoricalCatalogModel(anchor);
     if (state.selectedId === runId) {

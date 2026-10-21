@@ -199,4 +199,4 @@ def test_model_preserves_compilation_and_quality_settings() -> None:
         "redistribution": "restricted",
         "attribution": "YOLO26 is developed by Ultralytics and distributed under AGPL-3.0.",
     }
-    assert model["accuracy"][0]["required_metrics"] == ["coco_map"]
+    assert model["accuracy"]["required_metrics"] == ["coco_map"]

@@ -14,14 +14,7 @@ from urllib.parse import quote
 from .compile_matrix import build_matrix
 from .errors import ModelRegistryError, ValidationError
 from .model import load_models
-from .stage_keys import (
-    ACCURACY_FINGERPRINT_VERSION,
-    ACCURACY_RUN_TYPE,
-    PERFORMANCE_FINGERPRINT_VERSION,
-    PERFORMANCE_RUN_TYPE,
-    accuracy_key,
-    performance_key,
-)
+from .stage_keys import MEASUREMENT_RUNS, measurement_key
 
 REPOSITORY_API_PATH = "/v1/repositories/sima-neat/models"
 DEFAULT_BRANCH = "develop"
@@ -99,14 +92,6 @@ def resolve_base_branches(
     return [branch for *_, branch in sorted(candidates)]
 
 
-def applicable_stages(entry: dict[str, Any]) -> list[str]:
-    """Board stages a compile invocation declares, from its build-matrix entry."""
-    return [
-        *(["performance"] if entry["benchmark_component_ids"] else []),
-        *(["accuracy"] if entry["accuracy_id"] else []),
-    ]
-
-
 def _is_not_found(error: ModelRegistryError, code: str) -> bool:
     return f"HTTP 404 {code}" in str(error)
 
@@ -159,9 +144,9 @@ def read_catalog_sources(
     return record, documents
 
 
-def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, list[dict[str, Any]]]]:
-    """Index a models document's builds and packages by (model, build profile)."""
-    profiles: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
+def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Index a models document's builds, packages and measurement keys by (model, build profile)."""
+    profiles: dict[tuple[str, str], dict[str, Any]] = {}
     for model in document.get("models", []):
         if not isinstance(model, dict) or not isinstance(model.get("id"), str):
             continue
@@ -172,6 +157,9 @@ def _profiles(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, list[
                         (model["id"], item["build_profile_id"]), {"builds": [], "packages": []}
                     )
                     profile[kind].append(item)
+        for profile_id, keys in (model.get("measurements") or {}).items():
+            if (model["id"], profile_id) in profiles:
+                profiles[(model["id"], profile_id)]["measurements"] = keys
     return profiles
 
 
@@ -184,9 +172,10 @@ def _carries_keys(builds: list[dict[str, Any]], keys: dict[str, str]) -> bool:
 def merge_catalog_sources(documents: list[dict[str, Any]], matrix: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Combine source catalogs into the one prior catalog a revision is planned and published against.
 
-    Each model build profile takes its builds and packages together from the first source whose builds
-    carry every compile key the head declares for that profile, else from the first source that has the
-    profile at all, so its prior builds stay visible while the replacement compiles.
+    Each model build profile takes its builds, packages and measurement keys together from the first source
+    whose builds carry every compile key the head declares for that profile, else from the first source that
+    has the profile at all, so its prior builds and their measurements stay visible while the replacement
+    compiles.
     """
     if not documents:
         return None
@@ -197,7 +186,7 @@ def merge_catalog_sources(documents: list[dict[str, Any]], matrix: list[dict[str
             profile_keys[component_id] = entry["build_fingerprint"]
 
     sources = [_profiles(document) for document in documents]
-    models: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    models: dict[str, dict[str, Any]] = {}
     for (model_id, profile_id), keys in sorted(head_keys.items()):
         present = [source[(model_id, profile_id)] for source in sources if (model_id, profile_id) in source]
         matching = [profile for profile in present if _carries_keys(profile["builds"], keys)]
@@ -206,6 +195,8 @@ def merge_catalog_sources(documents: list[dict[str, Any]], matrix: list[dict[str
             model = models.setdefault(model_id, {"builds": [], "packages": []})
             model["builds"].extend(chosen[0]["builds"])
             model["packages"].extend(chosen[0]["packages"])
+            if "measurements" in chosen[0]:
+                model.setdefault("measurements", {})[profile_id] = chosen[0]["measurements"]
     return {"models": [{"id": model_id, **entries} for model_id, entries in sorted(models.items())]}
 
 
@@ -271,14 +262,6 @@ def plan_stages(
         model_ids and profile_ids
     ):
         raise ValidationError("on-demand builds require explicit --models and --profiles")
-    if include_on_demand and component_ids:
-        for model_id, profile_id in {(item["model_id"], item["build_profile_id"])
-                                     for item in head if item.get("build_on_demand", False)}:
-            profile = next(item for item in models[model_id]["build_profiles"] if item["id"] == profile_id)
-            selected = {component for item in head if (item["model_id"], item["build_profile_id"])
-                        == (model_id, profile_id) for component in item["component_ids"]}
-            if selected != {item["id"] for item in profile["components"]}:
-                raise ValidationError("on-demand candidates require a complete profile; omit --components")
     document = None
     if read is not None:
         if not read_api_url:
@@ -300,41 +283,22 @@ def plan_stages(
             build is None or build.get("compile_fingerprint") != entry["build_fingerprint"]
             for build in prior.values()
         ):
-            compile_entries.append({**entry, "stages": applicable_stages(entry)})
+            compile_entries.append(entry)
             continue
         model = models[entry["model_id"]]
-        profile_id = entry["build_profile_id"]
-        performance = [
-            component_id
-            for component_id in entry["benchmark_component_ids"]
+        stages = [
+            stage
+            for stage in entry["stages"]
             if not stage_run_exists(
                 read,
                 read_api_url,
-                PERFORMANCE_RUN_TYPE,
-                performance_key(root, model, profile_id, component_id, prior),
-                PERFORMANCE_FINGERPRINT_VERSION,
+                MEASUREMENT_RUNS[stage][0],
+                measurement_key(root, model, entry["build_profile_id"], prior, stage),
+                MEASUREMENT_RUNS[stage][1],
             )
         ]
-        stages = ["performance"] if performance else []
-        if entry["accuracy_id"] and not stage_run_exists(
-            read,
-            read_api_url,
-            ACCURACY_RUN_TYPE,
-            accuracy_key(root, model, profile_id, prior),
-            ACCURACY_FINGERPRINT_VERSION,
-        ):
-            stages.append("accuracy")
         if stages:
-            measure_entries.append({**entry, "benchmark_component_ids": performance, "stages": stages})
-    candidate_profiles = {(item["model_id"], item["build_profile_id"]) for item in compile_entries
-                          if item.get("build_on_demand", False)}
-    compiled_ids = {(item["model_id"], item["build_profile_id"], item["compile_invocation_id"])
-                    for item in compile_entries}
-    # A candidate cannot attach unchanged components from an older source commit.
-    for item in head:
-        if ((item["model_id"], item["build_profile_id"]) in candidate_profiles
-                and (item["model_id"], item["build_profile_id"], item["compile_invocation_id"]) not in compiled_ids):
-            compile_entries.append({**item, "stages": applicable_stages(item)})
+            measure_entries.append({**entry, "stages": stages})
     measure_entries = [item for item in measure_entries if not item.get("build_on_demand", False)]
     return {
         "compile": {"include": compile_entries},

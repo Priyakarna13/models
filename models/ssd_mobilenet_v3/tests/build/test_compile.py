@@ -31,7 +31,7 @@ def test_validation_restart_preserves_component(
     profile = "w8a8"
     monkeypatch.setattr(sys, "argv", [
         "compile.py", "--model", str(source), "--output-dir", str(tmp_path / "out"),
-        "--build-profile", profile, "--compile-invocation", "model",
+        "--build-profile", profile, "--compile-invocation", profile,
         "--dataset", str(source),
     ])
     monkeypatch.setattr(recipe, "compile_model", lambda *args: None)
@@ -45,7 +45,7 @@ def test_validation_restart_preserves_component(
     with pytest.raises(SystemExit) as stopped:
         recipe.main()
     assert stopped.value.code == 0
-    assert captured[captured.index("--compile-invocation") + 1] == "model"
+    assert captured[captured.index("--compile-invocation") + 1] == profile
     assert captured[captured.index("--build-profile") + 1] == profile
     assert "--validation-only" in captured
 

@@ -685,10 +685,10 @@ def test_build_is_published_from_a_hosted_runner() -> None:
             "Verify the complete component set",
             "Configure artifact-registry publisher credentials",
             "Publish the complete component set",
-            "Retain the published model output for the DevKit stages",
-            "Start the DevKit stages",
             "Assemble the packages this build completes",
             "Publish the finalized packages",
+            "Retain the published model output for the DevKit stages",
+            "Start the DevKit stages",
             "Publish this build in the catalog",
         )
     ]
@@ -706,27 +706,45 @@ def test_published_output_is_the_artifact_the_benchmark_verifies() -> None:
         "-${{ fromJSON(inputs.entry).compile_invocation_id }}"
     )
     assert 'artifact_name="compiled-model-$MODEL_ID-$BUILD_PROFILE_ID-$COMPILE_INVOCATION_ID"' in verify
+    # Only a published build, with its package, is retained for the DevKit stages.
+    assert retained["if"] == "inputs.publishable && !fromJSON(inputs.entry).build_on_demand"
+
+
+def test_published_package_receipt_travels_with_the_build() -> None:
+    packages = step(load(BUILD_WORKFLOW)["jobs"]["publish"], "Publish the finalized packages")["run"]
+
+    assert 'receipt="$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"' in packages
+    assert 'cp "_packages/$receipt" "_compiled/$receipt"' in packages
+    assert packages.index("model-registry publish-package") < packages.index('cp "_packages/$receipt"')
 
 
 @pytest.mark.parametrize(
-    ("environment", "target", "stages", "expected"),
+    ("publishable", "on_demand", "packages", "environment", "target", "stages", "expected"),
     [
-        ("staging", "modalix", "performanceaccuracy", True),
-        ("staging", "modalix", "accuracy", True),
-        ("staging", "modalix", "", False),
-        ("production", "modalix", "performance", False),
-        ("staging", "davinci", "performance", False),
+        (True, False, "1", "staging", "modalix", "performanceaccuracy", True),
+        (True, False, "1", "staging", "modalix", "accuracy", True),
+        (True, False, "1", "staging", "modalix", "", False),
+        (True, False, "1", "production", "modalix", "performance", False),
+        (True, False, "1", "staging", "davinci", "performance", False),
+        # A measurement runs under the profile's published package.
+        (False, False, "1", "staging", "modalix", "performance", False),
+        (True, True, "1", "staging", "modalix", "performance", False),
+        (True, False, "0", "staging", "modalix", "performance", False),
     ],
 )
-def test_new_builds_start_only_their_applicable_devkit_stages(environment, target, stages, expected) -> None:
+def test_new_builds_start_only_their_applicable_devkit_stages(
+    publishable, on_demand, packages, environment, target, stages, expected
+) -> None:
     start = step(load(BUILD_WORKFLOW)["jobs"]["publish"], "Start the DevKit stages")
     values = {
+        "inputs.publishable": publishable,
+        "fromJSON(inputs.entry).build_on_demand": on_demand,
+        "steps.packages.outputs.count": packages,
         "inputs.vulcan_environment": environment,
         "fromJSON(inputs.entry).target": target,
         "join(fromJSON(inputs.entry).stages, '')": stages,
     }
 
-    assert "inputs.publishable" not in start["if"]
     assert evaluate(start["if"], values) is expected
 
 
@@ -763,14 +781,8 @@ def run_start_script(tmp_path: Path, gh: str, *args: str) -> tuple[subprocess.Co
     return result, summary, calls
 
 
-def build(model_id: str, components: list[str], stages: list[str]) -> dict:
-    return {
-        "model_id": model_id,
-        "build_profile_id": "int8",
-        "compile_invocation_id": "default",
-        "benchmark_component_ids": components,
-        "stages": stages,
-    }
+def build(model_id: str, stages: list[str]) -> dict:
+    return {"model_id": model_id, "build_profile_id": "int8", "compile_invocation_id": "default", "stages": stages}
 
 
 def test_start_script_dispatches_every_benchmark_input() -> None:
@@ -794,7 +806,7 @@ def test_start_script_dispatches_every_benchmark_input() -> None:
     ],
 )
 def test_start_script_logs_one_devkit_run_link_per_build(tmp_path: Path, gh: str, link: str) -> None:
-    matrix = {"include": [build("alpha", ["model"], ["performance", "accuracy"]), build("beta", [], ["accuracy"])]}
+    matrix = {"include": [build("alpha", ["performance", "accuracy"]), build("beta", ["accuracy"])]}
 
     result, summary, calls = run_start_script(tmp_path, gh, json.dumps(matrix))
 
@@ -807,13 +819,12 @@ def test_start_script_logs_one_devkit_run_link_per_build(tmp_path: Path, gh: str
     assert summary.read_text(encoding="utf-8") == lines
     alpha, beta = calls.read_text(encoding="utf-8").splitlines()
     assert "-f source_run_id= " in alpha
-    assert "-f component_ids=model " in alpha
-    # An accuracy-only build names no performance component.
-    assert "-f component_ids= -f stages=accuracy" in beta
+    assert alpha.endswith("-f stages=performance,accuracy")
+    assert beta.endswith("-f compile_invocation_id=default -f stages=accuracy")
 
 
 def test_start_script_accepts_one_build_with_its_source_run(tmp_path: Path) -> None:
-    result, _, calls = run_start_script(tmp_path, "true", json.dumps(build("alpha", ["model"], ["performance"])), "77")
+    result, _, calls = run_start_script(tmp_path, "true", json.dumps(build("alpha", ["performance"])), "77")
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "DevKit run for alpha/int8/default (performance): link unavailable\n"
@@ -822,7 +833,7 @@ def test_start_script_accepts_one_build_with_its_source_run(tmp_path: Path) -> N
 
 def test_start_script_starts_the_other_builds_after_a_failure(tmp_path: Path) -> None:
     gh = 'case "$*" in *model_id=alpha*) echo "HTTP 404: not found" >&2; exit 1;; esac'
-    matrix = {"include": [build("alpha", ["model"], ["performance"]), build("beta", ["model"], ["performance"])]}
+    matrix = {"include": [build("alpha", ["performance"]), build("beta", ["performance"])]}
 
     result, summary, calls = run_start_script(tmp_path, gh, json.dumps(matrix))
 

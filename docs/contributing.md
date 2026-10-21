@@ -28,10 +28,10 @@ A typical new-model change contains:
 
 ```text
 models/<model-id>/README.md
-models/<model-id>/model.yaml                        # identity, builds, fidelity, accuracy, benchmark
+models/<model-id>/model.yaml                        # identity, builds, fidelity, accuracy, performance
 models/<model-id>/scripts/compile.py
 models/<model-id>/scripts/performance.py
-models/<model-id>/scripts/accuracy.py               # only with a devkit_script accuracy entry
+models/<model-id>/scripts/accuracy.py               # only with an accuracy declaration
 models/<model-id>/scripts/requirements-accuracy.txt # optional, with accuracy.py
 models/<model-id>/scripts/convert.py                # only with a declared conversion
 models/<model-id>/scripts/requirements-convert.txt  # required with convert.py

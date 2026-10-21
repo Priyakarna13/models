@@ -14,7 +14,7 @@
       "unevaluatedProperties": false,
       "properties": {
         "expected": {
-          "description": "Per build profile, the value of every metric the accuracy result reports.",
+          "description": "Per build profile, the value of every metric the accuracy report gives.",
           "type": "object",
           "additionalProperties": {"$ref": "#/$defs/metricValues"}
         }
@@ -25,16 +25,12 @@
       "unevaluatedProperties": false,
       "properties": {
         "expected": {
-          "description": "Per build profile and benchmarked component or package, the throughput its performance result reports.",
+          "description": "Per build profile, the whole model's throughput and any other performance metric its report gives.",
           "type": "object",
           "additionalProperties": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["throughput_fps"],
-              "properties": {"throughput_fps": {"type": "number", "exclusiveMinimum": 0}}
-            }
+            "$ref": "#/$defs/metricValues",
+            "required": ["throughput_fps"],
+            "properties": {"throughput_fps": {"type": "number", "exclusiveMinimum": 0}}
           }
         }
       }

@@ -1009,10 +1009,8 @@ def test_registry_entry_pins_qualified_qat_and_calibration_sources() -> None:
     assert model["compositions"] == [
         {"id": "default", "type": "single", "component": "model", "entrypoint": "default"}
     ]
-    benchmark = model["benchmark"][0]
-    assert benchmark["id"] == "modalix_tracker_latency"
-    assert benchmark["scope"] == {"type": "component", "component": "model"}
-    assert benchmark["build_profiles"] == ["w8a8"]
+    assert profile["compile_invocations"] == [{"id": "w8a8", "components": ["model"]}]
+    assert model["performance"] == {"required_metrics": ["latency_avg_ms", "throughput_fps"]}
     assert binding["parameters"]["calibration_samples"] == 128
     assert binding["parameters"]["calibration_tensor_sha256"] == (
         "d8830d19b33fe336c5c2cec4822c3b278be4169d125ca249be476771be5b544e"
@@ -1088,13 +1086,16 @@ def test_modelsdk_output_labels_refuse_to_overwrite_an_abi_change(
         restore_public_output_labels(Model(), ["bbox_0"])
 
 
-def test_registry_accuracy_gates_match_qualified_export() -> None:
-    accuracy = load_and_validate_model(MODEL_DIR)["accuracy"][0]
-    metrics = {item["name"]: item for item in accuracy["metrics"]}
+def test_registry_qualification_evidence_matches_qualified_export() -> None:
+    model = load_and_validate_model(MODEL_DIR)
+    evidence = model["qualification_evidence"][0]
+    metrics = {item["name"]: item for item in evidence["metrics"]}
 
-    assert "engine" not in accuracy
-    assert accuracy["status"] == "qualified_reference"
-    assert accuracy["validation_tiny_ground_truth_count"] == 197828
+    # The qualified export recorded these gates; the registry runs no accuracy stage for this model.
+    assert model.get("accuracy") is None
+    assert evidence["build_profiles"] == ["w8a8"]
+    assert evidence["status"] == "qualified_reference"
+    assert evidence["validation_tiny_ground_truth_count"] == 197828
     assert metrics["qat_ap50"]["measured"] > metrics["qat_ap50"]["minimum"]
     assert metrics["qat_tiny_recall50"]["measured"] > metrics["qat_tiny_recall50"]["minimum"]
     assert metrics["ap50_drop"]["measured"] < metrics["ap50_drop"]["maximum"]

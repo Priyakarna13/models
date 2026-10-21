@@ -41,7 +41,7 @@ table for scanning model names, tasks, precisions, accuracy, and performance.
 Both views use the same filters; the table groups models by task and keeps the
 model-family ordering within each group. Multi-task models appear in each applicable
 group, while the total counts unique models. It names the selected precision and
-keeps component measurements separate. Each card carries one thing per role: the
+shows one whole-model measurement per variant. Each card carries one thing per role: the
 model's hero illustration, its name, a one-line description, and its tasks. A
 card states what the model is, not how a build measured; numbers, precision,
 and build state belong on the model page, where they have context. Card
@@ -69,7 +69,8 @@ green and orange palette. LLM/VLM comparisons remain TBD.
 The model page reads at a glance first and expands on request.
 The header pairs its title, description and Download action with a compact model
 image on the right; narrow screens stack the content and image. The image appears
-once, in the header. Performance and accuracy keep separate stacked sections.
+once, in the header. Performance and accuracy keep separate stacked sections, each
+measuring the whole model once per build profile.
 Validation and source-link icons sit beside Download; CLI commands live inside
 the download dialog.
 Each section shows its key facts directly; longer detail sits behind one kind of control: a

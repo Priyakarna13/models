@@ -23,7 +23,7 @@ controls. Selecting a branch in the developer UI changes the catalog, not the UI
 
 The catalog opens as a grid of cards, one per model. **Cards** and **Table**
 switch between the two views and remember the choice. The table shows the model,
-selected precision, measured accuracy and component performance. Changing
+selected precision, measured accuracy and whole-model performance. Changing
 the precision updates its measurements; opening the model shows the full results.
 Both views share search and filters. The table groups models by task, with the
 same model-family ordering inside each group. Models with multiple tasks appear
@@ -110,15 +110,16 @@ in this order:
    rest of the README after its checksum is verified, so the title, hero, and
    overview are never shown twice. The README follows the
    [README requirements](https://github.com/sima-neat/models/blob/develop/AGENTS.md#model-readme-requirements).
-2. **Performance.** For each component, four tiles with one number each:
-   throughput, average latency, average SoM power, and energy per inference.
-   The line below them names the workload: **Core default MPK**
-   when the benchmark script uses Core's defaults, or the script's own
-   selection, such as **YoloV26 box decoder, top 100**, followed by
-   preprocessing, postprocessing, and the MLA and CPU clocks. It ends with
-   the commit and GitHub workflow of the run that measured the component.
-   CI reuses a build until its compile inputs change, so that commit can be
-   later than the build's.
+2. **Performance.** One whole-model result for the selected build profile,
+   read from the profile's [model report](benchmarking.md#workload-and-measurements).
+   Four tiles show one number each: throughput, average latency, average SoM
+   power, and energy per inference. The line below them names the workload the
+   report records, such as **YoloV26 box decoder, top 100**, and when it was
+   measured. Its commit and GitHub workflow are those of the run that measured
+   the profile. A measurement is reused until its
+   [stage key](benchmarking.md#ci-and-registry-publication) changes, so that commit can be
+   later than the build's. A profile with no result shows **Not measured at
+   this revision.**
    When the report includes layer stats, **Runtime Layer Analysis**
    shows one full-width table with **Compiled layer / Execution time (µs) / Share (%)**
    headings. Each execution-time cell shows its exact value above a thin bar,
@@ -156,8 +157,7 @@ in this order:
    a partition of headline latency. Compiled layer names may differ from ONNX
    operators. Historical reports without stats omit this section.
    **Benchmark details** has three cards on the left:
-   **Performance** with asynchronous and synchronous throughput in one row
-   (synchronous from the mean latency), the mean latency, and the p50, p95,
+   **Performance** with the throughput, the mean latency, and the p50, p95,
    and p99 latency in one row; **Heat** with the SoC and SoM temperatures;
    and **CPU** with the core count, the load over all cores and on the
    busiest core, and a bar per core with its average and peak. On the right,
@@ -173,8 +173,8 @@ in this order:
    the throughput pass. The (i) mark beside a reading or
    rail explains what it measures. The footer lists the telemetry (the
    Sentinel version and the samples behind the board readings, or why they
-   are missing) and the runtime. Beside it, **Raw result** opens the result
-   JSON and **Download CSV** saves one table of the component's context,
+   are missing) and the runtime. Beside it, **Raw result** downloads the
+   model report and **Download CSV** saves one table of the result's context,
    every metric, every SoM rail, every CPU core, and all compiled layer timings.
    A metric the browser does not place in the tiles or the cards appears under **Other measurements**,
    so a new metric shows up without a browser change.
@@ -191,34 +191,31 @@ in this order:
    multi-component model whose `model.yaml` declares a `pipeline` first shows
    the order its components run in, from input to output: numbered components,
    with any CPU step between them, such as RF-DETR's **Top 300 proposals**.
-   When the build has a [package benchmark](benchmarking.md#package-benchmark)
-   result, the tiles, context line, and **Benchmark details** are that result,
-   for the components and CPU step running together. **Runtime Layer Analysis** and **Execution graph** each
-   switch between the components, and **Download CSV** names the package and
-   lists each component's layer timings. The catalog shows the package result as
-   the model's one value. Otherwise, each component's measurements appear under
-   its number.
-3. **Accuracy.** The status, the first four metrics, the evaluated sample
+   The tiles, context line, and **Benchmark details** are the
+   [whole-model result](benchmarking.md#multi-component-models), with the
+   components and CPU step running together. **Runtime Layer Analysis** and
+   **Execution graph** each switch between the components, and **Download CSV**
+   lists each component's layer timings.
+3. **Accuracy.** The coverage (full when the run evaluated every sample of
+   its split, sampled otherwise), the first four metrics, the evaluated sample
    count, and the commit and GitHub workflow of the run that measured them.
-   In the developer UI, **Evaluation details** explains the status and coverage and lists
+   In the developer UI, **Evaluation details** explains the coverage and lists
    the remaining metrics, each with its published score when
-   `published_metrics` in `model.yaml` records one for the measured dataset.
-   Its **Published scores** row lists every published entry with its dataset,
+   `reference_metrics` in `model.yaml` records one for the measured dataset.
+   Its **Published scores** row lists every reference entry with its dataset,
    conditions, and source. A build with no accuracy result yet shows only the
    published scores.
 4. **Details (developer UI only).** The package with its size, checksum, and download buttons.
    A single-component package downloads as its MPK. A multi-component package
    downloads as a ZIP of its MPKs and also offers **Download components**.
    Then come rows for build provenance (the commit and workflow that compiled the
-   build), source models, and each component's files,
-   checksum, numerical fidelity, and compile parameters.
+   build), source models, the package's numerical fidelity, and each
+   component's files, checksum, and compile parameters.
 5. **License.** The SPDX identifier, whether redistribution is allowed, and the
    attribution.
 
 A section that has no data, such as Accuracy for a model with neither an
-accuracy result nor published scores, is left out. Components are measured on their own, so the latencies of a
-multi-component model do not add up to end-to-end latency; without a package
-result, the page says so.
+accuracy result nor published scores, is left out.
 
 ## Preview your model locally
 

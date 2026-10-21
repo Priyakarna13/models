@@ -172,8 +172,8 @@ def main() -> int:
     parser.add_argument("--compile-invocation", required=True)
     parser.add_argument("--dataset", type=Path, help="dataset-registry calibration archive")
     args = parser.parse_args()
-    if args.compile_invocation != COMPONENT_ID:
-        parser.error(f"unsupported compile invocation: {args.compile_invocation}")
+    if args.compile_invocation != args.build_profile:
+        parser.error("a build profile compiles in one invocation named after it")
     source = args.model.expanduser().resolve()
     if source.suffix != ".onnx":
         parser.error("--model must be the verified ONNX from the conversion workflow")

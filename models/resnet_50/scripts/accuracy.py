@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import model_report
 import numpy as np
 import pyneat
 from calibration import VALIDATION_SPLIT, preprocess_image, split_names, validation_labels
@@ -56,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="model=<path>")
     parser.add_argument("--dataset", type=Path, required=True, help="extracted imagenet-2012/mini directory")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure the first images only (local runs only)")
     args = parser.parse_args(argv)
 
@@ -82,18 +83,16 @@ def main(argv: list[str] | None = None) -> int:
         if count == 1 or count % 500 == 0 or count == len(names):
             log(f"{count}/{len(names)} images, {(time.monotonic() - started) / count * 1000:.0f} ms/image")
 
-    result = {
-        "core_version": pyneat.__version__,
-        "dataset": {"split": VALIDATION_SPLIT, "evaluated_samples": len(names), "available_samples": len(available)},
-        "metrics": {
-            "top1_accuracy": {"value": top1 / len(names), "unit": "ratio", "direction": "higher"},
-            "top5_accuracy": {"value": top5 / len(names), "unit": "ratio", "direction": "higher"},
+    report = model_report.accuracy(
+        {
+            "top1_accuracy": top1 / len(names),
+            "top5_accuracy": top5 / len(names),
         },
-        "details": {"inference_seconds": round(time.monotonic() - started, 1)},
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({name: round(item["value"], 4) for name, item in result["metrics"].items()}))
+        dataset={"split": VALIDATION_SPLIT, "evaluated_samples": len(names), "available_samples": len(available)},
+        details={"inference_seconds": round(time.monotonic() - started, 1)},
+    )
+    report.save(args.output)
+    print(json.dumps({name: round(value, 4) for name, value in report.document["metrics"].items()}))
     return 0
 
 

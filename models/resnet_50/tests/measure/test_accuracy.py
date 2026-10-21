@@ -24,5 +24,5 @@ def test_prefetched_images_keep_their_order(load_script: Callable[[str], ModuleT
     assert list(script.prefetched(lambda item: item * 2, items)) == [item * 2 for item in items]
 
 
-def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path) -> None:
-    assert measured_shortfalls(model_dir, "accuracy", accuracy) == []
+def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path, build_profile: str) -> None:
+    assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy["metrics"]) == []

@@ -56,7 +56,6 @@ from surgery import (
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "rf_detr_large"
-INVOCATION_ID = "rf_detr"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 # Precisions with BF16 activations. Their layer norms keep FP32 intermediates, as every measured build did.
 A16_PRECISIONS = ("w8a16", "w16a16")
@@ -82,23 +81,6 @@ COMPONENT_INTERFACES = {
         "outputs": [_float32_bytes(OUTPUT_SHAPES[name]) for name in OUTPUTS],
     },
 }
-
-
-def _validate_boundary_contract(metadata: dict[str, Any]) -> None:
-    """Match authored connections to the graph boundaries surgery and MPK audits enforce."""
-    expected = {
-        "backbone": ({INPUT: INPUT_SHAPE}, {name: BOUNDARY_SHAPES[name] for name in (FEATURES, SCORES, BOXES)}),
-        "decoder": ({name: BOUNDARY_SHAPES[name] for name in (FEATURES, PROPOSALS)},
-                    {name: OUTPUT_SHAPES[name] for name in OUTPUTS}),
-    }
-    for component in metadata["components"]:
-        entry = next(item for item in component["interface"]["entrypoints"] if item["id"] == "default")
-        for direction, shapes in zip(("inputs", "outputs"), expected[component["id"]]):
-            actual = [(tensor["name"], tensor["dtype"], tensor["shape"]) for tensor in entry[direction]]
-            if actual != [(name, "float32", shape) for name, shape in shapes.items()]:
-                raise ValueError(
-                    f"model.yaml {component['id']} {direction} do not match the RF-DETR graph boundary: {actual}"
-                )
 
 
 def _component_parameters(metadata: dict[str, Any], profile_id: str) -> dict[str, dict[str, Any]]:
@@ -378,8 +360,6 @@ def _write_fidelity(
         "schema_version": 1,
         "model_id": MODEL_ID,
         "build_profile_id": profile_id,
-        "component_id": config["result_component"],
-        "scope": "full_pipeline",
         "status": config["status"],
         "reference": "Original full ONNX (ONNX Runtime)",
         "candidate": candidate,
@@ -546,18 +526,13 @@ def _copy_component_archives(temporary_dir: Path, profile_id: str, output_dir: P
 
 
 def _write_compile_outputs(
-    output_dir: Path,
-    profile_id: str,
-    archives: dict[str, Path],
-    graph_hashes: dict[str, str],
-    fidelity_component: str,
+    output_dir: Path, profile_id: str, archives: dict[str, Path], graph_hashes: dict[str, str]
 ) -> None:
-    """Write compile-outputs.json, which records each MPK, derived graph, and the fidelity report."""
-    fidelity_path = output_dir / fidelity_component / FIDELITY_REPORT
+    """Write compile-outputs.json, which records each MPK and derived graph."""
     manifest = {
         "model_id": MODEL_ID,
         "build_profile_id": profile_id,
-        "compile_invocation_id": INVOCATION_ID,
+        "compile_invocation_id": profile_id,
         "outputs": [
             {
                 "component_id": component_id,
@@ -569,11 +544,6 @@ def _write_compile_outputs(
         "derived_graphs": [
             {"component_id": component_id, "sha256": graph_hashes[component_id]} for component_id in COMPONENT_IDS
         ],
-        "correctness": {
-            "component_id": fidelity_component,
-            "path": f"{fidelity_component}/{FIDELITY_REPORT}",
-            "sha256": sha256_file(fidelity_path)[0],
-        },
     }
     (output_dir / "compile-outputs.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -589,9 +559,8 @@ def compile_model(
     output_dir: Path,
 ) -> dict[str, Path]:
     metadata = load_metadata(MODEL_DIR)
-    _validate_boundary_contract(metadata)
     component_parameters = _component_parameters(metadata, profile_id)
-    fidelity_config = next(entry for entry in metadata["fidelity"] if profile_id in entry["build_profiles"])
+    fidelity_config = metadata["numerical_fidelity"]
     selection = fidelity_config["selection"]
     calibration_names = _calibration_names(component_parameters, calibration_dataset, fidelity_dataset, selection)
     evaluation_names = select_images(
@@ -642,9 +611,8 @@ def compile_model(
         )
         output_dir.mkdir(parents=True)
         archives = _copy_component_archives(temporary_dir, profile_id, output_dir)
-        fidelity_component = fidelity_config["result_component"]
-        shutil.copyfile(temporary_dir / FIDELITY_REPORT, output_dir / fidelity_component / FIDELITY_REPORT)
-        _write_compile_outputs(output_dir, profile_id, archives, graph_hashes, fidelity_component)
+        shutil.copyfile(temporary_dir / FIDELITY_REPORT, output_dir / FIDELITY_REPORT)
+        _write_compile_outputs(output_dir, profile_id, archives, graph_hashes)
         return archives
 
 
@@ -657,8 +625,8 @@ def main() -> int:
     parser.add_argument("--build-profile", required=True)
     parser.add_argument("--compile-invocation", required=True)
     args = parser.parse_args()
-    if args.compile_invocation != INVOCATION_ID:
-        parser.error(f"unsupported compile invocation: {args.compile_invocation}")
+    if args.compile_invocation != args.build_profile:
+        parser.error("a build profile compiles in one invocation named after it")
     source = args.model.expanduser().resolve()
     dataset = args.dataset.expanduser().resolve() if args.dataset else None
     fidelity_dataset = args.fidelity_dataset.expanduser().resolve()

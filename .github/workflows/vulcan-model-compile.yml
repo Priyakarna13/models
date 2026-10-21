@@ -370,25 +370,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Retain the published model output for the DevKit stages
-        uses: actions/upload-artifact@v7
-        with:
-          name: compiled-model-${{ fromJSON(inputs.entry).model_id }}-${{ fromJSON(inputs.entry).build_profile_id }}-${{ fromJSON(inputs.entry).compile_invocation_id }}
-          path: _compiled
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Start the DevKit stages
-        if: >-
-          inputs.vulcan_environment == 'staging' &&
-          fromJSON(inputs.entry).target == 'modalix' &&
-          join(fromJSON(inputs.entry).stages, '') != ''
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ENTRY: ${{ inputs.entry }}
-        run: scripts/start_devkit_stages.sh "$ENTRY" "$GITHUB_RUN_ID"
-
       - name: Assemble the packages this build completes
         id: packages
         if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand
@@ -419,6 +400,32 @@ jobs:
             --github-run-attempt "$GITHUB_RUN_ATTEMPT" \
             --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --json > "$RUNNER_TEMP/package-publication.json"
+          # The DevKit stages measure the profile's package, so its receipt travels with the build.
+          receipt="$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"
+          mkdir -p "$(dirname "_compiled/$receipt")"
+          cp "_packages/$receipt" "_compiled/$receipt"
+
+      - name: Retain the published model output for the DevKit stages
+        if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand
+        uses: actions/upload-artifact@v7
+        with:
+          name: compiled-model-${{ fromJSON(inputs.entry).model_id }}-${{ fromJSON(inputs.entry).build_profile_id }}-${{ fromJSON(inputs.entry).compile_invocation_id }}
+          path: _compiled
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Start the DevKit stages
+        if: >-
+          inputs.publishable && !fromJSON(inputs.entry).build_on_demand &&
+          steps.packages.outputs.count != '0' &&
+          inputs.vulcan_environment == 'staging' &&
+          fromJSON(inputs.entry).target == 'modalix' &&
+          join(fromJSON(inputs.entry).stages, '') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENTRY: ${{ inputs.entry }}
+        run: scripts/start_devkit_stages.sh "$ENTRY" "$GITHUB_RUN_ID"
 
       - name: Publish this build in the catalog
         if: inputs.publishable && !fromJSON(inputs.entry).build_on_demand

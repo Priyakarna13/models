@@ -273,10 +273,7 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .compare-table .compare-group th { padding-block: 11px; color: var(--ink-soft); background: var(--surface); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .compare-table .best { display: inline-block; padding: 3px 8px; margin-left: -8px; border-radius: 5px; color: var(--blue); background: var(--blue-soft); font-weight: 700; }
 .compare-table tr:last-child > * { border-bottom: 0; }
-.compare-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-.compare-line + .compare-line { margin-top: 8px; }
 .compare-loading { display: flex; align-items: center; gap: 10px; }
-.compare-component { color: var(--ink-soft); font: 400 11px/1.7 var(--font-mono); }
 .compare-add { margin-top: 20px; }
 .compare-add label { width: min(100%, 420px); }
 .compare-add select { width: 100%; max-width: none; }
@@ -345,7 +342,6 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .detail-section-title h3 { margin: 0; font-size: 1.5rem; font-weight: 650; letter-spacing: -.01em; }
 .detail-section-title > span { color: var(--ink-soft); font-size: 14px; }
 .section-lede { margin: -8px 0 20px; color: var(--ink-soft); font-size: 15px; }
-.section-note { margin: 24px 0 0; padding: 12px 14px; border-radius: 8px; color: var(--ink-soft); background: var(--surface); font-size: 13px; line-height: 1.55; }
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
 .kpi { min-width: 0; display: grid; align-content: start; gap: 4px; padding: 20px 22px; }
 .kpi + .kpi { border-left: 1px solid var(--line); }
@@ -568,7 +564,7 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .benchmark-provenance dt { color: var(--ink-faint); }
 .benchmark-provenance dd { min-width: 0; margin: 0; color: var(--ink-soft); overflow-wrap: anywhere; }
 .benchmark-actions { display: flex; flex-shrink: 0; gap: 8px; }
-.benchmark-action { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--ink-soft); font-size: 13px; text-decoration: none; white-space: nowrap; transition: background 140ms ease, border-color 140ms ease, color 140ms ease; }
+.benchmark-action { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--ink-soft); font: inherit; font-size: 13px; text-decoration: none; white-space: nowrap; cursor: pointer; transition: background 140ms ease, border-color 140ms ease, color 140ms ease; }
 .benchmark-action:hover { border-color: var(--line-strong); background: var(--surface); color: var(--ink); }
 .benchmark-action:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 .benchmark-action svg { width: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -593,7 +589,6 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .fidelity-panel { margin-top: 24px; }
 .fidelity-panel .key-grid { margin-top: 10px; }
 .fidelity-scope { margin: 0 0 14px; color: var(--ink-soft); font-size: 13px; }
-.fidelity-scope strong { color: var(--ink); font-weight: 700; }
 .benchmark-metric { min-width: 0; display: grid; gap: 7px; padding: 15px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .benchmark-metric span { color: var(--ink-faint); font-size: 12px; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }
 .benchmark-metric strong { overflow: hidden; font: 500 18px/1.25 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }

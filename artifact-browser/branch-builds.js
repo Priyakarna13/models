@@ -88,7 +88,7 @@ export function deploymentCatalog(model) {
     const roots = selection.artifacts || [];
     const components = roots.filter(root => root.component_id && root.run_id);
     for (const root of components) {
-      // Accuracy belongs to this exact component build, not merely its profile.
+      // The catalog build of this exact component run, not merely of its profile.
       const original = (model.builds || []).find(build => build.run_id === root.run_id
         && build.build_profile_id === profile && build.component_id === root.component_id);
       builds.push({ ...original, ...root, build_profile_id: profile });
@@ -169,27 +169,28 @@ export function branchModels(compileRuns, packageRuns, catalogModels, compiler =
   const models = new Map();
   for (const group of latest.values()) {
     const definition = definitions.get(group.modelId) || { model_id: group.modelId, display_name: group.modelId };
-    if (!models.has(group.modelId)) models.set(group.modelId, { ...definition, builds: [], packages: [] });
+    if (!models.has(group.modelId)) models.set(group.modelId, { ...definition, measurements: {}, builds: [], packages: [] });
     const model = models.get(group.modelId);
-    for (const run of group.runs) {
-      const component = run.metadata?.component_id || "model";
-      const exactBuild = definition.builds?.find((build) => build.run_id === run.id
-        && build.build_profile_id === group.profile && build.component_id === component);
+    const exactBuilds = group.runs.map((run) => definition.builds?.find((build) => build.run_id === run.id
+      && build.build_profile_id === group.profile && build.component_id === (run.metadata?.component_id || "model")));
+    // A measurement key names the MPKs it measured, so only a profile showing the catalog's own build keeps it.
+    if (exactBuilds.every(Boolean) && definition.measurements?.[group.profile]) {
+      model.measurements[group.profile] = definition.measurements[group.profile];
+    }
+    group.runs.forEach((run, index) => {
       model.builds.push({
-        ...exactBuild,
+        ...exactBuilds[index],
         run_id: run.id,
         run,
         build_profile_id: group.profile,
-        component_id: component,
-        // The accuracy key names the MPKs it measured, so only the catalog build of this run carries it.
-        validation_fingerprint: exactBuild?.validation_fingerprint,
+        component_id: run.metadata?.component_id || "model",
         toolchain_name: run.toolchain_name,
         toolchain_version: run.toolchain_version,
         target_platform: run.target_platform,
         created_at: run.created_at,
         finished_at: run.finished_at,
       });
-    }
+    });
   }
 
   for (const model of models.values()) {

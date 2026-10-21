@@ -402,8 +402,8 @@ def main() -> int:
     parser.add_argument("--compile-invocation", required=True)
     parser.add_argument("--dataset", type=Path, required=True, help="verified calibration snapshot")
     args = parser.parse_args()
-    if args.compile_invocation != "model":
-        parser.error(f"unsupported compile invocation: {args.compile_invocation}")
+    if args.compile_invocation != args.build_profile:
+        parser.error("a build profile compiles in one invocation named after it")
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     source = args.model.expanduser().resolve()

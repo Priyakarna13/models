@@ -21,17 +21,16 @@ from urllib.request import urlopen
 
 from jsonschema import Draft202012Validator
 
-from .accuracy_config import find_devkit_accuracy_config
 from .artifact import compile_output_fields, deployment_files, validate_compile_outputs, verify_artifact, verify_llima
 from .compile_matrix import build_matrix
 from .dependencies import resolve_model_compiler
 from .documentation import load_model_documentation
 from .errors import ModelRegistryError, ValidationError
 from .fetch import sha256_file
-from .fidelity_config import find_fidelity_config, validate_fidelity_result
 from .model import compile_invocations_for, load_and_validate_model, load_models, mpk_filename
+from .package import FIDELITY_FILE
 from .source import source_identity
-from .stage_keys import accuracy_key, compile_key, performance_key
+from .stage_keys import compile_key, measurement_key
 from .stage_plan import merge_catalog_sources, read_catalog_sources, read_current_catalog
 from .taxonomy import (
     TAXONOMY_RELATIVE_PATH,
@@ -410,9 +409,12 @@ def build_catalog_snapshot(
     selected_profiles = {(model_id, profile_id) for model_id, profile_id, _ in selected_invocations}
     previous_builds: dict[tuple[str, str, str], JsonObject] = {}
     previous_packages: dict[tuple[str, str, str], JsonObject] = {}
+    previous_measurements: dict[tuple[str, str], JsonObject] = {}
     for model in (previous or {}).get("models", []):
         if not isinstance(model, dict) or not isinstance(model.get("id"), str):
             continue
+        for profile_id, keys in (model.get("measurements") or {}).items():
+            previous_measurements[(model["id"], profile_id)] = keys
         for build in model.get("builds", []):
             if not isinstance(build, dict):
                 continue
@@ -428,7 +430,19 @@ def build_catalog_snapshot(
     expected_keys: set[tuple[str, str, str]] = set()
     builds_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in models}
     packages_by_model: dict[str, list[JsonObject]] = {model_id: [] for model_id in models}
+    measurements_by_model: dict[str, dict[str, JsonObject]] = {model_id: {} for model_id in models}
     pending_builds: list[JsonObject] = []
+
+    def carry_forward(keys: list[tuple[str, str, str]]) -> None:
+        """Keep a profile's prior builds and their measurement keys visible."""
+        for key in keys:
+            prior = previous_builds.get(key)
+            if prior is not None:
+                builds_by_model[key[0]].append(prior)
+        measurements = previous_measurements.get(keys[0][:2])
+        if measurements is not None and any(key in previous_builds for key in keys):
+            measurements_by_model[keys[0][0]][keys[0][1]] = measurements
+
     for invocation in matrix:
         keys = [
             (invocation["model_id"], invocation["build_profile_id"], component_id)
@@ -438,10 +452,7 @@ def build_catalog_snapshot(
         if invocation.get("build_on_demand", False):
             # A manual build publishes a candidate. Only approved catalog entries
             # carry forward here, retaining the inputs and provenance they used.
-            for key in keys:
-                prior = previous_builds.get(key)
-                if prior is not None:
-                    builds_by_model[key[0]].append(prior)
+            carry_forward(keys)
             continue
         invocation_receipts = [receipts.get(key) for key in keys]
         if any(receipt is not None for receipt in invocation_receipts) and not all(
@@ -475,10 +486,7 @@ def build_catalog_snapshot(
             # Preserve prior, verified builds while the replacement invocation
             # is pending. A model with no prior build remains visible through
             # its pending invocation alone.
-            for key in keys:
-                prior = previous_builds.get(key)
-                if prior is not None:
-                    builds_by_model[key[0]].append(prior)
+            carry_forward(keys)
             continue
         model = models[invocation["model_id"]]
         invocation_builds: list[JsonObject] = []
@@ -515,23 +523,17 @@ def build_catalog_snapshot(
                     "component_id": key[2],
                     "compile_fingerprint": invocation["build_fingerprint"],
                     "artifact_sha256": artifact_sha256,
-                    "validation_fingerprint": None,
-                    "benchmark_fingerprint": None,
                     "run_id": run_id,
                 }
             )
         by_component = {build["component_id"]: build for build in invocation_builds}
-        # A package's performance key lives on its last component's build and covers every build it measures.
-        for component_id in invocation["benchmark_component_ids"]:
-            by_component[component_id]["benchmark_fingerprint"] = performance_key(
-                root, model, invocation["build_profile_id"], component_id, by_component
-            )
-        if invocation["accuracy_id"]:
-            # The accuracy key lives on the build that reports the result; the field name predates it.
-            result_component = find_devkit_accuracy_config(model, invocation["build_profile_id"])["result_component"]
-            by_component[result_component]["validation_fingerprint"] = accuracy_key(
-                root, model, invocation["build_profile_id"], by_component
-            )
+        # Each stage key names the profile's whole-model run over every component build.
+        measurements = {
+            stage: measurement_key(root, model, invocation["build_profile_id"], by_component, stage)
+            for stage in invocation["stages"]
+        }
+        if measurements:
+            measurements_by_model[invocation["model_id"]][invocation["build_profile_id"]] = measurements
         builds_by_model[invocation["model_id"]].extend(invocation_builds)
     unexpected = sorted(set(receipts) - expected_keys)
     if unexpected:
@@ -599,6 +601,8 @@ def build_catalog_snapshot(
                 packages_by_model[model_id], key=lambda item: (item["build_profile_id"], item["package_id"])
             ),
         }
+        if measurements_by_model[model_id]:
+            entry["measurements"] = dict(sorted(measurements_by_model[model_id].items()))
         if model.get("build-on-demand", False):
             entry["build_on_demand"] = True
             components = {item["id"]: item for item in model["components"]}
@@ -1098,6 +1102,17 @@ def stage_catalog_build(
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    # A measurement runs under the profile's package run, as after a fresh build's publish-package.
+    for package in catalog_model.get("packages", []):
+        if isinstance(package, dict) and (package.get("build_profile_id"), package.get("package_id")) == (
+            build_profile_id, "default"
+        ):
+            receipt = profile_dir / "packages" / "default" / "registry-publication.json"
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text(
+                json.dumps({"packages": [{"model_id": model_id, **package}]}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
     (profile_dir / "registry-staged.json").write_text(
         json.dumps({
             "model_id": model_id,
@@ -1136,8 +1151,7 @@ def _fidelity_result(
     *,
     model_id: str,
     build_profile_id: str,
-    component_id: str,
-    config: JsonObject | None = None,
+    config: JsonObject,
 ) -> JsonObject:
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
@@ -1152,36 +1166,26 @@ def _fidelity_result(
         first = errors[0]
         location = ".".join(str(part) for part in first.absolute_path) or "<root>"
         raise ValidationError(f"{path}: numerical fidelity {location}: {first.message}")
-    # The schema fixes the format version; these fields must name the build being published.
+    # The schema fixes the format; these fields must name the build and match model.yaml's numerical_fidelity.
     expected = {
         "model_id": model_id,
         "build_profile_id": build_profile_id,
-        "component_id": component_id,
+        "status": config["status"],
+        "dataset": {key: config["dataset"][key] for key in ("id", "variant", "sha256")},
+        "selection": config["selection"],
+        "samples": config["selection"]["samples"],
     }
     for field, value in expected.items():
         if report.get(field) != value:
             raise ValidationError(f"{path}: numerical fidelity {field} must be {value!r}")
-    metrics = report.get("metrics")
-    names: set[str] = set()
-    for index, metric in enumerate(metrics):
-        name = metric["name"]
-        if not isinstance(name, str) or not name or name in names:
-            raise ValidationError(f"{path}: numerical fidelity metric names must be unique non-empty strings")
-        names.add(name)
-        cosine = metric["cosine_similarity"]
-        if (
-            not isinstance(cosine, (int, float))
-            or isinstance(cosine, bool)
-            or not math.isfinite(cosine)
-            or not -1 <= cosine <= 1
-        ):
-            raise ValidationError(f"{path}: numerical fidelity cosine_similarity must be in -1..1")
-        for field in ("normalized_rmse", "mean_absolute_error", "max_absolute_error"):
-            value = metric[field]
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
-                raise ValidationError(f"{path}: numerical fidelity {field} must be non-negative")
-    if config is not None:
-        validate_fidelity_result(config, report, path)
+    names = [metric["name"] for metric in report["metrics"]]
+    if sorted(names) != sorted(config["outputs"]):
+        raise ValidationError(f"{path}: numerical fidelity metrics must cover exactly {config['outputs']}")
+    for metric in report["metrics"]:
+        values = [metric[field] for field in ("cosine_similarity", "normalized_rmse", "mean_absolute_error",
+                                               "max_absolute_error")]
+        if not all(math.isfinite(value) for value in values):
+            raise ValidationError(f"{path}: numerical fidelity {metric['name']} must be finite")
     return report
 
 
@@ -1204,14 +1208,60 @@ def _fidelity_measurements(report: JsonObject, fingerprint: str) -> list[JsonObj
             "dimensions": {
                 "model_id": report["model_id"],
                 "build_profile_id": report["build_profile_id"],
-                "component_id": report["component_id"],
-                "scope": report["scope"],
                 "output": metric["name"],
             },
         }
         for index, metric in enumerate(report["metrics"])
         for field, name, unit, direction in fields
     ]
+
+
+def _publish_fidelity(
+    client: SigV4RegistryClient,
+    store: S3ArtifactStore,
+    path: Path,
+    fidelity: JsonObject,
+    *,
+    run_id: str,
+    stable_key: str,
+    bucket: str,
+    retention_class: str,
+    s3_key: str,
+) -> None:
+    """Attach a profile's checked numerical fidelity to its package run, the whole-model build it compares."""
+    fingerprint = canonical_sha256(fidelity)
+    stored = store.ensure_native_sha256(path, s3_key, sha256_file(path)[0], media_type="application/json")
+    artifact = client.request(
+        "PUT",
+        f"/v1/runs/{run_id}/artifacts/numerical-fidelity",
+        {
+            "artifact_type": "numerical-fidelity",
+            "s3_bucket": bucket,
+            "s3_key": stored.key,
+            "s3_version_id": stored.version_id,
+            "sha256": stored.sha256,
+            "size_bytes": stored.size_bytes,
+            "media_type": "application/json",
+            "retention_class": retention_class,
+            "metadata": {key: fidelity[key] for key in ("model_id", "build_profile_id", "samples")},
+        },
+        f"{stable_key}-fidelity-artifact",
+    )
+    test: JsonObject = {"status": "passed", "version": str(fidelity["schema_version"]), "summary": fidelity}
+    if artifact.get("artifact_id"):
+        test["report_artifact_id"] = artifact["artifact_id"]
+    client.request(
+        "PUT",
+        f"/v1/runs/{run_id}/test-results/correctness/numerical-fidelity",
+        test,
+        f"{stable_key}-fidelity-test-result",
+    )
+    client.request(
+        "POST",
+        f"/v1/runs/{run_id}/measurements/batch",
+        {"measurements": _fidelity_measurements(fidelity, fingerprint)},
+        f"{stable_key}-fidelity-measurements",
+    )
 
 
 def _compile_timing(path: Path) -> JsonObject | None:
@@ -1375,35 +1425,6 @@ def _preflight_compilations(
         )
         if build_fingerprint != expected_build_fingerprint:
             raise ValidationError(f"{result_path}: build_fingerprint does not match semantic compile inputs")
-        fidelity_path = result_path.parent / "fidelity.json"
-        configured_fidelity = find_fidelity_config(
-            root / "models" / model_id,
-            model,
-            build_profile_id=build_profile_id,
-            component_id=component_id,
-        )
-        if configured_fidelity is not None:
-            owns_fidelity = configured_fidelity["result_component"] == component_id
-            if owns_fidelity != fidelity_path.is_file():
-                expectation = "requires" if owns_fidelity else "must not contain"
-                raise ValidationError(
-                    f"{result_path.parent}: configured numerical fidelity {expectation} fidelity.json"
-                )
-        fidelity_evidence = None
-        if fidelity_path.is_file():
-            fidelity = _fidelity_result(
-                fidelity_path,
-                root / "schemas" / "numerical-fidelity.schema.json",
-                model_id=model_id,
-                build_profile_id=build_profile_id,
-                component_id=component_id,
-                config=configured_fidelity,
-            )
-            fidelity_evidence = {
-                "path": fidelity_path,
-                "document": fidelity,
-                "sha256": sha256_file(fidelity_path)[0],
-            }
         prepared.append(
             {
                 "result_path": result_path,
@@ -1426,7 +1447,6 @@ def _preflight_compilations(
                 "target": target,
                 "source_sha": source_sha,
                 "build_fingerprint": build_fingerprint,
-                "fidelity": fidelity_evidence,
             }
         )
     return prepared
@@ -1656,71 +1676,6 @@ def publish_compilations(
             },
             f"{stable_key}-validation",
         )
-        fidelity_evidence = compilation["fidelity"]
-        fidelity_publication = None
-        if fidelity_evidence is not None:
-            fidelity_path = fidelity_evidence["path"]
-            fidelity = fidelity_evidence["document"]
-            fidelity_sha = fidelity_evidence["sha256"]
-            fidelity_fingerprint = canonical_sha256(fidelity)
-            fidelity_key = (
-                f"models/{branch_key}/{commit_tag}/{model_id}/{build_profile_id}/{component_id}/fidelity/"
-                f"{fidelity_fingerprint}/numerical-fidelity.json"
-            )
-            if candidate is not None:
-                fidelity_key = f"{candidate['upload_prefix'].rstrip('/')}/{run_id}/numerical-fidelity.json"
-            fidelity_stored = store.ensure_native_sha256(
-                fidelity_path,
-                fidelity_key,
-                fidelity_sha,
-                media_type="application/json",
-            )
-            fidelity_artifact = client.request(
-                "PUT",
-                f"/v1/runs/{run_id}/artifacts/numerical-fidelity",
-                {
-                    "artifact_type": "numerical-fidelity",
-                    "s3_bucket": bucket,
-                    "s3_key": fidelity_stored.key,
-                    "s3_version_id": fidelity_stored.version_id,
-                    "sha256": fidelity_stored.sha256,
-                    "size_bytes": fidelity_stored.size_bytes,
-                    "media_type": "application/json",
-                    "retention_class": retention_class,
-                    "metadata": {
-                        "model_id": model_id,
-                        "build_profile_id": build_profile_id,
-                        "component_id": component_id,
-                        "scope": fidelity["scope"],
-                        "samples": fidelity["samples"],
-                    },
-                },
-                f"{stable_key}-fidelity-artifact",
-            )
-            fidelity_test: JsonObject = {
-                "status": "passed",
-                "version": str(fidelity["schema_version"]),
-                "summary": fidelity,
-            }
-            if fidelity_artifact.get("artifact_id"):
-                fidelity_test["report_artifact_id"] = fidelity_artifact["artifact_id"]
-            client.request(
-                "PUT",
-                f"/v1/runs/{run_id}/test-results/correctness/numerical-fidelity",
-                fidelity_test,
-                f"{stable_key}-fidelity-test-result",
-            )
-            client.request(
-                "POST",
-                f"/v1/runs/{run_id}/measurements/batch",
-                {"measurements": _fidelity_measurements(fidelity, fidelity_fingerprint)},
-                f"{stable_key}-fidelity-measurements",
-            )
-            fidelity_publication = {
-                "s3_key": fidelity_stored.key,
-                "result_fingerprint": fidelity_fingerprint,
-                "samples": fidelity["samples"],
-            }
         client.request(
             "POST",
             f"/v1/runs/{run_id}/finalize",
@@ -1736,7 +1691,6 @@ def publish_compilations(
                 "compile_fingerprint": build_fingerprint,
                 "artifact_sha256": artifact_sha,
                 "s3_key": stored.key,
-                "fidelity": fidelity_publication,
             }
         )
 
@@ -1857,6 +1811,18 @@ def publish_packages(
             if not isinstance(run_id, str) or not run_id:
                 raise ValidationError(f"{result_path}: package component {component_id} has no finalized compile run")
             component_runs[component_id] = run_id
+        # Check the fidelity before any registry write, so an invalid report leaves no unfinished run.
+        fidelity_path = result_path.parent / FIDELITY_FILE
+        if fidelity_path.is_file() != ("numerical_fidelity" in model):
+            expectation = "requires" if "numerical_fidelity" in model else "must not contain"
+            raise ValidationError(f"{result_path.parent}: the package {expectation} {FIDELITY_FILE}")
+        fidelity = _fidelity_result(
+            fidelity_path,
+            root / "schemas" / "numerical-fidelity.schema.json",
+            model_id=model_id,
+            build_profile_id=profile_id,
+            config=model["numerical_fidelity"],
+        ) if fidelity_path.is_file() else None
 
         manifest_sha = canonical_sha256(manifest)
         parameters = {
@@ -1938,6 +1904,13 @@ def publish_packages(
             "media_type": media_type, "retention_class": retention_class,
             "metadata": artifact_metadata,
         }, f"{stable_key}-artifact")
+        if fidelity is not None:
+            _publish_fidelity(
+                client, store, fidelity_path, fidelity, run_id=run_id, stable_key=stable_key, bucket=bucket,
+                retention_class=retention_class,
+                s3_key=(f"{candidate['upload_prefix'].rstrip('/')}/{run_id}/numerical-fidelity.json" if candidate else
+                        f"models/{branch_key}/{commit_tag}/{model_id}/{profile_id}/numerical-fidelity.json"),
+            )
         client.request("POST", f"/v1/runs/{run_id}/finalize", {"status": "completed"}, f"{stable_key}-finalize")
         published.append({
             "model_id": model_id, "build_profile_id": profile_id, "package_id": package_id, "run_id": run_id,
