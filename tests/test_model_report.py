@@ -70,11 +70,12 @@ def test_energy_per_inference_matches_cores_energy_for_its_sample_count(tmp_path
     assert metrics["energy_per_inference_joules"] == pytest.approx(CORE_REPORT["energy_joules"] / 1000)
 
 
-def test_energy_per_inference_divides_by_the_compiled_batch(tmp_path):
+def test_energy_per_inference_does_not_depend_on_the_compiled_batch(tmp_path):
+    # Core's throughput already counts each inference of a batch, so equal power and rate mean equal energy.
     single = model_report.performance(Saved(CORE_REPORT), {"model": Model("m")}, workload="w").document["metrics"]
     batched = model_report.performance(Saved(CORE_REPORT), {"model": Model("m", 4)}, workload="w").document["metrics"]
 
-    assert batched["energy_per_inference_joules"] == pytest.approx(single["energy_per_inference_joules"] / 4)
+    assert batched["energy_per_inference_joules"] == pytest.approx(single["energy_per_inference_joules"])
 
 
 def test_a_value_core_did_not_measure_is_absent(tmp_path):

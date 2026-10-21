@@ -182,13 +182,13 @@ historical YOLO measurements that configured image preprocessing and
 BoxDecode explicitly.
 
 Core reports mean latency and its p50, p95, and p99 percentiles, throughput in
-logical inferences per second, and average SoM power. `model_report` derives
-energy per inference by dividing average power by throughput and the compiled
-batch size. Core writes 0 for a headline value it did not measure, and
-Sentinel provides 0 samples for a reading it did not take; those metrics are
-absent from the report and the browser shows them as unavailable. The
-`required_metrics` in `model.yaml` must be present, or the stage fails before
-publication.
+logical inferences per second, and average SoM power. Throughput counts every
+inference in a batch, so `model_report` derives energy per inference by
+dividing average power by throughput alone. Core writes 0 for a headline value
+it did not measure, and Sentinel provides 0 samples for a reading it did not
+take; those metrics are absent from the report and the browser shows them as
+unavailable. The `required_metrics` in `model.yaml` must be present, or the
+stage fails before publication.
 
 `model_report` reads these Sentinel metrics from the telemetry, each over the
 throughput pass:

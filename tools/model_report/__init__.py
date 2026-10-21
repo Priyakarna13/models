@@ -73,12 +73,11 @@ def performance(
         layer_stats = {component: core_report["layer_stats"] for component in models}
     if set(layer_stats) != set(models):
         raise ValueError("layer_stats must name exactly the components in models")
-    batch_size = next(iter(models.values())).compiled_batch_size()
     return Report(
         {
             **_header("performance"),
             "workload": workload,
-            "metrics": _performance_metrics(core_report, measured_telemetry, batch_size),
+            "metrics": _performance_metrics(core_report, measured_telemetry),
             "telemetry": measured_telemetry,
             "components": {
                 component: {
@@ -128,7 +127,7 @@ def _header(stage: str) -> dict[str, Any]:
     }
 
 
-def _performance_metrics(report: dict[str, Any], telemetry: dict[str, Any], batch_size: int) -> dict[str, float]:
+def _performance_metrics(report: dict[str, Any], telemetry: dict[str, Any]) -> dict[str, float]:
     metrics = {}
     for name, metric in METRICS.items():
         if "report" in metric and report[metric["report"]] > 0:
@@ -142,8 +141,9 @@ def _performance_metrics(report: dict[str, Any], telemetry: dict[str, Any], batc
                 raise ValueError(f"telemetry {field} must be in {unit!r}")
             if entries:
                 metrics[name] = float(max(entry[statistic] for entry in entries))
+    # Core's throughput counts every inference in a batch, so power over it is already energy per inference.
     if "avg_power_watts" in metrics and "throughput_fps" in metrics:
-        metrics[ENERGY_PER_INFERENCE] = metrics["avg_power_watts"] / metrics["throughput_fps"] / batch_size
+        metrics[ENERGY_PER_INFERENCE] = metrics["avg_power_watts"] / metrics["throughput_fps"]
     return metrics
 
 
