@@ -39,10 +39,8 @@ Each stage's registry run carries its fingerprint, and CI runs a stage only
 when no completed run carries the current fingerprint. A change therefore
 reruns exactly the stages whose inputs it touches.
 
-A fingerprint version (`BENCHMARK_RUN_TYPES` in `fingerprints.py`) changes
-only when `fingerprints.py` changes what a fingerprint hashes or how. Adding
-or editing a model, or changing the report schema or its tooling, changes the
-fingerprint itself and needs no new version.
+A tooling change reruns a stage only when the changed file is in that stage's
+tooling list in `fingerprints.py`.
 
 | Stage | Venue | Model entry point | Runner script |
 |---|---|---|---|
@@ -206,7 +204,7 @@ in the same commit.
 | a `model-registry` command | `cli.py` (and `AUTHOR_COMMANDS` when authors run it), every workflow and script that calls it, `packaging/model-registry/install_model_registry_package.sh`, the docs, and `tests/test_cli.py` |
 | a module that only CI may run | the removal list in `packaging/model-registry/build.sh` |
 | a module's job, or a new module | the [module map](design-doc/model-registry-architecture.md#shared-tooling) |
-| a published result's shape | its schema under `schemas/` and `artifact-browser/`, which must keep rendering results already in the registry |
+| a published result's shape | its schema under `schemas/` and `artifact-browser/` |
 | a CI job, trigger, or concurrency rule | [CI flow](design-doc/model-registry-architecture.md#ci-flow) and the [after-merge steps](docs/contributing.md#after-merge-trusted-staging-automation) |
 
 ## CI
@@ -290,11 +288,11 @@ change.
   `profileGroups` in `api.js` sets this, not the `model.yaml` profile order.
 - Keep the glance-first page: key facts in the section, the rest in one row.
   Actions are icon buttons; blue text with ↗ is only for external links.
-- Measurements are whole-model, per build profile. Show a component's layer
+- Benchmarks are whole-model, per build profile. Show a component's layer
   timings and execution plan per component; never add component numbers up
   or mark one component best against a different component.
-- Keep rendering every published model report version, and let unknown
-  metrics fall through to Other measurements rather than hiding them.
+- Render the current model report version, and let unknown metrics fall
+  through to Other measurements rather than hiding them.
 - Keep the preview data-driven. `preview.py` builds its catalog from
   `models/`; never add a model, name, or README to it by hand. It needs the
   repository installed (`python -m pip install .`) or `PYTHON` pointing at

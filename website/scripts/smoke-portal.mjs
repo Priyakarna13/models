@@ -281,6 +281,10 @@ async function checkCatalogLayouts(browser, url) {
         } else {
           await page.locator('.run-row').first().waitFor();
           if (await page.locator('#catalog-layout-toggle').isVisible()) throw new Error('model layout switch leaked into build history');
+          // preview.py OLD_LAYOUT_RUN_IDS: compile runs without a build profile or recipe timing.
+          for (const id of ['00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000a2']) {
+            if (await page.locator(`.run-row[data-run-id="${id}"]`).count()) throw new Error(`build history shows old-layout run ${id}`);
+          }
         }
         if (errors.length) throw new Error(errors.join('; '));
         console.log(`ok  Catalog cards/table · ${viewport.width}px ${theme}`);

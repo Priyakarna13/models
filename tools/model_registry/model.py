@@ -125,7 +125,7 @@ def normalize_model(value: dict[str, Any], directory: Path) -> dict[str, Any]:
         model = {
             **authored,
             "id": directory.name,
-            "maturity": "experimental",  # Existing catalog API compatibility.
+            "maturity": "experimental",  # Vulcan's catalog writer requires a maturity.
             "architecture": {"id": authored["architecture"]},
             "components": [
                 {

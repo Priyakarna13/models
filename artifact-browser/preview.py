@@ -75,7 +75,24 @@ def _repository() -> dict[str, Any]:
     }
     revisions = [_revision(models, matrix, documentation, compiler, day, sha) for day, sha in REVISIONS]
     runs = sorted((run for revision in revisions for run in revision["runs"]), key=lambda run: run["created_at"])
+    runs = _old_layout_runs(runs[0]) + runs
     return {"models": models, "compiler": compiler, "revisions": revisions, "runs": runs[::-1]}
+
+
+# Compile runs older Models revisions wrote, keyed by the field they lack; build history hides them.
+OLD_LAYOUT_RUN_IDS = {
+    "build_profile_id": "00000000-0000-4000-8000-0000000000a1",
+    "compile_timing": "00000000-0000-4000-8000-0000000000a2",
+}
+
+
+def _old_layout_runs(run: dict) -> list[dict]:
+    day = REVISIONS[0][0]
+    return [{
+        **run, "id": run_id, "created_at": f"{day}T00:00:00+00:00",
+        "started_at": f"{day}T00:00:00+00:00", "finished_at": f"{day}T00:00:42+00:00",
+        "metadata": {**{key: value for key, value in run["metadata"].items() if key != field}, "github_run_id": run_id},
+    } for field, run_id in OLD_LAYOUT_RUN_IDS.items()]
 
 
 def _documentation_receipt(model_id: str, documentation: dict[str, Any], sha: str) -> dict[str, Any]:
@@ -205,6 +222,9 @@ def _compile_run(model: dict, entry: dict, build: dict, compiler: dict, day: str
         "build_profile_id": build["build_profile_id"],
         "component_id": build["component_id"],
         "compile_invocation_id": build["compile_invocation_id"],
+        "compile_timing": {
+            "scope": "compile_recipe", "started_at": run["started_at"], "finished_at": run["finished_at"],
+        },
         "artifact_kind": "llima" if next(
             item for item in model["components"] if item["id"] == build["component_id"]
         )["interface"]["format"] == "huggingface" else "mpk",
@@ -497,14 +517,12 @@ def _benchmark_run(run_id: str) -> dict:
     profile's package run."""
     fingerprint = _index()["benchmark_run_fingerprints"][run_id]
     benchmark = _index()["benchmarks"][fingerprint]
-    run_type, fingerprint_version = BENCHMARK_RUN_TYPES[benchmark["stage"]]
     workflow = int(_fraction("workflow", run_id) * 10**11)
     return {
         **_index()["runs"][benchmark["parent_run_id"]],
         "id": run_id,
-        "run_type": run_type,
+        "run_type": BENCHMARK_RUN_TYPES[benchmark["stage"]],
         "parent_run_id": benchmark["parent_run_id"],
-        "fingerprint_version": fingerprint_version,
         "run_fingerprint": fingerprint,
         "commit_sha": _repository()["revisions"][-1]["sha"],
         "ci_run_url": f"https://github.com/sima-neat/models/actions/runs/{workflow}",
@@ -612,9 +630,9 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         elif path == "/resolve":
             fingerprint = query.get("fingerprint", [""])[0]
             benchmark = _index()["benchmarks"].get(fingerprint)
-            requested = (query.get("run_type", [""])[0], int(query.get("fingerprint_version", ["1"])[0]))
-            if benchmark and BENCHMARK_RUN_TYPES[benchmark["stage"]] == requested:
-                self._json({"run": {"id": _id(benchmark["stage"], fingerprint), "run_type": requested[0]}})
+            run_type = query.get("run_type", [""])[0]
+            if benchmark and BENCHMARK_RUN_TYPES[benchmark["stage"]] == run_type:
+                self._json({"run": {"id": _id(benchmark["stage"], fingerprint), "run_type": run_type}})
             else:
                 self._not_found("fingerprint_not_found")
         elif path in {"/models", "/resolve"} or path.startswith("/catalogs/"):

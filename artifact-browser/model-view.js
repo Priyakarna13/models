@@ -588,7 +588,7 @@ function humanize(id) {
 // variant's components; a pipeline built from another branch's model.yaml may not.
 function pipelineOrder(variant) {
   const order = (variant.pipeline || []).filter((stage) => "component" in stage).map((stage) => stage.component);
-  const ids = variant.details.map((detail) => detail.summary.run.metadata?.component_id || "model");
+  const ids = variant.details.map((detail) => detail.summary.run.metadata.component_id);
   return order.length === ids.length && order.every((id) => ids.includes(id)) ? order : null;
 }
 
@@ -616,14 +616,12 @@ function modelPerformance(benchmarkRun, modelId) {
 }
 
 function compileDuration(run) {
-  return run.metadata?.compile_timing?.scope === "compile_recipe"
-    ? formatDuration(run.metadata.compile_timing.started_at, run.metadata.compile_timing.finished_at)
-    : "Not recorded";
+  return formatDuration(run.metadata.compile_timing.started_at, run.metadata.compile_timing.finished_at);
 }
 
 function componentRow(detail, single) {
   const run = detail.summary.run;
-  const component = run.metadata?.component_id || "model";
+  const component = run.metadata.component_id;
   const artifacts = modelPackArtifacts(detail.summary.artifacts);
   const parameters = detail.provenance.parameters?.parameters?.compile_parameters || {};
   const mpkBytes = artifacts.reduce((total, artifact) => total + (Number.isFinite(deploymentSize(artifact)) ? deploymentSize(artifact) : 0), 0);

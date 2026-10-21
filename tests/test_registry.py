@@ -131,6 +131,13 @@ def test_publish_model_documentation_keys_bind_create_request_identity() -> None
     assert first != create_keys("production", "https://github.example.invalid/actions/runs/123")
 
 
+COMPILE_TIMING = {
+    "scope": "compile_recipe",
+    "started_at": "2026-08-13T00:00:00+00:00",
+    "finished_at": "2026-08-13T01:29:52+00:00",
+}
+
+
 def _packaged_result(tmp_path: Path) -> Path:
     dist = tmp_path / "dist"
     output = dist / "resnet_50" / "w16a16" / "model"
@@ -181,6 +188,7 @@ def _packaged_result(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    (output.parent / "compile-timing.json").write_text(json.dumps(COMPILE_TIMING), encoding="utf-8")
     # resnet_50 declares numerical fidelity, so its package publication requires the profile's report.
     _add_fidelity_result(dist)
     return dist
@@ -379,16 +387,8 @@ def test_registry_errors_identify_the_failed_endpoint() -> None:
         client.request("POST", "/v1/runs", {}, "create")
 
 
-@pytest.mark.parametrize("with_timing", [False, True])
-def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatch, with_timing: bool) -> None:
+def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatch) -> None:
     dist = _packaged_result(tmp_path)
-    timing = {
-        "scope": "compile_recipe",
-        "started_at": "2026-08-13T00:00:00+00:00",
-        "finished_at": "2026-08-13T01:29:52+00:00",
-    }
-    if with_timing:
-        (dist / "resnet_50/w16a16/compile-timing.json").write_text(json.dumps(timing))
     calls: list[tuple[str, str, dict | None, str]] = []
 
     def request(method: str, path: str, body: dict | None, key: str) -> dict:
@@ -425,8 +425,7 @@ def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatc
     create = calls[0][2]
     assert create is not None
     assert create["run_type"] == "model_compile"
-    if with_timing:
-        assert create["metadata"].pop("compile_timing") == timing
+    assert create["metadata"].pop("compile_timing") == COMPILE_TIMING
     assert create["metadata"] == {
         "model_id": "resnet_50",
         "build_profile_id": "w16a16",
@@ -1117,9 +1116,10 @@ def test_compile_timing_rejects_invalid_intervals(tmp_path: Path, timing) -> Non
         _compile_timing(path)
 
 
-def test_compile_timing_supports_legacy_outputs_and_utc_timestamps(tmp_path: Path) -> None:
+def test_compile_timing_is_required_and_normalized_to_utc(tmp_path: Path) -> None:
     path = tmp_path / "compile-timing.json"
-    assert _compile_timing(path) is None
+    with pytest.raises(ValidationError, match="invalid compile timing"):
+        _compile_timing(path)
     path.write_text(json.dumps({
         "scope": "compile_recipe", "started_at": "2026-08-13T00:00:00Z", "finished_at": "2026-08-13T01:29:52Z",
     }))

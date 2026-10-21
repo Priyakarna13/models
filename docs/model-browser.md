@@ -100,7 +100,7 @@ the model's folder at the commit the README comes from. LLM and VLM pages show
 the selected build's maximum context length (input plus output tokens) and image
 input resolution directly below the variant selector. Native deployments supply
 their verified settings, including fixed image resolutions without compiler
-overrides; older builds fall back to recorded compile parameters. Sections appear
+overrides; other builds show their recorded compile parameters. Sections appear
 in this order:
 
 1. **Overview.** The `## Overview` section of the README, including

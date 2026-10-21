@@ -159,7 +159,7 @@ throughput-pass telemetry. Ordinary inference can resume when it returns.
 `model_report` keeps each component's layer timings unchanged, and each model's
 performance stage test requires nonempty timings with at least one nonzero
 layer. Changing a performance script remeasures existing builds without
-invalidating their compile keys.
+invalidating their compile fingerprints.
 
 The model browser's **Runtime Layer Analysis** shows the profiled MLA time, layer
 count, and share in the ten slowest layers. **Duration** displays a ranked chart

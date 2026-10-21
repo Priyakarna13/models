@@ -258,10 +258,10 @@ def _published_catalog(repository: Path) -> dict:
     return build_catalog_snapshot(repository=repository, branch="develop", git_sha="a" * 40, previous=prior)
 
 
-def _published_runs(document: dict) -> set[tuple[str, str, int]]:
+def _published_runs(document: dict) -> set[tuple[str, str]]:
     """Registry runs that carry the benchmark fingerprints the catalog records."""
     return {
-        (BENCHMARK_RUN_TYPES[stage][0], fingerprint, BENCHMARK_RUN_TYPES[stage][1])
+        (BENCHMARK_RUN_TYPES[stage], fingerprint)
         for model in document["models"]
         for fingerprints in model.get("benchmark_fingerprints", {}).values()
         for stage, fingerprint in fingerprints.items()
@@ -269,7 +269,7 @@ def _published_runs(document: dict) -> set[tuple[str, str, int]]:
 
 
 class FakeRegistry:
-    def __init__(self, catalogs: dict[str, dict], runs: set[tuple[str, str, int]]) -> None:
+    def __init__(self, catalogs: dict[str, dict], runs: set[tuple[str, str]]) -> None:
         self.catalogs = catalogs
         self.runs = runs
         self.urls: list[str] = []
@@ -284,15 +284,15 @@ class FakeRegistry:
                 raise RegistryPublicationError("public artifact registry HTTP 404 catalog_not_found")
             return {"catalog": {"canonical_sha256": "c" * 64, "document": self.catalogs[branch]}}
         if parsed.path.endswith("/resolve"):
-            run = (query["run_type"][0], query["fingerprint"][0], int(query["fingerprint_version"][0]))
+            run = (query["run_type"][0], query["fingerprint"][0])
             if run not in self.runs:
                 raise RegistryPublicationError("public artifact registry HTTP 404 fingerprint_not_found")
             return {"run": {"run_id": "00000000-0000-4000-8000-000000000099"}}
         raise AssertionError(url)
 
-    def resolved(self) -> list[tuple[str, str]]:
+    def resolved(self) -> list[str]:
         return [
-            (query["run_type"][0], query["fingerprint_version"][0])
+            query["run_type"][0]
             for query in (parse_qs(urlsplit(url).query) for url in self.urls if "/resolve?" in url)
         ]
 
@@ -371,18 +371,14 @@ def test_everything_published_plans_nothing(stage_repository: Path) -> None:
     assert plan == {"compile": {"include": []}, "benchmark": {"include": []}, "catalog_found": True}
 
 
-def test_resolve_requests_carry_each_stage_fingerprint_version(stage_repository: Path) -> None:
+def test_resolve_requests_carry_each_stage_run_type(stage_repository: Path) -> None:
     document = _published_catalog(stage_repository)
     registry = FakeRegistry({BRANCH: document}, _published_runs(document))
 
     _plan(stage_repository, registry)
 
     # One performance lookup per profile, one accuracy lookup for the profile that declares it.
-    assert sorted(registry.resolved()) == [
-        ("model_accuracy", "1"),
-        ("model_performance", "1"),
-        ("model_performance", "1"),
-    ]
+    assert sorted(registry.resolved()) == ["model_accuracy", "model_performance", "model_performance"]
     # Each lookup carries the benchmark fingerprint of the profile's whole-model run over its catalog builds.
     model = load_models(stage_repository)[PLAN_MODEL]
     builds = {build["build_profile_id"]: {"model": build} for build in document["models"][0]["builds"]}
@@ -395,7 +391,8 @@ def test_resolve_requests_carry_each_stage_fingerprint_version(stage_repository:
         for profile_id, fingerprints in document["models"][0]["benchmark_fingerprints"].items()
         for stage, fingerprint in fingerprints.items()
     } == expected
-    assert all(any(f"fingerprint={fingerprint}&" in url for url in registry.urls) for fingerprint in expected.values())
+    for fingerprint in expected.values():
+        assert any(url.endswith(f"fingerprint={fingerprint}") for url in registry.urls)
 
 
 def test_compile_fingerprint_change_compiles_with_every_applicable_stage(stage_repository: Path) -> None:

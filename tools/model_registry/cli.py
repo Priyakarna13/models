@@ -93,7 +93,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     matrix.add_argument("--models", help="comma-separated model IDs; every model when omitted")
     matrix.add_argument("--profiles", help="comma-separated build profile IDs within the selected models")
     matrix.add_argument("--components", help="comma-separated component IDs within the selected models")
-    matrix.add_argument("--compiler-version", help="also emit each invocation's compile key")
+    matrix.add_argument("--compiler-version", help="also emit each invocation's compile fingerprint")
 
     pipelines = subcommands.add_parser(
         "component-pipelines", help="write the order each multi-component model runs in, for the model browser"

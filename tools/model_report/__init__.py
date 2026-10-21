@@ -1,4 +1,4 @@
-"""Write a model's measurement report from what Neat Core returned.
+"""Write a model's report from what Neat Core returned.
 
 A model's scripts/performance.py and scripts/accuracy.py measure the whole model their own way, then hand
 Core's results to performance() or accuracy(). Report.save() writes model-report.json, which the registry

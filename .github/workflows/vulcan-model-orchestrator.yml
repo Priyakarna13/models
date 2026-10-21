@@ -28,7 +28,7 @@ on:
         required: false
         type: string
       force_rebuild_all:
-        description: Recompile every selected invocation regardless of its compile key
+        description: Recompile every selected invocation regardless of its compile fingerprint
         required: true
         default: false
         type: boolean

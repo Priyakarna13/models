@@ -80,7 +80,7 @@ this table. Modules marked CI only are removed from the author package by
 | `cli.py` | the `model-registry` command; `AUTHOR_COMMANDS` lists the commands the author package exposes |
 | `model.py` | loading and validating `model.yaml` and the model folder (`load_models`), and expanding it into components, build profiles with their one compile invocation, and the `default` package |
 | `compile_matrix.py` | the compile matrix: one entry per build profile's compile invocation, with the benchmarks that measure it (`build_matrix`) |
-| `fingerprints.py` | the fingerprints (`compile_fingerprint`, `benchmark_fingerprint`), the files each one hashes, and each benchmark's run type and fingerprint version |
+| `fingerprints.py` | the fingerprints (`compile_fingerprint`, `benchmark_fingerprint`), the files each one hashes, and each benchmark's run type |
 | `stage_plan.py` | which builds compile and which benchmarks run on a push or explicit on-demand dispatch (`plan_stages`), the registry reads that decision needs, and base-branch resolution |
 | `registry.py` | publishing compile runs, packages, model documentation, and the branch catalog the browser reads (CI only) |
 | `promotions.py` | pinned environment-specific Develop requests, inspection, decisions, receipts and review summaries (CI only) |
@@ -126,13 +126,6 @@ therefore benchmarked again. No fingerprint reads a model's `tests/`, so a
 changed test applies the next time its stage runs. The contributor guide lists
 every input in [what a change
 reruns](../docs/adding-a-model.md#9-know-what-a-change-reruns).
-
-The YAML simplification rollout requires 47 ONNX compile invocations: two ResNet,
-eight RF-DETR, 30 standard YOLO26, six SSD-MobileNet and one Tiny Drone. The three
-LLiMa compile fingerprints remain unchanged. Plan 47 whole-model performance runs and
-39 accuracy runs; SSD-MobileNet and Tiny Drone record their accuracy under
-`qualification_evidence`. These are rollout
-work items; the migration does not dispatch them while editing.
 
 ## CI flow
 
@@ -277,9 +270,8 @@ not remove protected candidates. The summary and `candidate.json` report the
 actual returned protection, digest and provenance. Stable keys resume the same
 GitHub run across attempts, including interrupted publication; expired assembly
 requires a new workflow run. Compiler outputs and publication receipts remain
-GitHub artifacts for recovery. When one on-demand invocation needs rebuilding,
-the complete profile is built, since older source runs cannot be rebound as new
-provenance. Ordinary automatic fingerprint reuse is unchanged.
+GitHub artifacts for recovery. An on-demand profile is always rebuilt whole,
+since older source runs cannot be rebound as new provenance. Ordinary automatic fingerprint reuse is unchanged.
 
 Vulcan limits a candidate to 32 roles, 512 required names, 512 actual S3
 dependencies and a 1 MiB frozen manifest. The producer checks the role/name
@@ -299,8 +291,7 @@ snapshot conflict reloads the catalog and retries with a new body-bound key;
 failed selection can be retried without recompilation. Vulcan atomically selects
 and protects the deployment in `branch_deployments`, without approving it.
 Readers prefer that profile's branch selection over inherited approvals and
-legacy builds; unselected completed runs cannot replace it. PR #256's API and
-migration must be deployed before using this publication step.
+catalog builds; unselected completed runs cannot replace it.
 
 Vulcan PRs #248, #250 and #253 provide the staging backend. The protected GitHub
 approval workflow is tracked separately in [#315](https://github.com/sima-neat/models/issues/315).

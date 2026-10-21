@@ -181,8 +181,6 @@ def test_publish_report_publishes_one_whole_model_run_under_the_package_run(tmp_
     paths = [path for _, path, _ in calls]
     create = calls[0][2]
     assert create["run_type"] == "model_performance"
-    # Vulcan /resolve finds the run only under the version planning asks for.
-    assert create["environment"]["fingerprint_version"] == 1
     assert create["parent_run_id"] == PACKAGE_RUN
     assert create["run_fingerprint"] == fingerprint
     assert result["benchmark_fingerprint"] == fingerprint and result["package_run_id"] == PACKAGE_RUN
@@ -214,7 +212,6 @@ def test_publish_report_counts_each_evaluated_accuracy_sample(tmp_path: Path) ->
     calls, result = publish(tmp_path, "resnet_50", "w8a8", "accuracy", accuracy_report())
 
     assert calls[0][2]["run_type"] == result["run_type"] == "model_accuracy"
-    assert calls[0][2]["environment"]["fingerprint_version"] == 1
     measurements = next(body for _, path, body in calls if path.endswith("/measurements/batch"))["measurements"]
     assert sorted(item["name"] for item in measurements) == [
         "model.accuracy.top1_accuracy", "model.accuracy.top5_accuracy",

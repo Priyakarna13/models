@@ -1,5 +1,5 @@
 // Model catalog and build history: filters, search, and the result list.
-import { deploymentCatalog, branchModels, variantBuilds } from "./branch-builds.js";
+import { branchModels, variantBuilds } from "./branch-builds.js";
 import {
   DEFAULT_BRANCH, CATEGORY_QUERY_FIELDS, state, elements, categoryFilters, filters, catalogMode, taxonomyLabel,
 } from "./state.js";
@@ -8,7 +8,7 @@ import { formatDate, metricDefinition, metricDisplay } from "./metrics.js";
 import { readPerformance } from "./model-report.js";
 import { accuracyHeadline } from "./model-view.js";
 import {
-  api, writeBranchPreference, writeCachedBranches, writeCachedCatalog, buildProfileId, componentId,
+  api, writeBranchPreference, writeCachedBranches, writeCachedCatalog,
   runFromCatalogBuild, profileGroups, activeModelBuild, documentationHeroUrl, loadVariant, mapWithConcurrency,
 } from "./api.js";
 
@@ -85,27 +85,22 @@ export function updateFilterIndicators() {
 }
 
 export function applyCatalog(payload, { append = false, cache = true } = {}) {
-  const models = Array.isArray(payload.models) ? payload.models.map(deploymentCatalog) : [];
-  const runs = Array.isArray(payload.runs) ? payload.runs : [];
-  const modelsMode = payload.mode === "models"
-    || (payload.mode !== "runs" && Object.hasOwn(payload, "models"));
+  const modelsMode = payload.mode === "models";
   state.catalogMode = modelsMode ? "models" : "runs";
   if (modelsMode) {
-    if (Array.isArray(payload.compileRuns)) {
-      state.compileRuns = payload.compileRuns;
-      state.packageRuns = payload.packageRuns || [];
-      state.catalogDefinitions = payload.catalogDefinitions || [];
-      state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,
-        elements["compiler-filter"].value);
-    } else {
-      state.models = append ? [...state.models, ...models] : models;
-    }
+    state.compileRuns = payload.compileRuns;
+    state.packageRuns = payload.packageRuns;
+    state.catalogDefinitions = payload.catalogDefinitions;
+    state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,
+      elements["compiler-filter"].value);
     state.runs = state.models.flatMap((model) => (model.builds || []).map((build) => runFromCatalogBuild(model, build)));
   } else {
     state.models = [];
     state.compileRuns = [];
     state.packageRuns = [];
     state.catalogDefinitions = [];
+    // History shows compile runs that record their build profile and recipe timing.
+    const runs = payload.runs.filter((run) => run.metadata?.build_profile_id && run.metadata?.compile_timing);
     state.runs = append ? [...state.runs, ...runs] : runs;
   }
   state.availableBranches = [...new Set([
@@ -148,9 +143,7 @@ function normalizedSearchTerms(value) {
 
 function runSearchDocument(run) {
   return [
-    run.metadata?.model_id, run.metadata?.model_name, run.metadata?.display_name,
-    run.metadata?.build_profile_id, run.metadata?.component_id,
-    run.metadata?.variant_id, run.metadata?.package_id,
+    run.metadata?.model_id, run.metadata?.build_profile_id, run.metadata?.component_id,
     run.git_ref, run.commit_sha, run.run_type,
     run.toolchain_version, run.target_platform,
     taxonomyLabel("model_types", run.model_type),
@@ -190,7 +183,7 @@ function modelSearchDocument(model) {
     ...(model.output_modalities || []).flatMap((id) => [id, taxonomyLabel("modalities", id)]),
     ...(model.model_tags || []),
     ...(model.builds || []).flatMap((build) => [
-      buildProfileId(build), componentId(build), build.toolchain_name,
+      build.build_profile_id, build.component_id, build.toolchain_name,
       build.toolchain_version, build.target_platform,
     ]),
   ].filter(Boolean).join(" ");
@@ -237,7 +230,7 @@ function populateFilters({ persistBranchFallback = false } = {}) {
 }
 
 function componentList(runs) {
-  const components = runs.map((run) => run.metadata?.component_id || "model");
+  const components = runs.map((run) => run.metadata.component_id);
   return components.length > 1 || components[0] !== "model" ? components.join(" · ") : "";
 }
 

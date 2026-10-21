@@ -38,10 +38,8 @@ export function shortSha(sha = "") {
   return sha.slice(0, 12);
 }
 
-// Grouping treats a run without a build profile as its own "default" variant; never show that as a profile.
 export function profileLabel(run) {
-  const profile = run.metadata?.build_profile_id || run.metadata?.variant_id;
-  return profile ? variantLabel(profile) : "Build identity unavailable";
+  return variantLabel(run.metadata.build_profile_id);
 }
 
 // Variant IDs are lowercase identifiers such as w8a8_w16a16; readers see them in uppercase.

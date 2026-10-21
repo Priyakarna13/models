@@ -241,7 +241,7 @@ def publish_report(
     model = _model(root, model_id)
     builds, package_run_id = _registered_builds(Path(compiled_dir).expanduser().resolve(), model, build_profile_id)
     fingerprint = benchmark_fingerprint(root, model, build_profile_id, builds, stage)
-    run_type, fingerprint_version = BENCHMARK_RUN_TYPES[stage]
+    run_type = BENCHMARK_RUN_TYPES[stage]
     board = {**_read_json(output / ENVIRONMENT_FILE, "runner environment"), "pyneat": report["runtime"]["pyneat"]}
     runtime = resolve_benchmark_runtime(root)
     report_digest = canonical_sha256(report)
@@ -262,7 +262,6 @@ def publish_report(
         "run_fingerprint": fingerprint,
         "environment": {
             "fingerprint": canonical_sha256(board),
-            "fingerprint_version": fingerprint_version,
             "toolchain_name": "sima-neat",
             "toolchain_version": report["runtime"]["pyneat"],
             "target_platform": runtime["devkit"]["platform_version"],

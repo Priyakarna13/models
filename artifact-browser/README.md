@@ -341,13 +341,11 @@ duration** comes from `metadata.compile_timing`, captured around the compilation
 recipe by the compile workflow. It includes surgery and any validation performed
 inside that recipe; it excludes runner queue/setup, separate accuracy jobs,
 publication, and subsequent benchmarks. Components compiled together share this
-invocation timing. Older builds display **Not recorded** instead of presenting
-publication time as compile time; the workflow link provides historical job timing.
+invocation timing.
 
-The publisher accepts optional `compile-timing.json` alongside `compile-outputs.json`,
+The publisher requires `compile-timing.json` alongside `compile-outputs.json`,
 validates its timezone-aware start/end timestamps before any registry writes,
-and publishes it as additive run metadata. Existing outputs remain publishable.
-No registry API or database schema changes are required.
+and publishes it as run metadata.
 
 The preview's layer timings are illustrative generated data, including zero-time
 entries and multiple MLA stages to exercise the analysis controls. Production

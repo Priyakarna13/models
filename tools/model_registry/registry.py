@@ -362,7 +362,7 @@ def _selected_invocation_keys(selected_matrix: Path | None) -> set[tuple[str, st
 
 
 def _head_matrix(root: Path, models: dict[str, Any]) -> list[JsonObject]:
-    """Every compile invocation the checkout declares, with its compile key."""
+    """Every compile invocation the checkout declares, with its compile fingerprint."""
     compiler_version = resolve_model_compiler(root)["identity"]
     return build_matrix(models, sorted(models), repository=root, compiler_version=compiler_version)["include"]
 
@@ -723,7 +723,6 @@ def publish_model_documentation(
             "run_fingerprint": run_fingerprint,
             "environment": {
                 "fingerprint": canonical_sha256(environment_document),
-                "fingerprint_version": 1,
                 "toolchain_name": "sima-model-registry",
                 "toolchain_version": "1",
                 "target_platform": "documentation",
@@ -1255,10 +1254,8 @@ def _publish_fidelity(
     )
 
 
-def _compile_timing(path: Path) -> JsonObject | None:
-    """Read optional recipe timing; registry run timestamps measure publication."""
-    if not path.exists():
-        return None
+def _compile_timing(path: Path) -> JsonObject:
+    """Read the recipe timing the compile runner writes; registry run timestamps measure publication."""
     try:
         timing = json.loads(path.read_text(encoding="utf-8"))
         if timing["scope"] != "compile_recipe":
@@ -1554,7 +1551,6 @@ def publish_compilations(
                 "run_fingerprint": run_fingerprint,
                 "environment": {
                     "fingerprint": environment_fingerprint,
-                    "fingerprint_version": 1,
                     "toolchain_name": "sima-model-compiler",
                     "toolchain_version": compiler_version,
                     "target_platform": target,
@@ -1567,7 +1563,7 @@ def publish_compilations(
                     "artifact_kind": "llima" if native else "mpk",
                     **({"build_on_demand": True} if on_demand else {}),
                     "github_run_id": github_run_id,
-                    **({"compile_timing": compilation["compile_timing"]} if compilation["compile_timing"] else {}),
+                    "compile_timing": compilation["compile_timing"],
                     "license": model["license"],
                 },
             },
@@ -1838,7 +1834,7 @@ def publish_packages(
             "git_ref": f"refs/heads/{branch}", "ci_provider": "github-actions", "ci_run_url": github_run_url,
             "run_fingerprint": run_fingerprint,
             "environment": {
-                "fingerprint": canonical_sha256(environment_document), "fingerprint_version": 1,
+                "fingerprint": canonical_sha256(environment_document),
                 "toolchain_name": "sima-model-registry", "toolchain_version": "1",
                 "target_platform": manifest.get("target"),
                 "properties": {"vulcan_environment": environment},

@@ -150,6 +150,10 @@ class Registry:
             request=self.request, artifact_store=self,
         )
 
+COMPILE_TIMING = json.dumps({
+    "scope": "compile_recipe", "started_at": "2026-08-13T00:00:00Z", "finished_at": "2026-08-13T01:00:00Z",
+})
+
 
 @pytest.fixture
 def compiled(tmp_path):
@@ -170,6 +174,7 @@ def compiled(tmp_path):
     record_compile_outputs(
         profile, model_id=MODEL, build_profile_id=PROFILE, compile_invocation_id=PROFILE, component_ids=["model"]
     )
+    (profile / "compile-timing.json").write_text(COMPILE_TIMING)
     return dist
 
 
@@ -558,6 +563,7 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
         })
         outputs.append({"component_id": component, "mpk_path": f"{component}/{archive.name}",
                         "mpk_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
+    (invocation / "compile-timing.json").write_text(COMPILE_TIMING)
     (invocation / "compile-outputs.json").write_text(json.dumps({
         "model_id": "fixture_model", "build_profile_id": "fixture", "compile_invocation_id": "fixture",
         "outputs": outputs,

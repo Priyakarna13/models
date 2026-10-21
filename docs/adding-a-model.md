@@ -541,13 +541,11 @@ Whisper sets `entrypoint: transcribe` and uses a model-specific recipe calling
 and the Whisper mask and log-probe options, without LLM context or image settings.
 The runner forwards boolean parameters as `--name` or `--no-name`.
 
-The native compile key covers checkpoint content, the target, graph parameters
+The native compile fingerprint covers checkpoint content, the target, graph parameters
 and the pinned compiler identity. Declare graph-changing options in component
 `parameters`, including precision, group size, context length and image dimensions.
 Script edits, logging, job counts and runner selection do not invalidate it.
-README and hero changes remain outside compile identities. The YAML migration
-plans one ONNX rebuild rather than recreating removed descriptive inputs solely
-to preserve their old hashes; LLiMa graph identities remain unchanged.
+README and hero changes remain outside compile identities.
 
 Omit `calibrations`, `numerical_fidelity`, `accuracy`, and `performance` when no
 corresponding stage is implemented. A manual Qwen build compiles and publishes only; performance

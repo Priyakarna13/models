@@ -21,9 +21,8 @@ export async function api(path) {
 // catalog records for that profile. No run means the stage has not benchmarked this build.
 async function loadBenchmarkRun(stage, benchmarkFingerprint) {
   if (!benchmarkFingerprint) return null;
-  const [runType, fingerprintVersion] = BENCHMARK_RUN_TYPES[stage];
   const repo = state.repository;
-  const query = new URLSearchParams({ run_type: runType, fingerprint: benchmarkFingerprint, fingerprint_version: String(fingerprintVersion) });
+  const query = new URLSearchParams({ run_type: BENCHMARK_RUN_TYPES[stage], fingerprint: benchmarkFingerprint });
   let resolved;
   try {
     ({ run: resolved } = await api(`/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/resolve?${query}`));
@@ -86,7 +85,7 @@ function catalogCacheKey() {
   const categories = branchSnapshot ? [] : Object.entries(categoryFilters()).filter(([, value]) => value).sort();
   const search = branchSnapshot ? "" : elements.search.value.trim();
   const compiler = branchSnapshot ? "any" : elements["compiler-filter"].value || "any";
-  return `sima-neat-model-catalog:v4:${state.apiBase}:${repo.organization}/${repo.name}:${history}:${branch}:${compiler}:${search}:${JSON.stringify(categories)}`;
+  return `sima-neat-model-catalog:v5:${state.apiBase}:${repo.organization}/${repo.name}:${history}:${branch}:${compiler}:${search}:${JSON.stringify(categories)}`;
 }
 
 function branchCatalogCacheKey() {
@@ -139,11 +138,7 @@ export function writeCachedBranches() {
 export function readCachedCatalog() {
   try {
     const cached = JSON.parse(localStorage.getItem(catalogCacheKey()));
-    if (!cached || (!Array.isArray(cached.runs) && !Array.isArray(cached.models))) return null;
-    const mode = ["models", "runs"].includes(cached.mode)
-      ? cached.mode
-      : (cached.models?.length || !cached.runs?.length ? "models" : "runs");
-    return { ...cached, mode };
+    return cached && ["models", "runs"].includes(cached.mode) ? cached : null;
   } catch {
     return null;
   }
@@ -154,7 +149,6 @@ export function writeCachedCatalog() {
     localStorage.setItem(catalogCacheKey(), JSON.stringify({
       savedAt: new Date().toISOString(),
       mode: state.catalogMode,
-      models: state.models,
       runs: state.runs,
       compileRuns: state.compileRuns,
       packageRuns: state.packageRuns,
@@ -168,17 +162,9 @@ export function writeCachedCatalog() {
   }
 }
 
-export function buildProfileId(build) {
-  return build.build_profile_id || build.variant_id || "default";
-}
-
-export function componentId(build) {
-  return build.component_id || "model";
-}
-
 // The "model" component, else the first, opens a variant page.
 export function anchorBuild(builds) {
-  return builds.find((item) => componentId(item) === "model") || builds[0];
+  return builds.find((item) => item.component_id === "model") || builds[0];
 }
 
 function modelCategory(model, name, fallback) {
@@ -201,36 +187,15 @@ function catalogCategories(model) {
   };
 }
 
+// branchModels gives every shown build the compile run that produced it.
 export function runFromCatalogBuild(model, build) {
-  if (build.run) return { ...build.run, ...catalogCategories(model) };
-  const branch = elements["branch-filter"].value || DEFAULT_BRANCH;
-  return {
-    id: build.run_id,
-    repository: `${state.repository.organization}/${state.repository.name}`,
-    run_type: "model_compile",
-    status: build.status || "completed",
-    git_ref: model.git_ref || `refs/heads/${branch}`,
-    commit_sha: build.commit_sha || model.catalog_revision,
-    created_at: build.created_at,
-    finished_at: build.finished_at,
-    toolchain_name: build.toolchain_name,
-    toolchain_version: build.toolchain_version,
-    target_platform: build.target_platform,
-    metadata: {
-      model_id: model.model_id,
-      display_name: model.display_name,
-      build_profile_id: buildProfileId(build),
-      component_id: componentId(build),
-      compile_invocation_id: build.compile_invocation_id,
-    },
-    ...catalogCategories(model),
-  };
+  return { ...build.run, ...catalogCategories(model) };
 }
 
 export function profileGroups(model) {
   const groups = new Map();
   model.builds.forEach((build) => {
-    const profile = buildProfileId(build);
+    const profile = build.build_profile_id;
     if (!groups.has(profile)) groups.set(profile, []);
     groups.get(profile).push(build);
   });
@@ -278,7 +243,7 @@ async function variantRuns(run) {
   const model = state.models.find((item) => item.model_id === run.metadata?.model_id);
   const build = model?.builds.find((item) => item.run_id === run.id);
   if (!build) return variantBuildRuns(run, api);
-  return model.builds.filter((item) => buildProfileId(item) === buildProfileId(build))
+  return model.builds.filter((item) => item.build_profile_id === build.build_profile_id)
     .map((item) => runFromCatalogBuild(model, item));
 }
 
@@ -364,8 +329,8 @@ export async function loadHistoricalCatalogModel(run) {
     const payload = await api(
       `/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/catalogs/${encodeURIComponent(run.commit_sha)}?${query}`,
     );
-    const definition = (payload.catalog?.document?.models || []).find((model) => (model.model_id || model.id) === modelId);
-    const model = definition ? deploymentCatalog({ ...definition, model_id: definition.model_id || definition.id }) : null;
+    const definition = (payload.catalog?.document?.models || []).find((model) => model.id === modelId);
+    const model = definition ? deploymentCatalog({ ...definition, model_id: definition.id }) : null;
     state.historicalCatalogModels.set(key, model);
     return model;
   } catch {
@@ -376,7 +341,7 @@ export async function loadHistoricalCatalogModel(run) {
 
 function fullPackageForRun(run) {
   const model = catalogModelForRun(run);
-  const profile = run.metadata?.build_profile_id || run.metadata?.variant_id;
+  const profile = run.metadata?.build_profile_id;
   if (!model || !profile) return null;
   return (model.packages || []).find((item) => item.build_profile_id === profile
     && item.component_run_ids?.[run.metadata?.component_id] === run.id) || null;
@@ -392,7 +357,7 @@ export function compilerFilteredBuilds(model) {
 export function selectedCatalogBuild(modelId, profileId) {
   const model = state.models.find((item) => item.model_id === modelId);
   if (!model) return null;
-  const build = anchorBuild(compilerFilteredBuilds(model).filter((build) => buildProfileId(build) === profileId));
+  const build = anchorBuild(compilerFilteredBuilds(model).filter((build) => build.build_profile_id === profileId));
   if (build) state.activeProfileByModel.set(modelId, profileId);
   return build || null;
 }

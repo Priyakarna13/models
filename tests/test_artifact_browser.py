@@ -247,8 +247,7 @@ def _benchmark_run(base: str, model_id: str, profile: str, stage: str) -> dict |
     fingerprint = model.get("benchmark_fingerprints", {}).get(profile, {}).get(stage)
     if fingerprint is None:
         return None
-    run_type, version = BENCHMARK_RUN_TYPES[stage]
-    query = f"run_type={run_type}&fingerprint={fingerprint}&fingerprint_version={version}"
+    query = f"run_type={BENCHMARK_RUN_TYPES[stage]}&fingerprint={fingerprint}"
     try:
         run = _get_json(f"{base}{api}/resolve?{query}")["run"]
     except urllib.error.HTTPError as error:
@@ -265,19 +264,15 @@ def test_preview_resolves_each_benchmark_fingerprint_to_a_model_report(tmp_path:
     with _preview(tmp_path) as base:
         performance = _benchmark_run(base, "resnet_50", "w8a8", "performance")
         accuracy = _benchmark_run(base, "resnet_50", "w8a8", "accuracy")
-        wrong_version = _get_status(
-            f"{base}/v1/repositories/sima-neat/models/resolve?run_type=model_performance"
-            f"&fingerprint={performance['fingerprint']}&fingerprint_version=2"
-        )
         wrong_type = _get_status(
             f"{base}/v1/repositories/sima-neat/models/resolve?run_type=model_accuracy"
-            f"&fingerprint={performance['fingerprint']}&fingerprint_version=2"
+            f"&fingerprint={performance['fingerprint']}"
         )
 
     for stage, measured in (("performance", performance), ("accuracy", accuracy)):
         run = measured["run"]
         package = next(item for item in measured["model"]["packages"] if item["build_profile_id"] == "w8a8")
-        assert (run["run_type"], run["fingerprint_version"]) == BENCHMARK_RUN_TYPES[stage]
+        assert run["run_type"] == BENCHMARK_RUN_TYPES[stage]
         assert run["run_fingerprint"] == measured["fingerprint"]
         assert run["metadata"] == {
             "model_id": "resnet_50", "build_profile_id": "w8a8", "stage": stage, "package_run_id": package["run_id"],
@@ -291,7 +286,7 @@ def test_preview_resolves_each_benchmark_fingerprint_to_a_model_report(tmp_path:
     assert set(accuracy["tests"][0]["summary"]["metrics"]) == {"top1_accuracy", "top5_accuracy"}
     assert accuracy["parameters"]["accuracy"]["dataset"]["id"] == "imagenet-2012"
     assert list(performance["tests"][0]["summary"]["components"]) == ["model"]
-    assert (wrong_version, wrong_type) == (404, 404)
+    assert wrong_type == 404
 
 
 def test_preview_measures_a_multi_component_model_as_one_report(tmp_path: Path) -> None:
@@ -474,9 +469,7 @@ def test_browser_benchmark_run_types_match_the_registry() -> None:
     source = (BROWSER / "model-report.js").read_text(encoding="utf-8")
     table = re.search(r"BENCHMARK_RUN_TYPES = \{(.*?)\n\};", source, re.S)
     assert table is not None
-    runs = {stage: (run_type, int(version))
-            for stage, run_type, version in re.findall(r'(\w+): \["(\w+)", (\d+)\]', table.group(1))}
-    assert runs == BENCHMARK_RUN_TYPES
+    assert dict(re.findall(r'(\w+): "(\w+)"', table.group(1))) == BENCHMARK_RUN_TYPES
 
 
 def test_portal_assembly_rejects_relative_imports_it_does_not_deploy(tmp_path: Path) -> None:
@@ -532,14 +525,12 @@ def test_full_model_card_starts_after_the_overview_the_page_already_shows() -> N
 
 def test_w8a8_variants_are_listed_first() -> None:
     script = _browser_source("api.js")
-    start = script.index("export function buildProfileId(")
-    end = script.index("export function profileGroups(")
-    helper = script[start:script.index("\n}\n", start) + 3]
-    groups = script[end:script.index("export function activeModelBuild(")]
+    start = script.index("export function profileGroups(")
+    groups = script[start:script.index("export function activeModelBuild(")]
     builds = [{"build_profile_id": profile} for profile in ("w16a16", "w8a8", "a_fp32", "w8a8_w16a16")]
     probe = f"console.log(JSON.stringify(profileGroups({{builds: {json.dumps(builds)}}}).map(([id]) => id)));"
     result = subprocess.run(
-        ["node", "--input-type=module", "--eval", helper + groups + probe],
+        ["node", "--input-type=module", "--eval", groups + probe],
         cwd=ROOT, check=True, capture_output=True, text=True,
     )
     assert json.loads(result.stdout) == ["w8a8", "w8a8_w16a16", "a_fp32", "w16a16"]
@@ -843,8 +834,7 @@ def test_cached_build_history_preserves_run_mode() -> None:
     assert 'catalogMode: "runs"' in script
     assert 'state.catalogMode = modelsMode ? "models" : "runs"' in script
     assert 'mode: state.catalogMode' in script
-    assert 'cached.models?.length || !cached.runs?.length ? "models" : "runs"' in script
-    assert 'payload.mode !== "runs" && Object.hasOwn(payload, "models")' in script
+    assert 'cached && ["models", "runs"].includes(cached.mode) ? cached : null' in script
     assert "applyCatalog(cached, { cache: false })" in script
     assert 'return state.catalogMode === "models"' in script
     assert 'elements["branch-filter"].value && !elements["history-filter"].checked' not in browser
@@ -1061,7 +1051,7 @@ def test_filters_list_only_used_values_and_hide_without_a_choice() -> None:
 
     assert '<span>Model family</span><select id="architecture-filter">' in html
     assert "state.runs.flatMap((run) => run[field] ?? [])" in script
-    assert "if (build.run) return { ...build.run, ...catalogCategories(model) };" in _browser_source("api.js")
+    assert "return { ...build.run, ...catalogCategories(model) };" in _browser_source("api.js")
     model_view = _browser_source("model-view.js")
     assert "const categories = catalogModel?.categories || run.model_categories || {};" in model_view
     assert 'element.closest("label").hidden = element.options.length < 3 && !element.value' in script
@@ -1090,13 +1080,12 @@ def test_smart_search_uses_names_and_taxonomy_labels_on_client_and_server() -> N
     assert "setTimeout(() => loadRuns" in script
 
 
-def test_browser_formats_v1_and_v2_build_identities_without_a_false_default() -> None:
+def test_browser_formats_build_identities_without_a_false_default() -> None:
     script = _browser_source("ui.js", "catalog-view.js")
     browser = _browser_source()
 
     assert "function profileLabel(run)" in script
-    assert "const profile = run.metadata?.build_profile_id || run.metadata?.variant_id;" in script
-    assert 'return profile ? variantLabel(profile) : "Build identity unavailable";' in script
+    assert "return variantLabel(run.metadata.build_profile_id);" in script
     assert 'components.length > 1 || components[0] !== "model" ? components.join(" · ") : ""' in script
     assert '<small>${escapeHtml(profileLabel(run))}</small>' in script
     assert '"default artifact"' not in browser
@@ -1370,9 +1359,7 @@ def test_benchmark_runs_are_resolved_from_catalog_fingerprints_and_accuracy_is_r
     # History mode has no catalog loaded, so the fingerprints come from the catalog at the build's own revision.
     assert 'const current = state.catalogMode === "runs" ? null : catalogModelForRun(runs[0]);' in script
     assert "const model = lists(current) ? current : await loadHistoricalCatalogModel(runs[0]);" in script
-    assert (
-        "run_type: runType, fingerprint: benchmarkFingerprint, fingerprint_version: String(fingerprintVersion)"
-    ) in script
+    assert "run_type: BENCHMARK_RUN_TYPES[stage], fingerprint: benchmarkFingerprint" in script
     assert "if (error.status === 404) return null;" in script
     assert "api(`/v1/runs/${resolved.id}/provenance`)" in script
     assert "api(`/v1/runs/${resolved.id}/test-results`)" in script
@@ -1525,7 +1512,7 @@ def test_model_catalog_uses_clean_model_navigation_and_detail_build_switching() 
     assert "compilerFilteredBuilds(model).filter" in script
     assert "build.toolchain_version === compiler" in script
     assert 'branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,' in script
-    assert 'elements["compiler-filter"].value, elements["branch-filter"].value)' in script
+    assert 'state.catalogDefinitions,\n      elements["compiler-filter"].value);' in script
     assert "...state.compileRuns.map((run) => run.toolchain_version)" in script
     assert "branchName(anchor.git_ref) !== linkedBranch && !listed" in script
     assert "payload.models.flatMap" not in browser

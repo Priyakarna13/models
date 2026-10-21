@@ -200,14 +200,12 @@ def merge_catalog_sources(documents: list[dict[str, Any]], matrix: list[dict[str
     return {"models": [{"id": model_id, **entries} for model_id, entries in sorted(models.items())]}
 
 
-def stage_run_exists(
-    read: ReadRequest, read_api_url: str, run_type: str, fingerprint: str, fingerprint_version: int
-) -> bool:
+def stage_run_exists(read: ReadRequest, read_api_url: str, run_type: str, fingerprint: str) -> bool:
     """Whether a completed, unsuperseded registry run of this type carries the fingerprint."""
     try:
         read(
             f"{read_api_url.rstrip('/')}{REPOSITORY_API_PATH}/resolve?"
-            f"run_type={run_type}&fingerprint={fingerprint}&fingerprint_version={fingerprint_version}"
+            f"run_type={run_type}&fingerprint={fingerprint}"
         )
     except ModelRegistryError as exc:
         if _is_not_found(exc, "fingerprint_not_found"):
@@ -294,9 +292,8 @@ def plan_stages(
             if not stage_run_exists(
                 read,
                 read_api_url,
-                BENCHMARK_RUN_TYPES[stage][0],
+                BENCHMARK_RUN_TYPES[stage],
                 benchmark_fingerprint(root, model, entry["build_profile_id"], prior, stage),
-                BENCHMARK_RUN_TYPES[stage][1],
             )
         ]
         if stages:
