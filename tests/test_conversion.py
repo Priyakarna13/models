@@ -293,6 +293,48 @@ def test_planning_resolves_before_compile_reuse(repository, monkeypatch):
     assert stages(newer)["compile"]["include"] == []
 
 
+def test_targeted_direct_source_plan_needs_no_conversion_credentials(repository):
+    from model_registry.stage_plan import plan_stages
+
+    shutil.copytree(ROOT / "models/yolo26l", repository / "models/yolo26l")
+    result = plan_stages(repository, compiler_version="test", read=None, read_api_url=None,
+                         branch="feature", model_ids=["yolo26l"])
+    assert result["conversion_sources"] == {}
+    assert {entry["model_id"] for entry in result["compile"]["include"]} == {"yolo26l"}
+
+
+def test_targeted_conversion_plan_creates_only_selected_plan(repository, monkeypatch):
+    from model_registry.stage_plan import plan_stages
+
+    shutil.copytree(ROOT / "models/yolo26l", repository / "models/yolo26l")
+    path = repository / "models/yolo26l/model.yaml"
+    doc = yaml.safe_load(path.read_text())
+    doc["compilation"]["source"] = "conversion"
+    path.write_text(yaml.safe_dump(doc))
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setattr("model_registry.stage_plan.read_catalog_sources", lambda *args: (None, []))
+    registry = Registry()
+    result = plan_stages(repository, compiler_version="test", read=registry.read,
+                         read_api_url="https://registry.test", branch="feature",
+                         model_ids=["yolo26x"], conversion_client=registry)
+    assert set(result["conversion_sources"]) == {"yolo26x"}
+    created = [call[2]["metadata"]["model_id"] for call in registry.calls
+               if call[0] == "POST" and call[1] == "/v1/runs"]
+    assert created == ["yolo26x"]
+
+
+def test_unknown_model_rejected_before_conversion_registry_requests(repository):
+    from model_registry.stage_plan import plan_stages
+
+    registry = Registry()
+    with pytest.raises(ValidationError, match="unknown model id.*missing"):
+        plan_stages(repository, compiler_version="test", read=registry.read,
+                    read_api_url="https://registry.test", branch="feature",
+                    model_ids=["yolo26x", "missing"], conversion_client=registry)
+    assert registry.calls == []
+
+
 def test_conversion_fingerprint_tracks_recipe_and_dependency_pins(repository):
     model = load_and_validate_model(repository / "models/yolo26x")
     original = conversion.conversion_fingerprint(repository, model)

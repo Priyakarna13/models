@@ -39,7 +39,8 @@ pytest fixtures/configuration, and declared package dependencies. Update that li
 when adding a shared execution or validation dependency. This identifies the declared recipe, not a fully locked
 transitive Python environment; pin exporter requirements for reproducibility.
 
-Catalog planning resolves conversion declarations, including on-demand models,
+Catalog planning resolves conversion declarations for the requested models (all
+models when no `--models` filter is supplied), including on-demand models,
 so their build requirements have concrete content identities. This does not
 schedule compilation of an on-demand model. Before deciding compile reuse, planning resolves the latest completed matching
 run and checks its artifact. The plan uses ordinary `model_compile_plan` run

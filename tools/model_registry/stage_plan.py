@@ -253,13 +253,17 @@ def plan_stages(
     models = load_models(root)
     from .conversion import plan_conversions
 
+    selected_ids = model_ids or sorted(models)
+    unknown = sorted(set(selected_ids) - set(models))
+    if unknown:
+        raise ValidationError(f"unknown model id(s): {', '.join(unknown)}")
     conversion_sources = plan_conversions(
-        root, models,
+        root, {model_id: models[model_id] for model_id in sorted(set(selected_ids))},
         read=read, read_api_url=read_api_url, client=conversion_client, branch=branch,
     )
     head = build_matrix(
         models,
-        model_ids or sorted(models),
+        selected_ids,
         profile_ids,
         component_ids,
         repository=root,
