@@ -32,11 +32,10 @@ compilation:
   # The surgery has structural checks only, and no compiled-output reference comparison or
   # dataset-backed landmark accuracy test is declared; task accuracy is in Google's model card.
   format: onnx
-  # Placeholder until Vulcan Model Convert publishes model.onnx; replace with its printed pin.
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/blazepose_ghum_heavy/efcc9e62707d596c86bfc962a26a673401d8438702216f82fc15ead54c6f3a83/0-1/model.onnx
-    sha256: efcc9e62707d596c86bfc962a26a673401d8438702216f82fc15ead54c6f3a83
-    size_bytes: 55181411
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/blazepose_ghum_heavy/c71c7154ab833939523492c4b68627436006029e287fe47b7969a4188810299f/39834257849-1/model.onnx
+    sha256: c71c7154ab833939523492c4b68627436006029e287fe47b7969a4188810299f
+    size_bytes: 55181627
 
 build_profiles:
   w16a16:
