@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
@@ -364,7 +363,9 @@ def _selected_invocation_keys(selected_matrix: Path | None) -> set[tuple[str, st
 def _head_matrix(root: Path, models: dict[str, Any]) -> list[JsonObject]:
     """Every compile invocation the checkout declares, with its compile fingerprint."""
     compiler_version = resolve_model_compiler(root)["identity"]
-    return build_matrix(models, sorted(models), repository=root, compiler_version=compiler_version)["include"]
+    return build_matrix(
+        models, sorted(models), repository=root, compiler_version=compiler_version,
+    )["include"]
 
 
 def build_catalog_snapshot(
@@ -892,28 +893,14 @@ def _revision_documentation_receipts(
 
 
 def _public_registry_json(url: str) -> JsonObject:
+    from .errors import FetchError
+    from .fetch import read_registry_json
+
     try:
-        with urlopen(UrlRequest(url, headers={"User-Agent": "sima-neat-model-registry/0.1"}), timeout=30) as response:
-            value = json.load(response)
-    except HTTPError as exc:
-        code = "unknown_error"
-        message = str(exc)
-        try:
-            payload = json.loads(exc.read())
-            error = payload.get("error", {}) if isinstance(payload, dict) else {}
-            if isinstance(error, dict):
-                code = str(error.get("code", code))
-                message = str(error.get("message", message))
-        except (OSError, json.JSONDecodeError):
-            pass
-        raise RegistryPublicationError(
-            f"public artifact registry HTTP {exc.code} {code}: {message}"
-        ) from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RegistryPublicationError(f"could not read public artifact registry endpoint {url}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise RegistryPublicationError(f"artifact registry endpoint did not return an object: {url}")
-    return value
+        return read_registry_json(url)
+    except FetchError as exc:
+        raise RegistryPublicationError(str(exc)) from exc
+
 
 
 def _download_registry_file(url: str, destination: Path, artifact: JsonObject,
@@ -1284,6 +1271,9 @@ def _preflight_compilations(
         if model_id not in models:
             raise ValidationError(f"compile outputs reference unknown model: {model_id}")
         model = models[model_id]
+        from .conversion import apply_selection
+
+        apply_selection(model, root=root)
         profiles = {item["id"]: item for item in model["build_profiles"]}
         if build_profile_id not in profiles:
             raise ValidationError(f"compile outputs reference unknown build profile: {model_id}/{build_profile_id}")
@@ -1317,6 +1307,9 @@ def _preflight_compilations(
     for result_path in sorted(actual_results):
         model_id, build_profile_id, component_id = result_path.relative_to(dist).parts[:3]
         model = models[model_id]
+        from .conversion import apply_selection
+
+        apply_selection(model, root=root)
         profiles = {item["id"]: item for item in model["build_profiles"]}
         components = {item["id"]: item for item in model["components"]}
         profile = profiles[build_profile_id]
@@ -1435,6 +1428,12 @@ def _preflight_compilations(
             }
         )
     return prepared
+
+
+def _conversion_input(source):
+    from .conversion import input_record
+
+    return input_record(source)
 
 
 def publish_compilations(
@@ -1578,6 +1577,8 @@ def publish_compilations(
         if isinstance(model_card, str) and model_card:
             source_metadata["model_card"] = model_card
         source_reference = source.get("uri")
+        if source["type"] == "conversion":
+            source_reference = f"run:{source['run_id']}/artifacts/onnx"
         if not isinstance(source_reference, str):
             source_reference = f"{model['upstream']['repository']}#{source['entrypoint']}"
         client.request(
@@ -1592,6 +1593,7 @@ def publish_compilations(
                 ),
                 "media_type": _component_source_media_type(source),
                 "metadata": source_metadata,
+                **(_conversion_input(source) if source["type"] == "conversion" else {}),
             },
             f"{stable_key}-input",
         )

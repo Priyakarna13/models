@@ -6,6 +6,10 @@ name: Vulcan Model Compile
 on:
   workflow_call:
     inputs:
+      conversion_sources:
+        type: string
+        default: "{}"
+        required: false
       entry:
         description: Authorized compile-matrix entry as JSON
         required: true
@@ -40,6 +44,9 @@ on:
       artifact_kms_key_id:
         required: true
         type: string
+
+env:
+  MODEL_REGISTRY_CONVERSIONS: ${{ inputs.conversion_sources }}
 
 permissions:
   contents: read

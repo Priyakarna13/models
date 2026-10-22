@@ -90,6 +90,7 @@ this table. Modules marked CI only are removed from the author package by
 | `package.py` | assembling a profile's `default` package from component MPKs or a complete native deployment folder, with its numerical fidelity report |
 | `dependencies.py` | resolving the Model Compiler and DevKit runtime pins in `deps/` |
 | `fetch.py` | verified downloads, the cache, and dataset resolution |
+| `conversion.py` | conversion fingerprints, validated ONNX bundles, publication, durable plan selections and exact downloads; author CLI exposes only saved-selection fetching |
 | `source.py` | source identity and URL redaction |
 | `taxonomy.py` | loading the taxonomy and validating model categories |
 | `documentation.py` | loading a model's README and hero image |
@@ -121,8 +122,8 @@ tooling and that stage's runner scripts, and the DevKit runtime pin. The
 catalog lists each profile's benchmark fingerprints under
 `benchmark_fingerprints`, and the model browser resolves the runs by those
 fingerprints. A recompiled build gets new benchmark fingerprints and is
-therefore benchmarked again. No fingerprint reads a model's `tests/`, so a
-changed test applies the next time its stage runs. The contributor guide lists
+therefore benchmarked again. Compile and benchmark fingerprints do not read model tests; conversion
+fingerprints include validation files so a changed check requires revalidation. The contributor guide lists
 every input in [what a change
 reruns](../docs/adding-a-model.md#9-know-what-a-change-reruns).
 
@@ -143,7 +144,7 @@ push (Vulcan Model Orchestrator, every push)
   -> select: validate the catalog, resolve the compiler pin and base branches
      portal (in parallel): build and smoke-test the model browser; a failure stops the run here
        -> on main and develop: publish that model browser to staging
-  -> plan: compare fingerprints with the branch catalog and registry runs; skip on-demand models on pushes
+  -> plan: resolve and retain converted ONNX inputs, then compare fingerprints with the branch catalog and registry runs; skip on-demand models on pushes
   -> authorize: check requested runner classes
   -> initialize the catalog: publish model requirements and mark automatic builds pending
   -> benchmark: start the benchmarks that reused builds still lack (after the snapshot when nothing compiles)
@@ -332,3 +333,12 @@ upload limit. Aggregate deployment size has no limit.
 Empty benchmark declarations schedule no benchmarks. Qwen's defaults
 and the separate performance and accuracy follow-ups are in the
 [author guide](../docs/adding-a-model.md#llima-language-and-vision-language-models).
+
+## Converted ONNX inputs
+
+Models may declare `compilation.source: conversion`. The planner resolves and
+records the latest validated matching output before deciding build reuse. A
+`model_compile_plan` run retains the selection across workflow retries and
+protects its conversion for 24 hours; retained compile inputs protect it afterward.
+No artifact table or custom resolver is added. See [conversion artifacts](../docs/conversion-artifacts.md)
+for the registry contract, rollout and reproduction.

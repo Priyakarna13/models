@@ -264,9 +264,9 @@ def test_plan_compares_fingerprints_with_the_environment_registry() -> None:
     plan_job = load(WORKFLOW)["jobs"]["plan"]
     plan = step(plan_job, "Compare fingerprints with published runs")
 
-    assert plan_job["needs"] == ["select", "portal"]
+    assert plan_job["needs"] == ["select", "portal", "resolve-vulcan-config"]
     assert plan_job["environment"] == "${{ needs.select.outputs.vulcan_environment }}"
-    assert "permissions" not in plan_job
+    assert plan_job["permissions"] == {"contents": "read", "id-token": "write"}
     assert plan["env"]["REGISTRY_READ_API_URL"] == "${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL }}"
     assert "model-registry plan-stages" in plan["run"]
     assert '--read-api-url "$REGISTRY_READ_API_URL"' in plan["run"]
@@ -275,6 +275,7 @@ def test_plan_compares_fingerprints_with_the_environment_registry() -> None:
         assert name in plan["env"]
     assert "--force-rebuild-all" in plan["run"]
     assert plan_job["outputs"] == {
+        "conversion_sources": "${{ steps.plan.outputs.conversion_sources }}",
         "compile_count": "${{ steps.plan.outputs.compile_count }}",
         "compile_matrix": "${{ steps.plan.outputs.compile_matrix }}",
         "benchmark_count": "${{ steps.plan.outputs.benchmark_count }}",
@@ -311,7 +312,7 @@ def test_runner_classes_are_authorized_before_builds_are_queued() -> None:
     assert authorization["env"]["SELECTED_MATRIX"] == "${{ needs.plan.outputs.compile_matrix }}"
     assert authorization["env"]["VULCAN_CONFIG_S3_URI"] == "${{ needs.resolve-vulcan-config.outputs.config_s3_uri }}"
 
-    assert build["needs"] == ["select", "resolve-vulcan-config", "authorize-runner-classes", "initialize-catalog"]
+    assert build["needs"] == ["select", "plan", "resolve-vulcan-config", "authorize-runner-classes", "initialize-catalog"]
     assert build["strategy"]["matrix"] == "${{ fromJSON(needs.authorize-runner-classes.outputs.matrix) }}"
     assert build["strategy"]["fail-fast"] == "false"
     assert build["with"]["entry"] == "${{ toJSON(matrix) }}"
@@ -324,7 +325,7 @@ def test_catalog_marks_authorized_builds_pending_before_they_run() -> None:
     initialize = load(WORKFLOW)["jobs"]["initialize-catalog"]
     publish = step(initialize, "Publish the pending invocation plan")
 
-    assert initialize["needs"] == ["select", "resolve-vulcan-config", "authorize-runner-classes"]
+    assert initialize["needs"] == ["select", "plan", "resolve-vulcan-config", "authorize-runner-classes"]
     assert "needs.select.outputs.publishable == 'true'" in initialize["if"]
     assert "needs.authorize-runner-classes.result == 'success'" in initialize["if"]
     assert publish["env"]["SELECTED_MATRIX"] == "${{ needs.authorize-runner-classes.outputs.matrix }}"

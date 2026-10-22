@@ -232,3 +232,7 @@ If trusted compilation exposes a model-specific failure, update the recipe or
 manifest with reproducible evidence and tests. Use `status: unsupported` only
 after a combination is proven unusable, not as a shortcut around an unresolved
 failure.
+
+Converted ONNX models resolve a validated registry output before compile reuse is
+checked. Deploy the Vulcan contract and publish matching conversions before
+switching existing source declarations; see [conversion artifacts](conversion-artifacts.md).

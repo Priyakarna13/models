@@ -89,6 +89,7 @@ def test_builds_author_wheel_and_vulcan_payload(tmp_path: Path) -> None:
         assert "Version: 0.1.0+unit" in metadata
         assert "Requires-Dist: jsonschema<5,>=4.18.4" in metadata
         assert "model_registry/cli.py" in names
+        assert "model_registry/conversion.py" in names
         assert "model_report/metrics.json" in names
         for ci_module in ("report_publication", "registry", "candidates", "promotions"):
             assert f"model_registry/{ci_module}.py" not in names
