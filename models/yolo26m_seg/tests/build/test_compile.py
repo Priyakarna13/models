@@ -236,9 +236,9 @@ def test_model_preserves_compilation_and_quality_settings(accuracy_script: Modul
         "redistribution": "restricted",
         "attribution": "YOLO26 is developed by Ultralytics and distributed under AGPL-3.0.",
     }
-    declared = model["accuracy"][0]
+    declared = model["accuracy"]
     metric_names = {name for metrics in accuracy_script.METRICS.values() for name in metrics}
     for expected in load_model_tests(MODEL_DIR)["accuracy"]["expected"].values():
-        assert set(expected) == metric_names
-    assert declared["required_metrics"] == ["coco_mask_map"]
-    assert model["published_metrics"][0]["metrics"] == {"coco_mask_map": 0.441, "coco_box_map": 0.525}
+        assert set(expected["coco-2017-val"]) == metric_names
+    assert list(declared["datasets"]) == ["coco-2017-val"]
+    assert model["reference_metrics"][0]["metrics"] == {"coco_mask_map": 0.441, "coco_box_map": 0.525}

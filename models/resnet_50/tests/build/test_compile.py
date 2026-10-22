@@ -140,7 +140,7 @@ def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], 
 
     assert recipe._variant(metadata, "w16a16")["parameters"]["precision"] == "w16a16"
     assert recipe._variant(metadata, "w8a8")["parameters"]["calibration_samples"] == 500
-    assert recipe._fidelity_config(metadata, "w8a8")["id"] == "logits_fidelity"
+    assert metadata["numerical_fidelity"]["outputs"] == ["logits"]
     with pytest.raises(ValueError, match="exactly one build profile named 'w32a32'"):
         recipe._variant(metadata, "w32a32")
 
@@ -163,8 +163,8 @@ def test_compile_rejects_an_undeclared_precision_before_compiling(
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        (["--compile-invocation", "backbone"], "unsupported compile invocation: backbone"),
-        (["--compile-invocation", "model"], "pass --fidelity-dataset"),
+        (["--compile-invocation", "model"], "a build profile compiles in one invocation named after it"),
+        (["--compile-invocation", "w16a16"], "pass --fidelity-dataset"),
     ],
 )
 def test_compile_main_rejects_an_unknown_invocation_or_missing_fidelity_dataset(
