@@ -65,11 +65,9 @@ jobs:
       - model-compiler
       - ${{ inputs.model_compiler_label }}
       - ${{ fromJSON(inputs.entry).runner_class }}
+      - runner-market-${{ fromJSON(inputs.entry).runner_market }}
       - model-id-${{ fromJSON(inputs.entry).model_id }}
-      # The scaler authorizes elevated model runners by the contract-v2
-      # build-profile and primary-component identity. Grouped invocations use
-      # their first declared component here; matrix authorization verifies the
-      # complete component group before this job is queued.
+      # Approval is scoped to the model folder; profile/component labels identify the job.
       - build-profile-id-${{ fromJSON(inputs.entry).build_profile_id }}
       - component-id-${{ fromJSON(inputs.entry).component_id }}
     # Large models compile for hours; the limit only stops a stalled compile.
@@ -88,6 +86,8 @@ jobs:
       VULCAN_ENVIRONMENT: ${{ inputs.vulcan_environment }}
       COMPILE_FINGERPRINT: ${{ fromJSON(inputs.entry).compile_fingerprint }}
       REQUESTED_RUNNER_CLASS: ${{ fromJSON(inputs.entry).requested_runner_class }}
+      REQUESTED_RUNNER_MARKET: ${{ fromJSON(inputs.entry).requested_runner_market }}
+      RUNNER_MARKET: ${{ fromJSON(inputs.entry).runner_market }}
       RUNNER_CLASS: ${{ fromJSON(inputs.entry).runner_class }}
       RUNNER_APPROVAL_ID: ${{ fromJSON(inputs.entry).runner_approval_id }}
       RUNNER_APPROVAL_SPEC_REVISION: ${{ fromJSON(inputs.entry).runner_approval_spec_revision }}
@@ -102,6 +102,9 @@ jobs:
             echo "PROFILE_OUTPUT_DIR=$RUNNER_TEMP/model-registry-output/$MODEL_ID/$BUILD_PROFILE_ID"
             echo "MODEL_REGISTRY_CACHE_DIR=$RUNNER_TEMP/datasets"
           } >> "$GITHUB_ENV"
+
+      - name: Verify and record EC2 runner identity
+        run: scripts/record_compile_runner_identity.sh
 
       - name: Verify the pinned Model Compiler environment
         run: |
@@ -225,6 +228,12 @@ jobs:
               --compile-fingerprint "$COMPILE_FINGERPRINT" \
               --requested-runner-class "$REQUESTED_RUNNER_CLASS" \
               --runner-class "$RUNNER_CLASS" \
+              --requested-runner-market "$REQUESTED_RUNNER_MARKET" \
+              --runner-market "$RUNNER_MARKET" \
+              --runner-name "$RUNNER_NAME" \
+              --runner-instance-id "$RUNNER_INSTANCE_ID" \
+              --runner-instance-type "$RUNNER_INSTANCE_TYPE" \
+              --runner-actual-market "$RUNNER_ACTUAL_MARKET" \
               --runner-approval-id "$RUNNER_APPROVAL_ID" \
               --runner-approval-spec-revision "$RUNNER_APPROVAL_SPEC_REVISION"
           done
