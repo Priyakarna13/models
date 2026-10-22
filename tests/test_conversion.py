@@ -418,3 +418,66 @@ def test_on_demand_conversion_resolves_catalog_identity_without_compiling(reposi
                          read_api_url="https://registry.test", branch="feature", conversion_client=registry)
     assert not result["compile"]["include"]
     assert result["conversion_sources"]["yolo26x"]["run_id"] == "conversion-1"
+
+
+@pytest.mark.parametrize("reserved", ["manifest.json", ".bundle.tar.gz"])
+def test_bundle_rejects_reserved_directory_prefix(tmp_path, reserved):
+    directory = tmp_path / "output"
+    directory.mkdir()
+    (directory / reserved).mkdir()
+    other = output(tmp_path / "export", external=True)
+    model = onnx.load(other / "model.onnx", load_external_data=False)
+    for field in model.graph.initializer[0].external_data:
+        if field.key == "location":
+            field.value = reserved + "/weights.bin"
+    onnx.save(model, directory / "model.onnx")
+    shutil.copyfile(other / "weights.bin", directory / reserved / "weights.bin")
+    with pytest.raises(ValidationError, match="reserved ONNX bundle path"):
+        conversion.bundle_onnx(directory, tmp_path / "bundle.tar.gz")
+    assert not (tmp_path / "bundle.tar.gz").exists()
+
+
+@pytest.mark.parametrize("selected_conversion", [False, True])
+@pytest.mark.parametrize("has_previous", [False, True])
+def test_targeted_plan_publishes_catalog_with_unselected_conversion(
+    repository, monkeypatch, selected_conversion, has_previous,
+):
+    from model_registry import registry as publication
+    from model_registry import stage_plan
+
+    shutil.copytree(ROOT / "models/yolo26l", repository / "models/yolo26l")
+    if selected_conversion:
+        path = repository / "models/yolo26l/model.yaml"
+        doc = yaml.safe_load(path.read_text())
+        doc["compilation"]["source"] = "conversion"
+        path.write_text(yaml.safe_dump(doc))
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setattr(stage_plan, "read_catalog_sources", lambda *args: (None, []))
+    monkeypatch.setattr(publication, "resolve_model_compiler", lambda root: {"identity": "test", "version": "test"})
+    client = Registry()
+    result = stage_plan.plan_stages(repository, compiler_version="test", read=client.read,
+                                   read_api_url="https://registry.test", branch="feature",
+                                   model_ids=["yolo26l"], conversion_client=client)
+    import json
+    monkeypatch.setenv("MODEL_REGISTRY_CONVERSIONS", json.dumps(result["conversion_sources"]))
+    matrix = repository / "selected.json"
+    matrix.write_text(json.dumps(result["compile"]))
+    prior = {"id": "yolo26x", "builds": [], "packages": [],
+             "build_on_demand": True, "build_requirements": {"unchanged": "requirements"}}
+    sources = [{"models": [prior]}] if has_previous else []
+    monkeypatch.setattr(publication, "read_catalog_sources", lambda *args: (None, sources))
+    for _ in range(2):  # Both initialization and subsequent catalog publication.
+        published = publication.publish_catalog(
+            repository=repository, api_url="https://registry.test", read_api_url="https://registry.test",
+            aws_region="us-west-2", branch="feature", git_sha="a" * 40,
+            selected_matrix=matrix, request=lambda *args: {"stored": True}, read_request=client.read,
+        )["catalog"]
+        entries = {model["id"]: model for model in published["models"]}
+        assert "yolo26l" in entries
+        if has_previous:
+            assert entries["yolo26x"] == prior
+        else:
+            assert "yolo26x" not in entries
+        assert {build["model_id"] for build in published["pending_builds"]} == {"yolo26l"}
+        sources[:] = [published]

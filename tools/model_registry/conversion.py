@@ -226,7 +226,7 @@ def bundle_onnx(directory: Path, output: Path) -> Path:
             for field in message.external_data:
                 if field.key == "location":
                     name = _safe_path(field.value)
-                    if name in {"manifest.json", ".bundle.tar.gz"}:
+                    if PurePosixPath(name).parts[0] in {"manifest.json", ".bundle.tar.gz"}:
                         raise ValidationError(f"reserved ONNX bundle path: {name}")
                     names.add(name)
         for descriptor, value in message.ListFields():

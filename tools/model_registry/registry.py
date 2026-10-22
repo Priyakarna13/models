@@ -361,8 +361,18 @@ def _selected_invocation_keys(selected_matrix: Path | None) -> set[tuple[str, st
     return selected
 
 
+def _catalog_models(models: dict[str, Any]) -> dict[str, Any]:
+    """Only refresh conversion-backed catalog entries selected by this workflow."""
+    from .conversion import selections
+
+    selected = selections()
+    return {key: model for key, model in models.items()
+            if model["components"][0]["source"]["type"] != "conversion" or key in selected}
+
+
 def _head_matrix(root: Path, models: dict[str, Any]) -> list[JsonObject]:
     """Every compile invocation the checkout declares, with its compile fingerprint."""
+    models = _catalog_models(models)
     compiler_version = resolve_model_compiler(root)["identity"]
     return build_matrix(
         models, sorted(models), repository=root, compiler_version=compiler_version,
@@ -386,7 +396,9 @@ def build_catalog_snapshot(
         raise ValidationError("git SHA must contain exactly 40 hexadecimal characters")
     if not branch.strip():
         raise ValidationError("branch must not be empty")
-    models = load_models(root)
+    all_models = load_models(root)
+    models = _catalog_models(all_models)
+    deferred = set(all_models) - set(models)
     taxonomy = canonical_taxonomy_document(load_taxonomy(root / TAXONOMY_RELATIVE_PATH))
     taxonomy_digest = taxonomy_sha256(taxonomy)
     matrix = _head_matrix(root, models)
@@ -636,6 +648,10 @@ def build_catalog_snapshot(
                 raise ValidationError(f"model documentation receipt is missing: {model_id}")
             entry["documentation"] = documentation
         model_entries.append(entry)
+    # Unselected conversions retain their complete published model entry, including
+    # package links and on-demand requirements. New ones wait for a selected plan.
+    model_entries.extend(model for model in (previous or {}).get("models", []) if model["id"] in deferred)
+    model_entries.sort(key=lambda model: model["id"])
     document: JsonObject = {
         "schema_version": 2 if incremental else 1,
         "repository": "sima-neat/models",
@@ -849,7 +865,16 @@ def publish_catalog(
     # before the compare-and-swap POST below.
     root = Path(repository).expanduser().resolve()
     target_catalog, sources = read_catalog_sources(read, read_api_url, branch, base_branches)
-    previous = merge_catalog_sources(sources, _head_matrix(root, load_models(root)))
+    models = load_models(root)
+    previous = merge_catalog_sources(sources, _head_matrix(root, models))
+    deferred = set(models) - set(_catalog_models(models))
+    if deferred:
+        previous = previous or {"models": []}
+        for source in sources:
+            for model in source.get("models", []):
+                if model["id"] in deferred:
+                    previous["models"].append(model)
+                    deferred.remove(model["id"])
     document = build_catalog_snapshot(
         repository=repository,
         branch=branch,
