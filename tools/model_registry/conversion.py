@@ -23,6 +23,30 @@ REPOSITORY_PATH = "/v1/repositories/sima-neat/models"
 ARTIFACT = "onnx"
 FIELDS = ("s3_bucket", "s3_key", "s3_version_id", "sha256", "size_bytes", "media_type")
 
+# Shared execution and validation dependencies. Keep this explicit so unrelated
+# registry/UI changes do not invalidate conversions; update it with new imports.
+CONVERSION_TOOLING = (
+    ".github/workflows/vulcan-model-convert.yml",
+    "scripts/run_model_conversion.sh",
+    "scripts/run_model_tests.sh",
+    "conftest.py",
+    "pyproject.toml",
+    "tools/model_registry/conversion.py",
+    "tools/model_registry/fetch.py",
+    "tools/model_registry/source.py",
+    "tools/model_registry/model.py",
+    "tools/model_registry/model_tests.py",
+    "tools/model_registry/benchmark_declarations.py",
+    "tools/model_registry/taxonomy.py",
+    "tools/model_registry/errors.py",
+    "tools/model_report/__init__.py",
+    "tools/model_report/metrics.json",
+    "schemas/model.schema.json",
+    "schemas/model-tests.schema.json",
+    "schemas/dataset-requirements.schema.json",
+    "taxonomies/model-taxonomy.yaml",
+)
+
 
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -33,8 +57,7 @@ def conversion_fingerprint(root: Path, model: dict) -> str:
     paths = [
         directory / "scripts/convert.py",
         directory / "scripts/requirements-convert.txt",
-        root / "scripts/run_model_conversion.sh",
-        root / "tools/model_registry/conversion.py",
+        *(root / path for path in CONVERSION_TOOLING),
     ]
     # Include local helpers, exporter patches, and validation, but not compile/benchmark recipes.
     paths += [

@@ -273,8 +273,8 @@ is always benchmarked again.
 | --- | --- |
 | README, display metadata, `pipeline`, `reference_metrics`, `runner_class`, registry tooling outside a stage's tooling | nothing |
 | `build-on-demand` | nothing; changes scheduling and catalog metadata only |
-| conversion recipe, dependency specification or validation code | requires a new conversion for registry sources; compilation changes only if output content changes |
-| a model's compile/benchmark tests, or `scripts/run_model_tests.sh` | nothing for direct sources; conversion fingerprints include model test files, so registry conversions need revalidation |
+| conversion recipe, dependency specification, validation code or shared `CONVERSION_TOOLING` | requires a new conversion for registry sources; compilation changes only if output content changes |
+| a model's compile/benchmark tests, or `scripts/run_model_tests.sh` | nothing for direct sources; conversion fingerprints include model test files and the shared test runner, so registry conversions need revalidation |
 | a model's `performance.py` or `performance` declaration | that model's performance stages |
 | `accuracy.py`, its requirements, the `accuracy` datasets, or one of their pins | that model's accuracy stages |
 | a task's entry in `datasets/<id>.yaml` | the accuracy stages of models with that task that evaluate the dataset |
@@ -290,7 +290,9 @@ is always benchmarked again.
 | LLiMa scripts, registry helpers, checkpoint repository name, job count, logging or runner class | no LLiMa compilation |
 
 The fingerprints are computed by `compile_fingerprint` and `benchmark_fingerprint` in
-`tools/model_registry/fingerprints.py`.
+`tools/model_registry/fingerprints.py`. Conversion fingerprints and the explicit
+`CONVERSION_TOOLING` dependency list live in `tools/model_registry/conversion.py`;
+changes to those shared execution and validation files require a new conversion.
 
 To apply a changed test at once, dispatch **Vulcan Model Orchestrator** with
 `models` set to the model and `force_rebuild_all`: it recompiles the model's

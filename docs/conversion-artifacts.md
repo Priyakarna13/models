@@ -30,7 +30,11 @@ Vulcan stores ordinary `model_conversion` runs with upstream inputs, parameters,
 validation and the `onnx` artifact. Fingerprint version 1 covers model identity,
 upstream content, exporter code, local helpers, dependency specification and
 validation code. A changed recipe needs a new conversion. Shared conversion code
-is also fingerprinted. This identifies the declared recipe, not a fully locked
+is also fingerprinted through `CONVERSION_TOOLING` in
+`tools/model_registry/conversion.py`: the conversion workflow and runners,
+fetch/source and model-loading helpers, validation modules and schemas, shared
+pytest fixtures/configuration, and declared package dependencies. Update that list
+when adding a shared execution or validation dependency. This identifies the declared recipe, not a fully locked
 transitive Python environment; pin exporter requirements for reproducibility.
 
 Catalog planning resolves conversion declarations, including on-demand models,

@@ -21,8 +21,13 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def repository(tmp_path):
     root = tmp_path / "repo"
-    for name in ("schemas", "taxonomies", "datasets", "scripts", "tools/model_registry"):
+    for name in (
+        "schemas", "taxonomies", "datasets", "scripts",
+        "tools/model_registry", "tools/model_report", ".github/workflows",
+    ):
         shutil.copytree(ROOT / name, root / name)
+    for name in ("conftest.py", "pyproject.toml"):
+        shutil.copyfile(ROOT / name, root / name)
     shutil.copytree(ROOT / "models/yolo26x", root / "models/yolo26x")
     path = root / "models/yolo26x/model.yaml"
     doc = yaml.safe_load(path.read_text())
@@ -271,6 +276,17 @@ def test_conversion_fingerprint_tracks_recipe_and_dependency_pins(repository):
     assert conversion.conversion_fingerprint(repository, model) != original
     with pytest.raises(ValidationError, match="plan-stages"):
         compile_fingerprint(repository, "yolo26x", "w16a16", "w16a16", "test", conversion_sources={})
+
+
+@pytest.mark.parametrize("relative", conversion.CONVERSION_TOOLING)
+def test_shared_conversion_dependency_invalidates_saved_selection(repository, relative):
+    model = load_and_validate_model(repository / "models/yolo26x")
+    original = conversion.conversion_fingerprint(repository, model)
+    path = repository / relative
+    path.write_bytes(path.read_bytes() + b"\n")
+    assert conversion.conversion_fingerprint(repository, model) != original
+    with pytest.raises(ValidationError, match="checkout's recipe"):
+        conversion.apply_selection(model, {"yolo26x": {"conversion_fingerprint": original}}, root=repository)
 
 
 def test_saved_selection_rejects_a_different_recipe(repository, monkeypatch):
