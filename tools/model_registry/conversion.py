@@ -217,7 +217,6 @@ def bundle_onnx(directory: Path, output: Path) -> Path:
     import onnx
 
     entrypoint = directory / "model.onnx"
-    onnx.checker.check_model(str(entrypoint))
     model = onnx.load(str(entrypoint), load_external_data=False)
     names = {"model.onnx"}
 
@@ -240,8 +239,11 @@ def bundle_onnx(directory: Path, output: Path) -> Path:
         path = directory / name
         if not path.is_file() or path.resolve() != directory.resolve() / name or path.is_symlink():
             raise ValidationError(f"ONNX data must be regular files within output directory: {name}")
+        if path.resolve() == output.resolve() or (output.exists() and path.samefile(output)):
+            raise ValidationError(f"ONNX bundle output would overwrite model data: {name}")
         sha, size = sha256_file(path)
         files.append({"path": name, "sha256": sha, "size_bytes": size})
+    onnx.checker.check_model(str(entrypoint))
     manifest = json.dumps({"version": 1, "entrypoint": "model.onnx", "files": files}, sort_keys=True).encode()
     import io
 

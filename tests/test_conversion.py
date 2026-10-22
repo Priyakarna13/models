@@ -36,7 +36,7 @@ def repository(tmp_path):
     return root
 
 
-def output(directory, external=False):
+def output(directory, external=False, external_location="weights.bin"):
     directory.mkdir()
     tensor = onnx.numpy_helper.from_array(np.ones((2, 2), dtype=np.float32), name="weights")
     graph = onnx.helper.make_graph(
@@ -52,7 +52,7 @@ def output(directory, external=False):
         directory / "model.onnx",
         save_as_external_data=external,
         all_tensors_to_one_file=True,
-        location="weights.bin",
+        location=external_location,
         size_threshold=0,
     )
     return directory
@@ -163,6 +163,31 @@ def test_compile_fingerprint_depends_on_content_not_location(repository, monkeyp
     assert fingerprint(other) == first
     other["yolo26x"]["sha256"] = "b" * 64
     assert fingerprint(other) != first
+
+
+@pytest.mark.parametrize("filename", ["model.onnx", "weights.bin", "onnx.tar.gz"])
+def test_bundle_rejects_output_collisions_without_changing_model_data(tmp_path, filename):
+    location = filename if filename != "model.onnx" else "weights.bin"
+    directory = output(tmp_path / "output", external=True, external_location=location)
+    original = {p.name: p.read_bytes() for p in directory.iterdir()}
+    with pytest.raises(ValidationError, match="would overwrite model data"):
+        conversion.bundle_onnx(directory, directory / filename)
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == original
+
+
+@pytest.mark.parametrize("link_type", ["symlink", "hardlink"])
+def test_bundle_rejects_output_alias_of_tensor_data(tmp_path, link_type):
+    directory = output(tmp_path / "output", external=True)
+    destination = tmp_path / "bundle.tar.gz"
+    tensor = directory / "weights.bin"
+    if link_type == "symlink":
+        destination.symlink_to(tensor)
+    else:
+        destination.hardlink_to(tensor)
+    original = tensor.read_bytes()
+    with pytest.raises(ValidationError, match="would overwrite model data"):
+        conversion.bundle_onnx(directory, destination)
+    assert tensor.read_bytes() == original
 
 
 @pytest.mark.parametrize("external", [False, True])
