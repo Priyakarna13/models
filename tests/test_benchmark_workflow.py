@@ -156,6 +156,7 @@ def test_dispatched_benchmark_runs_on_the_resolved_devkit() -> None:
     }
     registry_install = step(steps, "Install registry tooling in an isolated environment")
     assert "pip install '.[tests]'" in registry_install["run"]
+    assert "|| sudo -n apt-get install -y python3-venv" in registry_install["run"]
     assert "pip install _source" not in registry_install["run"]
     download = step(steps, "Download the staged compiled model output")
     assert download["with"]["name"] == (

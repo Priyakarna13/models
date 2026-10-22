@@ -247,6 +247,8 @@ jobs:
 
       - name: Install registry tooling in an isolated environment
         run: |
+          # Platform 3.0.0 images ship without python3-venv; Core's installer adds it, but Core installs later.
+          python3 -c 'import ensurepip' 2>/dev/null || sudo -n apt-get install -y python3-venv
           python3 -m venv "$RUNNER_TEMP/model-registry-tools"
           "$RUNNER_TEMP/model-registry-tools/bin/python" -m pip install '.[tests]'
           echo "REGISTRY_PYTHON=$RUNNER_TEMP/model-registry-tools/bin/python" >> "$GITHUB_ENV"
