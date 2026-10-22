@@ -6,7 +6,7 @@
 # <stage> is conversion, compile, accuracy or performance, and <stage_output> is what that stage produced:
 # the converted ONNX model, one build's compile output directory, or the model-report.json of an accuracy or
 # performance stage, which also names the <build_profile> it measured. The tests are
-# <model_dir>/tests/<build|measure>/test_<stage>.py, and only those that take the output run. The outcome is
+# <model_dir>/tests/<build|benchmark>/test_<stage>.py, and only those that take the output run. The outcome is
 # skipped when tests/tests.yaml sets run_tests: false. A failed outcome exits 1 after printing it; any other
 # error exits without an outcome. pytest reports on stderr. REGISTRY_PYTHON must have pytest and
 # model_registry installed.
@@ -31,8 +31,8 @@ REPOSITORY="$(cd "$MODEL_DIR/../.." && pwd)"
 case "$STAGE" in
   conversion) TEST_FILE="build/test_conversion.py" OPTION="--converted" ;;
   compile) TEST_FILE="build/test_compile.py" OPTION="--compiled" ;;
-  accuracy) TEST_FILE="measure/test_accuracy.py" OPTION="--accuracy" ;;
-  performance) TEST_FILE="measure/test_performance.py" OPTION="--performance" ;;
+  accuracy) TEST_FILE="benchmark/test_accuracy.py" OPTION="--accuracy" ;;
+  performance) TEST_FILE="benchmark/test_performance.py" OPTION="--performance" ;;
   *)
     echo "unknown stage: $STAGE; expected conversion, compile, accuracy or performance" >&2
     exit 2

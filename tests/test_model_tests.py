@@ -46,10 +46,10 @@ def model_dir(tmp_path: Path) -> Path:
     for name in ("pyproject.toml", "conftest.py"):
         shutil.copy(ROOT / name, tmp_path / name)
     model = tmp_path / "models" / "demo"
-    (model / "tests" / "measure").mkdir(parents=True)
+    (model / "tests" / "benchmark").mkdir(parents=True)
     (model / "model.yaml").write_text("id: demo\n", encoding="utf-8")
     (model / "tests" / "tests.yaml").write_text(PERFORMANCE_EXPECTED, encoding="utf-8")
-    (model / "tests" / "measure" / "test_performance.py").write_text(PERFORMANCE_TESTS, encoding="utf-8")
+    (model / "tests" / "benchmark" / "test_performance.py").write_text(PERFORMANCE_TESTS, encoding="utf-8")
     return model
 
 
@@ -120,7 +120,7 @@ def test_stage_runner_skips_a_stage_tests_yaml_skips(model_dir: Path, tmp_path: 
 
 
 def test_stage_runner_passes_a_stage_whose_tests_take_no_output(model_dir: Path, tmp_path: Path) -> None:
-    (model_dir / "tests" / "measure" / "test_performance.py").write_text(
+    (model_dir / "tests" / "benchmark" / "test_performance.py").write_text(
         "def test_needs_no_output() -> None:\n    assert True\n", encoding="utf-8"
     )
 
@@ -136,7 +136,7 @@ def test_stage_runner_passes_a_stage_whose_tests_take_no_output(model_dir: Path,
         ("latency", "result.json", ("w8a8",), "unknown stage: latency"),
         ("performance", "missing.json", ("w8a8",), "performance output does not exist"),
         ("performance", "result.json", (), "performance tests need the build profile the report measured"),
-        ("accuracy", "result.json", ("w8a8",), "tests/measure/test_accuracy.py is missing"),
+        ("accuracy", "result.json", ("w8a8",), "tests/benchmark/test_accuracy.py is missing"),
     ],
 )
 def test_stage_runner_reports_no_outcome_when_it_cannot_run_the_tests(
@@ -163,10 +163,10 @@ def test_stage_output_tests_stop_on_an_invalid_tests_file(model_dir: Path, tmp_p
 
 
 @pytest.mark.parametrize("model", sorted(path.name for path in (ROOT / "models").iterdir() if path.is_dir()))
-def test_each_running_measure_file_checks_its_stage_result(model: str) -> None:
+def test_each_running_benchmark_file_checks_its_stage_result(model: str) -> None:
     model_dir = ROOT / "models" / model
     tests = load_model_tests(model_dir)
-    for stage in TEST_GROUPS["measure"]:
+    for stage in TEST_GROUPS["benchmark"]:
         if stage not in tests or skip_reason(tests, stage):
             continue
         path = model_dir / "tests" / stage_test_file(stage)
@@ -181,7 +181,7 @@ def test_each_running_measure_file_checks_its_stage_result(model: str) -> None:
 
 
 def test_a_test_with_its_own_fixture_of_a_stage_output_name_still_runs(model_dir: Path) -> None:
-    (model_dir / "tests" / "measure" / "test_performance.py").write_text(
+    (model_dir / "tests" / "benchmark" / "test_performance.py").write_text(
         "import pytest\n\n\n@pytest.fixture\ndef accuracy():\n    return 1\n\n\n"
         "def test_own_fixture(accuracy):\n    assert accuracy == 1\n\n\n"
         "@pytest.mark.parametrize('performance', [1, 2])\n"
@@ -276,7 +276,7 @@ COCO = {"coco": {"coco_map": 0.4}}
         ),
         (
             {"w8a8": {"imagenet": {"top1_accuracy": 0.8}, **COCO}, "w16a16": {"imagenet": {"top1_accuracy": 0.8}}},
-            "accuracy.expected names unmeasured build profiles: w16a16",
+            "accuracy.expected names build profiles that are not benchmarked: w16a16",
         ),
         (
             {"w8a8": {"imagenet": {"top1_accuracy": 0.8, "unknown_metric": 0.9}, **COCO}},
@@ -296,7 +296,7 @@ def test_accuracy_expectations_give_each_measured_build_profile_its_required_met
     tests = model_dir / "tests"
     (tests / "build").mkdir()
     (tests / "build" / "test_compile.py").write_text("", encoding="utf-8")
-    (tests / "measure" / "test_accuracy.py").write_text("", encoding="utf-8")
+    (tests / "benchmark" / "test_accuracy.py").write_text("", encoding="utf-8")
     (tests / "tests.yaml").write_text(
         yaml.safe_dump({"compile": {"run_tests": True}, "accuracy": {"run_tests": True, "expected": expected}}),
         encoding="utf-8",

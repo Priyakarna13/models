@@ -108,7 +108,7 @@ decoder. The model page draws it as the component's execution graph.
 A failed call exits unsuccessfully. Keep the log: a missing report is not a
 successful benchmark. Keep archives and results outside Git.
 
-The script runs once per measured build profile, with every component's MPK.
+The script runs once per benchmarked build profile, with every component's MPK.
 
 ## Multi-component models
 
@@ -246,7 +246,7 @@ then:
    clocks to `environment.json`.
 
 `scripts/run_model_tests.sh` then runs the model's
-`tests/measure/test_performance.py` on the report, which compares its
+`tests/benchmark/test_performance.py` on the report, which compares its
 throughput with the expected value for that build profile in
 `tests/tests.yaml`, checks the execution plans and layer timings, and records
 `passed`, `failed`, or `skipped` ([set up

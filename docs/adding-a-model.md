@@ -35,23 +35,23 @@ does not repeat it. A model directory may contain only these entries:
 ```text
 models/<model-id>/
   README.md
-  hero.png                      # 1200x480 catalog card image
-  model.yaml                    # the model's only configuration file
+  hero.png                        # 1200x480 catalog card image
+  model.yaml                      # the model's only configuration file
   scripts/
-    compile.py                  # compile stage: writes one MPK per component
-    performance.py              # performance stage, when model.yaml declares performance
-    accuracy.py                 # accuracy stage, when model.yaml declares accuracy
-    requirements-accuracy.txt   # optional wheels for accuracy.py
-    convert.py                  # only when model.yaml declares a conversion
-    requirements-convert.txt    # required with convert.py
-    <helper>.py                 # model-specific surgery, calibration, or shared code
-  tests/                        # the model's tests; see step 10
-    tests.yaml                  # which stage tests run, and the expected DevKit values
-    build/test_conversion.py    # only with convert.py
+    compile.py                    # compile stage: writes one MPK per component
+    performance.py                # performance stage, when model.yaml declares performance
+    accuracy.py                   # accuracy stage, when model.yaml declares accuracy
+    requirements-accuracy.txt     # optional wheels for accuracy.py
+    convert.py                    # only when model.yaml declares a conversion
+    requirements-convert.txt      # required with convert.py
+    <helper>.py                   # model-specific surgery, calibration, or shared code
+  tests/                          # the model's tests; see step 10
+    tests.yaml                    # which stage tests run, and the expected DevKit values
+    build/test_conversion.py      # only with convert.py
     build/test_compile.py
-    measure/test_accuracy.py    # only when model.yaml declares accuracy
-    measure/test_performance.py # only when model.yaml declares performance
-    fixtures/                   # optional test data
+    benchmark/test_accuracy.py    # only when model.yaml declares accuracy
+    benchmark/test_performance.py # only when model.yaml declares performance
+    fixtures/                     # optional test data
 ```
 
 Put every model-specific setting in `model.yaml`, not in separate
@@ -274,7 +274,7 @@ is always benchmarked again.
 | a model's `performance.py` or `performance` declaration | that model's performance stages |
 | `accuracy.py`, its requirements, the `accuracy` datasets, or one of their pins | that model's accuracy stages |
 | a task's entry in `datasets/<id>.yaml` | the accuracy stages of models with that task that evaluate the dataset |
-| `accuracy.build_profiles`, a new `datasets/` file, or an entry for a task no such model has | nothing; a newly measured profile runs because it has no run yet |
+| `accuracy.build_profiles`, a new `datasets/` file, or an entry for a task no such model has | nothing; a newly benchmarked profile runs because it has no run yet |
 | `scripts/run_model_performance.sh` | every performance stage |
 | `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, or `scripts/install_dataset_registry.sh` | every accuracy stage |
 | the DevKit runtime pin, the benchmarking workflow, `tools/model_report`, `schemas/model-report.schema.json`, or `report_publication.py` | every performance and accuracy stage |
@@ -304,8 +304,8 @@ output of its stage by taking that output's fixture from the root
 | --- | --- | --- | --- |
 | `build/test_conversion.py` | `convert.py` | `converted`: the ONNX path | after conversion, before the ONNX upload |
 | `build/test_compile.py` | `compile.py`, calibration, surgery | `compiled`: the build's output directory | after compilation, before the build is published |
-| `measure/test_accuracy.py` | `accuracy.py` | `accuracy`: the build profile's accuracy report | after the DevKit accuracy stage, before publication |
-| `measure/test_performance.py` | `performance.py` | `performance`: the build profile's performance report | after the DevKit performance stage, before publication |
+| `benchmark/test_accuracy.py` | `accuracy.py` | `accuracy`: the build profile's accuracy report | after the DevKit accuracy stage, before publication |
+| `benchmark/test_performance.py` | `performance.py` | `performance`: the build profile's performance report | after the DevKit performance stage, before publication |
 
 A test without a stage-output fixture runs in `python -m pytest` on every pull
 request. Import a model script with the `load_script` fixture, as in
@@ -364,8 +364,8 @@ performance:
       throughput_fps: 1491.4
 ```
 
-`model-registry validate` requires an `expected` value for every build the
-stage measures. The measurement test compares the report's metrics with these
+`model-registry validate` requires an `expected` value for every build profile
+the stage benchmarks. The benchmark test compares the report's metrics with these
 values through one shared function. A performance test also checks that the
 report records each component's execution plan, which the model browser draws:
 

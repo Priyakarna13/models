@@ -180,7 +180,7 @@ on the reviewed revision:
    they still lack.
 
 **Vulcan Model Benchmarking** runs the requested `performance` and `accuracy`
-stages of one build on a DevKit, runs the model's measure tests on each result,
+stages of one build on a DevKit, runs the model's benchmark tests on each result,
 then publishes each result as its own registry run under the build profile's
 package run, with the test outcome. A failed test fails the run after
 publication.

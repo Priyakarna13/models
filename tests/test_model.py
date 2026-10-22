@@ -189,12 +189,12 @@ def _benchmarked_model(tmp_path: Path, *stages: str) -> tuple[Path, dict]:
     """A copy of the fixture that benchmarks the given stages, with their scripts, test files and expected values."""
     directory = tmp_path / "fixture_model"
     shutil.copytree(FIXTURE, directory)
-    (directory / "tests" / "measure").mkdir()
+    (directory / "tests" / "benchmark").mkdir()
     authored = _authored(directory)
     tests = {"compile": RUN_TESTS}
     for stage in stages:
         (directory / "scripts" / f"{stage}.py").write_text("", encoding="utf-8")
-        (directory / "tests" / "measure" / f"test_{stage}.py").write_text("", encoding="utf-8")
+        (directory / "tests" / "benchmark" / f"test_{stage}.py").write_text("", encoding="utf-8")
         authored[stage] = copy.deepcopy(BENCHMARK_DECLARATIONS[stage])
         tests[stage] = EXPECTED[stage]
     _write_model_tests(directory, tests)
@@ -493,7 +493,7 @@ def test_model_tests_set_up_every_stage_the_model_has(tmp_path: Path) -> None:
     ("stage", "entry", "expected"),
     [
         ("accuracy", {**EXPECTED["accuracy"], "expected": {"other": {"imagenet-2012-mini": {"top1_accuracy": 0.5}}}},
-         "accuracy.expected names unmeasured build profiles: other"),
+         "accuracy.expected names build profiles that are not benchmarked: other"),
         ("accuracy", {**EXPECTED["accuracy"], "expected": {"fixture": {"imagenet-2012-mini": {"top5_accuracy": 0.5}}}},
          "accuracy.expected.fixture.imagenet-2012-mini lacks top1_accuracy"),
         ("accuracy", {**EXPECTED["accuracy"], "expected": {"fixture": {"other": {"top1_accuracy": 0.5}}}},
@@ -511,7 +511,7 @@ def test_model_tests_set_up_every_stage_the_model_has(tmp_path: Path) -> None:
         ),
     ],
     ids=[
-        "accuracy of an unmeasured build profile",
+        "accuracy of a build profile that is not benchmarked",
         "accuracy without a required metric",
         "accuracy of an undeclared dataset",
         "accuracy without values",
@@ -522,7 +522,7 @@ def test_model_tests_set_up_every_stage_the_model_has(tmp_path: Path) -> None:
         "performance with an accuracy metric",
     ],
 )
-def test_measured_stages_state_what_the_model_must_deliver(
+def test_benchmark_stages_state_what_the_model_must_deliver(
     tmp_path: Path, stage: str, entry: dict, expected: str
 ) -> None:
     directory, authored = _benchmarked_model(tmp_path, "accuracy", "performance")

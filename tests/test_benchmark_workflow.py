@@ -274,7 +274,7 @@ def test_each_benchmark_runs_and_publishes_on_its_own_outcome() -> None:
     assert "needs.benchmark-dispatched-model.outputs.accuracy == 'success'" in publish["if"]
 
 
-def test_each_measured_result_records_its_model_test_outcome() -> None:
+def test_each_benchmark_result_records_its_model_test_outcome() -> None:
     steps = load_workflow()["jobs"]["benchmark-dispatched-model"]["steps"]
     names = [item.get("name") for item in steps]
     performance_tests = step(steps, "Test the performance report with the model's performance tests")

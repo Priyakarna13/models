@@ -97,7 +97,7 @@ def test_discovery_and_matrix_are_stable(model_repository: Path) -> None:
     assert "compile_fingerprint" not in matrix["include"][0]
 
 
-def test_matrix_entries_carry_the_stages_each_profile_measures() -> None:
+def test_matrix_entries_carry_the_stages_each_profile_benchmarks() -> None:
     models = {model_id: load_and_validate_model(ROOT / "models" / model_id, SCHEMA)
               for model_id in ("resnet_50", "rf_detr_small", "qwen3_5_0_8b")}
 

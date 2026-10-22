@@ -72,7 +72,7 @@ def test_ci_runs_every_test_and_collects_every_stage_output_test() -> None:
 
     assert steps["Test model-registry contracts and each model's scripts"]["run"] == "python -m pytest"
     assert "--collect-only" in collect
-    assert "models/*/tests/build models/*/tests/measure" in collect
+    assert "models/*/tests/build models/*/tests/benchmark" in collect
     for option in ("converted", "compiled", "accuracy", "performance"):
         assert f"--{option}=" in collect
 

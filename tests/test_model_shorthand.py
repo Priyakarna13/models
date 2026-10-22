@@ -144,9 +144,9 @@ def test_accuracy_names_each_dataset_by_its_registry_source_and_keeps_measured_b
     assert benchmarked_profiles(model, "performance") == ["w16a16", "w8a8"]
     authored = _authored("yolo26n")
     del authored["accuracy"]
-    unmeasured = normalize_model(authored, MODELS / "yolo26n")
-    assert "accuracy" not in unmeasured
-    assert benchmarked_profiles(unmeasured, "accuracy") == []
+    without_accuracy = normalize_model(authored, MODELS / "yolo26n")
+    assert "accuracy" not in without_accuracy
+    assert benchmarked_profiles(without_accuracy, "accuracy") == []
 
 
 def test_hugging_face_shorthand_rejects_a_mutable_revision() -> None:

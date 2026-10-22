@@ -139,20 +139,20 @@ named by what they check:
 
 ```text
 models/<model_id>/tests/
-  tests.yaml                  which stage tests run, and the expected DevKit values
-  build/test_conversion.py    when the model has scripts/convert.py
-  build/test_compile.py       every model
-  measure/test_accuracy.py    when model.yaml declares accuracy
-  measure/test_performance.py when model.yaml declares performance
-  fixtures/                   optional test data
+  tests.yaml                    which stage tests run, and the expected DevKit values
+  build/test_conversion.py      when the model has scripts/convert.py
+  build/test_compile.py         every model
+  benchmark/test_accuracy.py    when model.yaml declares accuracy
+  benchmark/test_performance.py when model.yaml declares performance
+  fixtures/                     optional test data
 ```
 
 `tests.yaml` has one entry per stage the model has (`conversion`, `compile`,
 `accuracy`, `performance`), each with `run_tests: true`, or `false` with a
 `skip_reason`. A running `accuracy` or `performance` entry also sets
-`expected`: the latest published `develop` values of every measured build
+`expected`: the latest published `develop` values of every benchmarked build
 profile (`performance.expected.<profile>.throughput_fps`,
-`accuracy.expected.<profile>.<dataset>.<metric>`). Each measure test asserts
+`accuracy.expected.<profile>.<dataset>.<metric>`). Each benchmark test asserts
 `measured_shortfalls(model_dir, "<stage>", build_profile, report) == []`;
 it fails when a
 value falls more than `ACCURACY_ALLOWED_DROP` (5%) or
@@ -203,7 +203,7 @@ in the same commit.
 | a field of the model report | `schemas/model-report.schema.json`, `tools/model_report/__init__.py`, the checks in `report_publication.py`, and the browser code that reads the report |
 | a model's category: `model_type`, `tasks`, `modalities`, or the family in `architecture.id` | pick existing IDs from `taxonomies/model-taxonomy.yaml`; when none fits, add the entry there and follow [Model categorization taxonomy](docs/model-taxonomy.md) |
 | the model folder layout | `MODEL_FOLDER_ENTRIES` in `model.py` and [the directory step](docs/adding-a-model.md#2-create-the-directory) |
-| a model script | the model's test of that behavior under `tests/build/` or `tests/measure/` |
+| a model script | the model's test of that behavior under `tests/build/` or `tests/benchmark/` |
 | what a model converts, compiles, or measures on a DevKit | its `tests/tests.yaml` entries, their `expected` values, and the stage test files they run |
 | the layout of a model's `tests/` | `TESTS_DIR_ENTRIES` and `TEST_GROUPS` in `model_tests.py`, `schemas/model-tests.schema.json`, and [the tests step](docs/adding-a-model.md#10-write-the-models-tests) |
 | how a stage runs its model tests or what they report | `scripts/run_model_tests.sh`, the stage's workflow step, and `TEST_OUTCOMES` in `model_tests.py` |
@@ -231,7 +231,7 @@ in the same commit.
   benchmarks. `publish-catalog` writes the final catalog snapshot, and
   `benchmark` starts the benchmarks a reused build still lacks.
 - **Benchmarks.** `vulcan-model-benchmarking.yml` runs the requested
-  `stages` of one build profile on a DevKit, runs the model's measure tests on
+  `stages` of one build profile on a DevKit, runs the model's benchmark tests on
   each `model-report.json`, and publishes performance (`model_performance` runs)
   and accuracy (`model_accuracy` runs) separately with `model-registry
   publish-report`, each under the profile's `model_package` run with its test

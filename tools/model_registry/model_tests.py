@@ -1,6 +1,6 @@
 """Each model's tests: one file per stage under models/<id>/tests/, set up by tests/tests.yaml.
 
-build/ checks conversion and compilation; measure/ checks DevKit accuracy and performance. tests.yaml says
+build/ checks conversion and compilation; benchmark/ checks DevKit accuracy and performance. tests.yaml says
 whether each stage's tests run and what the model is expected to deliver. No fingerprint reads these files, so
 changing a test reruns nothing.
 """
@@ -27,7 +27,7 @@ TESTS_DIR = "tests"
 TESTS_FILE = "tests.yaml"
 TESTS_SCHEMA = "model-tests.schema.json"
 # Each stage's test file, by the folder that names what it checks.
-TEST_GROUPS = {"build": ("conversion", "compile"), "measure": ("accuracy", "performance")}
+TEST_GROUPS = {"build": ("conversion", "compile"), "benchmark": ("accuracy", "performance")}
 STAGE_GROUP = {stage: group for group, stages in TEST_GROUPS.items() for stage in stages}
 TESTS_DIR_ENTRIES = {TESTS_FILE, *TEST_GROUPS, "fixtures"}
 # What scripts/run_model_tests.sh prints for a stage's tests; a benchmark publishes it as its test status.
@@ -133,7 +133,7 @@ def validate_model_tests(model_dir: str | Path, model: dict[str, Any], schema_pa
             continue
         if not (tests_dir / stage_test_file(stage)).is_file():
             raise ValidationError(f"{directory}: {stage} tests run but {TESTS_DIR}/{stage_test_file(stage)} is missing")
-        if stage in TEST_GROUPS["measure"]:
+        if stage in TEST_GROUPS["benchmark"]:
             _require_expected_values(path, stage, tests[stage]["expected"], model)
 
     allowed = {
@@ -150,18 +150,18 @@ def validate_model_tests(model_dir: str | Path, model: dict[str, Any], schema_pa
     if unexpected:
         raise ValidationError(
             f"{directory}: unexpected test files: {', '.join(unexpected)}; "
-            f"each stage has one test file, build/test_<stage>.py or measure/test_<stage>.py"
+            f"each stage has one test file, build/test_<stage>.py or benchmark/test_<stage>.py"
         )
 
 
 def _require_expected_values(path: Path, stage: str, expected: dict[str, Any], model: dict[str, Any]) -> None:
-    """Every measured build profile expects its required metrics, for accuracy on each dataset (performance: its
+    """Every benchmarked build profile expects its required metrics, for accuracy on each dataset (performance: its
     throughput), and nothing else."""
     profiles = benchmarked_profiles(model, stage)
     unknown_profiles = set(expected) - set(profiles)
     if unknown_profiles:
         names = ", ".join(sorted(unknown_profiles))
-        raise ValidationError(f"{path}: {stage}.expected names unmeasured build profiles: {names}")
+        raise ValidationError(f"{path}: {stage}.expected names build profiles that are not benchmarked: {names}")
     for profile in profiles:
         values = expected.get(profile, {})
         if stage == "performance":

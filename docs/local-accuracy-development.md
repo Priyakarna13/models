@@ -168,7 +168,7 @@ ID its evaluated split and sample counts, one number per metric, and free-form
 digests, and board are not report fields; publication records them on the run.
 
 On the DevKit, `scripts/run_model_tests.sh` runs the model's
-`tests/measure/test_accuracy.py` on the report, which compares each dataset's
+`tests/benchmark/test_accuracy.py` on the report, which compares each dataset's
 metrics with the build profile's expected values for that dataset in
 `tests/tests.yaml` ([set up
 `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). CI publishes the

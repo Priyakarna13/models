@@ -154,7 +154,7 @@ push (Vulcan Model Orchestrator, every push)
   -> publish the catalog snapshot
   -> benchmark: start the benchmarks that reused builds still lack
 benchmarks (Vulcan Model Benchmarking, per build profile)
-  -> performance and accuracy on a DevKit, then the model's measure tests on each model report
+  -> performance and accuracy on a DevKit, then the model's benchmark tests on each model report
   -> publish each report under the profile's package run with its test outcome; a failed test then fails the run
 ```
 
