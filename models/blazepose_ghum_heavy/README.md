@@ -17,13 +17,14 @@ resampling and scaled to 0–1, passed as a 1×256×256×3 (NHWC) float tensor.
 
 **Outputs.**
 
-1. `Identity [1,195]`: 39 image-space records of x, y, z, visibility logit,
-   and presence logit.
-2. `Identity_1 [1,1]`: global pose-presence logit.
+1. `Identity [1,195]`: 39 image-space records of x, y, z, visibility logit, and presence logit.
+2. `Identity_1 [1,1]`: global pose-presence probability, already activated.
 3. `Identity_4 [1,117]`: 39 world-space x, y, z records.
 
-Apply a sigmoid to the visibility and presence logits; the model leaves them
-raw. The first 33 records of each landmark tensor are the public BlazePose body
+Apply a sigmoid only to each landmark's visibility and presence logits; the
+model leaves them raw. Compare `Identity_1` with your threshold directly, as
+MediaPipe does at 0.5; applying a sigmoid to it again keeps crops with no
+person. The first 33 records of each landmark tensor are the public BlazePose body
 landmarks. MediaPipe uses only `Identity` records 33 and 34 as auxiliary
 landmarks for deriving the crop for the next frame; records 35–38 are not part
 of its postprocessed landmark outputs. MediaPipe likewise discards `Identity_4`
