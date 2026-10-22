@@ -112,7 +112,8 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           OPERATION: ${{ steps.request.outputs.operation }}
           BRANCH: ${{ steps.request.outputs.branch }}
-          IDEMPOTENCY_KEY: branch-${{ steps.request.outputs.operation }}-${{ github.run_id }}
+          # A rerun starts a new purge job; the registry would replay a failed job under the same key.
+          IDEMPOTENCY_KEY: branch-${{ steps.request.outputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           : "${API_URL:?VULCAN_ARTIFACT_REGISTRY_API_URL is required}"
