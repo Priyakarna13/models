@@ -11,7 +11,7 @@ import onnx
 from onnx import helper, numpy_helper, shape_inference
 from onnx.utils import Extractor
 
-SOURCE_SHA256 = "efcc9e62707d596c86bfc962a26a673401d8438702216f82fc15ead54c6f3a83"
+MODEL_DIR = Path(__file__).resolve().parents[1]
 INPUT_NAME = "input_1"
 INPUT_SHAPE = (1, 256, 256, 3)
 SOURCE_OUTPUTS = (
@@ -31,6 +31,13 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def pinned_source_sha256() -> str:
+    """The SHA-256 model.yaml pins for the converted ONNX that compile.py receives."""
+    from model_registry.model import load_model
+
+    return load_model(MODEL_DIR)["components"][0]["source"]["sha256"]
 
 
 def _tensor_contract(values: list[onnx.ValueInfoProto]) -> list[tuple[str, tuple[int, ...]]]:
@@ -118,7 +125,8 @@ def validate_prepared_model(model: onnx.ModelProto) -> None:
 def prepare_model(source: Path, destination: Path) -> Path:
     source = source.expanduser().resolve()
     destination = destination.expanduser().resolve()
-    if _sha256(source) != SOURCE_SHA256:
+    source_sha256 = pinned_source_sha256()
+    if _sha256(source) != source_sha256:
         raise ValueError(f"BlazePose source SHA-256 mismatch: {source}")
     model = onnx.load(source)
     validate_source_model(model)
@@ -137,7 +145,7 @@ def prepare_model(source: Path, destination: Path) -> Path:
             "sima.output_order": ",".join(name for name, _ in OUTPUTS),
             "sima.preprocess": "RGB float32 NHWC [0,1], resize 256x256",
             "sima.replaced_channel_padding": str(len(replaced)),
-            "source.sha256": SOURCE_SHA256,
+            "source.sha256": source_sha256,
         },
     )
     extracted = shape_inference.infer_shapes(extracted, strict_mode=True, data_prop=True)

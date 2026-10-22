@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the pinned BlazePose GHUM Heavy source into its Modalix BF16 MPK."""
+"""Prepare the converted BlazePose GHUM Heavy ONNX and compile it into its Modalix BF16 MPK."""
 
 from __future__ import annotations
 
@@ -8,16 +8,16 @@ import io
 import json
 import logging
 import os
+import shutil
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
-import yaml
 from model_registry.dependencies import resolve_model_compiler
+from model_registry.model import load_model as load_metadata
 from surgery import INPUT_NAME, INPUT_SHAPE, OUTPUTS, prepare_model
-from validate_conversion import deterministic_input, validate_conversion
 
 LOG = logging.getLogger("blazepose_ghum_heavy.compile")
 MODEL_DIR = Path(__file__).resolve().parents[1]
@@ -28,25 +28,20 @@ PUBLIC_INPUT_SIZE = int(np.prod(INPUT_SHAPE)) * np.dtype(np.float32).itemsize
 PUBLIC_OUTPUT_SIZES = [int(np.prod(shape)) * np.dtype(np.float32).itemsize for _, shape in OUTPUTS]
 
 
-def variant_config(variant_id: str) -> dict[str, Any]:
-    metadata = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
-    matches = [item for item in metadata["build_profiles"] if item["id"] == variant_id]
-    if len(matches) != 1:
-        raise ValueError(f"expected exactly one BlazePose build profile named {variant_id!r}")
-    profile = matches[0]
-    binding = next(item for item in profile["components"] if item["id"] == COMPONENT_ID)
-    variant = {**profile, "parameters": binding["parameters"]}
-    parameters = variant["parameters"]
-    declared_outputs = tuple(parameters.get("output_names", []))
-    if (
-        variant["target"] != "modalix"
-        or parameters.get("precision") != "w16a16"
-        or parameters.get("input_name") != INPUT_NAME
-        or tuple(parameters.get("input_shape", [])) != INPUT_SHAPE
-        or declared_outputs != tuple(name for name, _ in OUTPUTS)
-    ):
+def _parameters(profile_id: str) -> dict[str, Any]:
+    model = load_metadata(MODEL_DIR)
+    profiles = [profile for profile in model["build_profiles"] if profile["id"] == profile_id]
+    if len(profiles) != 1:
+        raise ValueError(f"model.yaml declares no build profile {profile_id!r}")
+    parameters = next(item["parameters"] for item in profiles[0]["components"] if item["id"] == COMPONENT_ID)
+    if parameters.get("precision") != "w16a16":
         raise ValueError("BlazePose build profile does not match the qualified Modalix BF16 contract")
-    return variant
+    return parameters
+
+
+def deterministic_input() -> np.ndarray:
+    values = np.arange(np.prod(INPUT_SHAPE), dtype=np.float32).reshape(INPUT_SHAPE)
+    return np.remainder(values, np.float32(251.0)) / np.float32(250.0)
 
 
 def audit_mpk(archive: Path) -> dict[str, Any]:
@@ -159,8 +154,8 @@ def audit_mpk(archive: Path) -> dict[str, Any]:
     }
 
 
-def compile_model(source: Path, output_root: Path, variant_id: str) -> Path:
-    variant_config(variant_id)
+def compile_model(source: Path, output_root: Path, profile_id: str) -> Path:
+    _parameters(profile_id)
     from afe.apis.defines import (
         CalibrationMethod,
         InputName,
@@ -181,13 +176,12 @@ def compile_model(source: Path, output_root: Path, variant_id: str) -> Path:
         raise RuntimeError(
             f"BlazePose requires repository-pinned Model Compiler {COMPILER_VERSION}, found {actual_compiler_version}"
         )
-    tflite = source.with_name("pose_landmark_heavy.tflite")
-    conversion_report = validate_conversion(tflite, source)
 
     component_dir = output_root / COMPONENT_ID
     component_dir.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="blazepose-ghum-heavy-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
-        prepared = prepare_model(source, Path(temporary) / "blazepose_ghum_heavy.onnx")
+        build_dir = Path(temporary)
+        prepared = prepare_model(source, build_dir / "blazepose_ghum_heavy.onnx")
         importer = ImporterParams(
             format=ModelFormat.onnx,
             file_paths=[str(prepared)],
@@ -208,30 +202,21 @@ def compile_model(source: Path, output_root: Path, variant_id: str) -> Path:
             .with_requantization_mode(RequantizationMode.sima)
             .with_calibration(CalibrationMethod.from_str("mse"))
         )
-        model_name = f"{MODEL_ID}_{variant_id}"
+        model_name = f"{MODEL_ID}_{profile_id}"
         quantized = loaded.quantize(
             calibration_data=calibration_data,
             quantization_config=quantization,
             model_name=model_name,
             log_level=logging.INFO,
         )
-        quantized.save(model_name=model_name, output_directory=str(component_dir))
-        quantized.compile(output_path=str(component_dir), batch_size=1, log_level=logging.INFO)
-
-    archives = sorted(component_dir.glob("*_mpk.tar.gz"))
-    if len(archives) != 1:
-        raise RuntimeError(f"expected one BlazePose MPK, found {archives}")
-    report = {
-        "conversion": conversion_report,
-        "model_id": MODEL_ID,
-        "mpk": audit_mpk(archives[0]),
-        "output_contract": [{"name": name, "shape": list(shape)} for name, shape in OUTPUTS],
-        "variant_id": variant_id,
-    }
-    (component_dir / "blazepose-ghum-heavy-audit.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return archives[0]
+        quantized.compile(output_path=str(build_dir / "mpk"), batch_size=1, log_level=logging.INFO)
+        archives = sorted((build_dir / "mpk").glob("*_mpk.tar.gz"))
+        if len(archives) != 1:
+            raise RuntimeError(f"expected one BlazePose MPK, found {archives}")
+        audit_mpk(archives[0])
+        archive = component_dir / archives[0].name
+        shutil.copyfile(archives[0], archive)
+    return archive
 
 
 def main() -> int:
@@ -241,10 +226,12 @@ def main() -> int:
     parser.add_argument("--build-profile", required=True)
     parser.add_argument("--compile-invocation", required=True)
     args = parser.parse_args()
-    if args.compile_invocation != COMPONENT_ID:
-        parser.error(f"unsupported compile invocation: {args.compile_invocation}")
+    if args.compile_invocation != args.build_profile:
+        parser.error("a build profile compiles in one invocation named after it")
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     source = args.model.expanduser().resolve()
+    if source.suffix != ".onnx":
+        parser.error("--model must be the verified ONNX from the conversion workflow")
     if not source.is_file():
         parser.error(f"model does not exist: {source}")
     archive = compile_model(source, args.output_dir.expanduser().resolve(), args.build_profile)

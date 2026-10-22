@@ -1,161 +1,47 @@
-id: blazepose_ghum_heavy
 display_name: BlazePose GHUM Heavy 3D
 description: MediaPipe BlazePose GHUM Heavy landmark model with image-space and world-space 3D pose outputs.
 model_type: vision
-tasks:
-- pose_estimation
+tasks: [pose_estimation]
+
 modalities:
-  inputs:
-  - image
-  outputs:
-  - landmarks
-architecture:
-  id: blaze_pose
-owners:
-- '@sima-neat/models'
+  inputs: [image]
+  outputs: [landmarks]
+
+architecture: blaze_pose
+
 license:
   spdx: Apache-2.0
   redistribution: allowed
   attribution: BlazePose GHUM Heavy was created by the MediaPipe authors and is distributed under Apache-2.0.
+
 upstream:
   repository: https://github.com/google-ai-edge/mediapipe
   revision: 59e42d71bcd44cbdbabc419f0ff76686595fd265419566bd4009ef703ea8e1fe
   model_card: https://developers.google.com/ml-kit/images/vision/pose-detection/pose_model_card.pdf
   derived_from: https://storage.googleapis.com/mediapipe-assets/pose_landmark_heavy.tflite
-components:
-- id: model
-  role: inference
-  # The ONNX entrypoint was converted locally from the official TFLite with TensorFlow 2.17.0,
-  # tf2onnx 1.17.0, ONNX 1.17.0, and opset 16, then pinned because tf2onnx constant names are not
-  # byte-deterministic. scripts/compile.py gates it against the TFLite (max abs error 0.005, mean 0.0005).
+
+conversion:
+  # A Hugging Face copy of Google's official file; its SHA-256 matches the derived_from download.
   source:
-    type: file_set
-    entrypoint: pose_landmark_heavy.onnx
-    files:
-    - path: pose_landmark_heavy.onnx
-      uri: https://api.github.com/repos/sima-neat/models/releases/assets/603713934
-      sha256: efcc9e62707d596c86bfc962a26a673401d8438702216f82fc15ead54c6f3a83
-      size_bytes: 55181411
-      media_type: application/onnx
-    - path: pose_landmark_heavy.tflite
-      uri: https://api.github.com/repos/sima-neat/models/releases/assets/603713936
-      sha256: 59e42d71bcd44cbdbabc419f0ff76686595fd265419566bd4009ef703ea8e1fe
-      size_bytes: 27709200
-      media_type: application/vnd.tensorflow.lite
-  interface:
-    format: onnx
-    opset: 16
-    entrypoints:
-    - id: default
-      inputs:
-      - name: input_1
-        dtype: float32
-        shape:
-        - 1
-        - 256
-        - 256
-        - 3
-        layout: NHWC
-        description: RGB pose ROI resized to 256x256 and normalized to [0, 1].
-      outputs:
-      - name: Identity
-        dtype: float32
-        shape:
-        - 1
-        - 195
-        layout: NC
-        description: Raw image-space landmark records; 0-32 are public landmarks, 33-34 are MediaPipe ROI auxiliaries, and 35-38 are ignored.
-      - name: Identity_1
-        dtype: float32
-        shape:
-        - 1
-        - 1
-        layout: NC
-        description: Global pose-presence logit.
-      - name: Identity_4
-        dtype: float32
-        shape:
-        - 1
-        - 117
-        layout: NC
-        description: Raw world-coordinate landmark records; MediaPipe exposes only 0-32 and ignores 33-38.
-    shape_profiles: []
-  preprocessing:
-    pipeline:
-    - op: decode_image
-      parameters:
-        color_space: RGB
-    - op: resize
-      parameters:
-        width: 256
-        height: 256
-        resample: bilinear
-    - op: rescale
-      parameters:
-        factor: 0.00392156862745098
-  postprocessing:
-    pipeline: []
-  surgery:
-    type: python
-    entrypoint: scripts/surgery.py:prepare_model
-    parameters:
-      retained_outputs:
-      - Identity
-      - Identity_1
-      - Identity_4
-      replace_channel_padding: true
-  recipe: scripts/compile.py
-resources: []
-calibrations: []
+    uri: hf://models/Pictorial/mediapipe@c89ffb465643886fe8a86d9ce771ac3bd239606a/modules/pose_landmark/pose_landmark_heavy.tflite
+    sha256: 59e42d71bcd44cbdbabc419f0ff76686595fd265419566bd4009ef703ea8e1fe
+    size_bytes: 27709200
+
+compilation:
+  # scripts/convert.py checks this ONNX against the TFLite (max abs error 0.005, mean 0.0005).
+  # The surgery has structural checks only, and no compiled-output reference comparison or
+  # dataset-backed landmark accuracy test is declared; task accuracy is in Google's model card.
+  format: onnx
+  # Placeholder until Vulcan Model Convert publishes model.onnx; replace with its printed pin.
+  source:
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/blazepose_ghum_heavy/efcc9e62707d596c86bfc962a26a673401d8438702216f82fc15ead54c6f3a83/0-1/model.onnx
+    sha256: efcc9e62707d596c86bfc962a26a673401d8438702216f82fc15ead54c6f3a83
+    size_bytes: 55181411
+
 build_profiles:
-- id: w16a16
-  target: modalix
-  components:
-  - id: model
-    parameters:
-      precision: w16a16
-      input_name: input_1
-      input_shape:
-      - 1
-      - 256
-      - 256
-      - 3
-      output_names:
-      - Identity
-      - Identity_1
-      - Identity_4
-compositions:
-- id: default
-  type: single
-  component: model
-  entrypoint: default
-packages:
-- id: default
-  default: true
-  components:
-  - model
-  resources: []
-  build_profiles:
-  - w16a16
-  composition: default
-# The surgery has structural checks only, and no compiled-output reference comparison or
-# dataset-backed landmark accuracy test is declared; task accuracy is in Google's model card.
-fidelity: []
-accuracy: []
-benchmark:
-- id: modalix_latency
-  scope:
-    type: component
-    component: model
-  build_profiles:
-  - w16a16
-  status: pending
-  target: modalix
-  reason: Establish a Core API baseline for the default BF16 MPK workload.
-  metrics:
-  - latency_avg_ms
-  - throughput_fps
-  - avg_power_watts
-  - energy_joules
-  - energy_per_inference_joules
-maturity: staging
+  w16a16:
+    components:
+      model:
+        parameters: {precision: w16a16}
+
+performance: {}

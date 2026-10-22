@@ -11,7 +11,6 @@ from types import ModuleType
 import numpy as np
 import onnx
 import pytest
-import yaml
 from onnx import TensorProto, helper, numpy_helper
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -61,37 +60,33 @@ def test_surgery_replaces_each_channel_pad_with_identity_convolution(
     assert all(np.count_nonzero(weight[2:]) == 0 for weight in weights)
 
 
-def test_conversion_gate_accepts_qualified_deltas_and_rejects_regression(
+def test_surgery_accepts_only_the_onnx_model_yaml_pins(
+    tmp_path: Path,
     load_script: Callable[[str], ModuleType],
 ) -> None:
-    conversion = load_script("validate_conversion")
-    reference = {
-        name: np.ones(shape, dtype=np.float32)
-        for name, shape in (("Identity", (1, 195)), ("Identity_1", (1, 1)), ("Identity_4", (1, 117)))
-    }
-    candidate = {name: value + np.float32(0.0001) for name, value in reference.items()}
-    assert conversion.compare_outputs(reference, candidate)["passed"] is True
-    candidate["Identity"][0, 0] = 2.0
-    with pytest.raises(ValueError, match="exceeds tolerance"):
-        conversion.compare_outputs(reference, candidate)
+    surgery = load_script("surgery")
+    from model_registry.model import load_model as load_metadata
+
+    pinned = load_metadata(MODEL_DIR)["components"][0]["source"]["sha256"]
+    assert surgery.pinned_source_sha256() == pinned
+    source = tmp_path / "model.onnx"
+    source.write_bytes(b"not the pinned conversion")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        surgery.prepare_model(source, tmp_path / "prepared.onnx")
 
 
-def test_model_declares_exact_apps_output_contract() -> None:
-    metadata = yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
-    component = metadata["components"][0]
-    outputs = component["interface"]["entrypoints"][0]["outputs"]
-    assert [(item["name"], item["shape"]) for item in outputs] == [
-        ("Identity", [1, 195]),
-        ("Identity_1", [1, 1]),
-        ("Identity_4", [1, 117]),
+def test_model_keeps_exact_apps_output_contract(load_script: Callable[[str], ModuleType]) -> None:
+    surgery = load_script("surgery")
+    assert (surgery.INPUT_NAME, surgery.INPUT_SHAPE) == ("input_1", (1, 256, 256, 3))
+    assert list(surgery.OUTPUTS) == [
+        ("Identity", (1, 195)),
+        ("Identity_1", (1, 1)),
+        ("Identity_4", (1, 117)),
     ]
-    descriptions = {item["name"]: item["description"] for item in outputs}
-    assert "33-34 are MediaPipe ROI auxiliaries" in descriptions["Identity"]
-    assert "35-38 are ignored" in descriptions["Identity"]
-    assert "exposes only 0-32 and ignores 33-38" in descriptions["Identity_4"]
-    profile = metadata["build_profiles"][0]
-    assert profile["id"] == "w16a16"
-    assert profile["components"][0]["parameters"]["precision"] == "w16a16"
+    recipe = load_script("compile")
+    assert recipe._parameters("w16a16") == {"precision": "w16a16"}
+    with pytest.raises(ValueError, match="no build profile"):
+        recipe._parameters("w8a8")
 
 
 def test_documentation_distinguishes_public_and_raw_landmark_records() -> None:
@@ -130,12 +125,17 @@ def test_compile_cli_accepts_current_invocation_contract(
             "--build-profile",
             "w16a16",
             "--compile-invocation",
-            "model",
+            "w16a16",
         ],
     )
 
     assert recipe.main() == 0
     assert calls == [(source.resolve(), output_root.resolve(), "w16a16")]
+
+    monkeypatch.setattr(sys, "argv", [*sys.argv[:-1], "model"])
+    with pytest.raises(SystemExit):
+        recipe.main()
+    assert len(calls) == 1
 
 
 def test_mpk_audit_enforces_public_abi_and_mla_placement(
