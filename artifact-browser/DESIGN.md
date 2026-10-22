@@ -57,7 +57,7 @@ Filter dropdowns stay neutral when selected, with a neutral outline for keyboard
 The selected precision tab uses a soft blue fill and border while keeping its
 text neutral and readable in both themes.
 
-Compare starts with a task, then shows measured single-component vision variants
+Compare starts with a task, then shows measured vision variants
 in one scatter plot: accuracy vertically, throughput horizontally. The dataset is
 shown below the chart title, with a Dataset & metric selector when multiple groups
 are available. A point popup identifies its model, variant and measurements. Muted points become colored when selected; a

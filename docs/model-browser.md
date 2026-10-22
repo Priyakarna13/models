@@ -67,7 +67,7 @@ variant, throughput and accuracy. Accuracy is the vertical axis and throughput
 in inferences/s is the horizontal axis. The dataset, variant and split appear below
 the chart title. Accuracy is grouped by dataset and metric; when more than one
 group is available, choose it with **Dataset & metric**.
-Multi-component models are excluded for now. Select up to three points or use the compact
+A multi-component model shows its [whole-model result](benchmarking.md#multi-component-models), with all its components running as one pipeline. Select up to three points or use the compact
 **Add model** selector to show detailed measurements, including power and memory.
 Remove a selected variant using the × in its table heading or its chart label.
 The chart labels only selected variants plotted against its current dataset and metric.

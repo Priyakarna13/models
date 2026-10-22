@@ -39,7 +39,7 @@ const PERFORMANCE_ROWS = [
 
 function catalogVariants() {
   return [...state.models].sort(compareModels).flatMap((model) => (
-    profileGroups({ ...model, builds: compilerFilteredBuilds(model) }).filter(([, builds]) => builds.length === 1).map(([profile, builds]) => ({
+    profileGroups({ ...model, builds: compilerFilteredBuilds(model) }).map(([profile, builds]) => ({
       key: pickKey(model.model_id, profile), model, profile, build: anchorBuild(builds),
     }))
   ));

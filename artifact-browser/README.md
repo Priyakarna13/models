@@ -214,7 +214,7 @@ revision.**
 **Compare** explores the selected branch's model variants by task. All
 precisions appear together; measured variants appear in a scatter
 plot of accuracy against throughput in inferences/s. Accuracy plots keep dataset
-and metric identities separate. Multi-component models are excluded for now. Hovering or focusing a point
+and metric identities separate. A multi-component model shows its whole-model result, with all its components running as one pipeline. Hovering or focusing a point
 shows the model name, variant, throughput and accuracy.
 
 Select up to three points or use **Add model** to inspect exact measurements

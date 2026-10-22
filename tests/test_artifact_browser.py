@@ -1445,6 +1445,39 @@ def test_compare_explores_one_task_with_a_chart_and_selected_table() -> None:
     assert '.workspace:not([data-view="compare"]) .compare-pane { display: none; }' in styles
 
 
+def test_compare_lists_every_build_profile_of_a_multi_component_model() -> None:
+    api = _browser_source("api.js")
+    script = _browser_source("compare-view.js")
+    grouping = "".join(
+        api[api.index(f"export function {name}("):api.index(end)].replace("export ", "")
+        for name, end in (
+            ("anchorBuild", "function modelCategory("),
+            ("profileGroups", "export function activeModelBuild("),
+        )
+    )
+    variants = script[script.index("function catalogVariants("):script.index("function measuredText(")]
+    builds = [
+        {"model_id": "rf_detr_small", "build_profile_id": profile, "component_id": component,
+         "run_id": f"{profile}-{component}"}
+        for profile in ("w8a8_w16a16", "w8a16_w16a16") for component in ("backbone", "decoder")
+    ]
+    stubs = (
+        f"const state = {{models: [{{model_id: 'rf_detr_small', builds: {json.dumps(builds)}}}]}};"
+        "const compareModels = () => 0; const compilerFilteredBuilds = (model) => model.builds;"
+        "const pickKey = (modelId, profile) => `${modelId}.${profile}`;"
+    )
+    probe = "console.log(JSON.stringify(catalogVariants().map(({key, build}) => [key, build.run_id])));"
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", stubs + grouping + variants + probe],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    # Each profile is one pick, anchored on its first component; the variant then reads its whole-model result.
+    assert json.loads(result.stdout) == [
+        ["rf_detr_small.w8a8_w16a16", "w8a8_w16a16-backbone"],
+        ["rf_detr_small.w8a16_w16a16", "w8a16_w16a16-backbone"],
+    ]
+
+
 def test_compare_bolds_the_best_whole_model_value() -> None:
     metrics = _browser_source("metrics.js").replace("export ", "")
     script = _browser_source("compare-view.js")
