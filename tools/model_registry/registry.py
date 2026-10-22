@@ -650,8 +650,20 @@ def build_catalog_snapshot(
         model_entries.append(entry)
     # Unselected conversions retain their complete published model entry, including
     # package links and on-demand requirements. New ones wait for a selected plan.
-    model_entries.extend(model for model in (previous or {}).get("models", []) if model["id"] in deferred)
+    for model in (previous or {}).get("models", []):
+        if model["id"] not in deferred:
+            continue
+        entry = dict(model)
+        if documentation_receipts is not None:
+            documentation = documentation_receipts.get(model["id"])
+            if not isinstance(documentation, dict):
+                raise ValidationError(f"model documentation receipt is missing: {model['id']}")
+            # Documentation must belong to the new catalog revision even when
+            # the model's conversion/build artifacts are carried forward.
+            entry["documentation"] = documentation
+        model_entries.append(entry)
     model_entries.sort(key=lambda model: model["id"])
+    pending_builds.extend(item for item in (previous or {}).get("pending_builds", []) if item["model_id"] in deferred)
     document: JsonObject = {
         "schema_version": 2 if incremental else 1,
         "repository": "sima-neat/models",
@@ -874,6 +886,9 @@ def publish_catalog(
             for model in source.get("models", []):
                 if model["id"] in deferred:
                     previous["models"].append(model)
+                    previous.setdefault("pending_builds", []).extend(
+                        item for item in source.get("pending_builds", []) if item["model_id"] == model["id"]
+                    )
                     deferred.remove(model["id"])
     document = build_catalog_snapshot(
         repository=repository,

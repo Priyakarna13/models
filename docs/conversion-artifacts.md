@@ -43,8 +43,10 @@ Catalog planning resolves conversion declarations for the requested models (all
 models when no `--models` filter is supplied), including on-demand models,
 so their build requirements have concrete content identities. This does not
 schedule compilation of an on-demand model. During targeted catalog publication,
-unselected conversion-backed models keep their entire previous catalog entry,
-including package links and on-demand requirements; they are not re-resolved or
+unselected conversion-backed models keep their previous build/package entries
+and on-demand requirements, along with any existing pending build records;
+documentation receipts are refreshed for the current
+catalog revision. Their conversions are not re-resolved or
 marked pending. A new unselected conversion-backed model enters the catalog when
 it has a selected conversion plan. Before deciding compile reuse, planning resolves the latest completed matching
 run and checks its artifact. The plan uses ordinary `model_compile_plan` run

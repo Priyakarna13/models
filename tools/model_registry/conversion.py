@@ -250,12 +250,11 @@ def bundle_onnx(directory: Path, output: Path) -> Path:
 
     with output.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as zipped:
         with tarfile.open(fileobj=zipped, mode="w") as archive:
-            for name, stream, size in [("manifest.json", io.BytesIO(manifest), len(manifest))] + [
-                (f["path"], (directory / f["path"]).open("rb"), f["size_bytes"]) for f in files
-            ]:
-                with stream:
+            for item in [{"path": "manifest.json", "size_bytes": len(manifest)}, *files]:
+                name = item["path"]
+                with io.BytesIO(manifest) if name == "manifest.json" else (directory / name).open("rb") as stream:
                     info = tarfile.TarInfo(name)
-                    info.size = size
+                    info.size = item["size_bytes"]
                     info.mode = 0o644
                     archive.addfile(info, stream)
     return output

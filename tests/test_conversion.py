@@ -439,8 +439,9 @@ def test_bundle_rejects_reserved_directory_prefix(tmp_path, reserved):
 
 @pytest.mark.parametrize("selected_conversion", [False, True])
 @pytest.mark.parametrize("has_previous", [False, True])
+@pytest.mark.parametrize("deferred_pending", [False, True])
 def test_targeted_plan_publishes_catalog_with_unselected_conversion(
-    repository, monkeypatch, selected_conversion, has_previous,
+    repository, monkeypatch, selected_conversion, has_previous, deferred_pending,
 ):
     from model_registry import registry as publication
     from model_registry import stage_plan
@@ -464,20 +465,94 @@ def test_targeted_plan_publishes_catalog_with_unselected_conversion(
     matrix = repository / "selected.json"
     matrix.write_text(json.dumps(result["compile"]))
     prior = {"id": "yolo26x", "builds": [], "packages": [],
-             "build_on_demand": True, "build_requirements": {"unchanged": "requirements"}}
-    sources = [{"models": [prior]}] if has_previous else []
+             "build_on_demand": not deferred_pending, "build_requirements": {"unchanged": "requirements"},
+             "documentation": {"source_commit": "b" * 40}}
+    documentation = {model_id: {"source_commit": "a" * 40, "run_id": model_id + "-docs"}
+                     for model_id in ("yolo26x", "yolo26l")}
+    monkeypatch.setattr(publication, "_revision_documentation_receipts", lambda *args: None)
+    monkeypatch.setattr(publication, "publish_model_documentation", lambda **kwargs: documentation)
+    pending = [{"model_id": "yolo26x", "build_profile_id": "w16a16", "compile_invocation_id": "w16a16",
+                "component_ids": ["model"], "compile_fingerprint": "c" * 64}] if deferred_pending else []
+    sources = [{"models": [prior], "pending_builds": pending}] if has_previous else []
     monkeypatch.setattr(publication, "read_catalog_sources", lambda *args: (None, sources))
     for _ in range(2):  # Both initialization and subsequent catalog publication.
         published = publication.publish_catalog(
             repository=repository, api_url="https://registry.test", read_api_url="https://registry.test",
             aws_region="us-west-2", branch="feature", git_sha="a" * 40,
+            bucket="test-artifacts", environment="staging",
             selected_matrix=matrix, request=lambda *args: {"stored": True}, read_request=client.read,
         )["catalog"]
         entries = {model["id"]: model for model in published["models"]}
         assert "yolo26l" in entries
         if has_previous:
-            assert entries["yolo26x"] == prior
+            assert entries["yolo26x"] == {**prior, "documentation": documentation["yolo26x"]}
         else:
             assert "yolo26x" not in entries
-        assert {build["model_id"] for build in published["pending_builds"]} == {"yolo26l"}
+        expected_pending_models = {"yolo26l", "yolo26x"} if has_previous and deferred_pending else {"yolo26l"}
+        assert {build["model_id"] for build in published["pending_builds"]} == expected_pending_models
+        if has_previous and deferred_pending:
+            assert [build for build in published["pending_builds"] if build["model_id"] == "yolo26x"] == pending
         sources[:] = [published]
+
+
+def test_bundle_many_external_files_under_low_descriptor_limit(tmp_path):
+    import subprocess
+    import sys
+    import tarfile
+
+    directory = tmp_path / "export"
+    directory.mkdir()
+    tensors = [onnx.numpy_helper.from_array(np.ones((2, 2), dtype=np.float32), name=f"weights_{i}")
+               for i in range(100)]
+    graph = onnx.helper.make_graph(
+        [onnx.helper.make_node("Add", ["x", "weights_0"], ["y"])], "many-files",
+        [onnx.helper.make_tensor_value_info("x", onnx.TensorProto.FLOAT, [2, 2])],
+        [onnx.helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, [2, 2])], tensors,
+    )
+    onnx.save_model(onnx.helper.make_model(graph), directory / "model.onnx",
+                    save_as_external_data=True, all_tensors_to_one_file=False, size_threshold=0)
+    archive = tmp_path / "bundle.tar.gz"
+    # Isolate the low descriptor limit from pytest and its other tests.
+    result = subprocess.run([sys.executable, "-c", """
+import resource
+import sys
+from pathlib import Path
+import onnx
+from model_registry.conversion import bundle_onnx
+_, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+limit = 64 if hard == resource.RLIM_INFINITY else min(64, hard)
+resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
+bundle_onnx(Path(sys.argv[1]), Path(sys.argv[2]))
+""", str(directory), str(archive)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    with tarfile.open(archive) as bundle:
+        assert len(bundle.getmembers()) == 102
+        for tensor in tensors:
+            assert bundle.extractfile(tensor.name).read() == (directory / tensor.name).read_bytes()
+
+
+def test_bundle_closes_streams_when_archive_write_fails(tmp_path, monkeypatch):
+    import tarfile
+
+    directory = output(tmp_path / "export", external=True)
+    archive = tmp_path / "bundle.tar.gz"
+    opened = []
+    original_open = Path.open
+    original_addfile = tarfile.TarFile.addfile
+
+    def track_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path.parent == directory or path == archive:
+            opened.append(stream)
+        return stream
+
+    def fail_tensor_write(self, info, stream=None):
+        if info.name == "weights.bin":
+            raise OSError("simulated disk failure")
+        return original_addfile(self, info, stream)
+
+    monkeypatch.setattr(Path, "open", track_open)
+    monkeypatch.setattr(tarfile.TarFile, "addfile", fail_tensor_write)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        conversion.bundle_onnx(directory, archive)
+    assert opened and all(stream.closed for stream in opened)
