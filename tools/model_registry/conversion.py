@@ -65,10 +65,11 @@ def conversion_fingerprint(root: Path, model: dict) -> str:
         for p in (directory / "scripts").rglob("*")
         if p.is_file() and p.name not in {"compile.py", "accuracy.py", "performance.py", "requirements-compile.txt"}
     ]
-    paths += [p for p in (directory / "tests").rglob("*") if p.is_file() and p.suffix in {".py", ".yaml"}]
+    # Validation can consume images, arrays, or arbitrary binary fixtures.
+    paths += [p for p in (directory / "tests").rglob("*") if p.is_file()]
     files = {}
     for path in sorted(set(paths)):
-        if "__pycache__" in path.parts:
+        if {"__pycache__", ".pytest_cache"}.intersection(path.relative_to(root).parts):
             continue
         if not path.is_file() or path.is_symlink():
             raise ValidationError(f"conversion input must be a regular file: {path}")

@@ -29,7 +29,9 @@ Skipped or failed model tests do not publish successful conversions.
 Vulcan stores ordinary `model_conversion` runs with upstream inputs, parameters,
 validation and the `onnx` artifact. Fingerprint version 1 covers model identity,
 upstream content, exporter code, local helpers, dependency specification and
-validation code. A changed recipe needs a new conversion. Shared conversion code
+validation code and all files under the model's `tests/`, including binary fixtures
+(excluding generated `__pycache__` and `.pytest_cache` directories).
+A changed recipe or fixture needs a new conversion. Shared conversion code
 is also fingerprinted through `CONVERSION_TOOLING` in
 `tools/model_registry/conversion.py`: the conversion workflow and runners,
 fetch/source and model-loading helpers, validation modules and schemas, shared

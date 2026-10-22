@@ -303,6 +303,33 @@ def test_conversion_fingerprint_tracks_recipe_and_dependency_pins(repository):
         compile_fingerprint(repository, "yolo26x", "w16a16", "w16a16", "test", conversion_sources={})
 
 
+@pytest.mark.parametrize("name", ["image.png", "array.npy", "tensor.bin", "expected.json", "extensionless"])
+def test_conversion_fixture_changes_invalidate_saved_selection(repository, name):
+    model = load_and_validate_model(repository / "models/yolo26x")
+    baseline = conversion.conversion_fingerprint(repository, model)
+    fixture = repository / "models/yolo26x/tests/fixtures/nested" / name
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_bytes(b"\x00\x01fixture")
+    added = conversion.conversion_fingerprint(repository, model)
+    assert added != baseline
+    fixture.write_bytes(b"\x00\x02fixture")
+    assert conversion.conversion_fingerprint(repository, model) != added
+    with pytest.raises(ValidationError, match="checkout's recipe"):
+        conversion.apply_selection(model, {"yolo26x": {"conversion_fingerprint": added}}, root=repository)
+    fixture.unlink()
+    assert conversion.conversion_fingerprint(repository, model) == baseline
+
+
+def test_conversion_fingerprint_ignores_generated_test_caches(repository):
+    model = load_and_validate_model(repository / "models/yolo26x")
+    original = conversion.conversion_fingerprint(repository, model)
+    for relative in ("__pycache__/test_conversion.pyc", ".pytest_cache/v/cache/nodeids"):
+        path = repository / "models/yolo26x/tests" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"generated cache")
+    assert conversion.conversion_fingerprint(repository, model) == original
+
+
 @pytest.mark.parametrize("relative", conversion.CONVERSION_TOOLING)
 def test_shared_conversion_dependency_invalidates_saved_selection(repository, relative):
     model = load_and_validate_model(repository / "models/yolo26x")

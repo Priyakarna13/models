@@ -279,7 +279,7 @@ is always benchmarked again.
 | --- | --- |
 | README, display metadata, `pipeline`, `reference_metrics`, `runner_class`, `runner_market`, registry tooling outside a stage's tooling | nothing |
 | `build-on-demand` | nothing; changes scheduling and catalog metadata only |
-| conversion recipe, dependency specification, validation code or shared `CONVERSION_TOOLING` | requires a new conversion for registry sources; compilation changes only if output content changes |
+| conversion recipe, dependency specification, validation code, test fixtures of any format or shared `CONVERSION_TOOLING` | requires a new conversion for registry sources; compilation changes only if output content changes |
 | a model's compile/benchmark tests, or `scripts/run_model_tests.sh` | nothing for direct sources; conversion fingerprints include model test files and the shared test runner, so registry conversions need revalidation |
 | a model's `performance.py` or `performance` declaration | that model's performance stages |
 | `accuracy.py`, its requirements, the `accuracy` datasets, or one of their pins | that model's accuracy stages |
