@@ -396,7 +396,11 @@ def test_saved_selection_rejects_a_different_recipe(repository, monkeypatch):
 def test_conversion_workflow_uses_shared_environment_and_passed_tests():
     workflow = yaml.safe_load((ROOT / ".github/workflows/vulcan-model-convert.yml").read_text())
     job = workflow["jobs"]["convert"]
-    assert job["environment"] == "${{ needs.config.outputs.vulcan_env }}"
+    assert job["environment"] == "${{ inputs.environment }}"
+    assert job["env"]["VULCAN_ENVIRONMENT"] == "${{ inputs.environment }}"
+    assert job["runs-on"][3] == "${{ inputs.environment == 'staging' && 'vulcan-stg' || 'vulcan-production' }}"
+    # The shared config resolver emits stg/prod, not canonical GitHub environment names.
+    assert "needs.config.outputs.vulcan_env" not in str(job)
     tests = next(step for step in job["steps"] if step.get("name", "").startswith("Test the converted"))
     assert '[[ "$outcome" == passed ]]' in tests["run"]
     publish = job["steps"][-1]["run"]

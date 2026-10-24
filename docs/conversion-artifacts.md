@@ -20,7 +20,10 @@ continue to work.
 
 ## Publication and selection
 
-Run **Vulcan Model Convert** in the selected environment. It installs the model's
+Run **Vulcan Model Convert** in the selected environment. The explicit
+`staging`/`production` input selects the matching GitHub environment and runner;
+the shared configuration resolver returns `stg`/`prod` aliases for infrastructure
+lookup, which must not be used as GitHub environment names. It installs the model's
 exporter requirements, runs conversion and model tests, checks the ONNX, and
 publishes a deterministic bundle under `models/conversions/`. The bundle contains
 `model.onnx`, any referenced external tensor files, and a checked file manifest.

@@ -30,8 +30,9 @@ jobs:
     secrets: inherit
   convert:
     needs: config
-    environment: ${{ needs.config.outputs.vulcan_env }}
-    runs-on: [self-hosted, linux, arm64, "${{ needs.config.outputs.vulcan_env == 'staging' && 'vulcan-stg' || 'vulcan-production' }}", ubuntu, default]
+    # The resolver emits stg/prod aliases; GitHub environments use canonical names.
+    environment: ${{ inputs.environment }}
+    runs-on: [self-hosted, linux, arm64, "${{ inputs.environment == 'staging' && 'vulcan-stg' || 'vulcan-production' }}", ubuntu, default]
     timeout-minutes: 90
     permissions:
       contents: read
@@ -41,7 +42,7 @@ jobs:
       REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
       ARTIFACT_BUCKET: ${{ needs.config.outputs.artifact_bucket }}
       KMS_KEY_ID: ${{ needs.config.outputs.artifact_kms_key_id }}
-      VULCAN_ENVIRONMENT: ${{ needs.config.outputs.vulcan_env }}
+      VULCAN_ENVIRONMENT: ${{ inputs.environment }}
       MODEL_ID: ${{ inputs.model }}
       CONVERSION: ${{ inputs.conversion }}
       EXPORT_VENV: /mnt/nvme/model-export-${{ github.run_id }}-${{ github.run_attempt }}-venv
