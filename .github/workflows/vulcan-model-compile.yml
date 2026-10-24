@@ -224,6 +224,10 @@ jobs:
           BASH
 
       - name: Verify every MPK and record its provenance
+        env:
+          MODEL_REGISTRY_READ_AWS_ACCESS_KEY_ID: ${{ steps.conversion-reader.outputs.aws-access-key-id }}
+          MODEL_REGISTRY_READ_AWS_SECRET_ACCESS_KEY: ${{ steps.conversion-reader.outputs.aws-secret-access-key }}
+          MODEL_REGISTRY_READ_AWS_SESSION_TOKEN: ${{ steps.conversion-reader.outputs.aws-session-token }}
         run: |
           set -euo pipefail
           IFS=',' read -ra components <<< "$COMPONENT_IDS"

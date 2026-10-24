@@ -267,3 +267,7 @@ failure.
 Converted ONNX models resolve a validated registry output before compile reuse is
 checked. Deploy the Vulcan contract and publish matching conversions before
 switching existing source declarations; see [conversion artifacts](conversion-artifacts.md).
+
+For private production conversion sources, both compilation and provenance
+verification use the isolated ONNX metadata reader session, including cached
+fetches. Keep these credentials separate from the runner's dataset credentials.
