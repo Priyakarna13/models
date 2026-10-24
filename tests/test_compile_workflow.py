@@ -640,6 +640,23 @@ def test_self_hosted_compile_holds_no_publication_credentials() -> None:
         assert "gh workflow run" not in run
 
 
+def test_conversion_fetch_steps_receive_isolated_reader_credentials() -> None:
+    compile_job = load(BUILD_WORKFLOW)["jobs"]["compile"]
+    expected = {
+        "MODEL_REGISTRY_READ_AWS_ACCESS_KEY_ID": "${{ steps.conversion-reader.outputs.aws-access-key-id }}",
+        "MODEL_REGISTRY_READ_AWS_SECRET_ACCESS_KEY": "${{ steps.conversion-reader.outputs.aws-secret-access-key }}",
+        "MODEL_REGISTRY_READ_AWS_SESSION_TOKEN": "${{ steps.conversion-reader.outputs.aws-session-token }}",
+    }
+    for name in (
+        "Compile the invocation with its model's compile script",
+        "Verify every MPK and record its provenance",
+    ):
+        assert step(compile_job, name).get("env", {}) == expected
+    # Dataset downloads must keep the runner's default AWS credential chain.
+    for env in [compile_job["env"], *(item.get("env", {}) for item in compile_job["steps"])]:
+        assert not {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} & env.keys()
+
+
 def test_compile_script_runs_in_activated_model_compiler_shell() -> None:
     compile_job = load(BUILD_WORKFLOW)["jobs"]["compile"]
     script = step(compile_job, "Compile the invocation with its model's compile script")["run"]
