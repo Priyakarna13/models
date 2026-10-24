@@ -511,7 +511,7 @@ function executionGraphSection(components, key) {
   const meta = graphed.length > 1
     ? graphed.map(({ label }) => label).join(" · ")
     : graphed[0].graph.steps.filter((step) => step.runsOn).map((step) => step.runsOn).join(" · ");
-  return disclosure(`graphs:${key}`, "Execution graph", `<div data-execution-graphs>${switcher}${panels}</div>`, meta);
+  return disclosure(`graphs:${key}`, "Execution Graph", `<div data-execution-graphs>${switcher}${panels}</div>`, meta);
 }
 
 export function selectExecutionGraph(event) {
@@ -576,7 +576,7 @@ function performanceSummary(performance, run, modelId) {
   const details = performanceDetails(performance, run);
   return `${tiles ? `<div class="kpis">${tiles}</div>` : ""}
     <p class="performance-context">${escapeHtml(performanceContext(performance))}${measurementSource(run, modelId)}</p>
-    ${disclosure(`performance:${run.id}`, "Performance details", details.markup, details.titles.join(" · "))}`;
+    ${disclosure(`performance:${run.id}`, "Performance Details", details.markup, details.titles.join(" · "))}`;
 }
 
 // Component and role ids read as words: "feature_extractor" becomes "Feature extractor".
@@ -612,20 +612,38 @@ function renderMlaUtilization(components, simulation, precisions, throughputFps,
   });
   const number = (value, digits) => value === null ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: digits });
   const percent = (value) => value === null ? "—" : `${(value * 100).toFixed(1)}%`;
-  const row = (label, stage) => `<tr><th scope="row">${label}</th>${[number(stage.measuredUs, 1), number(stage.simulatedUs, 1),
+  // Component numbers are never added up, so only a single-component model gets a model-level rate.
+  const compared = results.length === 1 && results[0].metrics && Number.isFinite(throughputFps) && results[0].batch > 0;
+  const sustainedTops = compared ? sustainedEffectiveTops(results[0].metrics.total, throughputFps, results[0].batch) : null;
+  // A component's totals as tiles in the layer summary's style, each explained behind an (i) mark.
+  const tile = (value, digits, unit, label, info) => `<div><strong>${number(value, digits)}${value === null ? "" : unit}</strong><span>${label}${infoMark(info)}</span></div>`;
+  const summary = ({ metrics: { stages, total } }) => `<div class="layer-summary mla-summary">
+    ${total.utilization === null ? "" : tile(total.utilization * 100, 1, "<small>%</small>", "Utilization",
+      `Effective TOPS as a share of the MLA's ${MLA_PEAK_INT8_TOPS} TOPS INT8 peak.`)}
+    ${tile(total.effectiveTops, 2, " <small>TOPS</small>", "Effective TOPS",
+      `Useful operations per second: the Model Compiler simulator's count over the measured MLA time.${compared ? `\nSustained at the measured throughput: ${number(sustainedTops, 2)} TOPS.` : ""}`)}
+    ${tile(total.packing === null ? null : total.packing * 100, 1, "<small>%</small>", "Packing",
+      "Share of the operations the MLA executes that are useful. The rest is padding.")}
+    ${tile(total.measuredUs, 1, " <small>µs</small>", "MLA time",
+      `Measured on the board${stages.length > 1 ? ` across ${stages.length} MLA stages` : ` for MLA stage ${stages[0].index}`}.`)}
+  </div>`;
+  const row = (stage) => `<tr><th scope="row">MLA stage ${stage.index}</th>${[number(stage.measuredUs, 1), number(stage.simulatedUs, 1),
     number(stage.effectiveOps / 1e9, 2), percent(stage.packing), number(stage.effectiveTops, 2), percent(stage.utilization)]
     .map((value) => `<td>${value}</td>`).join("")}</tr>`;
   const headings = ["Stage", "Measured <small>(µs)</small>", "Simulated <small>(µs)</small>", "Effective GOP", "Packing",
     "Effective TOPS", "Utilization"];
-  const table = ({ metrics }) => `<div class="tensor-table"><table><thead><tr>${headings.map((heading) => `<th scope="col">${heading}</th>`).join("")}</tr></thead>
-    <tbody>${metrics.stages.map((stage) => row(`MLA stage ${stage.index}`, stage)).join("")}${metrics.stages.length > 1 ? row("All MLA stages", metrics.total) : ""}</tbody></table></div>`;
+  // Each stage's numbers stay behind a Details button, as the execution graph's tensors do.
+  const stageDetails = ({ id, metrics }) => {
+    const detailsKey = `mla-stages:${key}:${id}`;
+    const open = state.openDisclosures.has(detailsKey);
+    return `<div class="mla-summary-row">${summary({ metrics })}
+      <button type="button" class="execution-details" data-details="${escapeHtml(detailsKey)}" aria-controls="${escapeHtml(detailsKey)}" aria-expanded="${open}">Details${icons.chevron}</button></div>
+      <div id="${escapeHtml(detailsKey)}" class="tensor-table"${open ? "" : " hidden"}><table><thead><tr>${headings.map((heading) => `<th scope="col">${heading}</th>`).join("")}</tr></thead>
+      <tbody>${metrics.stages.map(row).join("")}</tbody></table></div>`;
+  };
   const body = results.map((result) => `${results.length > 1 ? `<h4>${escapeHtml(result.label)}</h4>` : ""}
-    ${result.metrics ? table(result) : `<p class="muted-message">${escapeHtml(result.reason)}</p>`}`).join("");
-  // Component numbers are never added up, so only a single-component model gets a model-level rate.
-  const compared = results.length === 1 && results[0].metrics && Number.isFinite(throughputFps) && results[0].batch > 0;
-  const sustainedTops = compared ? sustainedEffectiveTops(results[0].metrics.total, throughputFps, results[0].batch) : null;
+    ${result.metrics ? stageDetails(result) : `<p class="muted-message">${escapeHtml(result.reason)}</p>`}`).join("");
   return disclosure(`mla-utilization:${key}`, "MLA Utilization", `<div class="mla-utilization">
-    <p class="layer-explanation">Effective TOPS divides the Model Compiler simulator's count of operations that contribute to the result by the stage's latency on the board. Packing is their share of all operations the MLA executes. Utilization compares a w8a8 stage's effective TOPS with the MLA's ${MLA_PEAK_INT8_TOPS} TOPS INT8 peak.${compared ? ` At the measured throughput, the model sustains ${number(sustainedTops, 2)} effective TOPS.` : ""}</p>
     ${body}</div>`, compared ? `${number(sustainedTops, 2)} effective TOPS sustained` : "");
 }
 
