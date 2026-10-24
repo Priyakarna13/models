@@ -371,3 +371,8 @@ records the latest validated matching output before deciding build reuse. A
 protects its conversion for 24 hours; retained compile inputs protect it afterward.
 No artifact table or custom resolver is added. See [conversion artifacts](../docs/conversion-artifacts.md)
 for the registry contract, rollout and reproduction.
+
+Production conversion-backed compile jobs obtain a session restricted to ONNX
+artifact metadata GET requests before compilation. They use it for private registry
+reads; publication remains in the separate hosted publish job. Public reads do not
+require signing. See [conversion artifacts](../docs/conversion-artifacts.md#private-production-reads).

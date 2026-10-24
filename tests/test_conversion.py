@@ -191,7 +191,8 @@ def test_bundle_rejects_output_alias_of_tensor_data(tmp_path, link_type):
 
 
 @pytest.mark.parametrize("external", [False, True])
-def test_bundle_is_deterministic_and_fetch_checks_exact_version(tmp_path, monkeypatch, external):
+@pytest.mark.parametrize("private", [False, True])
+def test_bundle_is_deterministic_and_fetch_checks_exact_version(tmp_path, monkeypatch, external, private):
     directory = output(tmp_path / "output", external)
     first = conversion.bundle_onnx(directory, tmp_path / "first.tar.gz")
     second = conversion.bundle_onnx(directory, tmp_path / "second.tar.gz")
@@ -217,12 +218,27 @@ def test_bundle_is_deterministic_and_fetch_checks_exact_version(tmp_path, monkey
         "metadata": {"validation": "passed"},
         "download_url": first.as_uri(),
     }
-    monkeypatch.setattr("model_registry.conversion.read_registry_json", lambda _: {"artifact": artifact})
+    calls = []
+    if private:
+        monkeypatch.setenv("MODEL_REGISTRY_IAM_READ_API_URL", source["read_api_url"])
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        def signed(self, method, path, body, key):
+            calls.append((method, path))
+            return {"artifact": artifact}
+        monkeypatch.setattr("model_registry.registry.SigV4RegistryClient.request", signed)
+        def unsigned(url):
+            pytest.fail("private conversion metadata must use SigV4")
+        monkeypatch.setattr("model_registry.fetch.read_registry_json", unsigned)
+    else:
+        monkeypatch.delenv("MODEL_REGISTRY_IAM_READ_API_URL", raising=False)
+        monkeypatch.setattr("model_registry.fetch.read_registry_json", lambda _: {"artifact": artifact})
     fetched, hit, _, _ = conversion.fetch_conversion(source, tmp_path / "cache")
     assert not hit
     onnx.checker.check_model(str(fetched))
     assert (fetched.parent / "weights.bin").exists() == external
     assert conversion.fetch_conversion(source, tmp_path / "cache")[1]
+    if private:
+        assert calls == [("GET", "/v1/runs/run/artifacts/onnx")] * 2
     artifact["s3_version_id"] = "v2"
     with pytest.raises(ValidationError, match="saved plan"):
         conversion.fetch_conversion(source, tmp_path / "cache")

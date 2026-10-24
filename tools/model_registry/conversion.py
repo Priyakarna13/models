@@ -15,7 +15,7 @@ from urllib.parse import quote
 from urllib.request import urlopen
 
 from .errors import ValidationError
-from .fetch import read_registry_json, sha256_file
+from .fetch import sha256_file
 from .model import load_and_validate_model
 from .source import source_identity
 
@@ -288,8 +288,9 @@ def _verify_bundle(directory: Path, source: dict | None = None) -> None:
 
 def fetch_conversion(source: dict, cache_dir: Path | None = None):
     from .fetch import default_cache_dir
+    from .registry import _public_registry_json
 
-    artifact = _artifact(read_registry_json, source["read_api_url"], source["run_id"])
+    artifact = _artifact(_public_registry_json, source["read_api_url"], source["run_id"])
     if any(artifact[key] != source[key] for key in FIELDS) or artifact["id"] != source["artifact_id"]:
         raise ValidationError("Conversion reference no longer matches the saved plan")
     cache = Path(cache_dir) if cache_dir else default_cache_dir()
