@@ -57,10 +57,13 @@ class RegistryPublicationError(ModelRegistryError):
 
 
 class SigV4RegistryClient:
-    def __init__(self, api_url: str, region: str, *, request: Request | None = None) -> None:
+    def __init__(
+        self, api_url: str, region: str, *, request: Request | None = None, credential_env_prefix: str = "AWS"
+    ) -> None:
         self.api_url = api_url.rstrip("/")
         self.region = region
         self._request = request or self._curl_request
+        self.credential_env_prefix = credential_env_prefix
 
     def request(self, method: str, path: str, body: JsonObject | None, idempotency_key: str) -> JsonObject:
         try:
@@ -69,9 +72,9 @@ class SigV4RegistryClient:
             raise RegistryPublicationError(f"{method} {path}: {exc}") from exc
 
     def _curl_request(self, method: str, path: str, body: JsonObject | None, idempotency_key: str) -> JsonObject:
-        access_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
-        secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-        session_token = os.environ.get("AWS_SESSION_TOKEN", "")
+        access_key = os.environ.get(f"{self.credential_env_prefix}_ACCESS_KEY_ID", "")
+        secret_key = os.environ.get(f"{self.credential_env_prefix}_SECRET_ACCESS_KEY", "")
+        session_token = os.environ.get(f"{self.credential_env_prefix}_SESSION_TOKEN", "")
         if not access_key or not secret_key or not session_token:
             raise RegistryPublicationError("AWS session credentials are required for registry publication")
 
@@ -944,7 +947,10 @@ def _public_registry_json(url: str) -> JsonObject:
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
         if not region:
             raise RegistryPublicationError("AWS_REGION is required for authenticated registry reads")
-        return SigV4RegistryClient(iam_api, region).request("GET", url[len(iam_api):], None, "")
+        prefix = "MODEL_REGISTRY_READ_AWS" if os.environ.get("MODEL_REGISTRY_READ_AWS_ACCESS_KEY_ID") else "AWS"
+        return SigV4RegistryClient(iam_api, region, credential_env_prefix=prefix).request(
+            "GET", url[len(iam_api):], None, ""
+        )
     try:
         return read_registry_json(url)
     except FetchError as exc:
