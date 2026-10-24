@@ -107,7 +107,12 @@ promotion or automatic conversion scheduler is introduced.
 When a selection uses the IAM API, compile fetches sign artifact metadata requests
 with SigV4, including cache hits. The compile job assumes the registry role with
 an inline session policy restricted to `GET /v1/runs/*/artifacts/onnx`; the session
-cannot publish, write objects, or access KMS directly. Vulcan must grant that GET
+cannot publish, write objects, or access KMS directly. These credentials are
+passed only to the registry reader; dataset access retains the runner credentials. Vulcan must grant that GET
 route to the role before enabling this path. Public metadata reads stay unsigned,
 and the artifact body uses the version-specific signed download URL. Exact version,
 checksum, size, and validation checks apply to both paths.
+
+The offline browser preview supplies deterministic synthetic conversion identities
+for its fixture catalog. It does not resolve real conversions or require registry
+credentials; production planning still requires validated registry selections.

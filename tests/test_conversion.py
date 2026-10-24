@@ -576,3 +576,19 @@ def test_bundle_closes_streams_when_archive_write_fails(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="simulated disk failure"):
         conversion.bundle_onnx(directory, archive)
     assert opened and all(stream.closed for stream in opened)
+
+
+def test_offline_browser_preview_supports_conversion_models(repository, monkeypatch):
+    import runpy
+
+    shutil.copytree(ROOT / "deps", repository / "deps")
+    preview = runpy.run_path(str(ROOT / "artifact-browser/preview.py"))
+    namespace = preview["_repository"].__wrapped__.__globals__
+    monkeypatch.setitem(namespace, "ROOT", repository)
+    monkeypatch.setenv("MODEL_REGISTRY_CONVERSIONS", '{"untouched": true}')
+    result = preview["_repository"]()
+    assert result["revisions"][-1]["document"]["models"][0]["id"] == "yolo26x"
+    assert result["revisions"][-1]["document"]["models"][0]["builds"]
+    assert result["models"]["yolo26x"]["components"][0]["source"]["sha256"]
+    import os
+    assert os.environ["MODEL_REGISTRY_CONVERSIONS"] == '{"untouched": true}'

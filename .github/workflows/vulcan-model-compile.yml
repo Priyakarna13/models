@@ -195,16 +195,23 @@ jobs:
 
       # Session policy removes every publisher capability except artifact metadata GET.
       - name: Configure read-only conversion registry credentials
+        id: conversion-reader
         if: ${{ inputs.vulcan_environment == 'production' && inputs.conversion_sources != '{}' }}
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ inputs.aws_region }}
           role-to-assume: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN }}
           role-session-name: models-conversion-reader-${{ github.run_id }}
+          output-env-credentials: false
+          output-credentials: true
           inline-session-policy: >-
             {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"execute-api:Invoke","Resource":"arn:aws:execute-api:${{ inputs.aws_region }}:*:*/*/GET/v1/runs/*/artifacts/onnx"}]}
 
       - name: Compile the invocation with its model's compile script
+        env:
+          MODEL_REGISTRY_READ_AWS_ACCESS_KEY_ID: ${{ steps.conversion-reader.outputs.aws-access-key-id }}
+          MODEL_REGISTRY_READ_AWS_SECRET_ACCESS_KEY: ${{ steps.conversion-reader.outputs.aws-secret-access-key }}
+          MODEL_REGISTRY_READ_AWS_SESSION_TOKEN: ${{ steps.conversion-reader.outputs.aws-session-token }}
         run: |
           set -euo pipefail
           bash --noprofile --norc <<'BASH'

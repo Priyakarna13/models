@@ -617,6 +617,13 @@ def test_self_hosted_compile_holds_no_publication_credentials() -> None:
     assert compile_job["permissions"] == {"contents": "read", "id-token": "write"}
     credentials = step(compile_job, "Configure read-only conversion registry credentials")
     assert credentials["if"] == "${{ inputs.vulcan_environment == 'production' && inputs.conversion_sources != '{}' }}"
+    assert credentials["with"]["output-env-credentials"] == "false"
+    assert credentials["with"]["output-credentials"] == "true"
+    compile_env = step(compile_job, "Compile the invocation with its model's compile script")["env"]
+    assert set(compile_env) == {
+        "MODEL_REGISTRY_READ_AWS_ACCESS_KEY_ID", "MODEL_REGISTRY_READ_AWS_SECRET_ACCESS_KEY",
+        "MODEL_REGISTRY_READ_AWS_SESSION_TOKEN",
+    }
     policy = json.loads(credentials["with"]["inline-session-policy"])
     assert policy["Statement"] == [{
         "Effect": "Allow", "Action": "execute-api:Invoke",
