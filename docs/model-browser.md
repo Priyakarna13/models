@@ -120,7 +120,7 @@ in this order:
    [benchmark fingerprint](benchmarking.md#ci-and-registry-publication) changes, so that
    commit can be later than the build's. A profile with no result shows **Not measured at
    this revision.**
-   When the report includes layer stats, **Runtime Layer Analysis**
+   When the report includes MLA layer stats, **Runtime Layer Analysis**
    shows one full-width table with **Compiled layer / Execution time (µs) / Share (%)**
    headings. Each execution-time cell shows its exact value above a thin bar,
    colored by operation family with a compact legend. Families are inferred from
@@ -156,6 +156,18 @@ in this order:
    denominator. These timings come from a separate profiling pass; they are not
    a partition of headline latency. Compiled layer names may differ from ONNX
    operators. Historical reports without stats omit this section.
+   In developer mode, **MLA Utilization** follows Runtime Layer Analysis. For each
+   MLA stage it shows the latency Core measured on the board, the latency the
+   Model Compiler's simulator estimated, the simulator's count of effective
+   operations (those that contribute to the result), packing (their share of all
+   operations the MLA executes), and effective TOPS: effective operations divided by
+   the measured latency. A w8a8 component also shows utilization, its effective TOPS
+   as a share of the MLA's 50 TOPS INT8 peak. For a single-component model, the
+   summary gives the effective TOPS the model sustains at its measured throughput,
+   counting one MLA run per batch in the execution plan.
+   A component whose stages were not
+   measured or simulated, or whose board and simulator stages differ, says so instead.
+   Customers do not see this section, because its rates rest on a simulator estimate.
    **Performance details** has three cards on the left:
    **Performance** with the throughput, the mean latency, and the p50, p95,
    and p99 latency in one row; **Heat** with the SoC and SoM temperatures;
@@ -194,7 +206,8 @@ in this order:
    The tiles, context line, and **Performance details** are the
    [whole-model result](benchmarking.md#multi-component-models), with the
    components and CPU step running together. **Runtime Layer Analysis** and
-   **Execution graph** each switch between the components, and **Download CSV**
+   **Execution graph** each switch between the components, **MLA Utilization** shows
+   one table per component, and **Download CSV**
    lists each component's layer timings.
 3. **Accuracy.** For each dataset the run evaluated, in `model.yaml` order:
    the coverage (full when the run evaluated every sample of its split,
@@ -264,3 +277,32 @@ selections, including inherited compilation runs and their matching package.
 Newer unselected runs do not replace an explicitly selected deployment.
 Feature branches show finalized on-demand candidates before promotion; metadata
 and unselected runs do not create a card. Develop and Main show approved deployments.
+
+## Preview production data from staging
+
+The staging browser uses staging by default. Open
+[the production preview](https://developer-stg.sima.ai/models?env=prod)
+to run the same staged UI against the public read-only production Models registry.
+The registry label changes to **Production registry**, downloads use production,
+and catalog/branch caches stay separate by API origin. Model navigation retains
+`env=prod`; remove that parameter to return to staging. Select the catalog branch
+you want to inspect; changing backend does not populate or promote a catalog.
+
+The preview uses only the fixed `https://models-registry.neat.sima.ai` reader.
+Other `env` values retain the default backend; query strings cannot set arbitrary
+API origins. Production images use production API reads, never the staging image
+CDN. The preview is enabled only by staging configuration, including customer UI
+builds staged for review. Local custom APIs and production configurations do not
+opt into this override. No AWS credentials are sent by the browser. CORS permits
+cross-origin reads, while registry policy enforces repository and artifact access.
+
+## Hide branch selection
+
+Add `?branches=0` to browse Main with the branch selector hidden. This overrides
+saved branch preferences and any `branch=` parameter, without changing the UI
+audience or the selected backend. Other developer filters remain available.
+Clear filters and in-page navigation keep Main selected and retain `branches=0`.
+The preview does not replace your saved branch preference. Omit the parameter
+(or use `branches=1`) to restore the normal branch behavior; customer UI remains
+Main-only. Combine with `env=prod` as `/models/?env=prod&branches=0` to preview
+production Main. That catalog must be published before it can display models.

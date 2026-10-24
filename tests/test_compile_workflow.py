@@ -69,13 +69,52 @@ def test_every_push_runs_so_every_branch_revision_gets_a_catalog() -> None:
     assert "push" in on and not on["push"]
 
 
-def test_production_is_an_explicit_dispatch_choice() -> None:
+def test_manual_environment_can_override_the_repository_default() -> None:
     inputs = load(WORKFLOW)["on"]["workflow_dispatch"]["inputs"]
 
     assert set(inputs) == {"environment", "models", "profiles", "components", "base_branch", "force_rebuild_all"}
-    assert inputs["environment"]["options"] == ["staging", "production"]
-    assert inputs["environment"]["default"] == "staging"
+    assert inputs["environment"]["options"] == ["default", "staging", "production"]
+    assert inputs["environment"]["default"] == "default"
     assert inputs["force_rebuild_all"]["type"] == "boolean"
+
+
+@pytest.mark.parametrize(
+    ("override", "repository_env", "expected"),
+    [
+        ("", "staging", "staging"),
+        ("", "production", "production"),
+        ("", "", "staging"),
+        ("default", "production", "production"),
+        ("default", "staging", "staging"),
+        ("default", "", "staging"),
+        ("production", "staging", "production"),
+        ("staging", "production", "staging"),
+        ("", "invalid", "invalid"),
+    ],
+)
+def test_environment_selection_and_runner_mapping(tmp_path, override, repository_env, expected) -> None:
+    workflow = load(WORKFLOW)
+    resolve = step(workflow["jobs"]["select"], "Resolve Vulcan environment")
+    expression = resolve["env"]["REQUESTED_ENVIRONMENT"][3:-3].strip()
+    selected = evaluate(expression, {"inputs.environment": override, "vars.VULCAN_ENV": repository_env})
+    assert selected == expected
+    assert expression in workflow["concurrency"]["group"]
+    assert expression in workflow["run-name"]
+    output = tmp_path / "outputs"
+    result = subprocess.run(
+        ["bash", "-c", resolve["run"]],
+        env={**os.environ, "REQUESTED_ENVIRONMENT": selected, "GITHUB_OUTPUT": str(output)},
+        capture_output=True, text=True,
+    )
+    if expected == "invalid":
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        runner = "vulcan-stg" if expected == "staging" else "vulcan-production"
+        assert output.read_text().splitlines() == [
+            f"vulcan_environment={expected}", f"runner_environment={runner}",
+        ]
 
 
 def test_newer_pushes_supersede_runs_but_manual_dispatches_run_to_completion() -> None:
@@ -267,7 +306,12 @@ def test_plan_compares_fingerprints_with_the_environment_registry() -> None:
     assert plan_job["needs"] == ["select", "portal", "resolve-vulcan-config"]
     assert plan_job["environment"] == "${{ needs.select.outputs.vulcan_environment }}"
     assert plan_job["permissions"] == {"contents": "read", "id-token": "write"}
-    assert plan["env"]["REGISTRY_READ_API_URL"] == "${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL }}"
+    credentials = step(plan_job, "Configure registry planning credentials")
+    assert "if" not in credentials
+    assert plan["env"]["VULCAN_ARTIFACT_REGISTRY_API_URL"] == "${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}"
+    assert plan["env"]["REGISTRY_READ_API_URL"] == (
+        "${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL || vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}"
+    )
     assert "model-registry plan-stages" in plan["run"]
     assert '--read-api-url "$REGISTRY_READ_API_URL"' in plan["run"]
     assert "--offline" not in plan["run"]
@@ -312,7 +356,9 @@ def test_runner_classes_are_authorized_before_builds_are_queued() -> None:
     assert authorization["env"]["SELECTED_MATRIX"] == "${{ needs.plan.outputs.compile_matrix }}"
     assert authorization["env"]["VULCAN_CONFIG_S3_URI"] == "${{ needs.resolve-vulcan-config.outputs.config_s3_uri }}"
 
-    assert build["needs"] == ["select", "plan", "resolve-vulcan-config", "authorize-runner-classes", "initialize-catalog"]
+    assert build["needs"] == [
+        "select", "plan", "resolve-vulcan-config", "authorize-runner-classes", "initialize-catalog",
+    ]
     assert build["strategy"]["matrix"] == "${{ fromJSON(needs.authorize-runner-classes.outputs.matrix) }}"
     assert build["strategy"]["fail-fast"] == "false"
     assert build["with"]["entry"] == "${{ toJSON(matrix) }}"
@@ -1018,3 +1064,11 @@ def test_resnet_recipe_is_python_and_uses_the_standard_cli_contract() -> None:
     assert {"--model", "--output-dir", "--build-profile", "--dataset"} <= option_strings
     assert "--accuracy-samples" not in option_strings
     assert "--accuracy-workers" not in option_strings
+
+
+def test_compile_dataset_mirror_uses_the_selected_environment_config() -> None:
+    caller = load(WORKFLOW)["jobs"]["compile"]
+    build = load(BUILD_WORKFLOW)
+    assert caller["with"]["dataset_bucket"] == "${{ needs.resolve-vulcan-config.outputs.dataset_bucket }}"
+    assert build["on"]["workflow_call"]["inputs"]["dataset_bucket"]["required"] == "true"
+    assert build["jobs"]["compile"]["env"]["SIMA_DATASET_S3_URI"] == "s3://${{ inputs.dataset_bucket }}"

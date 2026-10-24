@@ -81,13 +81,14 @@ this table. Modules marked CI only are removed from the author package by
 | `compile_matrix.py` | the compile matrix: one entry per build profile's compile invocation, with the benchmarks that measure it (`build_matrix`) |
 | `fingerprints.py` | the fingerprints (`compile_fingerprint`, `benchmark_fingerprint`), the files each one hashes, and each benchmark's run type |
 | `stage_plan.py` | which builds compile and which benchmarks run on a push or explicit on-demand dispatch (`plan_stages`), the registry reads that decision needs, and base-branch resolution |
-| `registry.py` | publishing compile runs, packages, model documentation, and the branch catalog the browser reads (CI only) |
+| `registry.py` | publishing compile runs, packages (with, in staging, their MLA stage simulation), model documentation, and the branch catalog the browser reads (CI only) |
 | `promotions.py` | pinned environment-specific Develop requests, inspection, decisions, receipts and review summaries (CI only) |
 | `candidates.py` | complete model/profile candidate contracts, run publication and binding, finalization, feature selection and retry receipts (CI only) |
 | `benchmark_declarations.py` | the `performance` and `accuracy` declarations: the profiles each benchmarks, their scripts and required metrics, and validating `reference_metrics`, which the portal ships |
 | `report_publication.py` | the MPKs a benchmark runs, checking a `model-report.json` against `model.yaml`, and publishing it as one whole-model run under the profile's package run (CI only) |
 | `artifact.py` | compile outputs, MPK/deployed LLiMa verification, and deployment file indexes |
-| `package.py` | assembling a profile's `default` package from component MPKs or a complete native deployment folder, with its numerical fidelity report |
+| `mla_stage_simulation.py` | after an MPK compile, the Model Compiler simulator's operation counts and latency for each MLA stage (`simulate-mla-stages`) |
+| `package.py` | assembling a profile's `default` package from component MPKs or a complete native deployment folder, with its numerical fidelity report and MLA stage simulation |
 | `dependencies.py` | resolving the Model Compiler and DevKit runtime pins in `deps/` |
 | `fetch.py` | verified downloads, the cache, and dataset resolution |
 | `conversion.py` | conversion fingerprints, validated ONNX bundles, publication, durable plan selections and exact downloads; author CLI exposes only saved-selection fetching |
@@ -143,8 +144,9 @@ configuration, retries, and the staging acceptance boundary.
 push (Vulcan Model Orchestrator, every push)
   -> select: validate the catalog, resolve the compiler pin and base branches
      portal (in parallel): build and smoke-test the model browser; a failure stops the run here
-       -> on main and develop: publish that model browser to staging
-  -> plan: resolve and retain converted ONNX inputs, then compare fingerprints with the branch catalog and registry runs; skip on-demand models on pushes
+       -> on main and develop, when staging is selected: publish that model browser to staging
+  -> resolve-vulcan-config: after select, resolve the selected environment configuration
+  -> plan (waits for select, portal and resolve-vulcan-config): resolve and retain converted ONNX inputs, then compare fingerprints with the branch catalog and registry runs; skip on-demand models on pushes
   -> authorize: check requested runner classes
   -> initialize the catalog: publish model requirements and mark automatic builds pending
   -> benchmark: start the benchmarks that reused builds still lack (after the snapshot when nothing compiles)
@@ -159,6 +161,33 @@ benchmarks (Vulcan Model Benchmarking, per build profile)
   -> publish each report under the profile's package run with its test outcome; a failed test then fails the run
 ```
 
+Pushes, including merges to `develop`, select repository variable `VULCAN_ENV`,
+falling back to staging when it is unset. Manual dispatch defaults to `default`
+(use that same repository setting); choosing `staging` or `production` explicitly
+overrides it for that run. Concurrency and the run title use the same selection.
+The repository variable is currently staging, so merging this support preserves
+staging builds. Changing it to production switches subsequent default builds and
+publication to production. The selected configuration
+supplies the runner environment, artifact bucket and dataset bucket; compile
+workers receive that dataset bucket through `SIMA_DATASET_S3_URI`.
+
+The `plan` job requests `id-token: write` and waits for configuration resolution
+as well as validation and the portal check. Only production assumes the selected
+GitHub environment's `VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN` via OIDC before
+planning. That role must authorize catalog/resolve reads for this repository;
+planning uses a publisher-capable identity even though its registry operations
+are reads. Missing trust or read permissions fail the job before compilation.
+Staging skips this credential step and continues using public registry reads.
+
+Read URLs prefer `VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL`, falling back to
+`VULCAN_ARTIFACT_REGISTRY_API_URL`. For production, `MODEL_REGISTRY_IAM_READ_API_URL`
+is set to the configured API base: only reads below that exact base's `/v1/`
+path are SigV4-signed. Public-reader URLs, other hosts and artifact downloads
+retain their existing behavior. An unset public-read URL therefore permits
+private production planning without enabling public access. Catalog initialization
+and final publication use the same read selection alongside their existing write
+authentication. Pull-request validation does not acquire this planning identity.
+
 `plan-stages` reads the branch's prior catalog (see below). A build compiles when the catalog records no build with its current
 compile fingerprint, or when a maintainer forces a rebuild. A reused build is
 queued for the benchmarks whose fingerprints have no completed run. Benchmarks
@@ -168,7 +197,7 @@ selection described below, and their builds are not benchmarked.
 
 ### Branches, merges, and concurrent pushes
 
-- **One registry per environment.** Pushes publish to staging. Each branch has
+- **One registry per environment.** Pushes publish to the environment selected by `VULCAN_ENV`. Each branch has
   its own catalog in that registry, keyed by Git ref; runs are shared by every
   branch.
 - **Where each decision looks.** The compile decision compares compile
