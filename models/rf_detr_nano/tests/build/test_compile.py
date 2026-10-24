@@ -6,7 +6,7 @@ import sys
 import tarfile
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -287,8 +287,19 @@ def test_compile_main_rejects_an_invocation_not_named_after_the_build_profile(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["compile.py", "--model", str(tmp_path / "model.onnx"), "--fidelity-dataset", str(tmp_path / "images"),
-         "--output-dir", str(tmp_path / "out"), "--build-profile", "w8a16_w16a16", "--compile-invocation", "rf_detr"],
+        [
+            "compile.py",
+            "--model",
+            str(tmp_path / "model.onnx"),
+            "--fidelity-dataset",
+            str(tmp_path / "images"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--build-profile",
+            "w8a16_w16a16",
+            "--compile-invocation",
+            "rf_detr",
+        ],
     )
 
     with pytest.raises(SystemExit) as stopped:
@@ -347,15 +358,23 @@ def test_bf16_activation_components_quantize_without_calibration_data(
     assert loaded.quantize.call_args.kwargs["calibration_data"] is None
 
 
-@pytest.mark.parametrize(("precision", "fp32_intermediates"), [("w8a8", False), ("w8a16", True), ("w16a16", True)])
+@pytest.mark.parametrize(
+    ("parameters", "fp32_intermediates"),
+    [
+        ({"precision": "w8a8"}, False),
+        ({"precision": "w8a8", "bf16_regions": ["residual"]}, True),
+        ({"precision": "w8a16"}, True),
+        ({"precision": "w16a16"}, True),
+    ],
+)
 def test_bf16_activation_layer_norms_keep_fp32_intermediates(
-    precision: str, fp32_intermediates: bool, tmp_path: Path, load_script: Callable[[str], ModuleType]
+    parameters: dict, fp32_intermediates: bool, tmp_path: Path, load_script: Callable[[str], ModuleType]
 ) -> None:
     compile_module = load_script("compile")
     quantized = MagicMock()
 
     with pytest.raises(RuntimeError, match="expected one backbone MPK"):
-        compile_module._compile_component(quantized, tmp_path / "backbone", "backbone", precision)
+        compile_module._compile_component(quantized, tmp_path / "backbone", "backbone", parameters)
 
     assert quantized.compile.call_args.kwargs["layer_norm_use_fp32_intermediates"] is fp32_intermediates
 
@@ -412,7 +431,15 @@ def test_model_declares_onnx_and_whole_model_benchmarks() -> None:
     assert model["components"][0]["source"]["type"] == "file"
     assert model["components"][0]["source"]["uri"].endswith("/model.onnx")
     assert model["calibrations"][0]["dataset"]["id"] == "coco-2017"
-    assert [profile["id"] for profile in model["build_profiles"]] == ["w8a8_w16a16", "w8a16_w16a16"]
+    assert [profile["id"] for profile in model["build_profiles"]] == [
+        "w8a8_w16a16",
+        "w8a16_w16a16",
+        "w8a8_w16a16_bfr",
+        "w8a8_w16a16_bfrh",
+        "w8a8_w16a16_bfa",
+        "w8a8_w16a16_bfraph",
+        "w8a8_w16a16_bferaph",
+    ]
     assert model["build_profiles"][0]["components"][0]["parameters"]["calibration_samples"] == 50
     assert model["build_profiles"][0]["components"][0]["parameters"]["calibration_bins"] == 1024
     assert model["numerical_fidelity"]["outputs"] == ["dets", "labels"]
@@ -540,6 +567,105 @@ def test_surgery_merges_the_query_sine_embedding_into_one_sin(load_script: Calla
 
     assert [node.op_type for node in result.graph.node] == ["MatMul", "Add", "Sin"]
     np.testing.assert_allclose(ReferenceEvaluator(result).run(None, {"coords": coords})[0], expected, atol=1e-5)
+
+
+def test_surgery_marks_bf16_operations_and_their_first_readers(load_script: Callable[[str], ModuleType]) -> None:
+    surgery = load_script("surgery")
+    constant = onnx.numpy_helper.from_array
+    model = _model(
+        [
+            onnx.helper.make_node("LayerNormalization", ["x", "gamma", "beta"], ["normed"], name="norm", axis=-1),
+            onnx.helper.make_node("Reshape", ["normed", "shape"], ["tokens"], name="tokens"),
+            onnx.helper.make_node("MatMul", ["tokens", "w"], ["projected"], name="projection"),
+            onnx.helper.make_node("Add", ["b", "projected"], ["y"], name="bias"),
+            onnx.helper.make_node("Relu", ["normed"], ["z"], name="relu"),
+        ],
+        [_value("x", [1, 4, 8])],
+        [_value("y", [4, 8]), _value("z", [1, 4, 8])],
+        [
+            constant(np.ones(8, dtype=np.float32), "gamma"),
+            constant(np.zeros(8, dtype=np.float32), "beta"),
+            constant(np.array([4, 8], dtype=np.int64), "shape"),
+            constant(np.eye(8, dtype=np.float32), "w"),
+            constant(np.zeros(8, dtype=np.float32), "b"),
+        ],
+    )
+
+    marks = surgery._annotate(model, {"norm", "relu"})
+
+    onnx.checker.check_model(model)
+    assert marks == {"bfloat16": 2, "int8": 1}
+    assert [
+        (node.name, *(onnx.helper.get_attribute_value(a).decode() for a in node.attribute if a.name == "precision"))
+        for node in model.graph.node
+    ] == [
+        ("norm",),
+        ("norm/AnnotatePrecision", "bfloat16"),
+        ("tokens",),
+        ("projection",),
+        ("projection/AnnotatePrecision", "int8"),
+        ("bias",),
+        ("relu",),
+        ("relu/AnnotatePrecision", "bfloat16"),
+    ]
+    # Readers and graph outputs keep their value names; the marks sit in between.
+    assert model.graph.node[2].input[0] == "normed" and model.graph.node[7].output[0] == "z"
+    assert [output.name for output in model.graph.output] == ["y", "z"]
+
+
+def test_bf16_regions_must_match_the_build_profile_id(load_script: Callable[[str], ModuleType]) -> None:
+    compile_module = load_script("compile")
+    decoder = {"precision": "w16a16"}
+
+    def regions(profile_id: str, backbone: dict, decoder: dict = decoder) -> list[str]:
+        return compile_module._bf16_regions(profile_id, {"backbone": backbone, "decoder": decoder})
+
+    w8a8 = {"precision": "w8a8", "bf16_regions": ["attention_global", "residual"]}
+    assert regions("w8a8_w16a16_bfra", w8a8) == ["attention_global", "residual"]
+    assert regions("w8a8_w16a16", {"precision": "w8a8"}) == []
+    with pytest.raises(ValueError, match="must end with _bfra"):
+        regions("w8a8_w16a16_bfar", w8a8)
+    with pytest.raises(ValueError, match=r"unknown BF16 regions \['mlp'\]"):
+        regions("w8a8_w16a16_bf", {"precision": "w8a8", "bf16_regions": ["mlp"]})
+    with pytest.raises(ValueError, match="distinct regions of a W8A8 backbone"):
+        regions("w8a16_w16a16_bfr", {"precision": "w8a16", "bf16_regions": ["residual"]})
+    with pytest.raises(ValueError, match="distinct regions of a W8A8 backbone"):
+        regions("w8a8_w16a16_bfr", {"precision": "w8a8", "bf16_regions": ["residual", "residual"]})
+    with pytest.raises(ValueError, match="only the backbone"):
+        regions("w8a8_w16a16", {"precision": "w8a8"}, {**decoder, "bf16_regions": ["head"]})
+    assert compile_module._precision_label({"precision": "w8a8", "bf16_regions": ["residual", "head"]}) == (
+        "W8A8 with BF16 residual, head"
+    )
+    declared = [
+        compile_module._bf16_regions(profile["id"], compile_module._component_parameters(_metadata(), profile["id"]))
+        for profile in _metadata()["build_profiles"]
+    ]
+    assert sum(map(bool, declared)) == 5
+
+
+def test_the_bf16_guard_requires_the_operations_afe_quantized_in_bf16(
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    compile_module = load_script("compile")
+    bf16 = compile_module.QuantizationPrecision.BFLOAT_16
+    softmax, add = type("SoftmaxOp", (), {}), type("AddActivationOp", (), {})
+
+    def node(operation: type, precision: object) -> SimpleNamespace:
+        config = SimpleNamespace(quantization_precision=SimpleNamespace(value=precision))
+        return SimpleNamespace(ir=SimpleNamespace(operation=operation(), quant_config=config))
+
+    def quantized(*nodes: SimpleNamespace) -> SimpleNamespace:
+        return SimpleNamespace(_net=SimpleNamespace(iter_nodes_recursive=lambda: iter(nodes)))
+
+    global_softmaxes = [node(softmax, bf16) for _ in range(3)]
+    compile_module._require_bf16_regions(quantized(*global_softmaxes, node(softmax, "int8")), ["attention_global"])
+    compile_module._require_bf16_regions(quantized(node(add, bf16), node(softmax, "int8")), ["residual"])
+    with pytest.raises(RuntimeError, match="including 3 softmaxes"):
+        compile_module._require_bf16_regions(quantized(*global_softmaxes[:2]), ["attention_global"])
+    with pytest.raises(RuntimeError, match="including 0 softmaxes"):
+        compile_module._require_bf16_regions(quantized(node(add, "int8")), ["residual"])
+    with pytest.raises(RuntimeError, match="including 0 softmaxes"):
+        compile_module._require_bf16_regions(quantized(node(add, bf16), node(softmax, bf16)), ["residual"])
 
 
 def test_an_afe_system_exit_fails_the_phase(

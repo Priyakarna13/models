@@ -12,6 +12,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -32,6 +33,7 @@ from afe.apis.defines import (
 )
 from afe.apis.loaded_net import load_model
 from afe.apis.model import L2CachingMode
+from afe.core.configs import QuantizationPrecision
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import load_images, select_images, select_top_proposals, to_afe_layout
@@ -40,15 +42,18 @@ from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
 from surgery import (
+    BF16_REGION_LETTERS,
     BOUNDARY_SHAPES,
     BOXES,
     FEATURES,
+    GLOBAL_ATTENTION_BLOCKS,
     INPUT,
     INPUT_SHAPE,
     OUTPUT_SHAPES,
     OUTPUTS,
     PROPOSALS,
     SCORES,
+    annotate_bf16_regions,
     graph_paths,
     prepare_model,
     validate_float_split,
@@ -57,7 +62,7 @@ from surgery import (
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "rf_detr_nano"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
-# Precisions with BF16 activations. Their layer norms keep FP32 intermediates, as every measured build did.
+# Precisions with BF16 activations.
 A16_PRECISIONS = ("w8a16", "w16a16")
 COMPONENT_IDS = ("backbone", "decoder")
 # Files the compilation phases pass to each other in the temporary directory.
@@ -96,8 +101,31 @@ def _component_name(profile_id: str, component_id: str) -> str:
     return f"{MODEL_ID}_{profile_id}_{component_id}"
 
 
+def _bf16_regions(profile_id: str, component_parameters: dict[str, dict[str, Any]]) -> list[str]:
+    """Return the backbone regions the build profile promotes to BF16, checking that its ID names them."""
+    if "bf16_regions" in component_parameters["decoder"]:
+        raise ValueError("only the backbone declares bf16_regions")
+    parameters = component_parameters["backbone"]
+    regions = parameters.get("bf16_regions", [])
+    if not regions:
+        return []
+    if parameters["precision"] != "w8a8" or len(set(regions)) != len(regions):
+        raise ValueError(f"bf16_regions must name distinct regions of a W8A8 backbone: {regions}")
+    unknown = sorted(set(regions) - set(BF16_REGION_LETTERS))
+    if unknown:
+        raise ValueError(f"unknown BF16 regions {unknown}; choose from {list(BF16_REGION_LETTERS)}")
+    letters = "".join(letter for region, letter in BF16_REGION_LETTERS.items() if region in regions)
+    if not profile_id.endswith(f"_bf{letters}"):
+        raise ValueError(f"build profile {profile_id!r} must end with _bf{letters} to name its BF16 regions")
+    return regions
+
+
 def _calibrates(parameters: dict[str, Any]) -> bool:
     return "calibration_samples" in parameters
+
+
+def _has_bf16_activations(parameters: dict[str, Any]) -> bool:
+    return parameters["precision"] in A16_PRECISIONS or bool(parameters.get("bf16_regions"))
 
 
 def _quantization_config(parameters: dict[str, Any]) -> Any:
@@ -157,6 +185,22 @@ def _quantize_component(
     )
 
 
+def _require_bf16_regions(quantized: Any, regions: list[str]) -> None:
+    """Fail when AFE ignored the BF16 annotations, which would silently build a W8A8 backbone."""
+    # The quantized model keeps its network private, and AFE renames every node, so count by operation.
+    counts = Counter(
+        type(node.ir.operation).__name__
+        for node in quantized._net.iter_nodes_recursive()
+        if getattr(node.ir, "quant_config", None) is not None
+        and node.ir.quant_config.quantization_precision.value == QuantizationPrecision.BFLOAT_16
+    )
+    logging.info("BF16 backbone operations: %s", dict(sorted(counts.items())))
+    # Softmax stays one AFE node, unlike LayerNorm, whose scale and bias AFE splits off.
+    softmaxes = GLOBAL_ATTENTION_BLOCKS if "attention_global" in regions else 0
+    if not counts or counts["SoftmaxOp"] != softmaxes:
+        raise RuntimeError(f"expected BF16 operations including {softmaxes} softmaxes, found {dict(counts)}")
+
+
 def _read_mpk_manifest(archive: Path) -> tuple[list[str], dict[str, Any]]:
     with tarfile.open(archive, "r:gz") as stream:
         members = stream.getmembers()
@@ -214,7 +258,7 @@ def _compile_component(
     quantized: Any,
     build_dir: Path,
     component_id: str,
-    precision: str,
+    parameters: dict[str, Any],
 ) -> Path:
     build_dir.mkdir(parents=True, exist_ok=False)
     quantized.compile(
@@ -229,7 +273,8 @@ def _compile_component(
         retained_temporary_directory_name=None,
         use_power_limits=False,
         max_mla_power=None,
-        layer_norm_use_fp32_intermediates=precision in A16_PRECISIONS,
+        # BF16 layer norms keep FP32 intermediates, as every measured build did; INT8 ones ignore the option.
+        layer_norm_use_fp32_intermediates=_has_bf16_activations(parameters),
         rms_norm_use_fp32_intermediates=False,
         enable_filter_sharing=False,
         layout_search_effort_level=0,
@@ -311,8 +356,10 @@ class _OutputError:
 
 
 def _precision_label(parameters: dict[str, Any]) -> str:
-    """Name a component's precision, such as W8A16 per-token."""
-    return parameters["precision"].upper() + (" per-token" if parameters.get("per_token") else "")
+    """Name a component's precision, such as W8A16 per-token or W8A8 with BF16 residual."""
+    label = parameters["precision"].upper() + (" per-token" if parameters.get("per_token") else "")
+    regions = parameters.get("bf16_regions")
+    return label + (f" with BF16 {', '.join(regions)}" if regions else "")
 
 
 def _pipeline_description(component_parameters: dict[str, dict[str, Any]]) -> str:
@@ -413,13 +460,22 @@ def _prepare_phase(
     source: Path,
     fidelity_dataset: Path,
     evaluation_names: tuple[str, ...],
+    bf16_regions: list[str],
     temporary_dir: Path,
 ) -> None:
-    """Split the ONNX into the two component graphs, check the split, and save the reference outputs."""
+    """Split the ONNX into the two component graphs, check the split, and save the reference outputs.
+
+    Then mark the backbone's BF16 regions, which ONNX Runtime cannot run.
+    """
     backbone_graph, decoder_graph = prepare_model(source, temporary_dir / "graphs")
     images = load_images(fidelity_dataset, evaluation_names)
     validate_float_split(source, backbone_graph, decoder_graph, images[0])
     np.savez(temporary_dir / REFERENCE_OUTPUTS, **_reference_outputs(source, images))
+    if bf16_regions:
+        marks = annotate_bf16_regions(backbone_graph, bf16_regions)
+        logging.info(
+            "Marked %d backbone operations BF16 and %d INT8 for %s", marks["bfloat16"], marks["int8"], bf16_regions
+        )
 
 
 def _backbone_phase(
@@ -443,7 +499,9 @@ def _backbone_phase(
         {INPUT: calibration_images} if _calibrates(parameters) else None,
         {INPUT: tuple(INPUT_SHAPE)},
     )
-    _compile_component(backbone, temporary_dir / name, "backbone", parameters["precision"])
+    if parameters.get("bf16_regions"):
+        _require_bf16_regions(backbone, parameters["bf16_regions"])
+    _compile_component(backbone, temporary_dir / name, "backbone", parameters)
 
     features, scores, boxes = zip(
         *(_execute_backbone(backbone, image) for image in load_images(fidelity_dataset, evaluation_names)),
@@ -489,7 +547,7 @@ def _decoder_phase(
         calibration_inputs,
         {tensor: tuple(BOUNDARY_SHAPES[tensor]) for tensor in (FEATURES, PROPOSALS)},
     )
-    _compile_component(decoder, temporary_dir / name, "decoder", parameters["precision"])
+    _compile_component(decoder, temporary_dir / name, "decoder", parameters)
     metrics = _measure_fidelity(decoder, backbone_outputs, reference)
     _write_fidelity(temporary_dir, profile_id, fidelity_config, candidate, metrics)
 
@@ -560,6 +618,7 @@ def compile_model(
 ) -> dict[str, Path]:
     metadata = load_metadata(MODEL_DIR)
     component_parameters = _component_parameters(metadata, profile_id)
+    bf16_regions = _bf16_regions(profile_id, component_parameters)
     fidelity_config = metadata["numerical_fidelity"]
     selection = fidelity_config["selection"]
     calibration_names = _calibration_names(component_parameters, calibration_dataset, fidelity_dataset, selection)
@@ -581,6 +640,7 @@ def compile_model(
             source=source,
             fidelity_dataset=fidelity_dataset,
             evaluation_names=evaluation_names,
+            bf16_regions=bf16_regions,
             temporary_dir=temporary_dir,
         )
         graph_hashes = {

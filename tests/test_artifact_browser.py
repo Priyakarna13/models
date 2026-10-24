@@ -210,17 +210,18 @@ def test_preview_serves_the_models_this_repository_declares(tmp_path: Path) -> N
 
 def test_preview_serves_full_packages_as_the_publisher_records_them(tmp_path: Path) -> None:
     api = "/v1/repositories/sima-neat/models"
+    profiles = {"resnet_50": "w8a8", "rf_detr_nano": "w8a8_w16a16"}
     with _preview(tmp_path) as base:
         catalog = _get_json(f"{base}{api}/catalogs/current?git_ref=refs/heads/develop")
         packages = {
             model["id"]: package
             for model in catalog["catalog"]["document"]["models"]
             for package in model.get("packages", [])
+            if package["build_profile_id"] == profiles.get(model["id"])
         }
         artifacts = {
             model_id: _get_json(f"{base}/v1/runs/{package['run_id']}")["artifacts"]
             for model_id, package in packages.items()
-            if model_id in {"resnet_50", "rf_detr_nano"}
         }
         links = {
             model_id: _get_json(f"{base}/v1/runs/{packages[model_id]['run_id']}/artifacts/package")["artifact"]
