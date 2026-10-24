@@ -230,7 +230,7 @@ jobs:
         env:
           VULCAN_ARTIFACT_REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           MODEL_REGISTRY_IAM_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}
-          REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
+          REGISTRY_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL || vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           COMPILER_IDENTITY: ${{ needs.select.outputs.model_compiler_identity }}
           BASE_BRANCHES: ${{ needs.select.outputs.base_branches }}
           REQUESTED_MODELS: ${{ inputs.models }}
@@ -368,7 +368,7 @@ jobs:
           REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           MODEL_REGISTRY_CONVERSIONS: ${{ needs.plan.outputs.conversion_sources || '{}' }}
           MODEL_REGISTRY_IAM_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}
-          REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
+          REGISTRY_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL || vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           AWS_REGION: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
           ARTIFACT_BUCKET: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
           KMS_KEY_ID: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
@@ -546,7 +546,7 @@ jobs:
           REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           MODEL_REGISTRY_CONVERSIONS: ${{ needs.plan.outputs.conversion_sources || '{}' }}
           MODEL_REGISTRY_IAM_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}
-          REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
+          REGISTRY_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL || vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           AWS_REGION: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
           ARTIFACT_BUCKET: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
           KMS_KEY_ID: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
