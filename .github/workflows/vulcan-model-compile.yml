@@ -60,6 +60,7 @@ jobs:
     environment: ${{ inputs.vulcan_environment }}
     permissions:
       contents: read
+      id-token: write
     runs-on:
       - self-hosted
       - linux
@@ -76,6 +77,8 @@ jobs:
     # Large models compile for hours; the limit only stops a stalled compile.
     timeout-minutes: 360
     env:
+      MODEL_REGISTRY_IAM_READ_API_URL: ${{ inputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}
+      AWS_REGION: ${{ inputs.aws_region }}
       SIMA_DATASET_S3_URI: s3://${{ inputs.dataset_bucket }}
       MODEL_COMPILER_PYTHON: /mnt/model-compiler/bin/python
       MODEL_ID: ${{ fromJSON(inputs.entry).model_id }}
@@ -189,6 +192,17 @@ jobs:
         run: |
           "$MODEL_COMPILER_PYTHON" -m pip install --disable-pip-version-check \
             --target "$RUNNER_TEMP/model-test-tools" 'pytest>=8,<9'
+
+      # Session policy removes every publisher capability except artifact metadata GET.
+      - name: Configure read-only conversion registry credentials
+        if: ${{ inputs.vulcan_environment == 'production' && inputs.conversion_sources != '{}' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN }}
+          role-session-name: models-conversion-reader-${{ github.run_id }}
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"execute-api:Invoke","Resource":"arn:aws:execute-api:${{ inputs.aws_region }}:*:*/*/GET/v1/runs/*/artifacts/onnx"}]}
 
       - name: Compile the invocation with its model's compile script
         run: |

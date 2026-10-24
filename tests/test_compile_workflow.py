@@ -614,10 +614,18 @@ def test_self_hosted_compile_holds_no_publication_credentials() -> None:
     compile_job = load(BUILD_WORKFLOW)["jobs"]["compile"]
     text = yaml.safe_dump(compile_job)
 
-    assert compile_job["permissions"] == {"contents": "read"}
-    assert all("aws-actions/configure-aws-credentials" not in item.get("uses", "") for item in compile_job["steps"])
+    assert compile_job["permissions"] == {"contents": "read", "id-token": "write"}
+    credentials = step(compile_job, "Configure read-only conversion registry credentials")
+    assert credentials["if"] == "${{ inputs.vulcan_environment == 'production' && inputs.conversion_sources != '{}' }}"
+    policy = json.loads(credentials["with"]["inline-session-policy"])
+    assert policy["Statement"] == [{
+        "Effect": "Allow", "Action": "execute-api:Invoke",
+        "Resource": "arn:aws:execute-api:${{ inputs.aws_region }}:*:*/*/GET/v1/runs/*/artifacts/onnx",
+    }]
+    assert compile_job["env"]["MODEL_REGISTRY_IAM_READ_API_URL"] == (
+        "${{ inputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}"
+    )
     assert "${{ secrets." not in text
-    assert "${{ vars." not in text
     for item in compile_job["steps"]:
         run = item.get("run", "")
         assert "model-registry publish" not in run
