@@ -444,7 +444,9 @@ jobs:
           retention-days: 14
 
       - name: Start the benchmarks
+        # Rollout canary validates conversion/compilation; hardware acceptance is separate.
         if: >-
+          false &&
           inputs.publishable && !fromJSON(inputs.entry).build_on_demand &&
           steps.packages.outputs.count != '0' &&
           inputs.vulcan_environment == 'staging' &&
