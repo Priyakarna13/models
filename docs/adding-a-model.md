@@ -260,7 +260,7 @@ builds](#on-demand-builds).
 
 | Stage | Fingerprint inputs |
 | --- | --- |
-| conversion | model identity, upstream content, exporter/helpers, dependency specification, validation files and shared conversion tooling; explicit conversion dispatch publishes a new run |
+| conversion | model identity, upstream content, exporter/helpers, dependency specification, validation files and shared conversion tooling (including registry HTTP reads); explicit conversion dispatch publishes a new run |
 | compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, the Model Compiler version, `scripts/run_model_compilation.sh`, the shared model loader, and the MLA stage simulation (`tools/model_registry/mla_stage_simulation.py`) |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
 | performance | the compile run and MPK digest of every component, the `performance` declaration, the model's `performance.py`, the shared benchmark tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
