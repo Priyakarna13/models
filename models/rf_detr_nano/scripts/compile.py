@@ -62,7 +62,7 @@ from surgery import (
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "rf_detr_nano"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
-# Precisions with BF16 activations.
+# Precisions with BF16 activations. Their layer norms keep FP32 intermediates, as every measured build did.
 A16_PRECISIONS = ("w8a16", "w16a16")
 COMPONENT_IDS = ("backbone", "decoder")
 # Files the compilation phases pass to each other in the temporary directory.
@@ -122,10 +122,6 @@ def _bf16_regions(profile_id: str, component_parameters: dict[str, dict[str, Any
 
 def _calibrates(parameters: dict[str, Any]) -> bool:
     return "calibration_samples" in parameters
-
-
-def _has_bf16_activations(parameters: dict[str, Any]) -> bool:
-    return parameters["precision"] in A16_PRECISIONS or bool(parameters.get("bf16_regions"))
 
 
 def _quantization_config(parameters: dict[str, Any]) -> Any:
@@ -258,7 +254,7 @@ def _compile_component(
     quantized: Any,
     build_dir: Path,
     component_id: str,
-    parameters: dict[str, Any],
+    precision: str,
 ) -> Path:
     build_dir.mkdir(parents=True, exist_ok=False)
     quantized.compile(
@@ -273,8 +269,8 @@ def _compile_component(
         retained_temporary_directory_name=None,
         use_power_limits=False,
         max_mla_power=None,
-        # BF16 layer norms keep FP32 intermediates, as every measured build did; INT8 ones ignore the option.
-        layer_norm_use_fp32_intermediates=_has_bf16_activations(parameters),
+        # The option applies to every layer norm and INT8 ones reject it, so BF16 regions keep BF16 intermediates.
+        layer_norm_use_fp32_intermediates=precision in A16_PRECISIONS,
         rms_norm_use_fp32_intermediates=False,
         enable_filter_sharing=False,
         layout_search_effort_level=0,
@@ -501,7 +497,7 @@ def _backbone_phase(
     )
     if parameters.get("bf16_regions"):
         _require_bf16_regions(backbone, parameters["bf16_regions"])
-    _compile_component(backbone, temporary_dir / name, "backbone", parameters)
+    _compile_component(backbone, temporary_dir / name, "backbone", parameters["precision"])
 
     features, scores, boxes = zip(
         *(_execute_backbone(backbone, image) for image in load_images(fidelity_dataset, evaluation_names)),
@@ -547,7 +543,7 @@ def _decoder_phase(
         calibration_inputs,
         {tensor: tuple(BOUNDARY_SHAPES[tensor]) for tensor in (FEATURES, PROPOSALS)},
     )
-    _compile_component(decoder, temporary_dir / name, "decoder", parameters)
+    _compile_component(decoder, temporary_dir / name, "decoder", parameters["precision"])
     metrics = _measure_fidelity(decoder, backbone_outputs, reference)
     _write_fidelity(temporary_dir, profile_id, fidelity_config, candidate, metrics)
 

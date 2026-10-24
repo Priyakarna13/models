@@ -358,23 +358,15 @@ def test_bf16_activation_components_quantize_without_calibration_data(
     assert loaded.quantize.call_args.kwargs["calibration_data"] is None
 
 
-@pytest.mark.parametrize(
-    ("parameters", "fp32_intermediates"),
-    [
-        ({"precision": "w8a8"}, False),
-        ({"precision": "w8a8", "bf16_regions": ["residual"]}, True),
-        ({"precision": "w8a16"}, True),
-        ({"precision": "w16a16"}, True),
-    ],
-)
+@pytest.mark.parametrize(("precision", "fp32_intermediates"), [("w8a8", False), ("w8a16", True), ("w16a16", True)])
 def test_bf16_activation_layer_norms_keep_fp32_intermediates(
-    parameters: dict, fp32_intermediates: bool, tmp_path: Path, load_script: Callable[[str], ModuleType]
+    precision: str, fp32_intermediates: bool, tmp_path: Path, load_script: Callable[[str], ModuleType]
 ) -> None:
     compile_module = load_script("compile")
     quantized = MagicMock()
 
     with pytest.raises(RuntimeError, match="expected one backbone MPK"):
-        compile_module._compile_component(quantized, tmp_path / "backbone", "backbone", parameters)
+        compile_module._compile_component(quantized, tmp_path / "backbone", "backbone", precision)
 
     assert quantized.compile.call_args.kwargs["layer_norm_use_fp32_intermediates"] is fp32_intermediates
 
