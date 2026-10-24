@@ -158,10 +158,11 @@ in this order:
    operators. Historical reports without stats omit this section.
    In developer mode, **MLA Utilization** follows Runtime Layer Analysis. Like the
    layer summary, it shows each component's totals as tiles, each explained behind
-   an (i) mark: utilization (a w8a8 component's effective TOPS as a share of the
-   MLA's 50 TOPS INT8 peak), effective TOPS (the simulator's count of operations
-   that contribute to the result, divided by the MLA time Core measured on the
-   board), packing (their share of all operations the MLA executes), and the
+   an (i) mark: utilization (effective TOPS as a share of the MLA's peak: 50
+   TOPS for a w8a8 component, and a quarter of that, 12.5 TOPS, for one with
+   BF16 activations, whose multiplies take four times the cycles), effective
+   TOPS (the simulator's count of operations that contribute to the result,
+   divided by the MLA time Core measured on the board), packing (their share of all operations the MLA executes), and the
    measured MLA time. **Details** opens a table of each MLA stage's measured and
    simulated latency, effective operations, packing, effective TOPS, and
    utilization. For a single-component model, the summary gives the effective TOPS
@@ -207,10 +208,9 @@ in this order:
    with any CPU step between them, such as RF-DETR's **Top 300 proposals**.
    The tiles, context line, and **Performance Details** are the
    [whole-model result](benchmarking.md#multi-component-models), with the
-   components and CPU step running together. **Runtime Layer Analysis** and
-   **Execution Graph** each switch between the components, **MLA Utilization** shows
-   each component's tiles and **Details** table, and **Download CSV**
-   lists each component's layer timings.
+   components and CPU step running together. **Runtime Layer Analysis**,
+   **MLA Utilization**, and **Execution Graph** each switch between the
+   components, and **Download CSV** lists each component's layer timings.
 3. **Accuracy.** For each dataset the run evaluated, in `model.yaml` order:
    the coverage (full when the run evaluated every sample of its split,
    sampled otherwise), the first four metrics, the evaluated sample count, and
