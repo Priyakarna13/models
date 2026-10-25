@@ -45,34 +45,22 @@ compilation:
   source:
     main_file: model.onnx
     files:
-      model.safetensors:
-        uri: hf://models/nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/model.safetensors
-        sha256: 3a2026366188c8c68598edbbff92f8d11590a08e0ae2e6775544e7b07d6a5e11
-        size_bytes: 2508311120
-      config.json:
-        uri: hf://models/nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/config.json
-        sha256: e747b85e1bdfd300c8b8ac63bac8dd5221f8fe9bc275b48d06c735fcd6971b6e
-        size_bytes: 1153
-      generation_config.json:
-        uri: hf://models/nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/generation_config.json
-        sha256: b141de6ec6d7f982ece13f98f604e3fe1807ea9c0e839185d0ab7064604209d0
-        size_bytes: 289
-      processor_config.json:
-        uri: hf://models/nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/processor_config.json
-        sha256: 8346a93a3b987fa1dec57a78f045cd0817d21786589a5a096b41a57a446fd1d7
-        size_bytes: 392
+      model.onnx:
+        uri: https://artifacts.stg.neat.sima.ai/models-onnx/parakeet_tdt_0_6b_v3/1f6046f40a5b1ef01c70ec1e6ccda8f1a0ab9664041b445a89902094d70542cc/40229193811-1/model.onnx
+        sha256: 1f6046f40a5b1ef01c70ec1e6ccda8f1a0ab9664041b445a89902094d70542cc
+        size_bytes: 631905
+      model.onnx.ext:
+        uri: https://artifacts.stg.neat.sima.ai/models-onnx/parakeet_tdt_0_6b_v3/fcb507960ef2eb508e4e587c416ef6a25b492066ad34c552e5d9251b658878ff/40229193811-1/model.onnx.ext
+        sha256: fcb507960ef2eb508e4e587c416ef6a25b492066ad34c552e5d9251b658878ff
+        size_bytes: 2441579032
       tokenizer.json:
         uri: hf://models/nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/tokenizer.json
         sha256: bd321b096832a3f270bd3b2a88823957920f1a5c5ada71114a26ea729d0cbe91
         size_bytes: 1159960
-      tokenizer_config.json:
-        uri: hf://models/nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/tokenizer_config.json
-        sha256: 0b2fe0037599ee335f0b972fa682bf0ece74e4ccfec755cb7daa3405d3d3e874
-        size_bytes: 290
-      model.onnx:
-        uri: https://artifacts.stg.neat.sima.ai/models-onnx/parakeet_tdt_0_6b_v3/b1531b7f137cbe0a412b00e6971b684b00682e73749a0810790529d190696dc5/40221123490-1/model.onnx
-        sha256: b1531b7f137cbe0a412b00e6971b684b00682e73749a0810790529d190696dc5
-        size_bytes: 1169484564
+      processor_config.json:
+        uri: hf://models/nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/processor_config.json
+        sha256: 8346a93a3b987fa1dec57a78f045cd0817d21786589a5a096b41a57a446fd1d7
+        size_bytes: 392
 build_profiles:
   w8a16:
     components:
