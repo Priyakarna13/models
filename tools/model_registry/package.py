@@ -11,7 +11,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from .artifact import RUNTIME_FILES_MANIFEST, deployment_files, runtime_files_for, verify_artifact, verify_runtime_files
+from .artifact import deployment_files, runtime_files_for, verify_artifact, verify_runtime_files
 from .errors import ValidationError
 from .fetch import sha256_file
 from .mla_stage_simulation import SIMULATION_FILE
@@ -142,21 +142,16 @@ def assemble_package(
         package_path = "." if native else archive_name
         component_files.append((package_path, component_archive))
         if not native:
-            runtime_files = verify_runtime_files(result_dir, expected=runtime_files_for(model, component_id))
-            if runtime_files != result.get("runtime_files", []):
-                raise ValidationError(f"{result_dir}: runtime files do not match compile-result.json")
-            if (
-                runtime_files
-                and result.get("runtime_manifest_sha256") != sha256_file(result_dir / RUNTIME_FILES_MANIFEST)[0]
-            ):
-                raise ValidationError(f"{result_dir}: runtime manifest checksum does not match")
+            runtime_files = verify_runtime_files(
+                result_dir, expected=runtime_files_for(model, component_id), recorded=result.get("runtime_files", [])
+            )
             component_files.extend((item["path"], result_dir / item["path"]) for item in runtime_files)
             if runtime_files:
                 resources.append(
                     {
                         "id": f"runtime_{component_id}",
                         "paths": [item["path"] for item in runtime_files],
-                        "source_sha256": result["runtime_manifest_sha256"],
+                        "source_sha256": hashlib.sha256(json.dumps(runtime_files, sort_keys=True).encode()).hexdigest(),
                         "size_bytes": sum(item["size_bytes"] for item in runtime_files),
                     }
                 )

@@ -1295,10 +1295,10 @@ def test_iam_registry_reads_require_a_region(monkeypatch):
         registry._public_registry_json("https://private.example.test/v1/repositories")
 
 
-def test_runtime_files_survive_publication_and_catalog_restore(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fault", [None, "missing", "checksum", "symlink"])
+def test_runtime_files_survive_publication_and_catalog_restore(tmp_path, monkeypatch, fault):
     from model_registry import registry
     from model_registry.artifact import record_runtime_files
-    from model_registry.fetch import sha256_file
 
     model = load_model(ROOT / "models/resnet_50")
     model["runtime_files"] = ["predictor.onnx", "joiner.onnx", "data/tokenizer.json"]
@@ -1311,7 +1311,7 @@ def test_runtime_files_survive_publication_and_catalog_restore(tmp_path, monkeyp
     files = record_runtime_files(component, model["runtime_files"])
     result_path = component / "compile-result.json"
     result = json.loads(result_path.read_text())
-    result.update(runtime_files=files, runtime_manifest_sha256=sha256_file(component / "runtime-files.json")[0])
+    result.update(runtime_files=files)
     result_path.write_text(json.dumps(result))
     monkeypatch.setattr(registry, "load_models", lambda *_: {"resnet_50": model})
     monkeypatch.setattr(registry, "load_and_validate_model", lambda *_: model)
@@ -1341,9 +1341,10 @@ def test_runtime_files_survive_publication_and_catalog_restore(tmp_path, monkeyp
     )
     assert published["count"] == 1
     artifacts = {path.rsplit("/", 1)[1]: body for method, path, body in calls if "/artifacts/" in path}
-    assert "mpk" in artifacts and "runtime-files" in artifacts
-    assert artifacts["mpk"]["metadata"]["runtime_manifest_sha256"] == result["runtime_manifest_sha256"]
-    assert {item["artifact"] for item in files} <= artifacts.keys()
+    assert set(artifacts) == {"mpk", *(item["artifact"] for item in files)}
+    assert artifacts["mpk"]["metadata"]["runtime_files"] == files
+    parameters = next(body["parameters"] for _, path, body in calls if path.endswith("/parameters"))
+    assert parameters["runtime_files"] == files
     payloads = {key: path.read_bytes() for path, key, _, _ in store.objects}
     catalog = {
         "catalog_revision": "a" * 40,
@@ -1374,18 +1375,35 @@ def test_runtime_files_survive_publication_and_catalog_restore(tmp_path, monkeyp
             return {"run": {"toolchain_version": COMPILER_VERSION}}
         raise AssertionError(url)
 
-    restored = stage_catalog_build(
-        repository=ROOT,
-        output_dir=tmp_path / "restored",
-        api_url="https://registry.example.invalid",
-        branch="feature/models",
-        catalog_revision="a" * 40,
-        model_id="resnet_50",
-        build_profile_id="w16a16",
-        compile_invocation_id="w16a16",
-        read_request=read,
-        download_request=payloads.__getitem__,
-    )
+    if fault == "missing":
+        artifacts["mpk"]["metadata"]["runtime_files"] = files[:-1]
+    elif fault == "checksum":
+        artifacts[files[0]["artifact"]]["sha256"] = "0" * 64
+    elif fault == "symlink":
+        destination = tmp_path / "restored/resnet_50/w16a16/model"
+        destination.mkdir(parents=True)
+        (destination / "data").symlink_to(component / "data", target_is_directory=True)
+
+    def restore():
+        return stage_catalog_build(
+            repository=ROOT,
+            output_dir=tmp_path / "restored",
+            api_url="https://registry.example.invalid",
+            branch="feature/models",
+            catalog_revision="a" * 40,
+            model_id="resnet_50",
+            build_profile_id="w16a16",
+            compile_invocation_id="w16a16",
+            read_request=read,
+            download_request=payloads.__getitem__,
+        )
+
+    if fault:
+        error = {"missing": "declaration", "checksum": "inconsistent", "symlink": "unsafe"}[fault]
+        with pytest.raises(ValidationError, match=error):
+            restore()
+        return
+    restored = restore()
     assert restored["count"] == 1
     for name in model["runtime_files"]:
         assert (tmp_path / "restored/resnet_50/w16a16/model" / name).read_bytes() == name.encode()

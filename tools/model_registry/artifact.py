@@ -27,16 +27,16 @@ def record_runtime_files(directory: str | Path, paths: list[str]) -> list[dict[s
     ]
     deployment_files({"files": files})
     for item in files:
-        path = _runtime_path(root, item["path"])
+        path = runtime_file_path(root, item["path"])
         item["sha256"], item["size_bytes"] = sha256_file(path)
     manifest = root / RUNTIME_FILES_MANIFEST
     if manifest.is_symlink():
         raise ValidationError(f"{root}: runtime manifest must not be a symlink")
     manifest.write_text(json.dumps({"files": files}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return verify_runtime_files(root, expected=paths)
+    return files
 
 
-def _runtime_path(root: Path, name: str) -> Path:
+def runtime_file_path(root: Path, name: str, *, must_exist: bool = True) -> Path:
     relative = PurePosixPath(name)
     path = root / name
     reserved = {RUNTIME_FILES_MANIFEST, "compile-result.json", "registry-publication.json", "SHA256SUMS"}
@@ -44,19 +44,21 @@ def _runtime_path(root: Path, name: str) -> Path:
         relative.parts[0] in reserved
         or path.name.endswith("_mpk.tar.gz")
         or any((root.joinpath(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1))
-        or not path.is_file()
+        or (must_exist and not path.is_file())
         or not path.resolve().is_relative_to(root)
     ):
         raise ValidationError(f"{root}: unsafe or missing runtime file: {relative}")
     return path
 
 
-def verify_runtime_files(directory: str | Path, *, expected: list[str] | None = None) -> list[dict[str, Any]]:
+def verify_runtime_files(
+    directory: str | Path, *, expected: list[str] | None = None, recorded: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """Verify current bytes, safe paths and the model's complete declared runtime payload."""
     root = Path(directory).resolve()
     manifest = root / RUNTIME_FILES_MANIFEST
     if not manifest.exists():
-        if expected:
+        if expected or recorded:
             raise ValidationError(f"{root}: required runtime-files.json is missing")
         return []
     if manifest.is_symlink():
@@ -71,10 +73,12 @@ def verify_runtime_files(directory: str | Path, *, expected: list[str] | None = 
     if expected is not None and sorted(item["path"] for item in files) != sorted(expected):
         raise ValidationError(f"{root}: runtime files do not match the model declaration")
     for item in files:
-        path = _runtime_path(root, item["path"])
+        path = runtime_file_path(root, item["path"])
         digest, size = sha256_file(path)
         if (digest, size) != (item["sha256"], item["size_bytes"]):
             raise ValidationError(f"{root}: runtime file checksum or size differs: {item['path']}")
+    if recorded is not None and files != recorded:
+        raise ValidationError(f"{root}: runtime files do not match compile-result.json")
     return files
 
 
@@ -267,7 +271,6 @@ def verify_mpk(
     runtime_files = verify_runtime_files(directory)
     if runtime_files:
         result["runtime_files"] = runtime_files
-        result["runtime_manifest_sha256"] = sha256_file(directory / RUNTIME_FILES_MANIFEST)[0]
     if write_manifest:
         (directory / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
         (directory / "compile-result.json").write_text(

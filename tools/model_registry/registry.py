@@ -22,9 +22,10 @@ from urllib.request import urlopen
 from jsonschema import Draft202012Validator
 
 from .artifact import (
-    RUNTIME_FILES_MANIFEST,
     compile_output_fields,
     deployment_files,
+    record_runtime_files,
+    runtime_file_path,
     runtime_files_for,
     validate_compile_outputs,
     verify_artifact,
@@ -1078,36 +1079,19 @@ def stage_catalog_build(
                     raise ValidationError(f"unsafe deployment output path: {path}")
                 if path.is_file() and path.relative_to(deployment).as_posix() not in declared:
                     path.unlink()
-        if not native and (
-            runtime_files_for(model, component["id"]) or (artifact.get("metadata") or {}).get("runtime_manifest_sha256")
-        ):
-            registered_manifest = read(f"{base_url}/v1/runs/{run_id}/artifacts/runtime-files").get("artifact", {})
-            runtime_sha = (artifact.get("metadata") or {}).get("runtime_manifest_sha256")
-            if not runtime_sha or registered_manifest.get("sha256") != runtime_sha:
-                raise ValidationError(f"missing or inconsistent runtime manifest for {run_id}")
-            runtime_manifest = component_dir / RUNTIME_FILES_MANIFEST
-            _download_registry_file(
-                registered_manifest["download_url"], runtime_manifest, registered_manifest, download_request
-            )
-            runtime_document = json.loads(runtime_manifest.read_text(encoding="utf-8"))
-            runtime_files = deployment_files(runtime_document)
-            if sorted(item["path"] for item in runtime_files) != sorted(runtime_files_for(model, component["id"])):
+        runtime_files = (artifact.get("metadata") or {}).get("runtime_files", []) if not native else []
+        expected_runtime = runtime_files_for(model, component_id)
+        if runtime_files or expected_runtime:
+            runtime_files = deployment_files({"files": runtime_files})
+            if sorted(item["path"] for item in runtime_files) != sorted(expected_runtime):
                 raise ValidationError(f"runtime file list differs from the model declaration for {run_id}")
             for item in runtime_files:
-                relative = Path(item["path"])
-                path = component_dir / relative
-                if (
-                    relative.parts[0]
-                    in {RUNTIME_FILES_MANIFEST, "compile-result.json", "registry-publication.json", "SHA256SUMS"}
-                    or path.name.endswith("_mpk.tar.gz")
-                    or any(parent.is_symlink() for parent in (path, *path.parents))
-                ):
-                    raise ValidationError(f"unsafe runtime output path: {path}")
+                path = runtime_file_path(component_dir, item["path"], must_exist=False)
                 registered = read(f"{base_url}/v1/runs/{run_id}/artifacts/{item['artifact']}").get("artifact", {})
                 if (registered.get("sha256"), registered.get("size_bytes")) != (item["sha256"], item["size_bytes"]):
                     raise ValidationError(f"inconsistent runtime artifact: {item['path']}")
                 _download_registry_file(registered["download_url"], path, registered, download_request)
-            verify_runtime_files(component_dir, expected=runtime_files_for(model, component["id"]))
+            record_runtime_files(component_dir, [item["path"] for item in runtime_files])
         verified = verify_artifact(component_dir)
         run_payload = read(f"{base_url}/v1/runs/{run_id}")
         run = run_payload.get("run", {}) if isinstance(run_payload, dict) else {}
@@ -1478,16 +1462,9 @@ def _preflight_compilations(
             raise ValidationError(f"{result_path}: archive does not match the compile output manifest")
         actual_sha, actual_size = sha256_file(archive)
         files = deployment_files(json.loads(archive.read_text(encoding="utf-8"))) if native else []
-        runtime_files = (
-            [] if native else verify_runtime_files(archive.parent, expected=runtime_files_for(model, component["id"]))
+        runtime_files = [] if native else verify_runtime_files(
+            archive.parent, expected=runtime_files_for(model, component["id"]), recorded=result.get("runtime_files", [])
         )
-        if runtime_files != result.get("runtime_files", []):
-            raise ValidationError(f"{result_path}: runtime files do not match compile-result.json")
-        if (
-            runtime_files
-            and result.get("runtime_manifest_sha256") != sha256_file(archive.parent / RUNTIME_FILES_MANIFEST)[0]
-        ):
-            raise ValidationError(f"{result_path}: runtime manifest checksum does not match")
         if native:
             actual_size = sum(item["size_bytes"] for item in files)
         if artifact_sha != actual_sha or int(result.get("size_bytes", -1)) != actual_size:
@@ -1638,6 +1615,8 @@ def publish_compilations(
             "calibration": binding.get("calibration"),
             **({"llima_version": compilation["llima_version"]} if compilation["llima_version"] else {}),
         }
+        if compilation["runtime_files"]:
+            parameters["runtime_files"] = compilation["runtime_files"]
         environment_document = {
             "vulcan_environment": environment,
             "toolchain_name": "sima-model-compiler",
@@ -1734,43 +1713,13 @@ def publish_compilations(
         }
         if compilation.get("runtime_files"):
             runtime_files = compilation["runtime_files"]
-            runtime_manifest = archive.parent / RUNTIME_FILES_MANIFEST
-            runtime_sha, _ = sha256_file(runtime_manifest)
             _publish_deployment_files(
-                client,
-                store,
-                run_id=run_id,
-                stable_key=stable_key,
-                bucket=bucket,
-                deployment=archive.parent,
-                files=runtime_files,
-                metadata=artifact_metadata,
+                client, store, run_id=run_id, stable_key=stable_key, bucket=bucket,
+                deployment=archive.parent, files=runtime_files, metadata=artifact_metadata,
                 retention_class=retention_class,
                 upload_prefix=candidate["upload_prefix"].rstrip("/") if candidate else None,
             )
-            runtime_stored = store.ensure_native_sha256(
-                runtime_manifest,
-                f"{candidate['upload_prefix'].rstrip('/') if candidate else 'models'}/runtime-files/{runtime_sha}/{RUNTIME_FILES_MANIFEST}",
-                runtime_sha,
-                media_type="application/json",
-            )
-            client.request(
-                "PUT",
-                f"/v1/runs/{run_id}/artifacts/runtime-files",
-                {
-                    "artifact_type": "model-file",
-                    "s3_bucket": bucket,
-                    "s3_key": runtime_stored.key,
-                    "s3_version_id": runtime_stored.version_id,
-                    "sha256": runtime_sha,
-                    "size_bytes": runtime_stored.size_bytes,
-                    "media_type": "application/json",
-                    "retention_class": retention_class,
-                    "metadata": artifact_metadata,
-                },
-                f"{stable_key}-runtime-files",
-            )
-            artifact_metadata["runtime_manifest_sha256"] = runtime_sha
+            artifact_metadata["runtime_files"] = runtime_files
         if native:
             _publish_deployment_files(
                 client, store, run_id=run_id, stable_key=stable_key, bucket=bucket,

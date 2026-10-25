@@ -268,10 +268,12 @@ def test_runtime_files_bind_current_bytes_to_the_compile_result(tmp_path):
     files = record_runtime_files(tmp_path, ["predictor.onnx", "joiner.onnx"])
     result = verify_mpk(tmp_path, write_manifest=True)
     assert result["runtime_files"] == files
-    assert result["runtime_manifest_sha256"] == sha256_file(tmp_path / "runtime-files.json")[0]
     (tmp_path / "joiner.onnx").write_bytes(b"changed")
     with pytest.raises(ValidationError, match="checksum or size"):
         verify_runtime_files(tmp_path)
+    record_runtime_files(tmp_path, ["predictor.onnx", "joiner.onnx"])
+    with pytest.raises(ValidationError, match="compile-result"):
+        verify_runtime_files(tmp_path, recorded=result["runtime_files"])
 
 
 @pytest.mark.parametrize(

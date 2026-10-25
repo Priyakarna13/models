@@ -210,7 +210,6 @@ def test_package_preserves_runner_audit(tmp_path, monkeypatch, grouped):
 
 def test_cpu_models_ship_with_the_unchanged_encoder_in_one_zip(tmp_path, monkeypatch):
     from model_registry.artifact import record_runtime_files
-    from model_registry.fetch import sha256_file
 
     model = copy.deepcopy(
         package_module.load_and_validate_model(ROOT / "models/resnet_50", ROOT / "schemas/model.schema.json")
@@ -224,7 +223,7 @@ def test_cpu_models_ship_with_the_unchanged_encoder_in_one_zip(tmp_path, monkeyp
     files = record_runtime_files(component, model["runtime_files"])
     result_path = component / "compile-result.json"
     result = json.loads(result_path.read_text())
-    result.update(runtime_files=files, runtime_manifest_sha256=sha256_file(component / "runtime-files.json")[0])
+    result.update(runtime_files=files)
     result_path.write_text(json.dumps(result))
     packaged = assemble_package(
         repository=ROOT,

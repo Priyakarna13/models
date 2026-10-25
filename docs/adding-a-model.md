@@ -108,12 +108,8 @@ The **Vulcan Model Convert** workflow runs the same script, publishes
 `model.onnx`, and prints the `source` block to pin in `model.yaml`. Only that
 pin reaches the compile stage; editing `convert.py` recompiles nothing.
 
-For a large ONNX that references its original checkpoint as external data,
-`convert.py` also writes `source-members.json`: the normalized `files` list from
-its pinned conversion source. The publisher verifies that list and prints one
-file-set pin combining the published ONNX with those immutable upstream members.
-`model-registry conversion-source <model-dir> --model <export>/model.onnx --uri
-<immutable-ONNX-URI>` reproduces the source block locally.
+For ONNX external data that reuses the original checkpoint, pin the published
+graph and its immutable checkpoint members together in `compilation.source.files`.
 
 ## 4. Declare the compilation
 
@@ -274,7 +270,7 @@ ONNX compile code includes every `.py` and `.sh` under `scripts/` except
 `performance.py`, `accuracy.py`, `convert.py` and `requirements-convert.txt`.
 Models may declare `runtime_files`, the CPU models and data their recipe writes
 beside the first compiled component. Verification binds their checksums to the
-compile result; publication preserves every file and packaging includes them
+compile result; publication lists them in the MPK artifact metadata and packaging includes them
 with the unchanged compiled archives in one ZIP. Only models using this field
 hash its shared tooling (`artifact.py`, `onnx_checkpoint.py`) and runtime `.txt`
 files under `scripts/`. Other models keep

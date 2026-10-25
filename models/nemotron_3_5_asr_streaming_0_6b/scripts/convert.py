@@ -386,10 +386,6 @@ def convert(checkpoint: Path, output: Path) -> Path:
     path = output / "model.onnx"
     onnx.save_model(graph, path)
     onnx.checker.check_model(str(path))
-    # The normal conversion publisher uploads model.onnx. The other members are
-    # already immutable upstream files, fetched and verified by the registry.
-    source = load_model(MODEL_DIR)["conversion"]["default"]["source"]
-    (output / "source-members.json").write_text(json.dumps(source["files"], indent=2) + "\n")
     return path
 
 
