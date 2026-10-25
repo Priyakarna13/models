@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from model_registry.artifact import record_runtime_files
 from model_registry.model import load_model as load_metadata
-from model_registry.onnx_checkpoint import partition
+from model_registry.onnx_export import partition
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 
@@ -55,7 +55,7 @@ def runtime_contract(archive: Path, logical_outputs: list[str]) -> dict:
     return dict(inputs=inputs, outputs=outputs)
 
 
-def cpu_model(graph, outputs: list[str], bank: Path, destination: Path, prefix: str) -> None:
+def cpu_model(graph, outputs: list[str], source_dir: Path, destination: Path, prefix: str) -> None:
     import onnx
     import onnxruntime as ort
     from onnxruntime.quantization import QuantType, quantize_dynamic
@@ -68,7 +68,7 @@ def cpu_model(graph, outputs: list[str], bank: Path, destination: Path, prefix: 
     for values in (part.graph.input, part.graph.output, part.graph.value_info, part.graph.initializer):
         for value in values:
             value.name = value.name.removeprefix(prefix)
-    onnx.external_data_helper.load_external_data_for_model(part, str(bank.parent))
+    onnx.external_data_helper.load_external_data_for_model(part, str(source_dir))
     onnx.external_data_helper.convert_model_from_external_data(part)
     with tempfile.TemporaryDirectory(dir=destination.parent) as directory:
         source = Path(directory) / "float.onnx"
@@ -102,16 +102,21 @@ def prepare_model(source: Path, temporary: Path, component: Path) -> None:
         cpu_model(
             graph,
             config[name + "_outputs"],
-            source.parent / "model.safetensors",
+            source.parent,
             component / (name + "_cpu_int8.onnx"),
             name + "/",
         )
     encoder = partition(graph, config["encoder_outputs"])
-    bank = temporary / "model.safetensors"
-    try:
-        os.link(source.parent / "model.safetensors", bank)
-    except OSError:
-        shutil.copyfile(source.parent / "model.safetensors", bank)
+    weights = {
+        onnx.external_data_helper.ExternalDataInfo(tensor).location
+        for tensor in encoder.graph.initializer
+        if onnx.external_data_helper.uses_external_data(tensor)
+    }
+    for name in weights:
+        try:
+            os.link(source.parent / name, temporary / name)
+        except OSError:
+            shutil.copyfile(source.parent / name, temporary / name)
     onnx.save_model(encoder, temporary / "encoder.onnx")
     (temporary / "config.json").write_text(json.dumps(config))
 

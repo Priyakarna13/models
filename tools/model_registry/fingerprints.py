@@ -26,7 +26,7 @@ COMPILE_TOOLING = (
 
 RUNTIME_FILES_TOOLING = (
     "tools/model_registry/artifact.py",
-    "tools/model_registry/onnx_checkpoint.py",
+    "tools/model_registry/onnx_export.py",
 )
 
 _IGNORED_BUILD_PARTS = {".git", "__pycache__"}

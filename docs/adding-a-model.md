@@ -108,8 +108,8 @@ The **Vulcan Model Convert** workflow runs the same script, publishes
 `model.onnx`, and prints the `source` block to pin in `model.yaml`. Only that
 pin reaches the compile stage; editing `convert.py` recompiles nothing.
 
-For ONNX external data that reuses the original checkpoint, pin the published
-graph and its immutable checkpoint members together in `compilation.source.files`.
+For large ONNX models, export standard external weights as `model.onnx.ext`. The
+conversion workflow publishes both files; pin them together in `compilation.source.files`.
 
 ## 4. Declare the compilation
 
@@ -272,7 +272,7 @@ Models may declare `runtime_files`, the CPU models and data their recipe writes
 beside the first compiled component. Verification binds their checksums to the
 compile result; publication lists them in the MPK artifact metadata and packaging includes them
 with the unchanged compiled archives in one ZIP. Only models using this field
-hash its shared tooling (`artifact.py`, `onnx_checkpoint.py`) and runtime `.txt`
+hash its shared tooling (`artifact.py`, `onnx_export.py`) and runtime `.txt`
 files under `scripts/`. Other models keep
 their existing fingerprints.
 

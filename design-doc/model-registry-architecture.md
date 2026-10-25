@@ -90,7 +90,7 @@ this table. Modules marked CI only are removed from the author package by
 | `mla_stage_simulation.py` | after an MPK compile, the Model Compiler simulator's operation counts and latency for each MLA stage (`simulate-mla-stages`) |
 | `package.py` | assembling a profile's `default` package from component MPKs with declared CPU runtime files, or a complete native deployment folder, with its numerical fidelity report and MLA stage simulation |
 | `dependencies.py` | resolving the Model Compiler and DevKit runtime pins in `deps/` |
-| `onnx_checkpoint.py` | lossless ONNX external-data views into original checkpoint tensors and graph partitioning |
+| `onnx_export.py` | bounded ONNX exports, graph composition and standard graph extraction |
 | `fetch.py` | verified downloads, the cache, and dataset resolution |
 | `source.py` | source identity and URL redaction |
 | `taxonomy.py` | loading the taxonomy and validating model categories |

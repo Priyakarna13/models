@@ -96,6 +96,7 @@ def test_models_and_shared_tooling_download_nothing_from_github_releases() -> No
     assert offenders == []
 
 
-def test_vulcan_onnx_source() -> None:
-    uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/rf_detr_small/{DIGEST}/123-1/model.onnx"
+@pytest.mark.parametrize("suffix", ["", ".ext"])
+def test_vulcan_onnx_source(suffix) -> None:
+    uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/rf_detr_small/{DIGEST}/123-1/model.onnx{suffix}"
     assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri

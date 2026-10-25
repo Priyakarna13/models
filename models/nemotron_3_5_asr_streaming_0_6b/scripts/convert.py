@@ -1,4 +1,4 @@
-"""Export the pinned audio checkpoint into one lossless checkpoint-backed ONNX source."""
+"""Export the pinned audio checkpoint to ONNX with standard external weights."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 from model_registry.fetch import Fetcher
 from model_registry.model import load_model
-from model_registry.onnx_checkpoint import frontend_metadata
+from model_registry.onnx_export import frontend_metadata
 from torch import nn
 from torch.nn import functional as F
 
@@ -199,22 +199,20 @@ class OptimizedBlockStep(BlockStep):
         return b.norm_out(x), k[:, :, :, -56:], v[:, :, :, -56:], cache.next[f"conv.{self.index}"]
 
 
-def compose(model, checkpoint, directory):
+def compose(model, directory):
     import gc
 
-    from model_registry.onnx_checkpoint import append_graph, bind_checkpoint, checkpoint_index, export_part
+    from model_registry.onnx_export import append_graph, export_part
     from onnx import helper
 
     result = helper.make_model(
         helper.make_graph([], "nemotron_streaming", [], []), opset_imports=[helper.make_opsetid("", 17)], ir_version=8
     )
-    index = checkpoint_index(checkpoint)
     public_inputs = set()
     state_outputs = []
 
     def add(module, arguments, inputs, outputs, prefix, replacements):
         part = export_part(module, arguments, inputs, outputs, directory / "part.onnx")
-        bind_checkpoint(part, checkpoint, index=index)
         graph = append_graph(result, part, prefix=prefix, replacements=replacements)
         produced = {value for node in result.graph.node for value in node.output}
         for value in graph.input:
@@ -362,7 +360,7 @@ def convert(checkpoint: Path, output: Path) -> Path:
     processor = AutoProcessor.from_pretrained(checkpoint)
     with tempfile.TemporaryDirectory(dir=output, prefix="export-") as work:
         with torch.inference_mode():
-            graph, encoder_outputs = compose(model, bank, Path(work))
+            graph, encoder_outputs = compose(model, Path(work))
     runtime = {
         "kind": KIND,
         "sample_rate": 16000,
@@ -384,7 +382,7 @@ def convert(checkpoint: Path, output: Path) -> Path:
         item = graph.metadata_props.add()
         item.key, item.value = key, (MODEL_DIR / "scripts" / filename).read_text()
     path = output / "model.onnx"
-    onnx.save_model(graph, path)
+    onnx.save_model(graph, path, save_as_external_data=True, location="model.onnx.ext")
     onnx.checker.check_model(str(path))
     return path
 

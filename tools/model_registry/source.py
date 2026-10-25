@@ -17,7 +17,7 @@ HF_URI_RE = re.compile(
     r"(?P<path>.+)$"
 )
 HF_RESOLVE_RE = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/resolve/[a-f0-9]{40}/.+$")
-VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx$")
+VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx(?:\.ext)?$")
 DEFAULT_HTTPS_HOSTS = {
     "artifacts.stg.neat.sima.ai",
     "huggingface.co",

@@ -23,7 +23,7 @@ def test_export_matches_original_checkpoint(converted):
     import onnx
     import onnxruntime as ort
     import torch
-    from model_registry.onnx_checkpoint import partition
+    from model_registry.onnx_export import partition
     from transformers import AutoModelForRNNT, AutoModelForTDT
 
     converted = Path(converted)
@@ -73,7 +73,7 @@ def test_export_matches_original_checkpoint(converted):
     del model
     with tempfile.TemporaryDirectory(dir=converted.parent) as work:
         work = Path(work)
-        os.link(converted.parent / "model.safetensors", work / "model.safetensors")
+        os.link(converted.parent / "model.onnx.ext", work / "model.onnx.ext")
         path = work / "encoder.onnx"
         onnx.save_model(encoder, path)
         del encoder
