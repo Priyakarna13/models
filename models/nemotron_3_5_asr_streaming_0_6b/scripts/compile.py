@@ -13,6 +13,7 @@ import resource
 import shutil
 import tarfile
 import tempfile
+from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
@@ -150,7 +151,6 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
         if parameters != expected:
             raise ValueError(f"Build parameters must match the pinned encoder: {expected}")
         from afe.apis.defines import (
-            BiasCorrectionType,
             RequantizationMode,
             SkipCalibration,
             bfloat16_scheme,
@@ -163,6 +163,8 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
         from afe.load.importers.general_importer import onnx_source
 
         enable_verbose_error_messages()
+        for package in ("sima-frontend", "sima-mlc"):
+            print(f"Compiler package: {package}={version(package)}", flush=True)
         imported = load_model(
             onnx_source(str(encoder_path), layout="NCHW", flexible_batch_size=False), target=gen2_target
         )
@@ -171,11 +173,8 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
             .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
             .with_requantization_mode(RequantizationMode.sima)
             .with_calibration(SkipCalibration())
-            .with_bias_correction(BiasCorrectionType.NONE)
-            .with_per_token_quant(False)
-            .with_channel_equalization(False)
-            .with_smooth_quant(False)
         )
+        print(f"BF16 activation per-token quantization: {quantization.per_token_quant}", flush=True)
         quantized = imported.quantize(
             calibration_data=None, quantization_config=quantization, model_name=name, log_level=logging.INFO
         )
@@ -194,22 +193,20 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
             except (OSError, StopIteration):
                 return "unavailable"
 
-        logging.info("Compiler memory before: %s", memory_stats())
+        print(f"Compiler memory before: {memory_stats()}", flush=True)
         try:
             quantized.compile(
                 output_path=str(temporary / "compiled"),
                 batch_size=1,
-                compress=True,
-                deployable=True,
+                log_level=logging.INFO,
                 preserve=False,
-                layer_norm_use_fp32_intermediates=True,
             )
         finally:
-            logging.info("Compiler memory after: %s", memory_stats())
-            logging.info(
-                "Peak RSS KiB: process=%d, child=%d",
-                resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-                resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+            print(f"Compiler memory after: {memory_stats()}", flush=True)
+            print(
+                f"Peak RSS KiB: process={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}, "
+                f"child={resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss}",
+                flush=True,
             )
         archives = list((temporary / "compiled").rglob("*_mpk.tar.gz"))
         if len(archives) != 1:
