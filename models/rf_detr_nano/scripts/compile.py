@@ -42,6 +42,7 @@ from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
 from surgery import (
+    BACKBONE_BLOCKS,
     BF16_REGION_LETTERS,
     BOUNDARY_SHAPES,
     BOXES,
@@ -192,7 +193,9 @@ def _require_bf16_regions(quantized: Any, regions: list[str]) -> None:
     )
     logging.info("BF16 backbone operations: %s", dict(sorted(counts.items())))
     # Softmax stays one AFE node, unlike LayerNorm, whose scale and bias AFE splits off.
-    softmaxes = GLOBAL_ATTENTION_BLOCKS if "attention_global" in regions else 0
+    softmaxes = (
+        BACKBONE_BLOCKS if "softmax" in regions else GLOBAL_ATTENTION_BLOCKS if "attention_global" in regions else 0
+    )
     if not counts or counts["SoftmaxOp"] != softmaxes:
         raise RuntimeError(f"expected BF16 operations including {softmaxes} softmaxes, found {dict(counts)}")
 

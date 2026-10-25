@@ -68,7 +68,8 @@ build_profiles:
 
   # These variants run backbone regions in BF16 and the rest of the backbone in W8A8. The
   # letters after bf name the regions: e patch embedding and feature taps, r residual stream,
-  # a global attention, p projector, h proposal head.
+  # a global attention, p projector, h proposal head, s every softmax, o the backbone outputs.
+  # Without o the outputs stay INT8, because Neat cannot run outputs that mix BF16 and INT8.
   w8a8_w16a16_bfr:
     calibration_dataset: coco-2017-cal
     runner_market: on-demand
@@ -111,6 +112,33 @@ build_profiles:
     components:
       backbone:
         parameters: {precision: w8a8, calibration_bins: 1024, calibration_samples: 50, bf16_regions: [embed, residual, attention_global, projector, head]}
+      decoder:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+
+  w8a8_w16a16_bfrapho:
+    calibration_dataset: coco-2017-cal
+    runner_market: on-demand
+    components:
+      backbone:
+        parameters: {precision: w8a8, calibration_bins: 1024, calibration_samples: 50, bf16_regions: [residual, attention_global, projector, head, outputs]}
+      decoder:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+
+  w8a8_w16a16_bferapho:
+    calibration_dataset: coco-2017-cal
+    runner_market: on-demand
+    components:
+      backbone:
+        parameters: {precision: w8a8, calibration_bins: 1024, calibration_samples: 50, bf16_regions: [embed, residual, attention_global, projector, head, outputs]}
+      decoder:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+
+  w8a8_w16a16_bferaphs:
+    calibration_dataset: coco-2017-cal
+    runner_market: on-demand
+    components:
+      backbone:
+        parameters: {precision: w8a8, calibration_bins: 1024, calibration_samples: 50, bf16_regions: [embed, residual, attention_global, projector, head, softmax]}
       decoder:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
 

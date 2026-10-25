@@ -40,8 +40,16 @@ BOUNDARY_SHAPES = {
 
 # Backbone regions that can run BF16 in an otherwise INT8 backbone. A build profile ID names its
 # regions by these letters in this order, such as w8a8_w16a16_bfra.
-BF16_REGION_LETTERS = {"embed": "e", "residual": "r", "attention_global": "a", "projector": "p", "head": "h"}
-# Operations that only move values. AFE gives each one the precision its inputs share.
+BF16_REGION_LETTERS = {
+    "embed": "e",
+    "residual": "r",
+    "attention_global": "a",
+    "projector": "p",
+    "head": "h",
+    "softmax": "s",
+    "outputs": "o",
+}
+# Operations that only move values. AFE gives most of them the precision their inputs share, but runs a Concat INT8.
 LAYOUT_OPS = {"Reshape", "Transpose", "Slice", "Split", "Concat", "Tile"}
 
 
@@ -701,7 +709,21 @@ def _region_operations(model):
         "attention_global": attention,
         "projector": _upstream(producers, [FEATURES], {tap.output[0] for tap in taps}),
         "head": _upstream(producers, [SCORES, BOXES], {FEATURES}),
+        "softmax": [block["attention"][1] for block in blocks],
+        # The operations whose results leave the backbone, and the layout operations after them.
+        "outputs": [node for node in model.graph.node if None in _readers(users, node.output[0])],
     }
+
+
+def _promoted(found, regions):
+    """Return the names of the operations the regions run BF16.
+
+    Neat cannot run a backbone whose outputs mix BF16 and INT8, so only the outputs region promotes the
+    operations that produce them. It marks their layout operations too, because AFE runs a Concat INT8.
+    """
+    promoted = {node.name for region in regions for node in found[region] if node.op_type not in LAYOUT_OPS}
+    outputs = {node.name for node in found["outputs"]}
+    return promoted | outputs if "outputs" in regions else promoted - outputs
 
 
 def _annotate(model, promoted):
@@ -744,9 +766,7 @@ def _annotate(model, promoted):
 def annotate_bf16_regions(graph: Path, regions: list[str]) -> dict[str, int]:
     """Rewrite the backbone graph to run the regions' operations BF16; return the marks per precision."""
     model = onnx.load(graph)
-    found = _region_operations(model)
-    promoted = {node.name for region in regions for node in found[region] if node.op_type not in LAYOUT_OPS}
-    marks = _annotate(model, promoted)
+    marks = _annotate(model, _promoted(_region_operations(model), regions))
     onnx.checker.check_model(model)
     onnx.save(model, graph)
     return marks

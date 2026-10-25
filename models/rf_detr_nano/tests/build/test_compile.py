@@ -431,6 +431,9 @@ def test_model_declares_onnx_and_whole_model_benchmarks() -> None:
         "w8a8_w16a16_bfa",
         "w8a8_w16a16_bfraph",
         "w8a8_w16a16_bferaph",
+        "w8a8_w16a16_bfrapho",
+        "w8a8_w16a16_bferapho",
+        "w8a8_w16a16_bferaphs",
     ]
     assert model["build_profiles"][0]["components"][0]["parameters"]["calibration_samples"] == 50
     assert model["build_profiles"][0]["components"][0]["parameters"]["calibration_bins"] == 1024
@@ -605,6 +608,24 @@ def test_surgery_marks_bf16_operations_and_their_first_readers(load_script: Call
     assert [output.name for output in model.graph.output] == ["y", "z"]
 
 
+def test_only_the_outputs_region_promotes_the_operations_producing_backbone_outputs(
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    surgery = load_script("surgery")
+
+    def node(name: str, op_type: str) -> SimpleNamespace:
+        return SimpleNamespace(name=name, op_type=op_type)
+
+    found = {
+        "residual": [node("norm", "LayerNormalization")],
+        "head": [node("exp", "Exp"), node("box", "Add"), node("boxes", "Concat")],
+        "outputs": [node("box", "Add"), node("boxes", "Concat")],
+    }
+
+    assert surgery._promoted(found, ["residual", "head"]) == {"norm", "exp"}
+    assert surgery._promoted(found, ["residual", "head", "outputs"]) == {"norm", "exp", "box", "boxes"}
+
+
 def test_bf16_regions_must_match_the_build_profile_id(load_script: Callable[[str], ModuleType]) -> None:
     compile_module = load_script("compile")
     decoder = {"precision": "w16a16"}
@@ -632,7 +653,7 @@ def test_bf16_regions_must_match_the_build_profile_id(load_script: Callable[[str
         compile_module._bf16_regions(profile["id"], compile_module._component_parameters(_metadata(), profile["id"]))
         for profile in _metadata()["build_profiles"]
     ]
-    assert sum(map(bool, declared)) == 5
+    assert sum(map(bool, declared)) == 8
 
 
 def test_the_bf16_guard_requires_the_operations_afe_quantized_in_bf16(
@@ -654,6 +675,10 @@ def test_the_bf16_guard_requires_the_operations_afe_quantized_in_bf16(
     compile_module._require_bf16_regions(quantized(node(add, bf16), node(softmax, "int8")), ["residual"])
     with pytest.raises(RuntimeError, match="including 3 softmaxes"):
         compile_module._require_bf16_regions(quantized(*global_softmaxes[:2]), ["attention_global"])
+    all_softmaxes = [node(softmax, bf16) for _ in range(12)]
+    compile_module._require_bf16_regions(quantized(*all_softmaxes), ["attention_global", "softmax"])
+    with pytest.raises(RuntimeError, match="including 12 softmaxes"):
+        compile_module._require_bf16_regions(quantized(*global_softmaxes), ["attention_global", "softmax"])
     with pytest.raises(RuntimeError, match="including 0 softmaxes"):
         compile_module._require_bf16_regions(quantized(node(add, "int8")), ["residual"])
     with pytest.raises(RuntimeError, match="including 0 softmaxes"):
