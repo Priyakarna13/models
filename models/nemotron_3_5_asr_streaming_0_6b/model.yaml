@@ -46,13 +46,13 @@ compilation:
     main_file: model.onnx
     files:
       model.onnx:
-        uri: https://artifacts.stg.neat.sima.ai/models-onnx/nemotron_3_5_asr_streaming_0_6b/a03e376e1ba588ce481d5892f374a89fcb6c456a5d5db6df1daaec8c57ea8c2d/40229190368-1/model.onnx
-        sha256: a03e376e1ba588ce481d5892f374a89fcb6c456a5d5db6df1daaec8c57ea8c2d
-        size_bytes: 666848
+        uri: https://artifacts.stg.neat.sima.ai/models-onnx/nemotron_3_5_asr_streaming_0_6b/835788b1291f139d9200fae1b08ac8b0f5748e4c3e9bfb8a496d9cfe01711073/40240363558-1/model.onnx
+        sha256: 835788b1291f139d9200fae1b08ac8b0f5748e4c3e9bfb8a496d9cfe01711073
+        size_bytes: 666366
       model.onnx.ext:
-        uri: https://artifacts.stg.neat.sima.ai/models-onnx/nemotron_3_5_asr_streaming_0_6b/897a5b5bf4e1a33074edcc3d45bb774e91d702431305039e8ff2b72b5ccf1680/40229190368-1/model.onnx.ext
-        sha256: 897a5b5bf4e1a33074edcc3d45bb774e91d702431305039e8ff2b72b5ccf1680
-        size_bytes: 2458108032
+        uri: https://artifacts.stg.neat.sima.ai/models-onnx/nemotron_3_5_asr_streaming_0_6b/2ecaa74c651ad28f37842794a65eca7c0eaf4a92f6af223ad08e56eefd363a35/40240363558-1/model.onnx.ext
+        sha256: 2ecaa74c651ad28f37842794a65eca7c0eaf4a92f6af223ad08e56eefd363a35
+        size_bytes: 2452336768
       tokenizer.json:
         uri: hf://models/nvidia/nemotron-3.5-asr-streaming-0.6b@ea30d66debe3740a08b573244286791d423d6b3e/tokenizer.json
         sha256: 3f3d481deb073b64c2082e8c7860d487a3a62774bf4e9e4faac83007e181f246
