@@ -88,13 +88,26 @@ class BlockStep(nn.Module):
 class ProjectionStep(nn.Module):
     def __init__(self, model, frames=4):
         super().__init__()
-        self.prompt = model.prompt_projector
-        self.projection = model.encoder_projector
+        self.linear = model.prompt_projector.linear_1
+        self.activation = model.prompt_projector.act
+        tail = model.prompt_projector.linear_2
+        projection = model.encoder_projector
+        # Fold the consecutive affine layers before quantization, retaining the ReLU.
+        self.register_buffer(
+            "weight", (projection.weight.detach().double() @ tail.weight.detach().double()).to(projection.weight.dtype)
+        )
+        self.register_buffer(
+            "bias",
+            F.linear(
+                tail.bias.detach().double(), projection.weight.detach().double(), projection.bias.detach().double()
+            ).to(projection.weight.dtype),
+        )
         self.frames = frames
 
     def forward(self, hidden, language_one_hot):
         prompt = language_one_hot.expand(1, self.frames, 128)
-        return self.projection(self.prompt(torch.cat([hidden, prompt], dim=-1)))
+        hidden = self.activation(self.linear(torch.cat([hidden, prompt], dim=-1)))
+        return F.linear(hidden, self.weight, self.bias)
 
 
 class PredictorStep(nn.Module):

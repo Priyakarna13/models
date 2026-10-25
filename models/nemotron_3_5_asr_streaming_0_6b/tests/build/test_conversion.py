@@ -10,11 +10,14 @@ def test_converted_graph_has_static_regions(converted):
     assert config["encoder_outputs"][0] == "encoded"
     assert len(config["predictor_outputs"]) == 3
     assert len(config["joiner_outputs"]) in (1, 2)
+    projection = [node for node in model.graph.node if node.name.startswith("projection/")]
+    assert sum(node.op_type in {"MatMul", "Gemm"} for node in projection) == 2
+    assert sum(node.op_type == "Relu" for node in projection) == 1
     for value in [*model.graph.input, *model.graph.output]:
         assert all(dim.dim_value > 0 for dim in value.type.tensor_type.shape.dim)
 
 
-def test_export_matches_original_checkpoint(converted):
+def test_export_matches_original_checkpoint(converted, load_script):
     import os
     import tempfile
     from pathlib import Path
@@ -49,6 +52,13 @@ def test_export_matches_original_checkpoint(converted):
             converted.parent, dtype=torch.float32, attn_implementation="sdpa"
         ).eval()
         with torch.inference_mode():
+            hidden = torch.from_numpy(rng.normal(size=(1, 7, 1024)).astype(np.float32))
+            prompt = torch.from_numpy(inputs["language_one_hot"])
+            expected_projection = model.encoder_projector(
+                model.prompt_projector(torch.cat([hidden, prompt.expand(1, 7, 128)], dim=-1))
+            )
+            projection = load_script("convert").ProjectionStep(model, frames=7)
+            torch.testing.assert_close(projection(hidden, prompt), expected_projection, atol=1e-3, rtol=1e-4)
             reference = model.get_audio_features(
                 torch.from_numpy(features),
                 prompt_ids=torch.tensor([101]),
