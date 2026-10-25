@@ -71,7 +71,6 @@ compilation:
         uri: https://artifacts.stg.neat.sima.ai/models-onnx/nemotron_3_5_asr_streaming_0_6b/c440eb442119a33e87ae1934e5e2701ead9a53b640126de22604d049d5060a63/0-0/model.onnx
         sha256: c440eb442119a33e87ae1934e5e2701ead9a53b640126de22604d049d5060a63
         size_bytes: 436373243
-  entrypoint: transcribe
 build_profiles:
   w8a16:
     components:

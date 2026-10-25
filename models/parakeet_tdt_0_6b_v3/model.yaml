@@ -71,7 +71,6 @@ compilation:
         uri: https://artifacts.stg.neat.sima.ai/models-onnx/parakeet_tdt_0_6b_v3/c958e92d806449a3f381eb125fbd12a443f270275da9fc004e95db5f74b76403/0-0/model.onnx
         sha256: c958e92d806449a3f381eb125fbd12a443f270275da9fc004e95db5f74b76403
         size_bytes: 1169466702
-  entrypoint: transcribe
 build_profiles:
   w8a16:
     components:

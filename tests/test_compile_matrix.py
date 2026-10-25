@@ -672,3 +672,9 @@ def test_runtime_file_tooling_only_invalidates_models_that_use_it(model_reposito
     prior = _fingerprint(model_repository, "alpha", COMPILER_VERSION)
     path.write_text(yaml.safe_dump(model, sort_keys=False))
     assert _fingerprint(model_repository, "alpha", COMPILER_VERSION) != prior
+    runtime_requirements = model_repository / "models/alpha/scripts/requirements-runtime.txt"
+    runtime_requirements.write_text("onnxruntime==1.21.1\n")
+    prior = _fingerprint(model_repository, "alpha", COMPILER_VERSION)
+    runtime_requirements.write_text("onnxruntime==1.22.0\n")
+    assert _fingerprint(model_repository, "alpha", COMPILER_VERSION) != prior
+    assert _fingerprint(model_repository, "bravo", COMPILER_VERSION) == before
