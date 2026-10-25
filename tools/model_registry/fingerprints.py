@@ -14,7 +14,7 @@ from typing import Any
 from .benchmark_declarations import ACCURACY_REQUIREMENTS, SCRIPTS
 from .dependencies import resolve_benchmark_runtime
 from .errors import ValidationError
-from .model import CONVERSION_FILES, SCRIPTS_DIR, compile_invocations_for, load_and_validate_model
+from .model import CONVERSION_FILES, SCRIPTS_DIR, compile_invocations_for, load_and_validate_model, load_model
 from .source import source_identity
 
 # Shared code used by ONNX builds.
@@ -22,6 +22,11 @@ COMPILE_TOOLING = (
     "scripts/run_model_compilation.sh",
     "tools/model_registry/model.py",
     "tools/model_registry/mla_stage_simulation.py",
+)
+
+RUNTIME_FILES_TOOLING = (
+    "tools/model_registry/artifact.py",
+    "tools/model_registry/onnx_checkpoint.py",
 )
 
 _IGNORED_BUILD_PARTS = {".git", "__pycache__"}
@@ -79,7 +84,9 @@ def _file_digests(root: Path, required: list[str], optional: list[str] = ()) -> 
 def _compile_input_files(root: Path, model_id: str) -> list[Path]:
     """Code the compile runs: the shared runner and the model's scripts."""
     candidates: list[Path] = []
-    for relative in COMPILE_TOOLING:
+    model = load_model(root / "models" / model_id)
+    tooling = (*COMPILE_TOOLING, *(RUNTIME_FILES_TOOLING if model.get("runtime_files") else ()))
+    for relative in tooling:
         path = root / relative
         if not path.is_file():
             raise ValidationError(f"model compile input not found: {path}")
@@ -89,7 +96,7 @@ def _compile_input_files(root: Path, model_id: str) -> list[Path]:
         item
         for item in (model_dir / SCRIPTS_DIR).rglob("*")
         if item.is_file()
-        and item.suffix in {".py", ".sh"}
+        and item.suffix in ({".py", ".sh", ".txt"} if model.get("runtime_files") else {".py", ".sh"})
         and item.relative_to(model_dir).as_posix() not in NON_COMPILE_SCRIPTS
     )
     symlinks = sorted(item for item in candidates if item.is_symlink())
@@ -195,6 +202,8 @@ def compile_fingerprint(
         "fidelity": model.get("numerical_fidelity"),
         "compiler_version": compiler,
     }
+    if model.get("runtime_files") and model["components"][0]["id"] in invocation["components"]:
+        identity["runtime_files"] = model["runtime_files"]
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode())
     _hash_files(digest, root, _compile_input_files(root, model_id))
     return digest.hexdigest()

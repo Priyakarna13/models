@@ -206,3 +206,49 @@ def test_package_preserves_runner_audit(tmp_path, monkeypatch, grouped):
                 repository=ROOT, compiled_dir=compiled, output_dir=tmp_path / "packages",
                 model_id="resnet_50", build_profile_id="w16a16", package_id="default",
             )
+
+
+def test_cpu_models_ship_with_the_unchanged_encoder_in_one_zip(tmp_path, monkeypatch):
+    from model_registry.artifact import record_runtime_files
+    from model_registry.fetch import sha256_file
+
+    model = copy.deepcopy(
+        package_module.load_and_validate_model(ROOT / "models/resnet_50", ROOT / "schemas/model.schema.json")
+    )
+    model["runtime_files"] = ["predictor_cpu_int8.onnx", "joiner_cpu_int8.onnx", "tokenizer.json"]
+    monkeypatch.setattr(package_module, "load_and_validate_model", lambda *_: model)
+    compiled = _compiled_component(tmp_path)
+    component = compiled / "resnet_50/w16a16/model"
+    for name in model["runtime_files"]:
+        (component / name).write_bytes(name.encode())
+    files = record_runtime_files(component, model["runtime_files"])
+    result_path = component / "compile-result.json"
+    result = json.loads(result_path.read_text())
+    result.update(runtime_files=files, runtime_manifest_sha256=sha256_file(component / "runtime-files.json")[0])
+    result_path.write_text(json.dumps(result))
+    packaged = assemble_package(
+        repository=ROOT,
+        compiled_dir=compiled,
+        output_dir=tmp_path / "packages",
+        model_id="resnet_50",
+        build_profile_id="w16a16",
+        package_id="default",
+    )
+    archive = tmp_path / "packages/resnet_50/w16a16/packages/default" / packaged["archive"]
+    assert archive.suffix == ".zip"
+    with zipfile.ZipFile(archive) as stream:
+        assert set(stream.namelist()) == {MPK_NAME, *model["runtime_files"]}
+        assert stream.read(MPK_NAME) == (component / MPK_NAME).read_bytes()
+        for name in model["runtime_files"]:
+            assert stream.read(name) == name.encode()
+    assert set(packaged["manifest"]["resources"][0]["paths"]) == set(model["runtime_files"])
+    (component / "joiner_cpu_int8.onnx").unlink()
+    with pytest.raises(ValidationError, match="missing"):
+        assemble_package(
+            repository=ROOT,
+            compiled_dir=compiled,
+            output_dir=tmp_path / "broken",
+            model_id="resnet_50",
+            build_profile_id="w16a16",
+            package_id="default",
+        )

@@ -108,6 +108,13 @@ The **Vulcan Model Convert** workflow runs the same script, publishes
 `model.onnx`, and prints the `source` block to pin in `model.yaml`. Only that
 pin reaches the compile stage; editing `convert.py` recompiles nothing.
 
+For a large ONNX that references its original checkpoint as external data,
+`convert.py` also writes `source-members.json`: the normalized `files` list from
+its pinned conversion source. The publisher verifies that list and prints one
+file-set pin combining the published ONNX with those immutable upstream members.
+`model-registry conversion-source <model-dir> --model <export>/model.onnx --uri
+<immutable-ONNX-URI>` reproduces the source block locally.
+
 ## 4. Declare the compilation
 
 `compilation` names the source's `format`, `onnx` or `huggingface`, and its
@@ -258,13 +265,21 @@ builds](#on-demand-builds).
 
 | Stage | Fingerprint inputs |
 | --- | --- |
-| compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, the Model Compiler version, `scripts/run_model_compilation.sh`, the shared model loader, and the MLA stage simulation (`tools/model_registry/mla_stage_simulation.py`) |
+| compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, the Model Compiler version, `scripts/run_model_compilation.sh`, the shared model loader, and the MLA stage simulation (`tools/model_registry/mla_stage_simulation.py`); for models declaring `runtime_files`, that file list and `RUNTIME_FILES_TOOLING` |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
 | performance | the compile run and MPK digest of every component, the `performance` declaration, the model's `performance.py`, the shared benchmark tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
 | accuracy | the compile run and MPK digest of every component, each `accuracy` dataset's name, pin, and the metrics its `datasets/<id>.yaml` requires for the model's tasks, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
 
 ONNX compile code includes every `.py` and `.sh` under `scripts/` except
 `performance.py`, `accuracy.py`, `convert.py` and `requirements-convert.txt`.
+Models may declare `runtime_files`, the CPU models and data their recipe writes
+beside the first compiled component. Verification binds their checksums to the
+compile result; publication preserves every file and packaging includes them
+with the unchanged compiled archives in one ZIP. Only models using this field
+hash its shared tooling (`artifact.py`, `onnx_checkpoint.py`) and runtime `.txt`
+files under `scripts/`. Other models keep
+their existing fingerprints.
+
 The shared model loader is an input to every ONNX compile fingerprint;
 descriptive preprocessing and surgery declarations are not. The shared
 benchmark tooling is `BOARD_STAGE_TOOLING`: the benchmarking workflow, `tools/model_report`

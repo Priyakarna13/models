@@ -1264,6 +1264,7 @@ def test_package_run_retains_provenance_when_artifact_is_only_an_mpk(tmp_path):
     assert published["packages"][0]["artifact_sha256"] == assembled["sha256"]
 def test_iam_registry_reads_sign_only_the_configured_api(monkeypatch):
     import io
+
     import model_registry.registry as registry
 
     base = "https://private.example.test"
@@ -1292,3 +1293,99 @@ def test_iam_registry_reads_require_a_region(monkeypatch):
     monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
     with pytest.raises(RegistryPublicationError, match="AWS_REGION is required"):
         registry._public_registry_json("https://private.example.test/v1/repositories")
+
+
+def test_runtime_files_survive_publication_and_catalog_restore(tmp_path, monkeypatch):
+    from model_registry import registry
+    from model_registry.artifact import record_runtime_files
+    from model_registry.fetch import sha256_file
+
+    model = load_model(ROOT / "models/resnet_50")
+    model["runtime_files"] = ["predictor.onnx", "joiner.onnx", "data/tokenizer.json"]
+    dist = _packaged_result(tmp_path)
+    component = dist / "resnet_50/w16a16/model"
+    for name in model["runtime_files"]:
+        path = component / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(name.encode())
+    files = record_runtime_files(component, model["runtime_files"])
+    result_path = component / "compile-result.json"
+    result = json.loads(result_path.read_text())
+    result.update(runtime_files=files, runtime_manifest_sha256=sha256_file(component / "runtime-files.json")[0])
+    result_path.write_text(json.dumps(result))
+    monkeypatch.setattr(registry, "load_models", lambda *_: {"resnet_50": model})
+    monkeypatch.setattr(registry, "load_and_validate_model", lambda *_: model)
+    calls = []
+    run_id = "00000000-0000-4000-8000-000000000001"
+
+    def request(method, path, body, key):
+        calls.append((method, path, body))
+        return {"run_id": run_id} if path == "/v1/runs" else {"ok": True}
+
+    store = FakeStore()
+    published = publish_compilations(
+        repository=ROOT,
+        dist_dir=dist,
+        api_url="https://registry.example.invalid",
+        aws_region="us-west-2",
+        bucket="artifacts",
+        kms_key_id="alias/artifacts",
+        environment="staging",
+        branch="feature/models",
+        git_sha="a" * 40,
+        github_run_id="1234",
+        github_run_attempt="1",
+        github_run_url="https://github.com/sima-neat/models/actions/runs/1234",
+        request=request,
+        artifact_store=store,
+    )
+    assert published["count"] == 1
+    artifacts = {path.rsplit("/", 1)[1]: body for method, path, body in calls if "/artifacts/" in path}
+    assert "mpk" in artifacts and "runtime-files" in artifacts
+    assert artifacts["mpk"]["metadata"]["runtime_manifest_sha256"] == result["runtime_manifest_sha256"]
+    assert {item["artifact"] for item in files} <= artifacts.keys()
+    payloads = {key: path.read_bytes() for path, key, _, _ in store.objects}
+    catalog = {
+        "catalog_revision": "a" * 40,
+        "models": [
+            {
+                "id": "resnet_50",
+                "packages": [],
+                "builds": [
+                    dict(
+                        build_profile_id="w16a16",
+                        compile_invocation_id="w16a16",
+                        component_id="model",
+                        run_id=run_id,
+                        artifact_sha256=result["sha256"],
+                    )
+                ],
+            }
+        ],
+    }
+
+    def read(url):
+        if "/catalogs/current?" in url:
+            return {"catalog": {"document": catalog}}
+        if "/artifacts/" in url:
+            value = artifacts[url.rsplit("/", 1)[1]]
+            return {"artifact": dict(value, download_url=value["s3_key"])}
+        if url.endswith(run_id):
+            return {"run": {"toolchain_version": COMPILER_VERSION}}
+        raise AssertionError(url)
+
+    restored = stage_catalog_build(
+        repository=ROOT,
+        output_dir=tmp_path / "restored",
+        api_url="https://registry.example.invalid",
+        branch="feature/models",
+        catalog_revision="a" * 40,
+        model_id="resnet_50",
+        build_profile_id="w16a16",
+        compile_invocation_id="w16a16",
+        read_request=read,
+        download_request=payloads.__getitem__,
+    )
+    assert restored["count"] == 1
+    for name in model["runtime_files"]:
+        assert (tmp_path / "restored/resnet_50/w16a16/model" / name).read_bytes() == name.encode()

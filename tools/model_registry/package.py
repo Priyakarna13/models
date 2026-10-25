@@ -11,7 +11,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from .artifact import deployment_files, verify_artifact
+from .artifact import RUNTIME_FILES_MANIFEST, deployment_files, runtime_files_for, verify_artifact, verify_runtime_files
 from .errors import ValidationError
 from .fetch import sha256_file
 from .mla_stage_simulation import SIMULATION_FILE
@@ -87,6 +87,7 @@ def assemble_package(
     native_files: list[dict[str, Any]] = []
     component_entries: list[dict[str, Any]] = []
     component_files: list[tuple[str, Path]] = []
+    resources: list[dict[str, Any]] = []
     provenance_identity: dict[str, str] | None = None
     for component_id in sorted(package["components"]):
         result_dir = compiled / model_id / build_profile_id / component_id
@@ -140,6 +141,25 @@ def assemble_package(
             native_deployment = result_dir / "deployment"
         package_path = "." if native else archive_name
         component_files.append((package_path, component_archive))
+        if not native:
+            runtime_files = verify_runtime_files(result_dir, expected=runtime_files_for(model, component_id))
+            if runtime_files != result.get("runtime_files", []):
+                raise ValidationError(f"{result_dir}: runtime files do not match compile-result.json")
+            if (
+                runtime_files
+                and result.get("runtime_manifest_sha256") != sha256_file(result_dir / RUNTIME_FILES_MANIFEST)[0]
+            ):
+                raise ValidationError(f"{result_dir}: runtime manifest checksum does not match")
+            component_files.extend((item["path"], result_dir / item["path"]) for item in runtime_files)
+            if runtime_files:
+                resources.append(
+                    {
+                        "id": f"runtime_{component_id}",
+                        "paths": [item["path"] for item in runtime_files],
+                        "source_sha256": result["runtime_manifest_sha256"],
+                        "size_bytes": sum(item["size_bytes"] for item in runtime_files),
+                    }
+                )
         publication_path = result_dir / "registry-publication.json"
         compile_run_id = None
         if publication_path.is_file():
@@ -187,7 +207,7 @@ def assemble_package(
         "target": profiles[build_profile_id]["target"],
         "provenance": provenance_identity or {},
         "components": component_entries,
-        "resources": [],  # sima-cli reads the field; no package carries extra resources.
+        "resources": resources,
         "files": installed_files,
         "license": model["license"],
     }

@@ -106,6 +106,12 @@ postprocessing and surgery live in executable code, with application
 instructions in the README. Tensor details come from Core execution plans
 rather than a copied inventory.
 
+Optional top-level `runtime_files` lists safe relative paths written beside the
+first compiled component, such as `predictor_cpu_int8.onnx`,
+`joiner_cpu_int8.onnx`, and `tokenizer.json`. The recipe calls
+`artifact.record_runtime_files()` after writing them. The complete package is a
+ZIP containing the original compiled archives and the checksum-verified files.
+
 A source is one file, as above, or a set of files with the `main_file` the
 recipe opens. Files in one Hugging Face repository share its `repository` and
 `revision`:

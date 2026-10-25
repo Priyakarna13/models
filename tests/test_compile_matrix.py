@@ -649,3 +649,26 @@ def test_grouped_compile_rejects_conflicting_markets(model_repository):
     path.write_text(yaml.safe_dump(authored))
     with pytest.raises(ValidationError, match="conflicting runner_market"):
         load_and_validate_model(path.parent)
+
+
+def test_runtime_file_tooling_only_invalidates_models_that_use_it(model_repository):
+    from model_registry.fingerprints import RUNTIME_FILES_TOOLING
+
+    before = _fingerprint(model_repository, "bravo", COMPILER_VERSION)
+    for relative in RUNTIME_FILES_TOOLING:
+        destination = model_repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    path = model_repository / "models/alpha/model.yaml"
+    model = yaml.safe_load(path.read_text())
+    model["runtime_files"] = ["predictor.onnx", "joiner.onnx"]
+    path.write_text(yaml.safe_dump(model, sort_keys=False))
+    alpha = _fingerprint(model_repository, "alpha", COMPILER_VERSION)
+    shared = model_repository / RUNTIME_FILES_TOOLING[0]
+    shared.write_text(shared.read_text() + "\n# runtime file change\n")
+    assert _fingerprint(model_repository, "bravo", COMPILER_VERSION) == before
+    assert _fingerprint(model_repository, "alpha", COMPILER_VERSION) != alpha
+    model["runtime_files"].append("tokenizer.json")
+    prior = _fingerprint(model_repository, "alpha", COMPILER_VERSION)
+    path.write_text(yaml.safe_dump(model, sort_keys=False))
+    assert _fingerprint(model_repository, "alpha", COMPILER_VERSION) != prior

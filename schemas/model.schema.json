@@ -37,6 +37,11 @@
         "derived_from": {"type": "string", "format": "uri"}
       }
     },
+    "runtime_files": {
+      "description": "CPU model and runtime files written beside the first compiled component and included in the complete download ZIP.",
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/relativePath"}
+    },
     "conversion": {
       "description": "The source scripts/convert.py turns into compilation.source.",
       "type": "object", "additionalProperties": false, "required": ["source"],

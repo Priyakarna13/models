@@ -41,6 +41,14 @@ architecture_paradigms:
 # A family is the upstream model line, named without generation or size
 # (YOLO, not YOLO26n). The model's id and display_name carry those.
 architectures:
+  nemotron_asr:
+    display_name: Nemotron ASR
+    paradigm: transformer
+    allowed_model_types: [audio]
+  parakeet:
+    display_name: Parakeet
+    paradigm: transformer
+    allowed_model_types: [audio]
   clip:
     display_name: CLIP
     paradigm: transformer

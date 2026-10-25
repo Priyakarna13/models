@@ -86,10 +86,12 @@ this table. Modules marked CI only are removed from the author package by
 | `candidates.py` | complete model/profile candidate contracts, run publication and binding, finalization, feature selection and retry receipts (CI only) |
 | `benchmark_declarations.py` | the `performance` and `accuracy` declarations: the profiles each benchmarks, their scripts and required metrics, and validating `reference_metrics`, which the portal ships |
 | `report_publication.py` | the MPKs a benchmark runs, checking a `model-report.json` against `model.yaml`, and publishing it as one whole-model run under the profile's package run (CI only) |
-| `artifact.py` | compile outputs, MPK/deployed LLiMa verification, and deployment file indexes |
+| `artifact.py` | compile outputs, MPK/deployed LLiMa verification, and checksum-bound deployment/runtime file indexes |
 | `mla_stage_simulation.py` | after an MPK compile, the Model Compiler simulator's operation counts and latency for each MLA stage (`simulate-mla-stages`) |
-| `package.py` | assembling a profile's `default` package from component MPKs or a complete native deployment folder, with its numerical fidelity report and MLA stage simulation |
+| `package.py` | assembling a profile's `default` package from component MPKs with declared CPU runtime files, or a complete native deployment folder, with its numerical fidelity report and MLA stage simulation |
 | `dependencies.py` | resolving the Model Compiler and DevKit runtime pins in `deps/` |
+| `conversion_source.py` | source pins binding a converted ONNX to any reused original checkpoint members |
+| `onnx_checkpoint.py` | lossless ONNX external-data views into original checkpoint tensors and graph partitioning |
 | `fetch.py` | verified downloads, the cache, and dataset resolution |
 | `source.py` | source identity and URL redaction |
 | `taxonomy.py` | loading the taxonomy and validating model categories |

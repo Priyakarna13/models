@@ -22,6 +22,7 @@ from .stage_plan import plan_stages, resolve_base_branches
 
 AUTHOR_COMMANDS = frozenset(
     {
+        "conversion-source",
         "fetch",
         "fetch-calibration",
         "fetch-fidelity-dataset",
@@ -51,6 +52,12 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="model-registry", description="SiMa Neat Model Registry lifecycle tooling")
     parser.add_argument("--version", action="version", version=f"%(prog)s {tool_version()}")
     subcommands = parser.add_subparsers(dest="command", required=True)
+
+    conversion = subcommands.add_parser("conversion-source", help="print the immutable source pin for a converted ONNX")
+    conversion.add_argument("model_dir", type=Path)
+    conversion.add_argument("--model", type=Path, required=True)
+    conversion.add_argument("--uri", required=True)
+    conversion.add_argument("--conversion", default="default")
 
     validate = subcommands.add_parser("validate", help="validate a model directory against the model schema")
     validate.add_argument("model_dir", type=Path)
@@ -875,6 +882,19 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
     parser = _parser(author_safe=author_safe)
     args = parser.parse_args(argv)
     try:
+        if args.command == "conversion-source":
+            import yaml
+
+            from .conversion_source import conversion_source
+
+            print(
+                yaml.safe_dump(
+                    {"source": conversion_source(args.model_dir, args.model, args.uri, args.conversion)},
+                    sort_keys=False,
+                ),
+                end="",
+            )
+            return 0
         if args.command == "promotion":
             from .promotions import run
 

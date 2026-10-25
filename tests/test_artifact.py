@@ -257,3 +257,53 @@ def test_validate_compile_outputs_requires_derived_graphs_exactly_for_grouped_in
             compile_invocation_id="w8a8_w16a16",
             component_ids=components,
         )
+
+
+def test_runtime_files_bind_current_bytes_to_the_compile_result(tmp_path):
+    from model_registry.artifact import record_runtime_files, verify_runtime_files
+
+    _archive(tmp_path / "encoder_mpk.tar.gz", ["encoder.elf", "encoder_mpk.json"])
+    for name in ("predictor.onnx", "joiner.onnx"):
+        (tmp_path / name).write_bytes(name.encode())
+    files = record_runtime_files(tmp_path, ["predictor.onnx", "joiner.onnx"])
+    result = verify_mpk(tmp_path, write_manifest=True)
+    assert result["runtime_files"] == files
+    assert result["runtime_manifest_sha256"] == sha256_file(tmp_path / "runtime-files.json")[0]
+    (tmp_path / "joiner.onnx").write_bytes(b"changed")
+    with pytest.raises(ValidationError, match="checksum or size"):
+        verify_runtime_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../escape",
+        "/absolute",
+        "compile-result.json",
+        "runtime-files.json",
+        "manifest.json",
+        "encoder_mpk.tar.gz",
+        "a/../escape",
+    ],
+)
+def test_runtime_files_reject_unsafe_or_reserved_paths(tmp_path, name):
+    from model_registry.artifact import record_runtime_files
+
+    with pytest.raises(ValidationError):
+        record_runtime_files(tmp_path, [name])
+
+
+def test_runtime_files_require_the_complete_declaration_and_regular_files(tmp_path):
+    from model_registry.artifact import record_runtime_files, verify_runtime_files
+
+    with pytest.raises(ValidationError, match="missing"):
+        verify_runtime_files(tmp_path, expected=["predictor.onnx"])
+    (tmp_path / "predictor.onnx").write_bytes(b"predictor")
+    record_runtime_files(tmp_path, ["predictor.onnx"])
+    with pytest.raises(ValidationError, match="declaration"):
+        verify_runtime_files(tmp_path, expected=["predictor.onnx", "joiner.onnx"])
+    (tmp_path / "predictor.onnx").unlink()
+    (tmp_path / "real").write_bytes(b"predictor")
+    (tmp_path / "predictor.onnx").symlink_to(tmp_path / "real")
+    with pytest.raises(ValidationError, match="unsafe"):
+        verify_runtime_files(tmp_path)
