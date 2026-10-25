@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gc
 import json
 import logging
 import multiprocessing
 import os
+import resource
 import shutil
 import tarfile
 import tempfile
@@ -156,9 +158,11 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
             gen2_target,
             quantization_scheme,
         )
+        from afe.apis.error_handling_variables import enable_verbose_error_messages
         from afe.apis.loaded_net import load_model
         from afe.load.importers.general_importer import onnx_source
 
+        enable_verbose_error_messages()
         imported = load_model(
             onnx_source(str(encoder_path), layout="NCHW", flexible_batch_size=False), target=gen2_target
         )
@@ -175,14 +179,38 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
         quantized = imported.quantize(
             calibration_data=None, quantization_config=quantization, model_name=name, log_level=logging.INFO
         )
-        quantized.compile(
-            output_path=str(temporary / "compiled"),
-            batch_size=1,
-            compress=True,
-            deployable=True,
-            preserve=True,
-            layer_norm_use_fp32_intermediates=True,
-        )
+        # Compilation does not reuse the imported FP32 model or the quantized graph.
+        del imported
+        gc.collect()
+
+        def memory_stats():
+            try:
+                groups = Path("/proc/self/cgroup").read_text().splitlines()
+                group = next(line[3:] for line in groups if line.startswith("0::"))
+                directory = Path("/sys/fs/cgroup") / group.lstrip("/")
+                events = (directory / "memory.events").read_text().strip().replace("\n", ", ")
+                peak = (directory / "memory.peak").read_text().strip()
+                return f"{events}; peak_bytes={peak}"
+            except (OSError, StopIteration):
+                return "unavailable"
+
+        logging.info("Compiler memory before: %s", memory_stats())
+        try:
+            quantized.compile(
+                output_path=str(temporary / "compiled"),
+                batch_size=1,
+                compress=True,
+                deployable=True,
+                preserve=False,
+                layer_norm_use_fp32_intermediates=True,
+            )
+        finally:
+            logging.info("Compiler memory after: %s", memory_stats())
+            logging.info(
+                "Peak RSS KiB: process=%d, child=%d",
+                resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+            )
         archives = list((temporary / "compiled").rglob("*_mpk.tar.gz"))
         if len(archives) != 1:
             raise ValueError("Expected one full encoder archive")
