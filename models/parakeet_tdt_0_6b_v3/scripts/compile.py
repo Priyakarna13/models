@@ -126,7 +126,7 @@ def prepare_model(source: Path, temporary: Path, component: Path) -> None:
 
 def compile_model(source: Path, profile: str, output: Path) -> Path:
     # Limit simulator memory on the default 32 GB compile runner.
-    simulator_threads = os.environ.setdefault("SIMA_MLA_SIM_PARALLEL", "2")
+    simulator_threads = os.environ.setdefault("SIMA_MLA_SIM_PARALLEL", "1")
     print(f"MLA simulator threads: {simulator_threads}", flush=True)
     metadata = load_metadata(MODEL_DIR)
     selected = next(item for item in metadata["build_profiles"] if item["id"] == profile)
