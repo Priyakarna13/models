@@ -30,11 +30,10 @@ conversion:
 
 compilation:
   format: onnx
-  # TODO(#392): replace with the source block the Vulcan Model Convert workflow prints for pointnet2_ssg_s3dis.
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
-    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
-    size_bytes: 9917015
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/pointnet2_ssg_s3dis/39b4db06ce5f81e397451b3c5559200eded8c92e24f86d1dc833f08cc1141cb5/40496156362-1/model.onnx
+    sha256: 39b4db06ce5f81e397451b3c5559200eded8c92e24f86d1dc833f08cc1141cb5
+    size_bytes: 3852241
   # The four set-abstraction levels, then the four feature-propagation levels; fp1 also runs the classifier head.
   components: [sa1, sa2, sa3, sa4, fp4, fp3, fp2, fp1]
 
