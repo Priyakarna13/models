@@ -30,6 +30,8 @@ modalities:
     display_name: Embeddings
   landmarks:
     display_name: Landmarks
+  point_cloud:
+    display_name: Point Cloud
 
 # An architecture is the network design a family is built on. Keep it coarse.
 architecture_paradigms:
@@ -37,6 +39,8 @@ architecture_paradigms:
     display_name: CNN
   transformer:
     display_name: Transformer
+  point_based:
+    display_name: Point-based
 
 # A family is the upstream model line, named without generation or size
 # (YOLO, not YOLO26n). The model's id and display_name carry those.
@@ -73,6 +77,10 @@ architectures:
     display_name: Phi
     paradigm: transformer
     allowed_model_types: [llm]
+  pointnet:
+    display_name: PointNet
+    paradigm: point_based
+    allowed_model_types: [vision]
   qwen:
     display_name: Qwen
     paradigm: transformer
