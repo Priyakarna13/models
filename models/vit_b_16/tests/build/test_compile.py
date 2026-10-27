@@ -30,21 +30,20 @@ def _write_archive(path: Path, files: dict[str, bytes]) -> Path:
     return path
 
 
-def test_preprocessing_follows_timms_evaluation_recipe(load_script: Callable[[str], ModuleType]) -> None:
+def test_preprocessing_follows_the_checkpoints_processor(load_script: Callable[[str], ModuleType]) -> None:
     calibration = load_script("calibration")
 
-    assert calibration.SHORTEST_EDGE == 248
-    assert calibration.CROP == 224
+    assert calibration.SIZE == 224
     assert calibration.RESCALE == pytest.approx(1 / 255)
     np.testing.assert_allclose(calibration.MEAN, [0.5, 0.5, 0.5])
     np.testing.assert_allclose(calibration.STD, [0.5, 0.5, 0.5])
 
 
-def test_preprocessing_resizes_the_shortest_edge_then_crops_the_centre(
+def test_preprocessing_resizes_straight_to_the_model_input(
     load_script: Callable[[str], ModuleType],
 ) -> None:
     calibration = load_script("calibration")
-    # A portrait image, red above blue, resizes to 248x496; the centre crop keeps 112 rows of each.
+    # A portrait image, red above blue, squeezes to 224x224 without a crop: 112 rows of each.
     image = Image.new("RGB", (128, 256), (255, 0, 0))
     image.paste((0, 0, 255), (0, 128, 128, 256))
     stream = io.BytesIO()

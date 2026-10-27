@@ -11,10 +11,9 @@ from pathlib import Path, PurePosixPath
 import numpy as np
 from PIL import Image
 
-# timm's ImageNet evaluation recipe for these weights (crop 0.9, so the shorter side is 224 / 0.9 rounded down),
-# with channel constants in HWC order. ViT-B/16 was trained on pixels scaled to [-1, 1]: mean and std 0.5.
-SHORTEST_EDGE = 248
-CROP = 224
+# The checkpoint's declared preprocessing (its preprocessor_config.json): a bilinear resize straight to 224x224,
+# then mean and std 0.5, with channel constants in HWC order.
+SIZE = 224
 RESCALE = np.float32(1 / 255)
 MEAN = np.asarray([0.5, 0.5, 0.5], dtype=np.float32)
 STD = np.asarray([0.5, 0.5, 0.5], dtype=np.float32)
@@ -26,17 +25,9 @@ CLASSES = 1000
 
 
 def preprocess_image(content: bytes) -> np.ndarray:
-    """Decode, resize, crop and normalize one image into a float32 HWC tensor."""
+    """Decode, resize and normalize one image into a float32 HWC tensor."""
     with Image.open(io.BytesIO(content)) as source:
-        image = source.convert("RGB")
-    width, height = image.size
-    if width <= height:
-        size = (SHORTEST_EDGE, int(SHORTEST_EDGE * height / width))
-    else:
-        size = (int(SHORTEST_EDGE * width / height), SHORTEST_EDGE)
-    image = image.resize(size, Image.Resampling.BICUBIC)
-    left, top = (image.width - CROP) // 2, (image.height - CROP) // 2
-    image = image.crop((left, top, left + CROP, top + CROP))
+        image = source.convert("RGB").resize((SIZE, SIZE), Image.Resampling.BILINEAR)
     return (np.asarray(image, dtype=np.float32) * RESCALE - MEAN) / STD
 
 
