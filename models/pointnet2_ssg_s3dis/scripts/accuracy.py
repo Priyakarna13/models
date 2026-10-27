@@ -41,23 +41,32 @@ METRICS = ("miou", "overall_accuracy", "mean_class_accuracy")
 
 
 def load_rooms(directory: Path) -> list[tuple[str, dict[str, np.ndarray]]]:
-    """The area's rooms in name order: xyz (shifted to the room's minimum), rgb and label of every point, the
-    labels renumbered from the dataset's class order to the model's."""
+    """The area's rooms in manifest order: xyz (shifted to the room's minimum), rgb and label of every point, the
+    labels renumbered from the dataset's class order to the model's.
+
+    The dataset holds val/<area>/<room>/{xyz,rgb}.npy and annotations/<area>/<room>.npy, with the class names in
+    annotations/classes.txt.
+    """
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    if (manifest.get("id"), manifest.get("variant"), manifest.get("area")) != ("s3dis", "val", SPLIT):
+    rooms = manifest.get("rooms", [])
+    if (manifest.get("id"), manifest.get("variant")) != ("s3dis", "val") or not all(
+        room.startswith(f"{SPLIT}/") for room in rooms
+    ):
         raise SystemExit(f"{directory} is not the {DATASET} dataset ({SPLIT})")
-    if sorted(manifest.get("classes", [])) != sorted(CLASS_NAMES):
-        raise SystemExit(f"{directory} does not label the model's classes: {manifest.get('classes')}")
+    classes = (directory / "annotations" / "classes.txt").read_text(encoding="utf-8").split()
+    if sorted(classes) != sorted(CLASS_NAMES):
+        raise SystemExit(f"{directory} does not label the model's classes: {classes}")
     # The model scores chair before table and bookcase before sofa; S3DIS archives often order them otherwise.
-    to_model = np.array([CLASS_NAMES.index(name) for name in manifest["classes"]], np.uint8)
-    rooms = []
-    for name in manifest["rooms"]:
-        data = {key: np.load(directory / name / f"{key}.npy", allow_pickle=False) for key in ("xyz", "rgb", "label")}
+    to_model = np.array([CLASS_NAMES.index(name) for name in classes], np.uint8)
+    loaded = []
+    for room in rooms:
+        data = {key: np.load(directory / "val" / room / f"{key}.npy", allow_pickle=False) for key in ("xyz", "rgb")}
+        data["label"] = np.load(directory / "annotations" / f"{room}.npy", allow_pickle=False)
         if data["xyz"].shape != (len(data["label"]), 3) or data["label"].max() >= CLASSES:
-            raise SystemExit(f"{name} is malformed")
+            raise SystemExit(f"{room} is malformed")
         data["label"] = to_model[data["label"]]
-        rooms.append((name, data))
-    return rooms
+        loaded.append((room, data))
+    return loaded
 
 
 def blocks(

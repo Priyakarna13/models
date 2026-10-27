@@ -26,13 +26,17 @@ def _room(size_x: float, size_y: float, points: int, seed: int = 0) -> dict[str,
             "label": rng.randint(0, 13, points).astype(np.uint8)}
 
 
-def _write_dataset(directory: Path, rooms: dict[str, dict[str, np.ndarray]], **manifest) -> Path:
+def _write_dataset(directory: Path, rooms: dict[str, dict[str, np.ndarray]], classes=S3DIS_ORDER, **manifest) -> Path:
+    """An s3dis val archive's layout: val/<area>/<room>/{xyz,rgb}.npy and annotations/<area>/<room>.npy."""
     directory.mkdir()
     for name, room in rooms.items():
-        (directory / name).mkdir()
-        for key, value in room.items():
-            np.save(directory / name / f"{key}.npy", value)
-    content = {"id": "s3dis", "variant": "val", "area": "Area_5", "classes": S3DIS_ORDER, "rooms": list(rooms)}
+        (directory / "val" / name).mkdir(parents=True)
+        np.save(directory / "val" / name / "xyz.npy", room["xyz"])
+        np.save(directory / "val" / name / "rgb.npy", room["rgb"])
+        (directory / "annotations" / name).parent.mkdir(parents=True, exist_ok=True)
+        np.save(directory / "annotations" / f"{name}.npy", room["label"])
+    (directory / "annotations" / "classes.txt").write_text("\n".join(classes) + "\n", encoding="utf-8")
+    content = {"id": "s3dis", "variant": "val", "rooms": list(rooms)}
     (directory / "manifest.json").write_text(json.dumps({**content, **manifest}), encoding="utf-8")
     return directory
 
@@ -41,15 +45,17 @@ def test_labels_are_renumbered_to_the_models_class_order(tmp_path: Path, accurac
     room = _room(2, 2, 100)
     room["label"] = np.array([S3DIS_ORDER.index(name) for name in ("table", "chair", "sofa", "bookcase")] * 25,
                              np.uint8)
-    (name, loaded), = accuracy.load_rooms(_write_dataset(tmp_path / "s3dis-val", {"office_1": room}))
-    assert name == "office_1"
+    (name, loaded), = accuracy.load_rooms(_write_dataset(tmp_path / "s3dis-val", {"Area_5/office_1": room}))
+    assert name == "Area_5/office_1"
     assert [accuracy.CLASS_NAMES[i] for i in loaded["label"][:4]] == ["table", "chair", "sofa", "bookcase"]
 
 
-@pytest.mark.parametrize("case", ["area", "classes"])
+@pytest.mark.parametrize("case", ["area", "classes", "variant"])
 def test_other_datasets_are_refused(tmp_path: Path, case: str, accuracy: ModuleType) -> None:
-    changes = {"area": "Area_1"} if case == "area" else {"classes": S3DIS_ORDER[:12]}
-    directory = _write_dataset(tmp_path / "s3dis-val", {"office_1": _room(2, 2, 10)}, **changes)
+    room = "Area_1/office_1" if case == "area" else "Area_5/office_1"
+    classes = S3DIS_ORDER[:12] if case == "classes" else S3DIS_ORDER
+    changes = {"variant": "cal"} if case == "variant" else {}
+    directory = _write_dataset(tmp_path / "s3dis-val", {room: _room(2, 2, 10)}, classes, **changes)
     with pytest.raises(SystemExit):
         accuracy.load_rooms(directory)
 
