@@ -147,8 +147,10 @@ an application gets from a 720p frame to decoded results, not the MPK alone:
    YOLO26 resizes with `ResizeMode.Letterbox` and keeps Neat's default
    scaling of pixels to [0, 1]. ResNet-50 and RF-DETR's backbone resize with
    `ResizeMode.Stretch` and set `preprocess.preset =
-   NormalizePreset.ImageNet`; without a preset, Neat applies no mean or
-   standard deviation.
+   NormalizePreset.ImageNet`. ViT-B/16 also stretches, and sets its own mean
+   and standard deviation of 0.5 in `preprocess.normalize.mean` and `stddev`
+   with `normalize.has_explicit_stats = True`. Without a preset or explicit
+   statistics, Neat applies no mean or standard deviation.
 
 The report's `workload` names the dataset, the image, the frame, and the
 decoder settings. Preprocessing is part of the measurement and can bound

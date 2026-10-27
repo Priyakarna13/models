@@ -413,11 +413,14 @@ async function checkTaskComparison(browser, base) {
         if (!(await page.locator('.compare-chart-dataset').innerText()).includes('coco-2017')) throw new Error('chart does not identify its accuracy dataset');
         await page.locator('[data-compare-control="task"]').selectOption('image_classification');
         await add.waitFor();
-        const choices = await add.locator('option').allTextContents();
-        if (choices.length !== 4 || !choices.slice(1).every(text => text.includes('ResNet-50'))) throw new Error('comparison mixed tasks or omitted a variant');
+        // Each classifier's variants, and nothing from another task.
+        const classifiers = {'ResNet-50': 3, 'ViT-B/16': 2};
+        const variants = Object.values(classifiers).reduce((total, count) => total + count, 0);
+        const choices = (await add.locator('option').allTextContents()).slice(1);
+        if (choices.length !== variants || !Object.entries(classifiers).every(([name, count]) => choices.filter(text => text.includes(name)).length === count)) throw new Error('comparison mixed tasks or omitted a variant');
         const dataset = await page.locator('.compare-chart-dataset').innerText();
         if (!dataset.includes('imagenet-2012') || !dataset.includes('mini')) throw new Error('chart dataset did not follow the selected task');
-        if (await page.locator('.compare-point').count() !== 3) throw new Error('chart omitted a measured classification variant');
+        if (await page.locator('.compare-point').count() !== variants) throw new Error('chart omitted a measured classification variant');
         await add.selectOption('resnet_50.w16a16');
         if (!(await page.locator('.compare-table').innerText()).includes('W16A16')) throw new Error('selected variant is missing from the table');
         await page.locator('.compare-table .compare-remove').click();

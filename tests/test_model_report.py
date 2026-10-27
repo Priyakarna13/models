@@ -376,7 +376,15 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         assert expected in report["workload"]
     else:
         assert_letterboxed_frame(frame)
-        assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Stretch", "ImageNet")
+        assert options.preprocess.resize.mode == "Stretch"
+        # A classifier normalizes with the ImageNet preset, or with the mean and std of its own preprocessing.
+        normalize = options.preprocess.normalize
+        if getattr(normalize, "has_explicit_stats", False):
+            calibration = runpy.run_path(str(script.parent / "calibration.py"))
+            assert list(normalize.mean) == pytest.approx(calibration["MEAN"].tolist())
+            assert list(normalize.stddev) == pytest.approx(calibration["STD"].tolist())
+        else:
+            assert options.preprocess.preset == "ImageNet"
         assert "ILSVRC2012_val_00000001.webp" in report["workload"]
     assert list(report["components"]) == ["model"]
     assert report["components"]["model"]["mla_layer_stats"] == CORE_REPORT["mla_layer_stats"]
