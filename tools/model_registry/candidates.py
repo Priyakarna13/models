@@ -132,7 +132,8 @@ def publish_candidate(
         raise ValidationError("candidate requires exactly every component of one model/profile")
     roles = {}
     for item in prepared:
-        artifacts = ["llima" if item["files"] else "mpk", *(file["artifact"] for file in item["files"])]
+        files = [*item["files"], *item["runtime_files"]]
+        artifacts = ["llima" if item["files"] else "mpk", *(file["artifact"] for file in files)]
         roles[f"compile-{item['component_id']}"] = {
             "run_type": "model_compile", "artifacts": sorted(artifacts), "inputs": ["source-component"],
         }

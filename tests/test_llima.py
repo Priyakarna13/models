@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 from threading import Lock
 
@@ -18,6 +19,7 @@ from model_registry.artifact import (
     deployment_artifact_name,
     deployment_files,
     record_compile_outputs,
+    record_runtime_files,
     validate_compile_outputs,
     verify_artifact,
     verify_llima,
@@ -25,7 +27,7 @@ from model_registry.artifact import (
 from model_registry.candidates import DEPLOYMENTS, publish_candidate
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
-from model_registry.fingerprints import COMPILE_TOOLING, compile_fingerprint
+from model_registry.fingerprints import COMPILE_TOOLING, RUNTIME_FILES_TOOLING, compile_fingerprint
 from model_registry.model import load_and_validate_model, load_models
 from model_registry.registry import (
     RegistryPublicationError,
@@ -522,19 +524,25 @@ class WhisperModel:
     assert os.access(output / "compile.sh", os.X_OK)
 
 
-def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_runtime_files", [False, True])
+def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeypatch, with_runtime_files):
     root = tmp_path / "repository"
     model_dir = root / "models/fixture_model"
     shutil.copytree(ROOT / "tests/fixtures/fixture_model", model_dir)
     for directory in ("schemas", "taxonomies"):
         shutil.copytree(ROOT / directory, root / directory)
-    for relative in ("deps/manifest.json", *COMPILE_TOOLING):
+    for relative in ("deps/manifest.json", *COMPILE_TOOLING, *RUNTIME_FILES_TOOLING):
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
     path = model_dir / "model.yaml"
     model = yaml.safe_load(path.read_text())
     model["build-on-demand"] = True
+    runtime_files = (
+        ["predictor_cpu_int8.onnx", "joiner_cpu_int8.onnx", "data/tokenizer.json"] if with_runtime_files else []
+    )
+    if runtime_files:
+        model["runtime_files"] = runtime_files
     model["compilation"]["components"] = ["backbone", "decoder"]
     model["build_profiles"]["fixture"]["components"] = {
         "backbone": {"parameters": {}}, "decoder": {"parameters": {}},
@@ -549,6 +557,12 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
     for component in ("backbone", "decoder"):
         output = invocation / component
         output.mkdir(parents=True)
+        if component == "backbone" and runtime_files:
+            for name in runtime_files:
+                path = output / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(name.encode())
+            record_runtime_files(output, runtime_files)
         archive = output / f"fixture_model_fixture_{component}_mpk.tar.gz"
         with tarfile.open(archive, "w:gz") as stream:
             for name, payload in (("layer.elf", b"synthetic-elf"), ("fixture_mpk.json", b"{}")):
@@ -589,6 +603,15 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
                                model_id="fixture_model", build_profile_id="fixture", **registry.args())
     assert result["state"] == "finalized"
     assert set(registry.bindings) == {"compile-backbone", "compile-decoder", "package-default"}
+    role = registry.candidate["contract"]["roles"]["compile-backbone"]
+    assert set(role["artifacts"]) == {"mpk", *(deployment_artifact_name(name) for name in runtime_files)}
+    assert all(key.startswith(result["upload_prefix"]) for key in registry.objects)
+    package = next((tmp_path / "candidate/packages/fixture_model/fixture/packages/default").glob("*.zip"))
+    with zipfile.ZipFile(package) as archive:
+        for output in outputs:
+            assert archive.read(Path(output["mpk_path"]).name) == (invocation / output["mpk_path"]).read_bytes()
+        for name in runtime_files:
+            assert archive.read(name) == (invocation / "backbone" / name).read_bytes()
     finalization = next(index for index, (method, path, _) in enumerate(registry.calls)
                         if path.startswith(DEPLOYMENTS) and path.endswith("/finalize"))
     assert all(index < finalization for index, (_, path, _) in enumerate(registry.calls)

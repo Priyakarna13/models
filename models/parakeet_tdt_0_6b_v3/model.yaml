@@ -1,3 +1,4 @@
+build-on-demand: true
 display_name: Parakeet TDT 0.6B v3
 description: Transcribes multilingual speech in overlapping buffered windows using a token-and-duration decoder.
 model_type: audio
@@ -63,6 +64,8 @@ compilation:
         size_bytes: 392
 build_profiles:
   w8a16:
+    # Elevated Spot capacity requires the grant in sima-neat/vulcan#356.
+    runner_class: expensive
     components:
       model:
         parameters:
