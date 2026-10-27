@@ -216,7 +216,9 @@ class ModelOptions:
     """PyNeat's ModelOptions, with the preprocessing fields the scripts set."""
 
     def __init__(self):
-        self.preprocess = types.SimpleNamespace(resize=types.SimpleNamespace(), normalize=types.SimpleNamespace())
+        self.preprocess = types.SimpleNamespace(
+            resize=types.SimpleNamespace(), color_convert=types.SimpleNamespace(), normalize=types.SimpleNamespace()
+        )
 
 
 class Tensor:
@@ -276,6 +278,10 @@ def assert_letterboxed_frame(tensor):
     assert tensor.options["image_format"] == "RGB"
     assert (frame[:, : IMAGE_COLUMNS.start] == FILL).all() and (frame[:, IMAGE_COLUMNS.stop :] == FILL).all()
     assert (frame[:, IMAGE_COLUMNS] == 200).all()
+
+
+# Models whose inputs are not images benchmark a fixed tensor input on the tensor route.
+TENSOR_INPUT_MODELS = {"pointnet2_ssg_s3dis"}
 
 
 def performance_scripts(*, components: bool) -> list[Path]:
@@ -365,6 +371,8 @@ def test_every_multi_component_script_keeps_cores_mla_stats(script, monkeypatch)
 
     pyneat = types.SimpleNamespace(Model=ScriptModel, BenchmarkOptions=BenchmarkOptions)
     monkeypatch.setitem(sys.modules, "pyneat", pyneat)
+    # A script may import a helper beside it, as it does when run from its directory.
+    monkeypatch.syspath_prepend(str(script.parent))
 
     layer_stats, stage_stats = runpy.run_path(str(script))["mla_stats"](Path("backbone.tar.gz"))
 
@@ -372,7 +380,11 @@ def test_every_multi_component_script_keeps_cores_mla_stats(script, monkeypatch)
     assert (layer_stats, stage_stats) == (CORE_REPORT["mla_layer_stats"], CORE_REPORT["mla_stage_stats"])
 
 
-@pytest.mark.parametrize("script", performance_scripts(components=True), ids=lambda path: path.parents[1].name)
+@pytest.mark.parametrize(
+    "script",
+    [path for path in performance_scripts(components=True) if path.parents[1].name not in TENSOR_INPUT_MODELS],
+    ids=lambda path: path.parents[1].name,
+)
 def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script, monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
         ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
@@ -389,6 +401,42 @@ def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script,
     assert (options.preprocess.kind, options.preprocess.resize.mode, options.preprocess.preset) == (
         "Image", "Stretch", "ImageNet"
     )
+
+
+@pytest.mark.parametrize("model_name", sorted(TENSOR_INPUT_MODELS))
+def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_name, monkeypatch):
+    import numpy as np
+
+    script = REPOSITORY / "models" / model_name / "scripts/performance.py"
+    built, ran = [], []
+
+    class Runner:
+        def run(self, tensors, timeout_ms):
+            ran.append(tensors[0].array.shape)
+            return [types.SimpleNamespace(to_numpy=lambda copy: np.zeros(1, np.float32))]
+
+    class ScriptModel:
+        def build(self, tensors):
+            built.append(tensors[0].array.shape)
+            return Runner()
+
+    monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
+        ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
+    ))
+    monkeypatch.syspath_prepend(str(script.parent))
+    functions = runpy.run_path(str(script))
+
+    options = functions["tensor_options"]()
+    assert (options.preprocess.kind, options.preprocess.resize.enable, options.preprocess.normalize.enable) == (
+        "Tensor", "Off", "Off"
+    )
+    run, runners = functions["pipeline"]({"sa1": ScriptModel()})
+    run("sa1", np.zeros((1, 12, 1024, 32), np.float32))
+    run("sa1", np.zeros((1, 12, 1024, 32), np.float32))
+    # NCHW in, one [H, W, C] tensor to the MPK; the runner is built once.
+    assert built == [(1024, 32, 12)] and ran == [(1024, 32, 12)] * 2 and list(runners) == ["sa1"]
+    with pytest.raises(SystemExit):
+        functions["parse_mpks"](["sa1=a.tar.gz"])
 
 
 def test_model_code_uses_cores_mla_stats_names():
