@@ -75,6 +75,10 @@ pipeline:
 - {cpu: Interpolate to 4096 points}
 - {component: fp1}
 
+accuracy:
+  datasets:
+  - {id: s3dis, variant: val, sha256: d88c5f60ad559aa3051ab7e983f5284e48f309ba294166516b0051284b96f575, size_bytes: 561585555}
+
 performance: {}
 
 reference_metrics:
