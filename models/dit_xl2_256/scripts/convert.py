@@ -63,7 +63,8 @@ def validate_config(root: Path) -> None:
 
 
 def build(root: Path):
-    """The diffusers transformer, its embedders fed the CPU's features, and the VAE, in float32 eval mode."""
+    """The diffusers transformer, its embedders fed the CPU's features, and the VAE with its attention in 4D, in
+    float32 eval mode; also diffusers' own embedding and VAE attention, for the checks."""
     import torch
     from diffusers import AutoencoderKL, Transformer2DModel
 
@@ -84,6 +85,36 @@ def build(root: Path):
     for block in transformer.transformer_blocks:
         block.norm1.emb = FeatureEmbedding(block.norm1.emb)
     vae = AutoencoderKL.from_pretrained(root / "vae", use_safetensors=False).eval()
+
+    def conv(linear, scale=1.0):
+        layer = torch.nn.Conv2d(linear.in_features, linear.out_features, 1)
+        layer.weight.data = linear.weight.data[:, :, None, None] * scale
+        layer.bias.data = linear.bias.data * scale
+        return layer
+
+    class Attention4D(torch.nn.Module):
+        """The decoder's mid-block attention over its 1024 latent pixels as 4D Einsums on [1, 512, 1, 1024], the
+        softmax over keys on axis 1: diffusers' 3D form sends the whole decoder into the compiler's large-tensor
+        segmentation, which outlasts the 6-hour compile job."""
+
+        def __init__(self, attention):
+            super().__init__()
+            if attention.heads != 1 or not attention.residual_connection or attention.rescale_output_factor != 1:
+                raise ValueError("unsupported VAE attention")
+            self.norm = attention.group_norm
+            self.query = conv(attention.to_q, attention.to_q.in_features ** -0.5)
+            self.key, self.value, self.output = conv(attention.to_k), conv(attention.to_v), conv(attention.to_out[0])
+
+        def forward(self, hidden, *args, **kwargs):
+            batch, channels, height, width = hidden.shape
+            tokens = self.norm(hidden).reshape(batch, channels, 1, height * width)
+            query, key, value = self.query(tokens), self.key(tokens), self.value(tokens)
+            probabilities = torch.softmax(torch.einsum("nchw,nchq->nqhw", query, key), dim=1)
+            context = torch.einsum("nchw,nqhc->nqhw", probabilities, value)
+            return self.output(context).reshape(batch, channels, height, width) + hidden
+
+    vae_attention = vae.decoder.mid_block.attentions[0]
+    vae.decoder.mid_block.attentions[0] = Attention4D(vae_attention)
 
     class Part(torch.nn.Module):
         """Blocks part_blocks(part) of diffusers' Transformer2DModel.forward on patched input: the first part also
@@ -126,7 +157,7 @@ def build(root: Path):
             outputs = [part(*inputs[3 * index:3 * index + 3]) for index, part in enumerate(self.parts)]
             return (*outputs, self.vae.decode(inputs[-1] / VAE_SCALING).sample)
 
-    return SideBySide().eval(), transformer, original
+    return SideBySide().eval(), transformer, original, vae_attention
 
 
 def check_embedding(transformer, original) -> None:
@@ -138,6 +169,16 @@ def check_embedding(transformer, original) -> None:
         actual = transformer.transformer_blocks[0].norm1.emb(
             torch.from_numpy(timestep_features(500.0)), torch.from_numpy(class_one_hot(207)))
     np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=1e-4, atol=1e-4, err_msg="embedding")
+
+
+def check_vae_attention(model, original) -> None:
+    """The decoder's 4D attention equals diffusers' own, `original`, on a seeded mid-block input."""
+    import torch
+
+    hidden = torch.from_numpy(np.random.RandomState(0).standard_normal((1, 512, 32, 32)).astype(np.float32))
+    with torch.inference_mode():
+        expected, actual = original(hidden), model.vae.decoder.mid_block.attentions[0](hidden)
+    np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=1e-4, atol=1e-4, err_msg="VAE attention")
 
 
 def store_float16(path: Path, output: Path) -> None:
@@ -262,9 +303,10 @@ def convert(source: Path, output_dir: Path) -> Path:
     output = output_dir / "model.onnx"
     torch.set_num_threads(4)
     validate_config(root)
-    model, transformer, original = build(root)
+    model, transformer, original, vae_attention = build(root)
     check_embedding(transformer, original)
-    del original
+    check_vae_attention(model, vae_attention)
+    del original, vae_attention
     round_to_float16(model)
     inputs = sample_inputs(model)
     check_parts(model, transformer, inputs)
