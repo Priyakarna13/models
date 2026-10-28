@@ -31,7 +31,7 @@ from pathlib import Path
 import model_report
 import numpy as np
 import pyneat
-from pointcloud import CLASS_NAMES, CLASSES, COMPONENTS, FEATURES, POINTS, channels_last, plan, segment
+from pointcloud import CLASS_NAMES, CLASSES, COMPONENTS, FEATURES, POINTS, plan, segment
 
 DATASET = "s3dis-val"
 SPLIT = "Area_5"
@@ -213,15 +213,15 @@ def main(argv: list[str] | None = None) -> int:
     runners = {}
 
     def run(component: str, value: np.ndarray) -> np.ndarray:
-        # Each MPK takes its input as one [H, W, C] tensor.
-        tensor = pyneat.Tensor.from_numpy(channels_last(value), copy=False)
+        # segment() builds each MPK's input as the one [H, W, C] tensor it takes.
+        tensor = pyneat.Tensor.from_numpy(value, copy=False)
         if component not in runners:
             runners[component] = models[component].build([tensor])
         (output,) = runners[component].run([tensor], timeout_ms=60000)
         return output.to_numpy(copy=True)
 
     started = time.monotonic()
-    metrics, per_class, count = evaluate(rooms, lambda features, indices: segment(features, run, indices),
+    metrics, per_class, count = evaluate(rooms, lambda features, indices: segment(features, run, indices, True),
                                          args.limit, args.protocol, PLAN_WORKERS)
     result = {
         "metrics": metrics,

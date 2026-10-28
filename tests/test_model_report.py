@@ -431,9 +431,9 @@ def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_na
         "Tensor", "Off", "Off"
     )
     run, runners = functions["pipeline"]({"sa1": ScriptModel()})
-    run("sa1", np.zeros((1, 12, 1024, 32), np.float32))
-    run("sa1", np.zeros((1, 12, 1024, 32), np.float32))
-    # NCHW in, one [H, W, C] tensor to the MPK; the runner is built once.
+    run("sa1", np.zeros((1024, 32, 12), np.float32))
+    run("sa1", np.zeros((1024, 32, 12), np.float32))
+    # segment(..., channels_last=True) builds the [H, W, C] tensor; it reaches the MPK unchanged, built once.
     assert built == [(1024, 32, 12)] and ran == [(1024, 32, 12)] * 2 and list(runners) == ["sa1"]
     with pytest.raises(SystemExit):
         functions["parse_mpks"](["sa1=a.tar.gz"])

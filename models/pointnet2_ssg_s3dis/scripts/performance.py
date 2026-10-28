@@ -2,12 +2,13 @@
 
 Given one --mpk <component>=<path> per component, in model.yaml order, the script measures the whole model on one
 4096-point block: farthest point sampling, ball queries and 3-NN weights on the CPU (the block's plan), then the
-eight MPKs with the CPU grouping and interpolation between them. Latency runs one block at a time. The plan costs
-far more CPU time than the MPKs take, so the throughput pass computes the plans of upcoming blocks in
-PLAN_WORKERS processes while the main process runs the grouping and the MPKs, as an application streaming blocks
-would. It also records each MPK's MLA layer and stage stats. With --dataset s3dis-val=<extracted directory> the
-input is the first 1 m tile block of one random.Random(0) room, built exactly as accuracy.py builds it; without
-it, pointcloud.synthetic_block(), a fixed seeded block. Either way every run measures the same points.
+eight MPKs with the CPU grouping and interpolation between them. Latency runs one block at a time. The CPU steps
+cost far more time than the MPKs take, so the throughput pass streams blocks as an application with the DevKit's
+16 cores would: PLAN_WORKERS processes compute the plans of upcoming blocks, and NEAT_WORKERS processes, each with
+its own eight MPK runners, group, interpolate and run the MPKs. It also records each MPK's MLA layer and stage
+stats. With --dataset s3dis-val=<extracted directory> the input is the first 1 m tile block of one
+random.Random(0) room, built exactly as accuracy.py builds it; without it, pointcloud.synthetic_block(), a fixed
+seeded block. Either way every run measures the same points.
 
     PYTHONPATH=tools python performance.py --mpk sa1=<archive> ... --mpk fp1=<archive> \
         [--dataset s3dis-val=<extracted directory>] --output <directory>
@@ -16,9 +17,11 @@ it, pointcloud.synthetic_block(), a fixed seeded block. Either way every run mea
 from __future__ import annotations
 
 import argparse
+import collections
 import itertools
 import json
 import multiprocessing
+import os
 import random
 import time
 from pathlib import Path
@@ -26,15 +29,19 @@ from pathlib import Path
 import model_report
 import numpy as np
 import pyneat
-from accuracy import DATASET, SEED, blocks
-from pointcloud import COMPONENTS, POINTS, channels_last, plan, segment, synthetic_block
+from accuracy import DATASET, SEED, blocks, planned
+from pointcloud import COMPONENTS, POINTS, segment, synthetic_block
 
 WARMUP_BLOCKS = 10
 MEASURED_BLOCKS = 200
 MIN_DURATION_S = 60
 TIMEOUT_MS = 10000
-# Processes computing block plans in the throughput pass.
-PLAN_WORKERS = 4
+# Throughput-pass processes: block plans, and segment() with the MPKs. Neat Core runs at most 32 model runners at
+# once, four sets of the eight components.
+PLAN_WORKERS = 8
+NEAT_WORKERS = 4
+# Seconds between the Neat workers' starts: runners built at the same moment can find the accelerator busy.
+NEAT_START_STAGGER_S = 2.0
 
 
 def tensor_options() -> pyneat.ModelOptions:
@@ -64,11 +71,12 @@ def mla_stats(mpk: Path) -> tuple[dict[str, object], dict[str, object]]:
 
 
 def pipeline(models: dict[str, pyneat.Model]):
-    """run(component, input) for pointcloud.segment: each MPK takes its input as one [H, W, C] tensor."""
+    """run(component, input) for pointcloud.segment(..., channels_last=True): each MPK takes its input as the one
+    [H, W, C] tensor segment() builds."""
     runners = {}
 
     def run(component: str, value: np.ndarray) -> np.ndarray:
-        tensor = pyneat.Tensor.from_numpy(channels_last(value), copy=False)
+        tensor = pyneat.Tensor.from_numpy(value, copy=False)
         if component not in runners:
             runners[component] = models[component].build([tensor])
         (output,) = runners[component].run([tensor], timeout_ms=TIMEOUT_MS)
@@ -80,28 +88,60 @@ def pipeline(models: dict[str, pyneat.Model]):
 def measure_latency(run, block: np.ndarray) -> list[float]:
     """Seconds per block, each block's plan and MPKs run in turn with nothing else in flight, after the warm-up."""
     for _ in range(WARMUP_BLOCKS):
-        segment(block, run)
+        segment(block, run, channels_last=True)
     seconds: list[float] = []
     started = time.perf_counter()
     while len(seconds) < MEASURED_BLOCKS or time.perf_counter() - started < MIN_DURATION_S:
         begun = time.perf_counter()
-        logits = segment(block, run)
+        logits = segment(block, run, channels_last=True)
         seconds.append(time.perf_counter() - begun)
     if not np.isfinite(logits).all():
         raise RuntimeError("the pipeline produced non-finite logits")
     return seconds
 
 
-def measure_throughput(run, block: np.ndarray) -> tuple[int, float, pyneat.Telemetry]:
-    """Blocks, seconds and board telemetry with the plans computed ahead in PLAN_WORKERS processes. The measured
-    span starts after WARMUP_BLOCKS blocks and lasts at least MEASURED_BLOCKS blocks and MIN_DURATION_S seconds."""
+def _start_neat_worker(mpks: dict[str, Path], block: np.ndarray, started, ready) -> None:
+    """Pool initializer of a Neat worker: its own models and runners, built one worker at a time."""
+    global _worker_block, _worker_run
+    # The parent's runners set this for Neat's GStreamer runtime; Neat refuses to start with it inherited.
+    os.environ.pop("GST_PLUGIN_SYSTEM_PATH_1_0", None)
+    with started.get_lock():
+        order = started.value
+        started.value += 1
+    time.sleep(order * NEAT_START_STAGGER_S)
+    _worker_block = block
+    _worker_run, _ = pipeline({name: pyneat.Model(str(mpk), tensor_options()) for name, mpk in mpks.items()})
+    segment(block, _worker_run, channels_last=True)
+    with ready.get_lock():
+        ready.value += 1
+
+
+def _segment_planned(indices: dict) -> bool:
+    return bool(np.isfinite(segment(_worker_block, _worker_run, indices, channels_last=True)).all())
+
+
+def measure_throughput(mpks: dict[str, Path], block: np.ndarray) -> tuple[int, float, pyneat.Telemetry]:
+    """Blocks, seconds and board telemetry with blocks streamed through PLAN_WORKERS plan processes and NEAT_WORKERS
+    MPK processes, each keeping at most twice its count of blocks queued. The measured span starts after
+    WARMUP_BLOCKS blocks and lasts at least MEASURED_BLOCKS blocks and MIN_DURATION_S seconds."""
     monitor = pyneat.TelemetryMonitor()
-    xyz = np.ascontiguousarray(block[:, :3])
+    context = multiprocessing.get_context("spawn")
     blocks, started = 0, 0.0
-    # Spawned workers import only NumPy and pointcloud, not the Neat runtime this process holds.
-    with multiprocessing.get_context("spawn").Pool(PLAN_WORKERS) as pool:
-        for indices in pool.imap(plan, itertools.repeat(xyz), chunksize=1):
-            segment(block, run, indices)
+    ready = context.Value("i", 0)
+    with context.Pool(NEAT_WORKERS, _start_neat_worker, (mpks, block, context.Value("i", 0), ready)) as neat:
+        # Stream blocks only once every worker has built its runners.
+        deadline = time.monotonic() + 120 + NEAT_WORKERS * NEAT_START_STAGGER_S
+        while ready.value < NEAT_WORKERS:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"only {ready.value} of {NEAT_WORKERS} Neat workers started")
+            time.sleep(0.5)
+        ahead = collections.deque()
+        for _, _, indices in planned(((block, None) for _ in itertools.count()), PLAN_WORKERS):
+            ahead.append(neat.apply_async(_segment_planned, (indices,)))
+            if len(ahead) <= 2 * NEAT_WORKERS:
+                continue
+            if not ahead.popleft().get():
+                raise RuntimeError("the pipeline produced non-finite logits")
             blocks += 1
             if blocks == WARMUP_BLOCKS:
                 monitor.start()
@@ -109,9 +149,9 @@ def measure_throughput(run, block: np.ndarray) -> tuple[int, float, pyneat.Telem
             elif blocks > WARMUP_BLOCKS:
                 measured, seconds = blocks - WARMUP_BLOCKS, time.perf_counter() - started
                 if measured >= MEASURED_BLOCKS and seconds >= MIN_DURATION_S:
-                    pool.terminate()
+                    neat.terminate()
                     return measured, seconds, monitor.stop()
-    raise RuntimeError("the plan workers stopped before the measured span ended")
+    raise RuntimeError("the block stream stopped before the measured span ended")
 
 
 def dataset_block(directory: Path) -> tuple[str, np.ndarray]:
@@ -151,10 +191,11 @@ def main() -> None:
     run, runners = pipeline(models)
     try:
         seconds = measure_latency(run, block)
-        frames, span, telemetry = measure_throughput(run, block)
     finally:
+        # The throughput pass's workers need every runner Neat Core allows.
         for runner in runners.values():
             runner.close()
+    frames, span, telemetry = measure_throughput(mpks, block)
 
     benchmark = pyneat.BenchmarkReport()
     benchmark.latency_ms = float(np.mean(seconds) * 1000)
@@ -170,7 +211,8 @@ def main() -> None:
         workload=(
             f"{source}: CPU sampling, ball query and 3-NN weights, then the eight "
             f"MPKs with CPU grouping and interpolation between them; throughput with {PLAN_WORKERS} processes "
-            "computing upcoming blocks' sampling, ball queries and 3-NN"
+            f"computing upcoming blocks' sampling, ball queries and 3-NN and {NEAT_WORKERS} processes running "
+            "the grouping, interpolation and MPKs"
         ),
         telemetry=telemetry,
         mla_layer_stats=mla_layer_stats,

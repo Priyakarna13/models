@@ -51,6 +51,54 @@ def test_three_nearest_weights_by_inverse_squared_distance(pointcloud: ModuleTyp
     np.testing.assert_allclose(weight[0], raw / raw.sum(), rtol=1e-6)
 
 
+def _reference_ball_query(pos, centres, radius, neighbors):
+    """PointNet++'s query: the lowest indices within the radius, padded with the first."""
+    index = []
+    for centre in centres:
+        inside = [i for i in range(len(pos)) if ((pos[i] - centre) ** 2).sum() <= radius * radius][:neighbors]
+        index.append(inside + [inside[0]] * (neighbors - len(inside)))
+    return np.array(index)
+
+
+def test_ball_query_matches_the_full_query_across_chunks(pointcloud: ModuleType) -> None:
+    rng = np.random.RandomState(1)
+    pos = rng.uniform(0, 1, (600, 3)).astype(np.float32)
+    centres = pos[rng.choice(600, 150, replace=False)]
+    expected = _reference_ball_query(pos.astype(np.float64), centres.astype(np.float64), 0.2, pointcloud.NEIGHBORS)
+    # Three x-ordered chunks of centres, each measuring only its x window.
+    np.testing.assert_array_equal(pointcloud.ball_query(pos, centres, 0.2, chunk=64), expected)
+
+
+def test_farthest_point_sampling_matches_the_direct_loop(pointcloud: ModuleType) -> None:
+    pos = np.random.RandomState(2).uniform(0, 1, (500, 3)).astype(np.float32)
+    picked, distance, current = [], np.full(500, np.inf, np.float32), 0
+    for _ in range(64):
+        picked.append(current)
+        np.minimum(distance, ((pos - pos[current]) ** 2).sum(1), out=distance)
+        current = int(distance.argmax())
+    assert pointcloud.farthest_point_sample(pos, 64).tolist() == picked
+
+
+def test_three_nearest_matches_a_full_sort(pointcloud: ModuleType) -> None:
+    rng = np.random.RandomState(3)
+    coarse, fine = rng.uniform(0, 1, (64, 3)).astype(np.float32), rng.uniform(0, 1, (300, 3)).astype(np.float32)
+    distances = ((fine[:, None, :] - coarse[None]) ** 2).sum(-1)
+    nearest, weight = pointcloud.three_nearest(coarse, fine)
+    np.testing.assert_array_equal(nearest, np.argsort(distances, axis=1, kind="stable")[:, :3])
+    np.testing.assert_allclose(weight.sum(1), 1.0, rtol=1e-6)
+
+
+def test_channels_last_inputs_hold_the_nchw_values(pointcloud: ModuleType) -> None:
+    block = pointcloud.synthetic_block()
+    indices = pointcloud.plan(block[:, :3])
+    nchw, hwc = pointcloud.group(block, 0, indices), pointcloud.group(block, 0, indices, channels_last=True)
+    np.testing.assert_array_equal(hwc, nchw[0].transpose(1, 2, 0))
+    coarse, skip = np.random.RandomState(4).rand(1024, 64).astype(np.float32), block[:, :5]
+    nchw = pointcloud.interpolate(coarse, skip, 0, indices)
+    np.testing.assert_array_equal(pointcloud.interpolate(coarse, skip, 0, indices, channels_last=True),
+                                  nchw[0].transpose(1, 2, 0))
+
+
 def test_group_puts_features_then_relative_xyz(pointcloud: ModuleType) -> None:
     pos = np.array([[0, 0, 0], [0.05, 0, 0], [3, 3, 3]], np.float32)
     features = np.arange(3 * 9, dtype=np.float32).reshape(3, 9)
@@ -82,9 +130,12 @@ def test_segment_runs_every_component_in_order(layout: str, pointcloud: ModuleTy
             output[0, 2] = 1.0  # every point is a wall
         return output.transpose(0, 2, 3, 1) if layout == "channels_last" else output
 
-    logits = pointcloud.segment(pointcloud.synthetic_block(), run)
+    channels_last = layout == "channels_last"
+    logits = pointcloud.segment(pointcloud.synthetic_block(), run, channels_last=channels_last)
     assert [name for name, _ in calls] == list(pointcloud.COMPONENTS)
-    assert [shape for _, shape in calls] == [pointcloud.INPUT_SHAPES[name] for name in pointcloud.COMPONENTS]
+    # NCHW, or the [H, W, C] tensor each MPK takes.
+    shapes = [pointcloud.INPUT_SHAPES[name] for name in pointcloud.COMPONENTS]
+    assert [shape for _, shape in calls] == [(h, w, c) if channels_last else (n, c, h, w) for n, c, h, w in shapes]
     assert logits.shape == (pointcloud.POINTS, pointcloud.CLASSES)
     assert (logits.argmax(1) == 2).all()
 

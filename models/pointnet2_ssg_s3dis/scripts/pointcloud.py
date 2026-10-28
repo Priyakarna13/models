@@ -3,7 +3,9 @@
 The network runs as eight MPKs, the four set-abstraction (SA) levels and the four feature-propagation (FP)
 levels. Everything between them depends on point coordinates, which the MLA cannot gather by: `plan()` computes
 farthest point sampling, ball queries and 3-NN interpolation weights for a block once, `group()` builds each SA
-input, and `interpolate()` each FP input. Only NumPy is needed.
+input, and `interpolate()` each FP input. NumPy does the work; 3-NN uses OpenCV's vectorized nearest-neighbour
+search, imported where it runs. With channels_last, `group()` and `interpolate()` build the [H, W, C] tensor an MPK
+takes, without NCHW copies.
 """
 
 from __future__ import annotations
@@ -47,14 +49,25 @@ def output_name(component: str) -> str:
 
 
 def farthest_point_sample(pos: np.ndarray, count: int) -> np.ndarray:
-    """Indices of `count` points, each the farthest from those already chosen, starting from point 0."""
+    """Indices of `count` points, each the farthest from those already chosen, starting from point 0.
+
+    The loop is sequential, so each step reuses preallocated per-axis buffers: x, y and z squared and summed in that
+    order, as the [N, 3] form sums them.
+    """
+    x, y, z = (np.ascontiguousarray(pos[:, axis], np.float32) for axis in range(3))
     picked = np.empty(count, np.int64)
     distance = np.full(len(pos), np.inf, np.float32)
+    step, term = np.empty_like(distance), np.empty_like(distance)
     current = 0
     for i in range(count):
         picked[i] = current
-        offset = pos - pos[current]
-        np.minimum(distance, np.einsum("ij,ij->i", offset, offset), out=distance)
+        np.subtract(x, x[current], out=step)
+        np.multiply(step, step, out=step)
+        for axis in (y, z):
+            np.subtract(axis, axis[current], out=term)
+            np.multiply(term, term, out=term)
+            step += term
+        np.minimum(distance, step, out=distance)
         current = int(distance.argmax())
     return picked
 
@@ -70,25 +83,39 @@ def squared_distances(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return total
 
 
-def ball_query(pos: np.ndarray, centres: np.ndarray, radius: float) -> np.ndarray:
+def ball_query(pos: np.ndarray, centres: np.ndarray, radius: float, chunk: int = 64) -> np.ndarray:
     """[S, 32] indices of the lowest-indexed points within `radius` of each centre, padded with the first.
 
     PointNet++'s reference query keeps the lowest indices; padding with a repeat leaves the max pool unchanged.
+    Centres are taken `chunk` at a time in x order, and only points within the chunk's x range plus the radius are
+    measured; the candidates stay in index order, so the result is the full query's.
     """
-    inside = squared_distances(centres, pos) <= radius * radius
-    rank = np.cumsum(inside, axis=1)
-    rows, columns = np.nonzero(inside & (rank <= NEIGHBORS))
-    counts = np.minimum(rank[:, -1], NEIGHBORS)
-    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
-    slots = np.arange(len(rows)) - np.repeat(starts, counts)
-    index = np.repeat(columns[starts][:, None], NEIGHBORS, axis=1)
-    index[rows, slots] = columns
+    pos, centres = np.ascontiguousarray(pos, np.float32), np.ascontiguousarray(centres, np.float32)
+    index = np.empty((len(centres), NEIGHBORS), np.int64)
+    order = np.argsort(centres[:, 0], kind="stable")
+    for start in range(0, len(order), chunk):
+        chosen = order[start:start + chunk]
+        low, high = centres[chosen, 0].min() - radius, centres[chosen, 0].max() + radius
+        candidates = np.nonzero((pos[:, 0] >= low) & (pos[:, 0] <= high))[0]
+        rows, columns = np.nonzero(squared_distances(centres[chosen], pos[candidates]) <= radius * radius)
+        columns = candidates[columns]
+        counts = np.bincount(rows, minlength=len(chosen))
+        starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+        slots = np.arange(len(rows)) - starts[rows]
+        kept = slots < NEIGHBORS
+        found = np.repeat(columns[starts][:, None], NEIGHBORS, axis=1)
+        found[rows[kept], slots[kept]] = columns[kept]
+        index[chosen] = found
     return index
 
 
 def three_nearest(coarse: np.ndarray, fine: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """[N, 3] nearest coarse points of each fine point and their weights 1 / (d^2 + 1e-8), normalized."""
-    nearest = np.argpartition(squared_distances(fine, coarse), 2, axis=1)[:, :3]
+    import cv2  # OpenCV's brute-force K-nearest search; convert.py and compile.py never call this
+
+    _, nearest = cv2.batchDistance(np.ascontiguousarray(fine, np.float32), np.ascontiguousarray(coarse, np.float32),
+                                   cv2.CV_32F, normType=cv2.NORM_L2SQR, K=3)
+    nearest = nearest.astype(np.int64)
     offset = fine[:, None, :] - coarse[nearest]
     distance = np.einsum("nkc,nkc->nk", offset, offset)
     order = np.argsort(distance, axis=1, kind="stable")
@@ -110,20 +137,27 @@ def plan(pos: np.ndarray) -> dict[str, list[np.ndarray]]:
     return {"levels": levels, "centres": centres, "groups": groups, "interpolation": interpolation}
 
 
-def group(features: np.ndarray, level: int, indices: dict[str, list[np.ndarray]]) -> np.ndarray:
-    """SA input [1, C + 3, S, 32]: each neighbour's features, then its xyz minus the centre's."""
+def group(features: np.ndarray, level: int, indices: dict[str, list[np.ndarray]], channels_last: bool = False
+          ) -> np.ndarray:
+    """SA input [1, C + 3, S, 32], or [S, 32, C + 3]: each neighbour's features, then its xyz minus the centre's."""
     pos, neighbours = indices["levels"][level], indices["groups"][level]
-    relative = pos[neighbours] - pos[indices["centres"][level]][:, None, :]
-    grouped = np.concatenate([features[neighbours], relative], axis=-1)
-    return np.ascontiguousarray(grouped.transpose(2, 0, 1)[None], np.float32)
+    grouped = np.empty((*neighbours.shape, features.shape[1] + 3), np.float32)
+    grouped[..., :-3] = features[neighbours]
+    np.subtract(pos[neighbours], pos[indices["centres"][level]][:, None, :], out=grouped[..., -3:])
+    return grouped if channels_last else np.ascontiguousarray(grouped.transpose(2, 0, 1)[None])
 
 
-def interpolate(coarse: np.ndarray, skip: np.ndarray | None, level: int, indices: dict) -> np.ndarray:
-    """FP input [1, C + C_skip, N, 1]: the inverse-distance mix of the 3 nearest coarse features, then the skip."""
+def interpolate(coarse: np.ndarray, skip: np.ndarray | None, level: int, indices: dict,
+                channels_last: bool = False) -> np.ndarray:
+    """FP input [1, C + C_skip, N, 1], or [N, 1, C + C_skip]: the inverse-distance mix of the 3 nearest coarse
+    features, then the skip."""
     nearest, weight = indices["interpolation"][level]
-    mixed = np.einsum("nkc,nk->nc", coarse[nearest], weight)
-    stacked = mixed if skip is None else np.concatenate([mixed, skip], axis=1)
-    return np.ascontiguousarray(stacked.T[None, :, :, None], np.float32)
+    width = coarse.shape[1] + (0 if skip is None else skip.shape[1])
+    stacked = np.empty((len(nearest), 1, width), np.float32)
+    np.einsum("nkc,nk->nc", coarse[nearest], weight, out=stacked[:, 0, :coarse.shape[1]])
+    if skip is not None:
+        stacked[:, 0, coarse.shape[1]:] = skip
+    return stacked if channels_last else np.ascontiguousarray(stacked.transpose(2, 0, 1)[None])
 
 
 def channels_last(value: np.ndarray) -> np.ndarray:
@@ -157,9 +191,11 @@ def synthetic_block(seed: int = 0) -> np.ndarray:
     return np.concatenate([xyz, rgb, normalized], axis=1).astype(np.float32)
 
 
-def segment(x: np.ndarray, run: Callable[[str, np.ndarray], np.ndarray], indices: dict | None = None) -> np.ndarray:
-    """[4096, 13] logits of one block, x being its [4096, 9] features; run(component, input) runs one MPK.
-    `indices` is plan(x[:, :3]) when the caller computed it already, for example in another process."""
+def segment(x: np.ndarray, run: Callable[[str, np.ndarray], np.ndarray], indices: dict | None = None,
+            channels_last: bool = False) -> np.ndarray:
+    """[4096, 13] logits of one block, x being its [4096, 9] features; run(component, input) runs one MPK, its input
+    NCHW, or [H, W, C] with channels_last. `indices` is plan(x[:, :3]) when the caller computed it already, for
+    example in another process."""
     if x.shape != (POINTS, FEATURES):
         raise ValueError(f"a block is [{POINTS}, {FEATURES}], got {x.shape}")
     if indices is None:
@@ -167,11 +203,12 @@ def segment(x: np.ndarray, run: Callable[[str, np.ndarray], np.ndarray], indices
     features = [np.asarray(x, np.float32)]
     for level in range(4):
         component = f"sa{level + 1}"
-        output = run(component, group(features[-1], level, indices))
+        output = run(component, group(features[-1], level, indices, channels_last))
         features.append(points_of(output, OUTPUT_SHAPES[component][1], SA_POINTS[level]))
     upsampled = features[4]
     for level in range(3, -1, -1):
         component = f"fp{level + 1}"
-        output = run(component, interpolate(upsampled, features[level] if level else None, level, indices))
+        output = run(component, interpolate(upsampled, features[level] if level else None, level, indices,
+                                            channels_last))
         upsampled = points_of(output, OUTPUT_SHAPES[component][1], LEVEL_POINTS[level])
     return upsampled
