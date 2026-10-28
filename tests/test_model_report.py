@@ -408,7 +408,7 @@ def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_na
     import numpy as np
 
     script = REPOSITORY / "models" / model_name / "scripts/performance.py"
-    built, ran = [], []
+    built, ran, depths = [], [], []
 
     class Runner:
         def run(self, tensors, timeout_ms):
@@ -416,12 +416,16 @@ def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_na
             return [types.SimpleNamespace(to_numpy=lambda copy: np.zeros(1, np.float32))]
 
     class ScriptModel:
-        def build(self, tensors):
+        def build(self, tensors, run_options):
             built.append(tensors[0].array.shape)
+            depths.append((run_options.queue_depth, run_options.advanced.sync_num_buffers_override))
             return Runner()
 
+    def run_options():
+        return types.SimpleNamespace(queue_depth=4, advanced=types.SimpleNamespace(sync_num_buffers_override=-1))
+
     monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
-        ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
+        ModelOptions=ModelOptions, Tensor=Tensor, RunOptions=run_options, **SCRIPT_PYNEAT,
     ))
     monkeypatch.syspath_prepend(str(script.parent))
     functions = runpy.run_path(str(script))
@@ -435,6 +439,8 @@ def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_na
     run("sa1", np.zeros((1024, 32, 12), np.float32))
     # segment(..., channels_last=True) builds the [H, W, C] tensor; it reaches the MPK unchanged, built once.
     assert built == [(1024, 32, 12)] and ran == [(1024, 32, 12)] * 2 and list(runners) == ["sa1"]
+    # One block at a time: one buffer per runner, so a Neat worker's eight runners fit the DevKit's CMA memory.
+    assert depths == [(1, 1)]
     with pytest.raises(SystemExit):
         functions["parse_mpks"](["sa1=a.tar.gz"])
 

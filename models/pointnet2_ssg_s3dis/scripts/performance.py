@@ -36,11 +36,13 @@ WARMUP_BLOCKS = 10
 MEASURED_BLOCKS = 200
 MIN_DURATION_S = 60
 TIMEOUT_MS = 10000
-# Throughput-pass processes: block plans, and segment() with the MPKs. Each Neat worker holds eight runners and
-# their DMA buffers; on CI's DevKit four workers ran out of contiguous (CMA) memory. Two reach 18 blocks/s on a
-# DevKit, three 20.
-PLAN_WORKERS = 8
-NEAT_WORKERS = 2
+# Throughput-pass processes: block plans, and segment() with the MPKs, which together keep the DevKit's 16 cores
+# busy. Each Neat worker holds eight one-buffer runners; four workers with Neat's default four buffers ran out of
+# the DevKit's contiguous (CMA) memory. On a DevKit, 3 + 12 reach 24.3 blocks/s; 4 + 12, 23.8; 2 + 13, 22.3.
+PLAN_WORKERS = 12
+NEAT_WORKERS = 3
+# Thread counts of OpenMP, OpenBLAS and OpenCV, one per worker process.
+WORKER_THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "OPENCV_FOR_THREADS_NUM")
 # Seconds between the Neat workers' starts: runners built at the same moment can find the accelerator busy.
 NEAT_START_STAGGER_S = 2.0
 
@@ -71,6 +73,15 @@ def mla_stats(mpk: Path) -> tuple[dict[str, object], dict[str, object]]:
     return {"status": layer_stats.status, "layers": layers}, {"status": stage_stats.status, "stages": stages}
 
 
+def run_options() -> pyneat.RunOptions:
+    """Each runner runs one block at a time, so one buffer of each kind suffices; the default four per runner, times
+    eight runners per Neat worker, is what exhausted the DevKit's contiguous (CMA) memory."""
+    options = pyneat.RunOptions()
+    options.queue_depth = 1
+    options.advanced.sync_num_buffers_override = 1
+    return options
+
+
 def pipeline(models: dict[str, pyneat.Model]):
     """run(component, input) for pointcloud.segment(..., channels_last=True): each MPK takes its input as the one
     [H, W, C] tensor segment() builds."""
@@ -79,7 +90,7 @@ def pipeline(models: dict[str, pyneat.Model]):
     def run(component: str, value: np.ndarray) -> np.ndarray:
         tensor = pyneat.Tensor.from_numpy(value, copy=False)
         if component not in runners:
-            runners[component] = models[component].build([tensor])
+            runners[component] = models[component].build([tensor], run_options=run_options())
         (output,) = runners[component].run([tensor], timeout_ms=TIMEOUT_MS)
         return output.to_numpy(copy=True)
 
@@ -127,6 +138,10 @@ def measure_throughput(mpks: dict[str, Path], block: np.ndarray) -> tuple[int, f
     WARMUP_BLOCKS blocks and lasts at least MEASURED_BLOCKS blocks and MIN_DURATION_S seconds."""
     monitor = pyneat.TelemetryMonitor()
     context = multiprocessing.get_context("spawn")
+    # Every worker is one of many processes on 16 cores; library threads would only contend. Spawned workers read
+    # these when they import NumPy and OpenCV, so the latency pass keeps its threads.
+    for name in WORKER_THREAD_VARIABLES:
+        os.environ[name] = "1"
     blocks, started = 0, 0.0
     ready = context.Value("i", 0)
     with context.Pool(NEAT_WORKERS, _start_neat_worker, (mpks, block, context.Value("i", 0), ready)) as neat:
