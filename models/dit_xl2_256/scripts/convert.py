@@ -94,8 +94,11 @@ def build(root: Path):
 
     class Attention4D(torch.nn.Module):
         """The decoder's mid-block attention over its 1024 latent pixels as 4D Einsums on [1, 512, 1, 1024], the
-        softmax over keys on axis 1: diffusers' 3D form sends the whole decoder into the compiler's large-tensor
-        segmentation, which outlasts the 6-hour compile job."""
+        softmax over keys on axis 1, for QUERY_CHUNKS groups of queries at a time: one [1, 1024, 1, 1024] score
+        tensor needs the compiler's large-tensor segmentation, while four of [1, 1024, 1, 256] compile as one MLA
+        segment in about two minutes."""
+
+        QUERY_CHUNKS = 4
 
         def __init__(self, attention):
             super().__init__()
@@ -109,9 +112,11 @@ def build(root: Path):
             batch, channels, height, width = hidden.shape
             tokens = self.norm(hidden).reshape(batch, channels, 1, height * width)
             query, key, value = self.query(tokens), self.key(tokens), self.value(tokens)
-            probabilities = torch.softmax(torch.einsum("nchw,nchq->nqhw", query, key), dim=1)
-            context = torch.einsum("nchw,nqhc->nqhw", probabilities, value)
-            return self.output(context).reshape(batch, channels, height, width) + hidden
+            contexts = []
+            for chunk in torch.chunk(query, self.QUERY_CHUNKS, dim=3):
+                probabilities = torch.softmax(torch.einsum("nchw,nchq->nqhw", chunk, key), dim=1)
+                contexts.append(torch.einsum("nchw,nqhc->nqhw", probabilities, value))
+            return self.output(torch.cat(contexts, dim=3)).reshape(batch, channels, height, width) + hidden
 
     vae_attention = vae.decoder.mid_block.attentions[0]
     vae.decoder.mid_block.attentions[0] = Attention4D(vae_attention)
