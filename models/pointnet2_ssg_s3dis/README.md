@@ -5,8 +5,8 @@
 ## Overview
 
 PointNet++ SSG S3DIS labels every point of an indoor 3D scan as one of 13
-classes, such as wall, floor, chair, or table. It scores every class per point of a
-4096-point block. Four set-abstraction components summarize ever
+classes, such as wall, floor, chair, or table. It scores every class for each
+point of a 4096-point block. Four set-abstraction components summarize ever
 fewer points, and four feature-propagation components carry the summaries back
 to every point; your application groups and interpolates points between them.
 
@@ -17,26 +17,26 @@ points of 1 m × 1 m columns taken every 0.5 m, repeating random points to fill.
 Each point holds 9 values: x and y minus the column center, z; RGB / 255; and
 x, y, z divided by the scan's maximum.
 
-**Between the components.** Per block, from the first three values:
+**Between the components.** Once per block, from the first three values:
 
 1. Farthest point sampling: from point 0, keep the point farthest from those kept, to 1024 points, then 256, 64, and 16.
-2. Ball query: per kept point, the 32 lowest-numbered previous-level points within 0.1, 0.2, 0.4, or 0.8 m, repeating the first.
+2. Ball query: for each kept point, the 32 lowest-numbered previous-level points within 0.1, 0.2, 0.4, or 0.8 m, repeating the first to fill.
 3. Interpolation: each point's 3 nearest points one level coarser, weighted by 1 / (squared distance + 1e-8) and normalized.
 
-Each call takes two blocks along the first axis. `sa1` to `sa4` take 2 × (C + 3) × S × 32: each kept point's 32 neighbours'
+`sa1` to `sa4` take 1 × (C + 3) × S × 32: each kept point's 32 neighbours'
 features (the 9 inputs, then the previous output), then their offsets from it.
-`fp4` to `fp1` take 2 × (C + C_skip) × N × 1: interpolated features, then the
-matching set-abstraction output (none for `fp1`). Pad a lone block with itself.
+`fp4` to `fp1` take 1 × (C + C_skip) × N × 1: interpolated features, then the
+matching set-abstraction output (none for `fp1`).
 
-**Outputs.** `fp1_output` is 2 × 13 × 4096 × 1, a score per class and point.
+**Outputs.** `fp1_output` is 1 × 13 × 4096 × 1, a score per class and point.
 
 1. Take each point's highest-scoring class.
-2. For a scan, keep each point's most frequent label.
+2. For a scan, keep each point's most frequent label over its blocks.
 
 The classes: 0 ceiling, 1 floor, 2 wall, 3 beam, 4 column, 5 window, 6 door,
 7 chair, 8 table, 9 bookcase, 10 sofa, 11 board, 12 clutter.
 
-No Neat decoder handles these outputs.
+No Neat decoder handles these outputs; run the steps on the CPU.
 
 ## Building applications
 

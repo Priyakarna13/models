@@ -38,25 +38,24 @@ compilation:
   components: [sa1, sa2, sa3, sa4, fp4, fp3, fp2, fp1]
 
 build_profiles:
-  # Two blocks per MPK call: each call's fixed cost in Neat Core outweighs the MLA's 30-90 us per component.
   w16a16:
     components:
       sa1:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       sa2:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       sa3:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       sa4:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       fp4:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       fp3:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       fp2:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       fp1:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
 
 pipeline:
 - {cpu: "Sample, ball-query and 3-NN all levels; group 1024 x 32 neighbours"}

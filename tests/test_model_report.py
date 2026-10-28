@@ -240,7 +240,6 @@ PYNEAT_ENUMS = {
     "NormalizePreset": ("ImageNet",),
     "PixelFormat": ("RGB",),
     "TensorMemory": ("EV74",),
-    "TensorLayout": ("HWC",),
     "BoxDecodeType": ("YoloV26", "YoloV26Pose", "YoloV26Seg"),
 }
 SCRIPT_PYNEAT = {
@@ -413,7 +412,6 @@ def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_na
 
     class Runner:
         def run(self, tensors, timeout_ms):
-            assert tensors[0].options["layout"] == "HWC"
             ran.append(tensors[0].array.shape)
             return [types.SimpleNamespace(to_numpy=lambda copy: np.zeros(1, np.float32))]
 
@@ -441,11 +439,8 @@ def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_na
     run("sa1", np.zeros((1024, 32, 12), np.float32))
     # segment(..., channels_last=True) builds the [H, W, C] tensor; it reaches the MPK unchanged, built once.
     assert built == [(1024, 32, 12)] and ran == [(1024, 32, 12)] * 2 and list(runners) == ["sa1"]
-    # One call at a time: one buffer per runner, so a Neat worker's eight runners fit the DevKit's CMA memory.
+    # One block at a time: one buffer per runner, so a Neat worker's eight runners fit the DevKit's CMA memory.
     assert depths == [(1, 1)]
-    # Neat takes HWC as the axis semantic of single and batched tensors.
-    run("sa1", np.zeros((2, 1024, 32, 12), np.float32))
-    assert ran[-1] == (2, 1024, 32, 12)
     with pytest.raises(SystemExit):
         functions["parse_mpks"](["sa1=a.tar.gz"])
 

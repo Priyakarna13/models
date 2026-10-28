@@ -191,54 +191,24 @@ def synthetic_block(seed: int = 0) -> np.ndarray:
     return np.concatenate([xyz, rgb, normalized], axis=1).astype(np.float32)
 
 
-def _stack(inputs: list[np.ndarray], channels_last: bool) -> np.ndarray:
-    """One call's input for several blocks: NCHW along N, or [H, W, C] stacked into NHWC."""
-    if len(inputs) == 1:
-        return inputs[0]
-    return np.stack(inputs) if channels_last else np.concatenate(inputs)
-
-
-def _split(output: np.ndarray, blocks: int, channels: int, count: int) -> list[np.ndarray]:
-    """Each block's [points, channels] from one call's output. A multi-block call is a batched MPK's, whose output
-    is channels-last per block."""
-    if blocks == 1:
-        return [points_of(output, channels, count)]
-    output = np.asarray(output, np.float32)
-    if output.size != blocks * channels * count:
-        raise ValueError(f"expected {blocks} x {channels * count} values, got shape {output.shape}")
-    return [part.reshape(count, channels) for part in output.reshape(blocks, -1)]
-
-
-def segment_blocks(blocks: list[np.ndarray], run: Callable[[str, np.ndarray], np.ndarray],
-                   plans: list[dict] | None = None, channels_last: bool = False) -> list[np.ndarray]:
-    """[4096, 13] logits of each block, each x its [4096, 9] features, with every component called once for all of
-    them: run(component, input) runs one MPK on the blocks' inputs stacked along the batch axis, as an MPK compiled
-    at that batch size takes them. `plans` are plan(x[:, :3]) when the caller computed them already."""
-    for x in blocks:
-        if x.shape != (POINTS, FEATURES):
-            raise ValueError(f"a block is [{POINTS}, {FEATURES}], got {x.shape}")
-    plans = plans or [plan(x[:, :3]) for x in blocks]
-    features = [[np.asarray(x, np.float32)] for x in blocks]
-    for level in range(4):
-        component = f"sa{level + 1}"
-        inputs = [group(f[-1], level, p, channels_last) for f, p in zip(features, plans)]
-        outputs = _split(run(component, _stack(inputs, channels_last)), len(blocks),
-                         OUTPUT_SHAPES[component][1], SA_POINTS[level])
-        for f, output in zip(features, outputs):
-            f.append(output)
-    upsampled = [f[4] for f in features]
-    for level in range(3, -1, -1):
-        component = f"fp{level + 1}"
-        inputs = [interpolate(u, f[level] if level else None, level, p, channels_last)
-                  for u, f, p in zip(upsampled, features, plans)]
-        upsampled = _split(run(component, _stack(inputs, channels_last)), len(blocks),
-                           OUTPUT_SHAPES[component][1], LEVEL_POINTS[level])
-    return upsampled
-
-
 def segment(x: np.ndarray, run: Callable[[str, np.ndarray], np.ndarray], indices: dict | None = None,
             channels_last: bool = False) -> np.ndarray:
     """[4096, 13] logits of one block, x being its [4096, 9] features; run(component, input) runs one MPK, its input
     NCHW, or [H, W, C] with channels_last. `indices` is plan(x[:, :3]) when the caller computed it already, for
     example in another process."""
-    return segment_blocks([x], run, None if indices is None else [indices], channels_last)[0]
+    if x.shape != (POINTS, FEATURES):
+        raise ValueError(f"a block is [{POINTS}, {FEATURES}], got {x.shape}")
+    if indices is None:
+        indices = plan(x[:, :3])
+    features = [np.asarray(x, np.float32)]
+    for level in range(4):
+        component = f"sa{level + 1}"
+        output = run(component, group(features[-1], level, indices, channels_last))
+        features.append(points_of(output, OUTPUT_SHAPES[component][1], SA_POINTS[level]))
+    upsampled = features[4]
+    for level in range(3, -1, -1):
+        component = f"fp{level + 1}"
+        output = run(component, interpolate(upsampled, features[level] if level else None, level, indices,
+                                            channels_last))
+        upsampled = points_of(output, OUTPUT_SHAPES[component][1], LEVEL_POINTS[level])
+    return upsampled
