@@ -5,23 +5,28 @@ Given one --mpk <component>=<path> per component, in model.yaml order, the scrip
 eight MPKs with the CPU grouping and interpolation between them. Latency runs one block at a time. The plan costs
 far more CPU time than the MPKs take, so the throughput pass computes the plans of upcoming blocks in
 PLAN_WORKERS processes while the main process runs the grouping and the MPKs, as an application streaming blocks
-would. It also records each MPK's MLA layer and stage stats. The input is pointcloud.synthetic_block(), a fixed
-seeded block, so every run measures the same points.
+would. It also records each MPK's MLA layer and stage stats. With --dataset s3dis-val=<extracted directory> the
+input is the first 1 m tile block of one random.Random(0) room, built exactly as accuracy.py builds it; without
+it, pointcloud.synthetic_block(), a fixed seeded block. Either way every run measures the same points.
 
-    PYTHONPATH=tools python performance.py --mpk sa1=<archive> ... --mpk fp1=<archive> --output <directory>
+    PYTHONPATH=tools python performance.py --mpk sa1=<archive> ... --mpk fp1=<archive> \
+        [--dataset s3dis-val=<extracted directory>] --output <directory>
 """
 
 from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import multiprocessing
+import random
 import time
 from pathlib import Path
 
 import model_report
 import numpy as np
 import pyneat
+from accuracy import DATASET, SEED, blocks
 from pointcloud import COMPONENTS, POINTS, channels_last, plan, segment, synthetic_block
 
 WARMUP_BLOCKS = 10
@@ -109,6 +114,15 @@ def measure_throughput(run, block: np.ndarray) -> tuple[int, float, pyneat.Telem
     raise RuntimeError("the plan workers stopped before the measured span ended")
 
 
+def dataset_block(directory: Path) -> tuple[str, np.ndarray]:
+    """The first tile block of one random.Random(0) room of s3dis val, as accuracy.py's tile protocol builds it."""
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    room = random.Random(0).choice(manifest["rooms"])
+    points = {key: np.load(directory / "val" / room / f"{key}.npy", allow_pickle=False) for key in ("xyz", "rgb")}
+    features, _ = next(blocks(points, np.random.RandomState(SEED), "tiles"))
+    return f"{DATASET} {room}, its first 1 m tile block", features
+
+
 def parse_mpks(values: list[str]) -> dict[str, Path]:
     mpks = dict(value.split("=", 1) for value in values if "=" in value)
     if len(mpks) != len(values) or list(mpks) != list(COMPONENTS):
@@ -119,6 +133,7 @@ def parse_mpks(values: list[str]) -> dict[str, Path]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
+    parser.add_argument("--dataset", help=f"{DATASET}=<extracted directory>")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
     args = parser.parse_args()
     mpks = parse_mpks(args.mpk)
@@ -126,7 +141,13 @@ def main() -> None:
     for name, mpk in mpks.items():
         mla_layer_stats[name], mla_stage_stats[name] = mla_stats(mpk)
     models = {name: pyneat.Model(str(mpk), tensor_options()) for name, mpk in mpks.items()}
-    block = synthetic_block()
+    if args.dataset:
+        dataset_id, directory = args.dataset.split("=", 1)
+        if dataset_id != DATASET:
+            raise SystemExit(f"--dataset must be {DATASET}, got {dataset_id}")
+        source, block = dataset_block(Path(directory))
+    else:
+        source, block = f"a seeded synthetic {POINTS}-point block", synthetic_block()
     run, runners = pipeline(models)
     try:
         seconds = measure_latency(run, block)
@@ -147,7 +168,7 @@ def main() -> None:
         benchmark,
         models,
         workload=(
-            f"a seeded synthetic {POINTS}-point block: CPU sampling, ball query and 3-NN weights, then the eight "
+            f"{source}: CPU sampling, ball query and 3-NN weights, then the eight "
             f"MPKs with CPU grouping and interpolation between them; throughput with {PLAN_WORKERS} processes "
             "computing upcoming blocks' sampling, ball queries and 3-NN"
         ),

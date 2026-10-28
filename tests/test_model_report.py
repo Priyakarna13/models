@@ -439,6 +439,32 @@ def test_every_tensor_input_pipeline_script_feeds_channels_last_tensors(model_na
         functions["parse_mpks"](["sa1=a.tar.gz"])
 
 
+@pytest.mark.parametrize("model_name", sorted(TENSOR_INPUT_MODELS))
+def test_every_tensor_input_pipeline_script_benchmarks_a_seeded_dataset_block(model_name, monkeypatch, tmp_path):
+    import numpy as np
+
+    monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
+        ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
+    ))
+    script = REPOSITORY / "models" / model_name / "scripts/performance.py"
+    monkeypatch.syspath_prepend(str(script.parent))
+    functions = runpy.run_path(str(script))
+    rng = np.random.default_rng(0)
+    rooms = ["Area_5/office_1", "Area_5/office_2"]
+    for room in rooms:
+        (tmp_path / "val" / room).mkdir(parents=True)
+        np.save(tmp_path / "val" / room / "xyz.npy", (rng.uniform(0, 1, (6000, 3)) * [2, 2, 3]).astype(np.float32))
+        np.save(tmp_path / "val" / room / "rgb.npy", rng.integers(0, 256, (6000, 3)).astype(np.uint8))
+    (tmp_path / "manifest.json").write_text(json.dumps({"id": "s3dis", "variant": "val", "rooms": rooms}))
+
+    source, block = functions["dataset_block"](tmp_path)
+
+    # The room is chosen with random.Random(0); its first tile is the block, 4096 points of 9 features.
+    assert source.startswith("s3dis-val Area_5/office_")
+    assert block.shape == (4096, 9) and block.dtype == np.float32
+    np.testing.assert_array_equal(block, functions["dataset_block"](tmp_path)[1])
+
+
 def test_model_code_uses_cores_mla_stats_names():
     """Core renamed include_layer_stats and total_execution_time_us; PyNeat rejects the old option."""
     old_names = ("include_layer_stats", "total_execution_time_us")
