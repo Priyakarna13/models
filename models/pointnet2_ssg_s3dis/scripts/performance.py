@@ -36,10 +36,11 @@ WARMUP_BLOCKS = 10
 MEASURED_BLOCKS = 200
 MIN_DURATION_S = 60
 TIMEOUT_MS = 10000
-# Throughput-pass processes: block plans, and segment() with the MPKs. Neat Core runs at most 32 model runners at
-# once, four sets of the eight components.
+# Throughput-pass processes: block plans, and segment() with the MPKs. Each Neat worker holds eight runners and
+# their DMA buffers; on CI's DevKit four workers ran out of contiguous (CMA) memory. Two reach 18 blocks/s on a
+# DevKit, three 20.
 PLAN_WORKERS = 8
-NEAT_WORKERS = 4
+NEAT_WORKERS = 2
 # Seconds between the Neat workers' starts: runners built at the same moment can find the accelerator busy.
 NEAT_START_STAGGER_S = 2.0
 
