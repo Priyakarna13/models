@@ -3,7 +3,7 @@
 Two protocols cut each room into 4096-point blocks, centred and featured as yanx27's ScannetDatasetWholeScene does:
 
 - tiles (the default, which CI runs): each non-overlapping 1 m x 1 m column gives one block of 4096 of its points,
-  drawn with a fixed seed; the scored points are the ones drawn. Area 5 is 2,409 blocks.
+  drawn with a fixed seed; the scored points are the ones drawn. Area 5 is 2,348 blocks.
 - whole (yanx27's test_semseg.py, for local runs): columns every 0.5 m, every point of a column resampled into
   blocks, and each point's label voted over the blocks that hold it. Area 5 is 65,955 blocks, too many for a
   DevKit stage.
