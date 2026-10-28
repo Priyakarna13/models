@@ -1,7 +1,9 @@
 """DiT-XL/2 256's component interface and CPU steps, shared by convert.py and compile.py.
 
-Generation runs the transformer once per denoising step and the VAE decoder once at the end. The transformer
-component runs one classifier-free-guidance step: batch slot 0 is the requested class, slot 1 the null class.
+Generation runs the transformer once per classifier-free-guidance slot per denoising step, and the VAE decoder once
+at the end. The transformer's 28 blocks compile as TRANSFORMER_PARTS components of 7 blocks, since the compiler
+runs out of memory on all of them at once; parts pass the 256 tokens on as a [1, 1152, 16, 16] grid. Slot 0 is the
+requested class, slot 1 the null class.
 Its conditioning arrives as inputs every tensor of which is 4D: the timestep's sinusoidal features, which need no
 weights, and the class as a one-hot vector, so each block's label embedding is a matrix product. The helpers
 build both slots as rows; the transformer compiles at batch 1, so a step runs each row as its own call. The CPU
@@ -14,7 +16,11 @@ import math
 
 import numpy as np
 
-COMPONENTS = ("transformer", "vae_decoder")
+TRANSFORMER_PARTS = 4
+BLOCKS = 28
+HIDDEN, PATCH_GRID = 1152, 16
+TRANSFORMER = tuple(f"transformer_{part}" for part in range(TRANSFORMER_PARTS))
+COMPONENTS = (*TRANSFORMER, "vae_decoder")
 GUIDANCE_BATCH = 2
 LATENT_CHANNELS, LATENT_SIZE = 4, 32
 IMAGE_SIZE = 256
@@ -28,19 +34,25 @@ PREDICTION_CHANNELS = 8
 VAE_SCALING = 0.18215
 OPSET = 17
 
-# One batch slot of each component's graph.
+_CONDITIONING = {"timestep_features": (1, TIMESTEP_FEATURES, 1, 1), "class_one_hot": (1, CLASSES + 1, 1, 1)}
+_HIDDEN = (1, HIDDEN, PATCH_GRID, PATCH_GRID)
+# One batch slot of each component's graph. Every transformer part takes the conditioning: each block embeds it.
 INPUT_SHAPES = {
-    "transformer": {
-        "latent": (1, LATENT_CHANNELS, LATENT_SIZE, LATENT_SIZE),
-        "timestep_features": (1, TIMESTEP_FEATURES, 1, 1),
-        "class_one_hot": (1, CLASSES + 1, 1, 1),
-    },
+    "transformer_0": {"latent": (1, LATENT_CHANNELS, LATENT_SIZE, LATENT_SIZE), **_CONDITIONING},
+    **{part: {"previous_hidden": _HIDDEN, **_CONDITIONING} for part in TRANSFORMER[1:]},
     "vae_decoder": {"latent": (1, LATENT_CHANNELS, LATENT_SIZE, LATENT_SIZE)},
 }
 OUTPUT_SHAPES = {
-    "transformer": {"prediction": (1, PREDICTION_CHANNELS, LATENT_SIZE, LATENT_SIZE)},
+    **{part: {"hidden": _HIDDEN} for part in TRANSFORMER[:-1]},
+    TRANSFORMER[-1]: {"prediction": (1, PREDICTION_CHANNELS, LATENT_SIZE, LATENT_SIZE)},
     "vae_decoder": {"image": (1, 3, IMAGE_SIZE, IMAGE_SIZE)},
 }
+
+
+def part_blocks(part: int) -> range:
+    """The transformer blocks transformer_<part> runs."""
+    size = BLOCKS // TRANSFORMER_PARTS
+    return range(part * size, (part + 1) * size)
 
 
 def tensor_name(component: str, name: str) -> str:

@@ -39,6 +39,15 @@ def test_guidance_moves_from_the_null_prediction_toward_the_class(dit: ModuleTyp
     np.testing.assert_allclose(dit.guided_noise(prediction, 4.0), np.full((1, 4, 32, 32), 2.5))
 
 
+def test_transformer_parts_cover_the_blocks_once(dit: ModuleType) -> None:
+    blocks = [index for part in range(dit.TRANSFORMER_PARTS) for index in dit.part_blocks(part)]
+    assert blocks == list(range(dit.BLOCKS))
+    # Each part takes the conditioning; the first the latent, the others the previous part's hidden grid.
+    assert list(dit.INPUT_SHAPES["transformer_0"]) == ["latent", "timestep_features", "class_one_hot"]
+    for previous, part in zip(dit.TRANSFORMER, dit.TRANSFORMER[1:]):
+        assert dit.INPUT_SHAPES[part]["previous_hidden"] == dit.OUTPUT_SHAPES[previous]["hidden"] == (1, 1152, 16, 16)
+
+
 def test_source_must_be_the_pinned_pipeline_files(load_script: Callable[[str], ModuleType]) -> None:
     convert = load_script("convert")
     source = {"type": "file_set", "entrypoint": "model_index.json", "files": [{"path": p} for p in convert.FILES]}

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Export DiT-XL/2 256's transformer step and VAE decoder side by side in one ONNX and check it against PyTorch.
+"""Export DiT-XL/2 256's four transformer parts and its VAE decoder side by side in one ONNX, check the parts against
+the whole transformer, and the ONNX against PyTorch.
 
 The source is the pinned diffusers checkpoint. Each transformer block embeds the timestep and the class itself;
 the export feeds those embedders the CPU's timestep features and a one-hot class (dit.py), which equals
@@ -19,12 +20,17 @@ import numpy as np
 import onnx
 from dit import (
     COMPONENTS,
+    HIDDEN,
     INPUT_SHAPES,
     LATENT_CHANNELS,
     OPSET,
     OUTPUT_SHAPES,
+    PATCH_GRID,
+    TRANSFORMER,
+    TRANSFORMER_PARTS,
     VAE_SCALING,
     class_one_hot,
+    part_blocks,
     tensor_name,
     timestep_features,
 )
@@ -79,15 +85,45 @@ def build(root: Path):
         block.norm1.emb = FeatureEmbedding(block.norm1.emb)
     vae = AutoencoderKL.from_pretrained(root / "vae", use_safetensors=False).eval()
 
+    class Part(torch.nn.Module):
+        """Blocks part_blocks(part) of diffusers' Transformer2DModel.forward on patched input: the first part also
+        embeds the patches, the last also projects and unpatchifies; parts pass tokens on as a [1, 1152, 16, 16]
+        grid."""
+
+        def __init__(self, part):
+            super().__init__()
+            self.part, self.transformer = part, transformer
+
+        def forward(self, value, features, one_hot):
+            batch = value.shape[0]
+            if self.part == 0:
+                hidden = self.transformer.pos_embed(value)
+            else:
+                hidden = value.reshape(batch, HIDDEN, PATCH_GRID * PATCH_GRID).transpose(1, 2)
+            for index in part_blocks(self.part):
+                hidden = self.transformer.transformer_blocks[index](hidden, timestep=features, class_labels=one_hot)
+            if self.part < TRANSFORMER_PARTS - 1:
+                return hidden.transpose(1, 2).reshape(batch, HIDDEN, PATCH_GRID, PATCH_GRID)
+            # DiTTransformer2DModel.forward's output: block 0's conditioning modulates the final norm, then unpatchify.
+            model = self.transformer
+            conditioning = model.transformer_blocks[0].norm1.emb(features, one_hot, hidden_dtype=hidden.dtype)
+            shift, scale = model.proj_out_1(torch.nn.functional.silu(conditioning)).chunk(2, dim=1)
+            hidden = model.proj_out_2(model.norm_out(hidden) * (1 + scale[:, None]) + shift[:, None])
+            patch, channels = model.patch_size, model.out_channels
+            hidden = hidden.reshape(batch, PATCH_GRID, PATCH_GRID, patch, patch, channels)
+            return torch.einsum("nhwpqc->nchpwq", hidden).reshape(batch, channels, PATCH_GRID * patch, PATCH_GRID * patch)
+
     class SideBySide(torch.nn.Module):
+        """Every component on its own inputs, in COMPONENTS order."""
+
         def __init__(self):
             super().__init__()
-            self.transformer, self.vae = transformer, vae
+            self.parts = torch.nn.ModuleList(Part(part) for part in range(TRANSFORMER_PARTS))
+            self.vae = vae
 
-        def forward(self, latent, features, one_hot, decoder_latent):
-            prediction = self.transformer(latent, timestep=features, class_labels=one_hot).sample
-            image = self.vae.decode(decoder_latent / VAE_SCALING).sample
-            return prediction, image
+        def forward(self, *inputs):
+            outputs = [part(*inputs[3 * index:3 * index + 3]) for index, part in enumerate(self.parts)]
+            return (*outputs, self.vae.decode(inputs[-1] / VAE_SCALING).sample)
 
     return SideBySide().eval(), transformer, original
 
@@ -182,16 +218,38 @@ def cosine(expected: np.ndarray, actual: np.ndarray) -> float:
     return float(expected @ actual / (np.linalg.norm(expected) * np.linalg.norm(actual)))
 
 
-def sample_inputs() -> dict[str, np.ndarray]:
-    """The class slot of one guidance step, and a decoder latent."""
+def sample_inputs(model) -> dict[str, np.ndarray]:
+    """The class slot of one guidance step, each part fed the previous part's output, and a decoder latent."""
+    import torch
+
     rng = np.random.RandomState(0)
-    latent = rng.standard_normal(INPUT_SHAPES["transformer"]["latent"]).astype(np.float32)
-    return {
-        tensor_name("transformer", "latent"): latent,
-        tensor_name("transformer", "timestep_features"): timestep_features(500.0)[:1],
-        tensor_name("transformer", "class_one_hot"): class_one_hot(207)[:1],
-        tensor_name("vae_decoder", "latent"): (latent * VAE_SCALING).astype(np.float32),
-    }
+    latent = rng.standard_normal(INPUT_SHAPES["transformer_0"]["latent"]).astype(np.float32)
+    features, one_hot = timestep_features(500.0)[:1], class_one_hot(207)[:1]
+    inputs, value = {}, latent
+    for index, part in enumerate(TRANSFORMER):
+        inputs[tensor_name(part, "latent" if index == 0 else "previous_hidden")] = value
+        inputs[tensor_name(part, "timestep_features")] = features
+        inputs[tensor_name(part, "class_one_hot")] = one_hot
+        with torch.inference_mode():
+            value = model.parts[index](*(torch.from_numpy(item) for item in (value, features, one_hot))).numpy()
+    inputs[tensor_name("vae_decoder", "latent")] = (latent * VAE_SCALING).astype(np.float32)
+    return inputs
+
+
+def check_parts(model, transformer, inputs: dict[str, np.ndarray]) -> None:
+    """The parts in turn equal the whole transformer."""
+    import torch
+
+    names = [tensor_name("transformer_0", name) for name in INPUT_SHAPES["transformer_0"]]
+    with torch.inference_mode():
+        whole = transformer(*(torch.from_numpy(inputs[name]) for name in names[:1]),
+                            timestep=torch.from_numpy(inputs[names[1]]),
+                            class_labels=torch.from_numpy(inputs[names[2]])).sample.numpy()
+        last = TRANSFORMER[-1]
+        chained = model.parts[-1](*(torch.from_numpy(inputs[tensor_name(last, name)])
+                                    for name in INPUT_SHAPES[last])).numpy()
+    if cosine(whole, chained) < MIN_COSINE:
+        raise ValueError(f"the transformer parts disagree with the whole transformer: cosine {cosine(whole, chained)}")
 
 
 def convert(source: Path, output_dir: Path) -> Path:
@@ -207,8 +265,9 @@ def convert(source: Path, output_dir: Path) -> Path:
     check_embedding(transformer, original)
     del original
     round_to_float16(model)
-    inputs = sample_inputs()
-    names = list(inputs)
+    inputs = sample_inputs(model)
+    check_parts(model, transformer, inputs)
+    names = [tensor_name(c, n) for c in COMPONENTS for n in INPUT_SHAPES[c]]
     float32_dir = output_dir / "float32"
     float32_dir.mkdir()
     with torch.inference_mode():
@@ -228,12 +287,12 @@ def convert(source: Path, output_dir: Path) -> Path:
     validate_export(output)
 
     session = ort.InferenceSession(str(output), providers=["CPUExecutionProvider"])
-    actual = session.run(None, inputs)
+    actual = session.run(None, {name: inputs[name] for name in names})
     scores = {tensor_name(c, n): cosine(want, got) for (c, n), want, got in zip(
         [(c, n) for c in COMPONENTS for n in OUTPUT_SHAPES[c]], expected, actual)}
     if min(scores.values()) < MIN_COSINE:
         raise ValueError(f"ONNX Runtime disagrees with PyTorch: cosine {scores}")
-    noise = actual[0][:, :LATENT_CHANNELS]
+    noise = actual[len(TRANSFORMER) - 1][:, :LATENT_CHANNELS]
     print(f"PyTorch/ONNX check passed (cosine {scores}; noise std {noise.std():.3f}): {output}")
     return output
 

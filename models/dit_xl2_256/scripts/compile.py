@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import tarfile
@@ -96,13 +97,12 @@ def split(source: Path, directory: Path) -> dict[str, Path]:
 
 
 def sample(component: str) -> dict[str, np.ndarray]:
-    """One seeded NCHW input set of one batch slot: a noise latent, a mid-schedule timestep and class 207."""
+    """One seeded NCHW input set of one batch slot: a mid-schedule timestep, class 207, and a standard-normal latent
+    or hidden grid."""
     rng = np.random.RandomState(SAMPLE_SEED)
-    latent = rng.standard_normal(INPUT_SHAPES[component]["latent"]).astype(np.float32)
-    if component == "vae_decoder":
-        return {"latent": latent}
-    return {"latent": latent, "timestep_features": timestep_features(500.0)[:1],
-            "class_one_hot": class_one_hot(207)[:1]}
+    conditioning = {"timestep_features": timestep_features(500.0)[:1], "class_one_hot": class_one_hot(207)[:1]}
+    return {name: conditioning[name] if name in conditioning else rng.standard_normal(shape).astype(np.float32)
+            for name, shape in INPUT_SHAPES[component].items()}
 
 
 def _channels_last(value: np.ndarray) -> np.ndarray:
@@ -194,6 +194,14 @@ def _compile(quantized: Any, build_dir: Path, component: str, batch_size: int) -
     return archives[0]
 
 
+def _build(graph: Path, build_dir: Path, name: str, component: str, precision: str,
+           batch_size: int) -> tuple[Path, float]:
+    """Quantize and compile one component: its MPK and its output's cosine with float32."""
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s", force=True)
+    quantized, similarity = quantize(graph, name, component, precision)
+    return _compile(quantized, build_dir, component, batch_size), similarity
+
+
 def compile_model(source: Path, output_dir: Path, profile_id: str) -> dict[str, Path]:
     parameters = _component_parameters(profile_id)
     validate_source(source)
@@ -209,8 +217,10 @@ def compile_model(source: Path, output_dir: Path, profile_id: str) -> dict[str, 
             precision = str(parameters[component]["precision"])
             batch_size = int(parameters[component].get("batch_size", 1))
             logging.info("Quantizing %s as %s", component, precision)
-            quantized, similarity = quantize(graphs[component], name, component, precision)
-            built = _compile(quantized, build / name, component, batch_size)
+            # Each component in its own process: the compiler's memory goes back to the system between them.
+            with multiprocessing.get_context("spawn").Pool(1) as pool:
+                built, similarity = pool.apply(_build, (graphs[component], build / name, name, component, precision,
+                                                        batch_size))
             plan = plan_of(built)
             logging.info("FEASIBILITY %s", json.dumps({"component": component, "batch_size": batch_size,
                                                         "float32_cosine": similarity, **plan}))
