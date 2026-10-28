@@ -2,8 +2,8 @@
 """Split the verified DiT-XL/2 256 ONNX into its transformer and VAE decoder, quantize, and compile each to an MPK.
 
 The converted ONNX holds both components side by side. Each is extracted, quantized to its build precision with one
-seeded sample, compared with float32 ONNX Runtime on that sample, and compiled; the transformer at batch size 2,
-one call per classifier-free-guidance step. For the feasibility check in #406 every MPK's plan is logged as a
+seeded sample, compared with float32 ONNX Runtime on that sample, and compiled at its build profile's batch
+size. For the feasibility check in #406 every MPK's plan is logged as a
 FEASIBILITY line, which processor runs each plugin, instead of being required to be a single MLA segment.
 compile-outputs.json records every MPK and derived graph.
 """

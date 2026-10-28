@@ -44,9 +44,10 @@ compilation:
 build_profiles:
   w16a16:
     components:
-      # Both classifier-free-guidance slots in one call.
+      # Batch 1: the compiler can split the transformer's large tensors only at batch 1 (at batch 2,
+      # CannotSplitLargeTensorError), so a step runs the two guidance slots as two calls.
       transformer:
-        parameters: {precision: w16a16, batch_size: 2}
+        parameters: {precision: w16a16}
       vae_decoder:
         parameters: {precision: w16a16}
 

@@ -3,9 +3,9 @@
 Generation runs the transformer once per denoising step and the VAE decoder once at the end. The transformer
 component runs one classifier-free-guidance step: batch slot 0 is the requested class, slot 1 the null class.
 Its conditioning arrives as inputs every tensor of which is 4D: the timestep's sinusoidal features, which need no
-weights, and the class as a one-hot vector, so each block's label embedding is a matrix product. The graph takes
-one slot; the transformer compiles at batch size GUIDANCE_BATCH, so one call runs both. The CPU combines the two
-noise predictions, runs the DDIM update, and scales the final latent for the decoder.
+weights, and the class as a one-hot vector, so each block's label embedding is a matrix product. The helpers
+build both slots as rows; the transformer compiles at batch 1, so a step runs each row as its own call. The CPU
+combines the two noise predictions, runs the DDIM update, and scales the final latent for the decoder.
 """
 
 from __future__ import annotations

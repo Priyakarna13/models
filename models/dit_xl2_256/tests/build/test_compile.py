@@ -14,8 +14,8 @@ def test_compile_reads_the_declared_build_parameters(load_script: Callable[[str]
     compile_module = load_script("compile")
     parameters = compile_module._component_parameters("w16a16")
     assert list(parameters) == ["transformer", "vae_decoder"]
-    # One transformer call runs both classifier-free-guidance slots.
-    assert parameters["transformer"] == {"precision": "w16a16", "batch_size": 2}
+    # Batch 1: each classifier-free-guidance slot is its own call.
+    assert parameters["transformer"] == {"precision": "w16a16"}
     with pytest.raises(ValueError, match="no build profile"):
         compile_module._component_parameters("w8a8")
 
