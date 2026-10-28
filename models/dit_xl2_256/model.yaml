@@ -34,11 +34,10 @@ conversion:
 
 compilation:
   format: onnx
-  # TODO(#406): replace with the source block the Vulcan Model Convert workflow prints for dit_xl2_256.
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
-    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
-    size_bytes: 9917015
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/dit_xl2_256/11b3e053adc50c71e395a2f57bf1025b9c1d8dacdf0374db28c5a97847c0ff35/40682299548-1/model.onnx
+    sha256: 11b3e053adc50c71e395a2f57bf1025b9c1d8dacdf0374db28c5a97847c0ff35
+    size_bytes: 1451782327
   # One classifier-free-guidance denoising step, then the decoder of the final latent.
   components: [transformer, vae_decoder]
 
