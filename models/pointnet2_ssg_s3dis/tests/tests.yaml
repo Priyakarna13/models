@@ -3,8 +3,13 @@ conversion:
 compile:
   run_tests: true
 accuracy:
-  run_tests: false
-  skip_reason: The expected S3DIS values are recorded from the first DevKit accuracy run on s3dis val (#392 follow-up).
+  run_tests: true
+  expected:
+    w16a16:
+      s3dis-val:
+        miou: 0.5319
+        overall_accuracy: 0.8433
+        mean_class_accuracy: 0.6328
 performance:
   run_tests: true
   expected:
