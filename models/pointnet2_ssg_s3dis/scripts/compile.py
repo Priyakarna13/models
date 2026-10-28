@@ -64,6 +64,9 @@ def _component_parameters(profile_id: str) -> dict[str, dict[str, Any]]:
     parameters = {binding["id"]: binding["parameters"] for binding in profiles[0]["components"]}
     if list(parameters) != list(COMPONENTS):
         raise ValueError(f"build profile {profile_id} must bind {', '.join(COMPONENTS)} in order")
+    # segment_blocks() calls every component with the same blocks.
+    if len({int(item.get("batch_size", 1)) for item in parameters.values()}) != 1:
+        raise ValueError(f"build profile {profile_id} must compile every component at one batch size")
     return parameters
 
 
@@ -156,8 +159,8 @@ def _read_mpk_manifest(archive: Path) -> tuple[list[str], dict[str, Any]]:
         return names, json.load(source)
 
 
-def audit_mpk(archive: Path, component_id: str) -> None:
-    """Require the component on one MLA segment, with no host code, and its declared interface."""
+def audit_mpk(archive: Path, component_id: str, batch_size: int = 1) -> None:
+    """Require the component on one MLA segment, with no host code, and its declared interface at `batch_size`."""
     names, manifest = _read_mpk_manifest(archive)
     elfs = [name for name in names if name.endswith(".elf")]
     shared_objects = [name for name in names if name.endswith(".so") or ".so." in name]
@@ -175,12 +178,12 @@ def audit_mpk(archive: Path, component_id: str) -> None:
             f"found {manifest.get('model_sdk_version')}"
         )
     inputs = {node.get("name"): node.get("size") for node in manifest.get("input_nodes", [])}
-    if inputs != {input_name(component_id): math.prod(INPUT_SHAPES[component_id]) * 4}:
+    if inputs != {input_name(component_id): math.prod(INPUT_SHAPES[component_id]) * 4 * batch_size}:
         raise RuntimeError(f"{component_id} MPK input interface mismatch: {inputs}")
     terminal = plugins[-1] if plugins else {}
     kernel = str(terminal.get("config_params", {}).get("kernel", ""))
     outputs = [node.get("size") for node in terminal.get("output_nodes", [])]
-    if kernel not in OUTPUT_KERNELS or outputs != [math.prod(OUTPUT_SHAPES[component_id]) * 4]:
+    if kernel not in OUTPUT_KERNELS or outputs != [math.prod(OUTPUT_SHAPES[component_id]) * 4 * batch_size]:
         raise RuntimeError(f"{component_id} MPK output interface mismatch: kernel {kernel!r}, sizes {outputs}")
 
 
@@ -207,12 +210,12 @@ def _quantize(graph: Path, name: str, component: str, precision: str, sample: np
         raise RuntimeError(f"quantizing {component} failed; the AFE log above names the cause") from error
 
 
-def _compile(quantized: Any, build_dir: Path, component: str) -> Path:
+def _compile(quantized: Any, build_dir: Path, component: str, batch_size: int) -> Path:
     build_dir.mkdir(parents=True)
     try:
         quantized.compile(
             output_path=str(build_dir),
-            batch_size=1,
+            batch_size=batch_size,
             compress=True,
             log_level=logging.INFO,
             tessellate_parameters=None,
@@ -224,7 +227,7 @@ def _compile(quantized: Any, build_dir: Path, component: str) -> Path:
     archives = sorted(build_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
         raise RuntimeError(f"expected one {component} MPK, found {len(archives)}")
-    audit_mpk(archives[0], component)
+    audit_mpk(archives[0], component, batch_size)
     return archives[0]
 
 
@@ -252,7 +255,8 @@ def compile_model(source: Path, output_dir: Path, profile_id: str) -> dict[str, 
         archives = {}
         for component in COMPONENTS:
             name = _component_name(profile_id, component)
-            built = _compile(quantized[component], build / name, component)
+            built = _compile(quantized[component], build / name, component,
+                             int(parameters[component].get("batch_size", 1)))
             (output_dir / component).mkdir()
             archives[component] = output_dir / component / built.name
             shutil.copyfile(built, archives[component])

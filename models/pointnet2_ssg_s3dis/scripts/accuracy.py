@@ -31,7 +31,7 @@ from pathlib import Path
 import model_report
 import numpy as np
 import pyneat
-from pointcloud import CLASS_NAMES, CLASSES, COMPONENTS, FEATURES, POINTS, plan, segment
+from pointcloud import CLASS_NAMES, CLASSES, COMPONENTS, FEATURES, POINTS, plan, segment_blocks
 
 DATASET = "s3dis-val"
 SPLIT = "Area_5"
@@ -146,10 +146,12 @@ def planned(items: Iterable[tuple], workers: int) -> Iterator[tuple]:
             yield (*item, result.get())
 
 
-def evaluate(rooms, logits_of: Callable[[np.ndarray, dict], np.ndarray], limit: int | None = None,
-             protocol: str = "tiles", workers: int = 0):
+def evaluate(rooms, logits_of: Callable[[list[np.ndarray], list[dict]], list[np.ndarray]], limit: int | None = None,
+             protocol: str = "tiles", workers: int = 0, batch: int = 1):
     """Vote each room's labels over its blocks and score the points that got a vote; return the metrics,
-    per-class IoU and the block count. logits_of takes a block's features and its plan."""
+    per-class IoU and the block count. logits_of takes `batch` blocks' features and plans, as one call of MPKs
+    compiled at that batch size takes them, and returns their logits; the last call is padded with its last
+    block, whose extra logits are dropped. The blocks and their order do not depend on the batch."""
     rng = np.random.RandomState(SEED)
     rooms = rooms[:limit]
     confusion = np.zeros((CLASSES, CLASSES), np.int64)
@@ -168,13 +170,30 @@ def evaluate(rooms, logits_of: Callable[[np.ndarray, dict], np.ndarray], limit: 
         print(f"{index + 1}/{len(rooms)} rooms ({name}), {count} blocks, "
               f"{(time.monotonic() - started) / count * 1000:.0f} ms/block", file=sys.stderr, flush=True)
 
-    for index, features, points, indices in planned(items, workers):
+    def vote(index: int, points: np.ndarray, logits: np.ndarray) -> None:
+        nonlocal votes, current, count
         if index != current:
             if current is not None:
                 score(current)
             votes, current = np.zeros((len(rooms[index][1]["label"]), CLASSES), np.int32), index
-        np.add.at(votes, (points, logits_of(features, indices).argmax(1)), 1)
+        np.add.at(votes, (points, logits.argmax(1)), 1)
         count += 1
+
+    def run(group: list[tuple]) -> None:
+        padding = batch - len(group)
+        features = [item[1] for item in group] + [group[-1][1]] * padding
+        plans = [item[3] for item in group] + [group[-1][3]] * padding
+        for item, logits in zip(group, logits_of(features, plans)):
+            vote(item[0], item[2], logits)
+
+    group = []
+    for item in planned(items, workers):
+        group.append(item)
+        if len(group) == batch:
+            run(group)
+            group = []
+    if group:
+        run(group)
     if current is not None:
         score(current)
     seen, predicted, hit = confusion.sum(1), confusion.sum(0), np.diag(confusion)
@@ -213,16 +232,18 @@ def main(argv: list[str] | None = None) -> int:
     runners = {}
 
     def run(component: str, value: np.ndarray) -> np.ndarray:
-        # segment() builds each MPK's input as the one [H, W, C] tensor it takes.
-        tensor = pyneat.Tensor.from_numpy(value, copy=False)
+        # segment_blocks() builds each MPK's input as the [H, W, C] tensor, or batched NHWC tensor, it takes; Neat
+        # takes HWC as the axis semantic of both.
+        tensor = pyneat.Tensor.from_numpy(value, copy=False, layout=pyneat.TensorLayout.HWC)
         if component not in runners:
             runners[component] = models[component].build([tensor])
         (output,) = runners[component].run([tensor], timeout_ms=60000)
         return output.to_numpy(copy=True)
 
     started = time.monotonic()
-    metrics, per_class, count = evaluate(rooms, lambda features, indices: segment(features, run, indices, True),
-                                         args.limit, args.protocol, PLAN_WORKERS)
+    batch = models[COMPONENTS[0]].compiled_batch_size()
+    metrics, per_class, count = evaluate(rooms, lambda features, plans: segment_blocks(features, run, plans, True),
+                                         args.limit, args.protocol, PLAN_WORKERS, batch)
     result = {
         "metrics": metrics,
         "split": SPLIT,
@@ -231,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         "details": {
             "protocol": args.protocol, "blocks": count, "points_per_block": POINTS, "features": FEATURES,
             "class_iou": per_class,
-            "seconds": round(time.monotonic() - started, 1), "plan_workers": PLAN_WORKERS,
+            "seconds": round(time.monotonic() - started, 1), "plan_workers": PLAN_WORKERS, "blocks_per_call": batch,
         },
     }
     report = model_report.from_accuracy({DATASET: result})

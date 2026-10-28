@@ -103,10 +103,10 @@ def test_evaluate_scores_only_the_points_a_block_holds(script: ModuleType) -> No
     room = _room(2, 2, 20000)
     room["label"][:] = 2  # every point is a wall
 
-    def walls(features, indices):
-        logits = np.zeros((len(features), 13), np.float32)
+    def walls(features, plans):
+        logits = np.zeros((len(features[0]), 13), np.float32)
         logits[:, 2] = 1
-        return logits
+        return [logits] * len(features)
 
     metrics, per_class, count = script.evaluate([("office_1", room)], walls)
     assert count == 4 and metrics["overall_accuracy"] == 1.0 and per_class[2] == 1.0
@@ -120,14 +120,20 @@ def test_plan_workers_give_the_serial_votes(script: ModuleType, model_dir: Path,
     monkeypatch.setattr(script, "plan", importlib.import_module("pointcloud").plan)
     room = _room(2.5, 1.5, 20000)
 
-    def by_plan(features, indices):
+    def by_plan(features, plans):
         # Class of each point: which centre of the last level is nearest, so the votes depend on the plan.
-        logits = np.zeros((len(features), 13), np.float32)
-        logits[np.arange(len(features)), indices["interpolation"][0][0][:, 0] % 13] = 1
+        logits = []
+        for block, indices in zip(features, plans):
+            value = np.zeros((len(block), 13), np.float32)
+            value[np.arange(len(block)), indices["interpolation"][0][0][:, 0] % 13] = 1
+            logits.append(value)
         return logits
 
     serial = script.evaluate([("office_1", room)], by_plan)
     assert script.evaluate([("office_1", room)], by_plan, workers=2) == serial
+    # Six blocks: batches of 2 pair them, batches of 4 pad the last call; the votes do not change.
+    assert script.evaluate([("office_1", room)], by_plan, batch=2) == serial
+    assert script.evaluate([("office_1", room)], by_plan, batch=4) == serial
 
 
 def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path, build_profile: str) -> None:

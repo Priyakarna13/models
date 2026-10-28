@@ -140,17 +140,36 @@ def test_segment_runs_every_component_in_order(layout: str, pointcloud: ModuleTy
     assert (logits.argmax(1) == 2).all()
 
 
+def test_segment_blocks_split_a_batched_call_per_block(pointcloud: ModuleType) -> None:
+    """Two blocks stacked into each call give each block what its own calls give it."""
+
+    def fake_mpk(component, value):
+        # A channels-last component whose every output channel is its point's mean input, block by block.
+        _, channels, points, _ = pointcloud.OUTPUT_SHAPES[component]
+        batched = value.ndim == 4  # [H, W, C], or NHWC for several blocks
+        blocks = value if batched else value[None]
+        means = blocks.reshape(len(blocks), points, -1).mean(-1)
+        output = np.repeat(means[..., None], channels, -1).reshape(len(blocks), points, 1, channels)
+        return output if batched else output[0]
+
+    blocks = [pointcloud.synthetic_block(seed) for seed in (0, 1)]
+    batched = pointcloud.segment_blocks(blocks, fake_mpk, channels_last=True)
+    for block, logits in zip(blocks, batched):
+        np.testing.assert_array_equal(logits, pointcloud.segment(block, fake_mpk, channels_last=True))
+    assert not np.array_equal(batched[0], batched[1])
+
+
 def test_synthetic_block_is_seeded(pointcloud: ModuleType) -> None:
     block = pointcloud.synthetic_block()
     assert block.shape == (pointcloud.POINTS, pointcloud.FEATURES) and block.dtype == np.float32
     np.testing.assert_array_equal(block, pointcloud.synthetic_block())
 
 
-def _mpk_manifest(compile_module: ModuleType, component: str) -> dict:
+def _mpk_manifest(compile_module: ModuleType, component: str, batch: int = 1) -> dict:
     return {
         "model_sdk_version": compile_module.COMPILER_VERSION,
         "input_nodes": [{"name": compile_module.input_name(component),
-                         "size": math.prod(compile_module.INPUT_SHAPES[component]) * 4}],
+                         "size": math.prod(compile_module.INPUT_SHAPES[component]) * 4 * batch}],
         "plugins": [
             {"sequence": 0, "processor": "EV74", "config_params": {"kernel": "cast_transform"}},
             {"sequence": 1, "processor": "MLA", "config_params": {}},
@@ -158,7 +177,7 @@ def _mpk_manifest(compile_module: ModuleType, component: str) -> dict:
                 "sequence": 2,
                 "processor": "EV74",
                 "config_params": {"kernel": "cast_transform"},
-                "output_nodes": [{"size": math.prod(compile_module.OUTPUT_SHAPES[component]) * 4}],
+                "output_nodes": [{"size": math.prod(compile_module.OUTPUT_SHAPES[component]) * 4 * batch}],
             },
         ],
     }
@@ -172,12 +191,12 @@ def _write_mpk(path: Path, manifest: dict) -> None:
             stream.addfile(info, io.BytesIO(content))
 
 
-@pytest.mark.parametrize("case", ["valid", "inputs", "outputs", "kernel", "two_mla", "host", "compiler"])
+@pytest.mark.parametrize("case", ["valid", "inputs", "outputs", "kernel", "two_mla", "host", "compiler", "batch"])
 def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     tmp_path: Path, case: str, load_script: Callable[[str], ModuleType]
 ) -> None:
     compile_module = load_script("compile")
-    manifest = _mpk_manifest(compile_module, "sa2")
+    manifest = _mpk_manifest(compile_module, "sa2", 2)
     plugins = manifest["plugins"]
     if case == "inputs":
         manifest["input_nodes"][0]["size"] -= 4
@@ -193,11 +212,13 @@ def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
         manifest["model_sdk_version"] = "0.0.0"
     archive = tmp_path / "sa2_mpk.tar.gz"
     _write_mpk(archive, manifest)
+    # A batch-2 MPK carries two blocks per call; audited as batch 1, its interface is twice the size.
+    batch = 1 if case == "batch" else 2
     if case == "valid":
-        compile_module.audit_mpk(archive, "sa2")
+        compile_module.audit_mpk(archive, "sa2", batch)
     else:
         with pytest.raises(RuntimeError):
-            compile_module.audit_mpk(archive, "sa2")
+            compile_module.audit_mpk(archive, "sa2", batch)
 
 
 def _stages_onnx(compile_module: ModuleType, path: Path, wrong: bool = False) -> None:
@@ -242,6 +263,8 @@ def test_compile_reads_the_declared_build_parameters(load_script: Callable[[str]
     parameters = compile_module._component_parameters("w16a16")
     assert list(parameters) == list(compile_module.COMPONENTS)
     assert {item["precision"] for item in parameters.values()} == {"w16a16"}
+    # Two blocks per call, the same for every component.
+    assert {item["batch_size"] for item in parameters.values()} == {2}
     with pytest.raises(ValueError, match="no build profile"):
         compile_module._component_parameters("w8a8")
 
