@@ -8,7 +8,9 @@ Two protocols cut each room into 4096-point blocks, centred and featured as yanx
   blocks, and each point's label voted over the blocks that hold it. Area 5 is 65,955 blocks, too many for a
   DevKit stage.
 
-A block runs through the eight MPKs with pointcloud.py's CPU steps between them. Scores are over the scored
+A block runs through the eight MPKs with pointcloud.py's CPU steps between them. As in performance.py's
+throughput loop, the sampling and neighbour plans of upcoming blocks are computed in PLAN_WORKERS processes, so the
+tile protocol fits the DevKit stage; the blocks and their order do not change. Scores are over the scored
 points of the area: per-class IoU, their mean (mIoU), overall accuracy and mean class accuracy.
 
     python accuracy.py --mpk sa1=<archive> ... --mpk fp1=<archive> \
@@ -18,16 +20,18 @@ points of the area: per-class IoU, their mean (mIoU), overall accuracy and mean 
 from __future__ import annotations
 
 import argparse
+import collections
 import json
+import multiprocessing
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 import model_report
 import numpy as np
 import pyneat
-from pointcloud import CLASS_NAMES, CLASSES, COMPONENTS, FEATURES, POINTS, channels_last, segment
+from pointcloud import CLASS_NAMES, CLASSES, COMPONENTS, FEATURES, POINTS, channels_last, plan, segment
 
 DATASET = "s3dis-val"
 SPLIT = "Area_5"
@@ -38,6 +42,8 @@ PADDING = 0.001
 SEED = 0
 PROTOCOLS = ("tiles", "whole")
 METRICS = ("miou", "overall_accuracy", "mean_class_accuracy")
+# One block is ~880 ms on a DevKit, mostly the CPU plan: serially the tile protocol outlasts the 45-minute stage.
+PLAN_WORKERS = 4
 
 
 def load_rooms(directory: Path) -> list[tuple[str, dict[str, np.ndarray]]]:
@@ -121,23 +127,56 @@ def scores(confusion: np.ndarray) -> dict[str, float]:
     }
 
 
-def evaluate(rooms, logits_of: Callable[[np.ndarray], np.ndarray], limit: int | None = None, protocol: str = "tiles"):
+def planned(items: Iterable[tuple], workers: int) -> Iterator[tuple]:
+    """Each (..., features, points) item with plan(features' xyz) appended, in order. With workers, up to twice as
+    many plans are computed ahead in spawned processes, which import only NumPy and pointcloud."""
+    if not workers:
+        for item in items:
+            yield (*item, plan(item[-2][:, :3]))
+        return
+    with multiprocessing.get_context("spawn").Pool(workers) as pool:
+        ahead = collections.deque()
+        for item in items:
+            ahead.append((item, pool.apply_async(plan, (np.ascontiguousarray(item[-2][:, :3]),))))
+            if len(ahead) > 2 * workers:
+                item, result = ahead.popleft()
+                yield (*item, result.get())
+        while ahead:
+            item, result = ahead.popleft()
+            yield (*item, result.get())
+
+
+def evaluate(rooms, logits_of: Callable[[np.ndarray, dict], np.ndarray], limit: int | None = None,
+             protocol: str = "tiles", workers: int = 0):
     """Vote each room's labels over its blocks and score the points that got a vote; return the metrics,
-    per-class IoU and the block count."""
+    per-class IoU and the block count. logits_of takes a block's features and its plan."""
     rng = np.random.RandomState(SEED)
+    rooms = rooms[:limit]
     confusion = np.zeros((CLASSES, CLASSES), np.int64)
     count = 0
     started = time.monotonic()
-    for index, (name, room) in enumerate(rooms[:limit]):
-        votes = np.zeros((len(room["label"]), CLASSES), np.int32)
-        for features, points in blocks(room, rng, protocol):
-            np.add.at(votes, (points, logits_of(features).argmax(1)), 1)
-            count += 1
+    items = ((index, features, points) for index, (_, room) in enumerate(rooms)
+             for features, points in blocks(room, rng, protocol))
+    votes, current = None, None
+
+    def score(index: int) -> None:
+        nonlocal confusion
+        name, room = rooms[index]
         scored = votes.any(1)
         pairs = room["label"][scored].astype(np.int64) * CLASSES + votes[scored].argmax(1)
         confusion += np.bincount(pairs, minlength=CLASSES * CLASSES).reshape(CLASSES, CLASSES)
-        print(f"{index + 1}/{len(rooms[:limit])} rooms ({name}), {count} blocks, "
+        print(f"{index + 1}/{len(rooms)} rooms ({name}), {count} blocks, "
               f"{(time.monotonic() - started) / count * 1000:.0f} ms/block", file=sys.stderr, flush=True)
+
+    for index, features, points, indices in planned(items, workers):
+        if index != current:
+            if current is not None:
+                score(current)
+            votes, current = np.zeros((len(rooms[index][1]["label"]), CLASSES), np.int32), index
+        np.add.at(votes, (points, logits_of(features, indices).argmax(1)), 1)
+        count += 1
+    if current is not None:
+        score(current)
     seen, predicted, hit = confusion.sum(1), confusion.sum(0), np.diag(confusion)
     with np.errstate(invalid="ignore", divide="ignore"):
         per_class = hit / (seen + predicted - hit)
@@ -182,7 +221,8 @@ def main(argv: list[str] | None = None) -> int:
         return output.to_numpy(copy=True)
 
     started = time.monotonic()
-    metrics, per_class, count = evaluate(rooms, lambda features: segment(features, run), args.limit, args.protocol)
+    metrics, per_class, count = evaluate(rooms, lambda features, indices: segment(features, run, indices),
+                                         args.limit, args.protocol, PLAN_WORKERS)
     result = {
         "metrics": metrics,
         "split": SPLIT,
@@ -191,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         "details": {
             "protocol": args.protocol, "blocks": count, "points_per_block": POINTS, "features": FEATURES,
             "class_iou": per_class,
-            "seconds": round(time.monotonic() - started, 1),
+            "seconds": round(time.monotonic() - started, 1), "plan_workers": PLAN_WORKERS,
         },
     }
     report = model_report.from_accuracy({DATASET: result})
