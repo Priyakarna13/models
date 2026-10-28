@@ -111,7 +111,8 @@ def build(root: Path):
             hidden = model.proj_out_2(model.norm_out(hidden) * (1 + scale[:, None]) + shift[:, None])
             patch, channels = model.patch_size, model.out_channels
             hidden = hidden.reshape(batch, PATCH_GRID, PATCH_GRID, patch, patch, channels)
-            return torch.einsum("nhwpqc->nchpwq", hidden).reshape(batch, channels, PATCH_GRID * patch, PATCH_GRID * patch)
+            size = PATCH_GRID * patch
+            return torch.einsum("nhwpqc->nchpwq", hidden).reshape(batch, channels, size, size)
 
     class SideBySide(torch.nn.Module):
         """Every component on its own inputs, in COMPONENTS order."""
