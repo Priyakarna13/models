@@ -73,7 +73,7 @@ def test_tiles_give_one_block_per_occupied_metre(script: ModuleType) -> None:
         assert features.shape == (script.POINTS, script.FEATURES) and features.dtype == np.float32
         assert len(np.unique(points)) == script.POINTS  # enough points: no repeats
         # x, y centred on the 1 m column; rgb in [0, 1]; normalized xyz in [0, 1].
-        assert np.abs(features[:, :2]).max() <= 0.5 + script.PADDING + 1e-6
+        assert np.abs(features[:, :2]).max() <= 0.5 + script.blocks.__globals__["PADDING"] + 1e-6
         assert 0 <= features[:, 3:].min() and features[:, 3:].max() <= 1
 
 
@@ -117,7 +117,8 @@ def test_plan_workers_give_the_serial_votes(script: ModuleType, model_dir: Path,
     # Spawned workers import pointcloud by name, as they do beside accuracy.py on the DevKit.
     monkeypatch.syspath_prepend(str(model_dir / "scripts"))
     monkeypatch.delitem(sys.modules, "pointcloud", raising=False)
-    monkeypatch.setattr(script, "plan", importlib.import_module("pointcloud").plan)
+    # planned() is pointcloud's; give it the plan of the module the workers import.
+    monkeypatch.setitem(script.planned.__globals__, "plan", importlib.import_module("pointcloud").plan)
     room = _room(2.5, 1.5, 20000)
 
     def by_plan(features, indices):

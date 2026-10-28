@@ -29,8 +29,7 @@ from pathlib import Path
 import model_report
 import numpy as np
 import pyneat
-from accuracy import DATASET, SEED, blocks, planned
-from pointcloud import COMPONENTS, POINTS, segment, synthetic_block
+from pointcloud import COMPONENTS, DATASET, POINTS, SEED, blocks, planned, segment, synthetic_block
 
 WARMUP_BLOCKS = 10
 MEASURED_BLOCKS = 200

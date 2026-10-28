@@ -20,26 +20,29 @@ points of the area: per-class IoU, their mean (mIoU), overall accuracy and mean 
 from __future__ import annotations
 
 import argparse
-import collections
 import json
-import multiprocessing
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import model_report
 import numpy as np
 import pyneat
-from pointcloud import CLASS_NAMES, CLASSES, COMPONENTS, FEATURES, POINTS, plan, segment
+from pointcloud import (
+    CLASS_NAMES,
+    CLASSES,
+    COMPONENTS,
+    DATASET,
+    FEATURES,
+    POINTS,
+    SEED,
+    blocks,
+    planned,
+    segment,
+)
 
-DATASET = "s3dis-val"
 SPLIT = "Area_5"
-BLOCK_SIZE = 1.0
-STRIDE = 0.5
-PADDING = 0.001
-# Sampling a column's points is random; a fixed seed makes every run measure the same blocks.
-SEED = 0
 PROTOCOLS = ("tiles", "whole")
 METRICS = ("miou", "overall_accuracy", "mean_class_accuracy")
 # One block is ~880 ms on a DevKit, mostly the CPU plan: serially the tile protocol outlasts the 45-minute stage.
@@ -75,45 +78,6 @@ def load_rooms(directory: Path) -> list[tuple[str, dict[str, np.ndarray]]]:
     return loaded
 
 
-def blocks(
-    room: dict[str, np.ndarray], rng: np.random.RandomState, protocol: str = "tiles"
-) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-    """Each [4096, 9] block of a room and the room indices of its points, under the given protocol."""
-    xyz = room["xyz"].astype(np.float64)
-    rgb = room["rgb"].astype(np.float64) / 255.0
-    low, high = xyz.min(0), xyz.max(0)
-    stride = BLOCK_SIZE if protocol == "tiles" else STRIDE
-    columns_x = int(np.ceil((high[0] - low[0] - BLOCK_SIZE) / stride) + 1)
-    columns_y = int(np.ceil((high[1] - low[1] - BLOCK_SIZE) / stride) + 1)
-    for row in range(columns_y):
-        for column in range(columns_x):
-            end_x = min(low[0] + column * stride + BLOCK_SIZE, high[0])
-            end_y = min(low[1] + row * stride + BLOCK_SIZE, high[1])
-            start_x, start_y = end_x - BLOCK_SIZE, end_y - BLOCK_SIZE
-            inside = np.where(
-                (xyz[:, 0] >= start_x - PADDING) & (xyz[:, 0] <= end_x + PADDING)
-                & (xyz[:, 1] >= start_y - PADDING) & (xyz[:, 1] <= end_y + PADDING)
-            )[0]
-            if inside.size == 0:
-                continue
-            if protocol == "tiles":
-                # One block: 4096 distinct points, or every point and random repeats when the column has fewer.
-                if inside.size >= POINTS:
-                    order = rng.choice(inside, POINTS, replace=False)
-                else:
-                    order = np.concatenate([inside, rng.choice(inside, POINTS - inside.size, replace=True)])
-                    rng.shuffle(order)
-            else:
-                total = int(np.ceil(inside.size / POINTS)) * POINTS
-                extra = rng.choice(inside, total - inside.size, replace=total - inside.size > inside.size)
-                order = np.concatenate([inside, extra])
-                rng.shuffle(order)
-            centred = xyz[order] - [start_x + BLOCK_SIZE / 2, start_y + BLOCK_SIZE / 2, 0.0]
-            features = np.concatenate([centred, rgb[order], xyz[order] / high], axis=1).astype(np.float32)
-            for start in range(0, len(order), POINTS):
-                yield features[start : start + POINTS], order[start : start + POINTS]
-
-
 def scores(confusion: np.ndarray) -> dict[str, float]:
     """mIoU, overall accuracy and mean class accuracy of a [true, predicted] confusion matrix."""
     true_positive = np.diag(confusion).astype(np.float64)
@@ -125,25 +89,6 @@ def scores(confusion: np.ndarray) -> dict[str, float]:
         "overall_accuracy": float(true_positive.sum() / confusion.sum()),
         "mean_class_accuracy": float((true_positive[present] / seen[present]).mean()),
     }
-
-
-def planned(items: Iterable[tuple], workers: int) -> Iterator[tuple]:
-    """Each (..., features, points) item with plan(features' xyz) appended, in order. With workers, up to twice as
-    many plans are computed ahead in spawned processes, which import only NumPy and pointcloud."""
-    if not workers:
-        for item in items:
-            yield (*item, plan(item[-2][:, :3]))
-        return
-    with multiprocessing.get_context("spawn").Pool(workers) as pool:
-        ahead = collections.deque()
-        for item in items:
-            ahead.append((item, pool.apply_async(plan, (np.ascontiguousarray(item[-2][:, :3]),))))
-            if len(ahead) > 2 * workers:
-                item, result = ahead.popleft()
-                yield (*item, result.get())
-        while ahead:
-            item, result = ahead.popleft()
-            yield (*item, result.get())
 
 
 def evaluate(rooms, logits_of: Callable[[np.ndarray, dict], np.ndarray], limit: int | None = None,
