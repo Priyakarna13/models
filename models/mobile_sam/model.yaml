@@ -28,11 +28,10 @@ conversion:
 
 compilation:
   format: onnx
-  # TODO(#390): replace with the source block the Vulcan Model Convert workflow prints for mobile_sam.
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
-    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
-    size_bytes: 9917015
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/mobile_sam/b3dd739c9b4500d0375b56e5cbfdfcb3cfc63ee4ed13a40ba20f2df8616afaf0/40832407006-1/model.onnx
+    sha256: b3dd739c9b4500d0375b56e5cbfdfcb3cfc63ee4ed13a40ba20f2df8616afaf0
+    size_bytes: 52748077
   # The encoder runs once per image; the decoder once per prompt on its embedding.
   components: [image_encoder, prompt_decoder]
 
