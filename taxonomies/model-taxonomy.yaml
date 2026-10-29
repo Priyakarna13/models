@@ -85,6 +85,10 @@ architectures:
     display_name: RF-DETR
     paradigm: transformer
     allowed_model_types: [vision]
+  vjepa:
+    display_name: V-JEPA
+    paradigm: transformer
+    allowed_model_types: [vision]
   whisper:
     display_name: Whisper
     paradigm: transformer
@@ -142,6 +146,9 @@ tasks:
     allowed_model_types: [vision]
   semantic_segmentation:
     display_name: Semantic Segmentation
+    allowed_model_types: [vision]
+  video_feature_extraction:
+    display_name: Video Feature Extraction
     allowed_model_types: [vision]
   conversational_ai:
     display_name: Conversational AI

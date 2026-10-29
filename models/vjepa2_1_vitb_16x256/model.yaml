@@ -1,0 +1,80 @@
+display_name: V-JEPA 2.1 ViT-B 16x256
+description: Encodes a 16-frame video clip into spatio-temporal patch features with Meta's self-supervised V-JEPA 2.1.
+model_type: vision
+tasks: [video_feature_extraction]
+
+modalities:
+  inputs: [video]
+  outputs: [embeddings]
+
+architecture: vjepa
+
+license:
+  spdx: MIT
+  redistribution: allowed
+  attribution: V-JEPA 2.1 by Meta Platforms, Inc. and affiliates, distributed under the MIT License.
+
+upstream:
+  repository: https://huggingface.co/mnmly/vjepa2.1-vit-base-384
+  revision: ee3ee8b2a67ed07ca2aa0eb1b95593e1bc16613d
+  derived_from: https://github.com/facebookresearch/vjepa2/tree/204698b45b3712590f06245fbfba32d3be539812
+
+conversion:
+  # Every tensor equals the ema_encoder of Meta's vjepa2_1_vitb_dist_vitG_384.pt, the weights upstream's hub entry
+  # vjepa2_1_vit_base_384 loads; Meta publishes that file outside Hugging Face only.
+  source:
+    uri: hf://models/mnmly/vjepa2.1-vit-base-384@ee3ee8b2a67ed07ca2aa0eb1b95593e1bc16613d/model.safetensors
+    sha256: e89509a1d64dbd117b17d5c32a1d0b1892d3698d75249e4a001cb490ca7e4017
+    size_bytes: 347347384
+
+compilation:
+  format: onnx
+  # Placeholder until Vulcan Model Convert uploads this model's ONNX.
+  source:
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
+    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
+    size_bytes: 9917015
+  # The 12 transformer blocks run as three parts of four, compiled apart, since the whole encoder needs more memory
+  # to compile than a CI runner has.
+  components: [encoder_0, encoder_1, encoder_2]
+
+calibrations:
+- id: coco-2017-cal
+  dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
+
+build_profiles:
+  w16a16:
+    components:
+      encoder_0:
+        parameters: {precision: w16a16}
+      encoder_1:
+        parameters: {precision: w16a16}
+      encoder_2:
+        parameters: {precision: w16a16}
+
+  w8a8:
+    # Each calibration clip is a 16-frame pan across one COCO image (calibration.py), since the registry has no
+    # video dataset; each later part calibrates on the float32 tokens of the parts before it.
+    calibration_dataset: coco-2017-cal
+    components:
+      encoder_0:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+      encoder_1:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+      encoder_2:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+
+pipeline:
+- {cpu: "Resize each frame's shorter side to 256, centre-crop to 256x256, normalize, stack tubelets"}
+- {component: encoder_0}
+- {component: encoder_1}
+- {component: encoder_2}
+
+# Scored against the float32 ONNX on pan clips across COCO images, since the registry has no video dataset.
+numerical_fidelity:
+  status: diagnostic
+  dataset: {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
+  selection: {method: seeded_random_without_replacement, seed: 42, offset: 0, samples: 8}
+  outputs: [features]
+
+performance: {}
