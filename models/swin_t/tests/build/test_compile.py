@@ -271,15 +271,17 @@ def test_score_scale_folds_into_the_query_projection(
             helper.make_node("Softmax", ["biased"], ["probabilities"], axis=-1),
             helper.make_node("MatMul", ["probabilities", "v"], ["attended"]),
         ],
-        {"tokens": [4, 49, 16]},
+        {"tokens": [4, 49, 32]},
         ["attended"],
         {
-            "qkv_weight": rng.standard_normal((16, 48)).astype(np.float32),
-            "widths": np.asarray([16, 16, 16], np.int64),
-            "heads": np.asarray([4, 49, 2, 8], np.int64),
-            "root": np.asarray(np.sqrt(8), np.float32),
+            "qkv_weight": rng.standard_normal((32, 96)).astype(np.float32),
+            "widths": np.asarray([32, 32, 32], np.int64),
+            # Heads of 16 channels scale scores by 1/4; a power of two moves through the projection exactly,
+            # so the comparison does not depend on how a NumPy build rounds.
+            "heads": np.asarray([4, 49, 2, 16], np.int64),
+            "root": np.asarray(4.0, np.float32),
             "bias": rng.standard_normal((1, 2, 49, 49)).astype(np.float32),
-            **{f"{name}_bias": rng.standard_normal(16).astype(np.float32) for name in "qkv"},
+            **{f"{name}_bias": rng.standard_normal(32).astype(np.float32) for name in "qkv"},
         },
     )
 

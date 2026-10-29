@@ -414,10 +414,12 @@ async function checkTaskComparison(browser, base) {
         await page.locator('[data-compare-control="task"]').selectOption('image_classification');
         await add.waitFor();
         const choices = await add.locator('option').allTextContents();
-        if (choices.length !== 4 || !choices.slice(1).every(text => text.includes('ResNet-50'))) throw new Error('comparison mixed tasks or omitted a variant');
+        // The image classifiers are ResNet-50 and Swin-T, three variants each.
+        const classifiers = ['ResNet-50', 'Swin-T'];
+        if (choices.length !== 7 || !choices.slice(1).every(text => classifiers.some(name => text.includes(name)))) throw new Error('comparison mixed tasks or omitted a variant');
         const dataset = await page.locator('.compare-chart-dataset').innerText();
         if (!dataset.includes('imagenet-2012') || !dataset.includes('mini')) throw new Error('chart dataset did not follow the selected task');
-        if (await page.locator('.compare-point').count() !== 3) throw new Error('chart omitted a measured classification variant');
+        if (await page.locator('.compare-point').count() !== 6) throw new Error('chart omitted a measured classification variant');
         await add.selectOption('resnet_50.w16a16');
         if (!(await page.locator('.compare-table').innerText()).includes('W16A16')) throw new Error('selected variant is missing from the table');
         await page.locator('.compare-table .compare-remove').click();
