@@ -29,11 +29,10 @@ conversion:
 
 compilation:
   format: onnx
-  # Placeholder until Vulcan Model Convert uploads this model's ONNX.
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
-    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
-    size_bytes: 9917015
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/vjepa2_1_vitb_16x256/35ea4accc8e9956bacf9b0531a193b45bdcb09f9eb7478cdaac494829aa535ba/40903717415-1/model.onnx
+    sha256: 35ea4accc8e9956bacf9b0531a193b45bdcb09f9eb7478cdaac494829aa535ba
+    size_bytes: 357943586
   # The 12 transformer blocks run as three parts of four, compiled apart, since the whole encoder needs more memory
   # to compile than a CI runner has.
   components: [encoder_0, encoder_1, encoder_2]
