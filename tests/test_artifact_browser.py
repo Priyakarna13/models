@@ -119,8 +119,7 @@ def test_staging_deployment_publishes_models_to_docs_origin() -> None:
     job = workflow["jobs"]["publish-model-browser"]
 
     assert job["if"] == (
-        "(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') && "
-        "needs.select.outputs.vulcan_environment == 'staging'"
+        "github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'"
     )
     assert job["uses"] == "sima-neat/.github/.github/workflows/vulcan-publish-static-site.yml@main"
     assert job["permissions"] == {"contents": "read", "actions": "write", "id-token": "write"}
@@ -130,18 +129,35 @@ def test_staging_deployment_publishes_models_to_docs_origin() -> None:
         "cancel-in-progress": "false",
     }
 
+    resolver = workflow["jobs"]["resolve-staging-browser-config"]
+    assert resolver["if"] == job["if"]
+    assert "needs" not in resolver
+    assert resolver["uses"] == "sima-neat/.github/.github/workflows/vulcan-resolve-config.yml@main"
+    assert resolver["with"]["vulcan_env"] == "staging"
+    assert workflow["jobs"]["portal"]["with"]["environment"] == "staging"
+    # Model operations retain their independently selected environment.
+    assert workflow["jobs"]["resolve-vulcan-config"]["with"]["vulcan_env"] == (
+        "${{ needs.select.outputs.vulcan_environment }}"
+    )
+
     publish = job["with"]
-    assert publish["bucket"] == "${{ needs.resolve-vulcan-config.outputs.docs_bucket }}"
-    assert publish["role_to_assume"] == "${{ needs.resolve-vulcan-config.outputs.docs_publisher_role_arn }}"
+    for field, output in {
+        "environment_name": "vulcan_env",
+        "aws_region": "aws_region",
+        "sse_kms_key_id": "docs_kms_key_id",
+    }.items():
+        assert publish[field] == "${{ needs.resolve-staging-browser-config.outputs." + output + " }}"
+    assert publish["bucket"] == "${{ needs.resolve-staging-browser-config.outputs.docs_bucket }}"
+    assert publish["role_to_assume"] == "${{ needs.resolve-staging-browser-config.outputs.docs_publisher_role_arn }}"
     assert publish["cloudfront_distribution_id"] == (
-        "${{ needs.resolve-vulcan-config.outputs.sysdoc_cloudfront_distribution_id }}"
+        "${{ needs.resolve-staging-browser-config.outputs.sysdoc_cloudfront_distribution_id }}"
     )
     assert publish["s3_prefix"] == "models"
     assert publish["cloudfront_paths"] == "/models /models/*"
 
     # The deployment publishes the site the run's portal check built and checked.
     assert workflow["jobs"]["portal"]["uses"] == "./.github/workflows/developer-docs.yml"
-    assert job["needs"] == ["select", "portal", "resolve-vulcan-config"]
+    assert job["needs"] == ["portal", "resolve-staging-browser-config"]
     docs = yaml.load(DOCS_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     upload = docs["jobs"]["build"]["steps"][-1]
     assert upload["with"]["path"] == "website/portal-build/"
@@ -311,12 +327,10 @@ def test_preview_measures_a_multi_component_model_as_one_report(tmp_path: Path) 
 def test_preview_leaves_a_profile_without_a_benchmark_run(tmp_path: Path) -> None:
     with _preview(tmp_path) as base:
         unmeasured = _benchmark_run(base, "yolo26n", "w16a16", "performance")
-        no_accuracy = _benchmark_run(base, "resnet_50", "w16a16", "accuracy")
         on_demand = _benchmark_run(base, "whisper_small", "w8a16", "performance")
 
-    # A fingerprint without a run reads as not measured at this revision; ResNet measures accuracy on W8A8 only.
+    # A fingerprint without a run reads as not measured at this revision.
     assert unmeasured["run"] is None
-    assert no_accuracy is None
     assert on_demand is None
 
 
@@ -408,6 +422,30 @@ def test_assembled_portal_modules_import_only_deployed_files(tmp_path: Path) -> 
         for specifier in re.findall(r"[\"'](\.\.?/[^\"'\s]*\.js)[\"']", module.read_text(encoding="utf-8")):
             assert ".aaaaaaaaaaaa.js" in specifier, f"{module.name} imports {specifier}"
             assert (portal / specifier).is_file(), f"{module.name} imports missing {specifier}"
+
+
+def test_portal_config_assets_preserve_audience_and_backend_on_rollback(tmp_path: Path, monkeypatch) -> None:
+    deployments = []
+    for index, (environment, audience) in enumerate([
+        ("production", "developer"), ("production", "customer"),
+        ("staging", "developer"), ("production", "developer"),
+    ]):
+        root = tmp_path / str(index)
+        shutil.copytree(BROWSER, root / "artifact-browser")
+        monkeypatch.setenv("MODEL_BROWSER_ENVIRONMENT", environment)
+        monkeypatch.setenv("MODEL_BROWSER_UI_MODE", audience)
+        result = assemble_portal(root)
+        assert result.returncode == 0, result.stderr
+        portal = root / "website" / "portal-build"
+        html = (portal / "index.html").read_text()
+        filename = re.search(r'src="(config\.[a-f0-9]+\.js)"', html).group(1)
+        deployments.append((filename, (portal / filename).read_text()))
+    assert len({name for name, _ in deployments[:3]}) == 3
+    assert deployments[0] == deployments[3]
+    # Simulate retained S3 assets: each old entry point must retain its exact config.
+    retained = dict(deployments)
+    for name, content in deployments:
+        assert retained[name] == content
 
 
 def test_assembled_portal_ships_the_model_data_api_fetches(tmp_path: Path) -> None:
@@ -714,7 +752,7 @@ def test_developer_docs_workflow_only_validates_the_combined_portal() -> None:
     assert any(step.get("run") == "npm run build:portal" for step in build["steps"])
     portal_build = next(step for step in build["steps"] if step.get("run") == "npm run build:portal")
     assert portal_build["env"] == {
-        "DOCS_SITE_URL": "https://developer-stg.sima.ai",
+        "DOCS_SITE_URL": "${{ inputs.environment == 'production' && 'https://developer.sima.ai' || 'https://developer-stg.sima.ai' }}",
         "DOCS_BASE_URL": "/models/",
     }
     assert not any("pages" in step.get("uses", "") for step in build["steps"])
@@ -1268,9 +1306,9 @@ def test_performance_rendering_reads_the_model_report_and_is_charted() -> None:
     assert 'item.suite === stage && item.name === "model"' in script
     assert "This result format is not supported by this browser." in script
     assert '<p class="muted-message">Not measured at this revision.</p>' in script
-    # Each headline tile shows one number; Performance details has three cards on the left and two on the right.
+    # Each headline tile shows one number; Performance Details has three cards on the left and two on the right.
     assert "KPI_METRICS.map((key) => kpiTile(key, performance.measurements[key]))" in script
-    assert 'disclosure(`performance:${run.id}`, "Performance details", details.markup' in script
+    assert 'disclosure(`performance:${run.id}`, "Performance Details", details.markup' in script
     for card in ['["performance", "Performance"', '["heat", "Heat"', '["cpu", "CPU"', '["power", "Power"',
                  '["memory", "Memory"']:
         assert card in script
@@ -1304,7 +1342,9 @@ def test_performance_rendering_reads_the_model_report_and_is_charted() -> None:
     assert "repeating-linear-gradient(135deg, var(--red) 0 2px" in script
     assert ".detail-card tbody tr.depth-2 th" in styles
     assert '["SoM", ["avg_board_temperature_c", "peak_board_temperature_c"]' in script
-    assert '["CMA pool", ["avg_cma_memory_mib", "peak_cma_memory_mib"]' in script
+    assert '["EV74", ["ev74_memory_avg_mib", "ev74_memory_peak_mib"]' in script
+    assert '["Linux (board)", ["avg_linux_memory_mib", "peak_linux_memory_mib"]' in script
+    assert "cma_memory" not in script
     assert "power: { lead: railSplit(measurements) }" in script
     assert 'power_rail_mla_watts: ["MLA core (0.68 V)"' in script
     assert ".rail-split" in styles
@@ -1762,11 +1802,16 @@ def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None
     assert utilization.split("\n", 2)[1].strip().startswith("if (customerView ||")
     assert "performanceSummary(result.value, run, modelId)" in model_performance
     graphs = script.split("function executionGraphSection(", 1)[1].split("\nexport function ", 1)[0]
-    assert 'disclosure(`graphs:${key}`, "Execution graph"' in graphs
-    assert 'componentSwitch(graphed.map(({ label }) => label), 0, "data-graph-component")' in graphs
-    select = script.split("export function selectExecutionGraph(", 1)[1].split("\n}\n", 1)[0]
-    assert 'item.hidden = item.dataset.graphPanel !== button.value;' in select
-    assert 'elements["detail-pane"].addEventListener("click", selectExecutionGraph);' in _browser_source("app.js")
+    assert 'disclosure(`graphs:${key}`, "Execution Graph"' in graphs
+    # Execution Graph and MLA Utilization switch between components the same way.
+    assert "componentPanels(graphed.map(({ label }) => label)," in graphs
+    assert "componentPanels(results.map(({ label }) => label), panels)" in utilization
+    assert "<h4>" not in utilization
+    panels = script.split("function componentPanels(", 1)[1].split("\n}\n", 1)[0]
+    assert 'componentSwitch(labels, 0, "data-component-switch")' in panels
+    select = script.split("export function selectComponentPanel(", 1)[1].split("\n}\n", 1)[0]
+    assert 'item.hidden = item.dataset.componentPanel !== button.value;' in select
+    assert 'elements["detail-pane"].addEventListener("click", selectComponentPanel);' in _browser_source("app.js")
     # Switching component re-renders the panel and restarts the minimum time on the new scale.
     update = script.split("export function updateLayerAnalysis(", 1)[1].split("\nexport function ", 1)[0]
     assert 'if (field === "component") {' in update

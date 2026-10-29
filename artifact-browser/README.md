@@ -99,9 +99,13 @@ publishes that portal to the staging docs bucket under `models/`. The
 Developer Center CloudFront distribution routes that prefix to the docs bucket,
 making the browser available at <https://developer-stg.sima.ai/models>.
 
-A manual staging dispatch of the orchestrator on either branch republishes it. The job resolves the bucket, publisher
-role, KMS key, and CloudFront distribution from the shared staging Vulcan
-configuration; those deployment values are not hard-coded in this repository.
+A manual dispatch of the orchestrator on either branch also republishes it.
+The frontend build and publication always use staging, independently of
+`VULCAN_ENV` and the selected model build/registry environment. The separate
+`resolve-staging-browser-config` job resolves the bucket, publisher role, KMS key,
+and CloudFront distribution from the shared staging Vulcan configuration.
+Production frontend deployment remains a manual, owner-gated
+**Deploy Model Browser & Docs** dispatch.
 
 `website/scripts/portal-config.mjs` selects the UI at build time from `GITHUB_REF`:
 Main builds the customer view of the main catalog; Develop, feature branches and
@@ -185,7 +189,7 @@ everything longer sits in one expandable row.
   inference for the whole model, one number per tile, from the build profile's
   performance run. A multi-component model is measured with its components
   running together, and its layer analysis and execution graph switch between
-  the components. **Performance details** is
+  the components. **Performance Details** is
   performance, heat, and CPU cards, with power (SoM; SoC as the sum of its
   MLA and Non-MLA rails; and each other power rail) and memory cards beside
   them,
@@ -220,7 +224,7 @@ and metric identities separate. A multi-component model shows its whole-model re
 shows the model name, variant, throughput and accuracy.
 
 Select up to three points or use **Add model** to inspect exact measurements
-in a table. It includes throughput, latency, power, energy, peak MLA memory and
+in a table. It includes throughput, latency, power, energy, peak MLA and EV74 memory and
 accuracy. Bold marks the best value.
 Models without measurements remain available in **Add model**. LLM/VLM comparisons show **TBD**.
 Links preserve the task and selected builds with `compare_task` and repeated
@@ -357,7 +361,7 @@ pages use only the compiled layer timings in each published model report.
 
 ### Staging hero CDN
 
-Staging developer builds use the existing public-reader hostname's
+Staging and production developer builds use their own public-reader hostname's
 `/images/sha256/<hero artifact SHA-256>.png` path. The hash comes from catalog
 metadata; no signed URLs or extra per-image API resolution are needed. Vulcan
 publishes validated hero derivatives into a private S3 origin when documentation
@@ -365,8 +369,8 @@ runs finish. Deploy that infrastructure and backfill current images **before**
 merging/deploying this browser change. See the companion Vulcan
 `docs/artifact-registry-hero-cdn.md` runbook.
 
-`MODEL_HERO_CDN_BASE_URL` is an optional build setting. Its default is the staging
-CDN path for developer builds using the standard staging API; customer builds and
+`MODEL_HERO_CDN_BASE_URL` is an optional build setting. Its default is the matching environment
+CDN path for developer builds using either standard registry API; customer builds and
 custom API origins default to disabled. Set it to an empty string and rebuild to
 roll back to API image URLs. The source preview `config.js` selects staging CDN.
 Image loading retries twice on the CDN and then uses the existing API URL with
@@ -408,3 +412,10 @@ The preview does not replace your saved branch preference. Omit the parameter
 (or use `branches=1`) to restore the normal branch behavior; customer UI remains
 Main-only. Combine with `env=prod` as `/models/?env=prod&branches=0` to preview
 production Main. That catalog must be published before it can display models.
+
+## Production deployment
+
+`MODEL_BROWSER_ENVIRONMENT=production` selects the production public registry,
+Developer Center origin and environment label. Audience remains independent.
+See [production frontend deployment](../docs/model-browser.md#production-frontend)
+for the tested, prefix-scoped operator deployment and rollback procedure.
