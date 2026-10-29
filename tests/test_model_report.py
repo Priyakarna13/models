@@ -416,6 +416,12 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         assert not hasattr(options.preprocess, "preset")
         assert (options.superpoint.profile, options.top_k) == ("MagicLeapDemoV1", 1000)
         assert "v_scene/1.ppm" in report["workload"]
+    elif getattr(options.preprocess.normalize, "has_explicit_stats", False):
+        # SSD-MobileNet stretches to its 300x300 input, scales to [-1, 1] and is measured at its raw heads.
+        normalize = options.preprocess.normalize
+        assert (options.preprocess.resize.mode, normalize.mean, normalize.stddev) == ("Stretch", [0.5] * 3, [0.5] * 3)
+        assert not hasattr(options, "decode_type")
+        assert ".jpg" in report["workload"]
     else:
         assert_letterboxed_frame(frame)
         assert options.preprocess.resize.mode == "Stretch"
