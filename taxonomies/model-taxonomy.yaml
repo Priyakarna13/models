@@ -85,6 +85,10 @@ architectures:
     display_name: RF-DETR
     paradigm: transformer
     allowed_model_types: [vision]
+  sam:
+    display_name: SAM
+    paradigm: transformer
+    allowed_model_types: [vision]
   whisper:
     display_name: Whisper
     paradigm: transformer
@@ -136,6 +140,9 @@ tasks:
     allowed_model_types: [vision, vlm]
   pose_estimation:
     display_name: Pose Estimation
+    allowed_model_types: [vision]
+  promptable_segmentation:
+    display_name: Promptable Segmentation
     allowed_model_types: [vision]
   re_identification:
     display_name: Re-Identification

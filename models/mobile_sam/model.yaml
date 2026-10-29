@@ -1,0 +1,74 @@
+display_name: MobileSAM
+description: Segments the object a click or a box points at, with a lightweight Segment Anything model.
+model_type: vision
+tasks: [promptable_segmentation]
+
+modalities:
+  inputs: [image]
+  outputs: [masks]
+
+architecture: sam
+
+license:
+  spdx: Apache-2.0
+  redistribution: allowed
+  attribution: MobileSAM by Chaoning Zhang et al. (Kyung Hee University), distributed under Apache-2.0; its prompt encoder and mask decoder are Meta's Segment Anything.
+
+upstream:
+  repository: https://huggingface.co/dhkim2810/MobileSAM
+  revision: 4e2e5245fe9dc63096d575d36e70eb39b03b3aba
+  derived_from: https://github.com/ChaoningZhang/MobileSAM/tree/f706ad9c4eb7f219c00d9050e46328518ffb65d2
+
+conversion:
+  # Byte-identical to weights/mobile_sam.pt in the upstream GitHub repository at the derived_from commit.
+  source:
+    uri: hf://models/dhkim2810/MobileSAM@4e2e5245fe9dc63096d575d36e70eb39b03b3aba/mobile_sam.pt
+    sha256: 6dbb90523a35330fedd7f1d3dfc66f995213d81b29a5ca8108dbcdd4e37d6c2f
+    size_bytes: 40728226
+
+compilation:
+  format: onnx
+  # TODO(#390): replace with the source block the Vulcan Model Convert workflow prints for mobile_sam.
+  source:
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
+    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
+    size_bytes: 9917015
+  # The encoder runs once per image; the decoder once per prompt on its embedding.
+  components: [image_encoder, prompt_decoder]
+
+calibrations:
+- id: coco-2017-cal
+  dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
+
+build_profiles:
+  w16a16:
+    components:
+      image_encoder:
+        parameters: {precision: w16a16}
+      prompt_decoder:
+        parameters: {precision: w16a16}
+
+  w8a8:
+    # The decoder calibrates on the float32 encoder's embeddings of the same images, two prompts each.
+    calibration_dataset: coco-2017-cal
+    components:
+      image_encoder:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+      prompt_decoder:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+
+pipeline:
+- {cpu: "Resize the longer side to 1024, normalize, pad to 1024x1024"}
+- {component: image_encoder}
+- {cpu: "Prompt points as normalized coordinates and one-hot point types"}
+- {component: prompt_decoder}
+- {cpu: "Upsample the chosen mask's logits to the image and threshold at 0"}
+
+# Scored against the float32 ONNX encoder and decoder, on fixed prompts, since COCO has no prompt annotations.
+numerical_fidelity:
+  status: diagnostic
+  dataset: {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
+  selection: {method: seeded_random_without_replacement, seed: 42, offset: 0, samples: 8}
+  outputs: [masks, iou_predictions]
+
+performance: {}
