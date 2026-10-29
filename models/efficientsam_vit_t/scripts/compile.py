@@ -5,13 +5,15 @@ The encoder is folded at a fixed 1x3x1024x1024 input, so its own resize to 1024x
 decoder becomes a static graph: the prompt encoding (sin and cos of the points, plus an embedding per point type)
 runs in the graph on one points tensor of normalized coordinates and one-hot point types; the prompt's shape logic
 folds away; and the final resize to the image size moves to the CPU. Both graphs are checked against the original
-files before they compile. Numerical fidelity runs the quantized encoder into the quantized decoder on coco-2017 cal
-images with the box of each image's largest annotated object, against the original float32 graphs.
+files before they compile, and the encoder compiles without AFE's simulator check of its MLA code, which does not fit
+in the compile runner's memory at 4096 tokens. Numerical fidelity runs the quantized encoder into the quantized decoder
+on coco-2017 cal images with the box of each image's largest annotated object, against the original float32 graphs.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import logging
 import math
@@ -533,6 +535,21 @@ def audit_mpk(archive: Path, component_id: str) -> dict[str, Any]:
     return {"elf": elfs[0], "mla_plugins": len(mla_plugins)}
 
 
+def _skip_simulator_check() -> None:
+    """Compile without AFE's check that replays the generated MLA code in the MLA simulator.
+
+    At 1024x1024 the encoder attends over 4096 tokens, and the simulator runs out of memory on the 32 GiB compile
+    runner. The check only verifies the generated code and does not change it. performance.py checks the compiled
+    encoder on a DevKit instead, through the mask the compiled models segment.
+    """
+    from afe.backends.mla.afe_to_n2a_compiler.n2a_compiler_operations import MLACompilerConfig
+    from afe.core import compile_networks
+
+    if getattr(compile_networks, "MLACompilerConfig", None) is not MLACompilerConfig:
+        raise RuntimeError("this Model Compiler configures the MLA compile differently; revisit the simulator check")
+    compile_networks.MLACompilerConfig = functools.partial(MLACompilerConfig, verify_mlc_files=False)
+
+
 def _find_mpk(build_dir: Path, component_id: str) -> Path:
     archives = sorted(build_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
@@ -632,6 +649,7 @@ def _encoder_phase(graph: Path, temporary_dir: Path, profile_id: str, parameters
     images = np.stack([image for image, _ in load_samples(calibration_dataset, calibration)])
     name = _component_name(profile_id, "image_encoder")
     encoder = _quantize_component(graph, name, "image_encoder", parameters, {"batched_images": images})
+    _skip_simulator_check()
     _compile_component(encoder, temporary_dir / name, "image_encoder", parameters["precision"])
     embeddings = [_by_shape(_execute(encoder, {"batched_images": image[None]}), "image_encoder", "image_embeddings")
                   for image, _ in load_samples(fidelity_dataset, fidelity)]

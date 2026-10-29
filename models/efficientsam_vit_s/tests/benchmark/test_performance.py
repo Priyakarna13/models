@@ -5,6 +5,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import cv2
 import numpy as np
 import pytest
 from model_registry.model_tests import measured_shortfalls
@@ -40,6 +41,28 @@ def test_the_cpu_step_upsamples_the_mask_with_the_best_score(load_script: Callab
     assert mask[: script.FRAME_HEIGHT // 2 - 4].all() and not mask[script.FRAME_HEIGHT // 2 + 4 :].any()
     with pytest.raises(ValueError):  # masks in any other layout are refused, not misread
         script.frame_mask([_Tensor(np.asarray([[[0.2, 0.9, 0.1]]], np.float32)), _Tensor(masks.transpose(0, 3, 1, 2))])
+
+
+class _Runner:
+    def __init__(self, *outputs: np.ndarray) -> None:
+        self.outputs = outputs
+
+    def run(self, inputs: list[Any], timeout_ms: int) -> list[_Tensor]:
+        return [_Tensor(output) for output in self.outputs]
+
+
+def test_the_benchmark_stops_unless_the_mask_covers_the_frames_object(load_script: Callable[[str], ModuleType]) -> None:
+    script = load_script("performance")
+    # The object at the masks' 256x256 resolution, which stretches over the whole frame.
+    inside = cv2.resize(script.object_mask().astype(np.float32), (256, 256), interpolation=cv2.INTER_AREA) > 0.5
+    masks = np.full((1, 256, 256, 3), -5.0, np.float32)
+    masks[0, :, :, 1] = np.where(inside, 5.0, -5.0)
+    scores = np.asarray([[[0.1, 0.9, 0.2]]], np.float32)
+    encoder = _Runner(np.zeros((1, 64, 64, 256), np.float32))
+
+    assert script.check_mask(encoder, _Runner(scores, masks), None, []) > 0.9
+    with pytest.raises(RuntimeError, match="below 0.5"):
+        script.check_mask(encoder, _Runner(scores, np.full((1, 256, 256, 3), -5.0, np.float32)), None, [])
 
 
 def test_the_benchmark_frame_is_fixed_and_its_object_fills_the_prompt_box(load_script: Callable[[str], ModuleType]) -> None:
