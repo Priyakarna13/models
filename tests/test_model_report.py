@@ -312,13 +312,16 @@ def first_accuracy_dataset(script: Path) -> str | None:
     return datasets[0]["id"] if datasets else None
 
 
-def performance_scripts(*, components: bool) -> list[Path]:
+def performance_scripts(*, components: bool, dataset: bool | None = None) -> list[Path]:
     """Benchmarked models' scripts: single-component ones run Model.benchmark, multi-component ones time their
-    pipeline and take each component's MLA stats from its own Model.benchmark."""
+    pipeline and take each component's MLA stats from its own Model.benchmark. With dataset, only the models that
+    declare an accuracy dataset (True) or none (False); a model without one builds its own input."""
     scripts = []
     for path in sorted(REPOSITORY.glob("models/*/model.yaml")):
         model = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if "performance" in model and ("components" in model["compilation"]) == components:
+        if "performance" in model and ("components" in model["compilation"]) == components and (
+            dataset is None or ("accuracy" in model) == dataset
+        ):
             scripts.append(path.parent / "scripts/performance.py")
     assert scripts
     return scripts
@@ -412,7 +415,9 @@ def test_every_multi_component_script_keeps_cores_mla_stats(script, monkeypatch)
     assert (layer_stats, stage_stats) == (CORE_REPORT["mla_layer_stats"], CORE_REPORT["mla_stage_stats"])
 
 
-@pytest.mark.parametrize("script", performance_scripts(components=True), ids=lambda path: path.parents[1].name)
+@pytest.mark.parametrize(
+    "script", performance_scripts(components=True, dataset=True), ids=lambda path: path.parents[1].name
+)
 def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script, monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
         ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
@@ -429,6 +434,24 @@ def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script,
     assert (options.preprocess.kind, options.preprocess.resize.mode, options.preprocess.preset) == (
         "Image", "Stretch", "ImageNet"
     )
+
+
+@pytest.mark.parametrize(
+    "script", performance_scripts(components=True, dataset=False), ids=lambda path: path.parents[1].name
+)
+def test_every_multi_component_script_without_a_dataset_feeds_a_fixed_frame(script, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
+        ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
+    ))
+    functions = runpy.run_path(str(script))
+
+    first, second = functions["synthetic_frame"](), functions["synthetic_frame"]()
+
+    # Every run measures the same realistic 720p frame, not a blank one, on Neat's image route.
+    assert (first.shape, str(first.dtype)) == ((720, 1280, 3), "uint8")
+    assert (first == second).all() and first.std() > 10
+    options = functions["image_options"]()
+    assert (options.preprocess.kind, options.preprocess.enable, options.preprocess.resize.enable) == ("Image", "On", "On")
 
 
 def test_model_code_uses_cores_mla_stats_names():
