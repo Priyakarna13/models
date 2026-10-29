@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -151,3 +151,94 @@ def test_mpk_argument_names_exactly_the_model_component(load_script: Callable[[s
 
 def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path, build_profile: str) -> None:
     assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy) == []
+
+
+@pytest.mark.parametrize("ranked_pairs", [1, 1024])
+def test_select_discards_degenerate_boxes_before_the_topk_limit(
+    ranked_pairs: int, monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str], ModuleType]
+) -> None:
+    accuracy = load_script("accuracy")
+    monkeypatch.setattr(accuracy, "RANKED_PAIRS", ranked_pairs)
+    monkeypatch.setattr(accuracy, "MAX_DETECTIONS", 2)
+    # The first three high scores are a point, a horizontal line and a vertical line after clipping.
+    # Reversed corners are invalid too, even though multiplying two negative lengths gives positive area.
+    boxes = np.asarray(
+        [
+            [1, 1, 1, 1],
+            [0, 0, 0, 0.5],
+            [0, 0, 0.5, 0],
+            [0.8, 0.8, 0.2, 0.2],
+            [0.1, 0.1, 0.3, 0.3],
+            [0.6, 0.6, 0.9, 0.9],
+        ],
+        np.float32,
+    )
+    scores = np.asarray([[0.99], [0.98], [0.97], [0.96], [0.8], [0.7]], np.float32)
+
+    anchors, labels = accuracy.select(boxes, scores)
+
+    np.testing.assert_array_equal(anchors, [4, 5])
+    np.testing.assert_array_equal(labels, [0, 0])
+
+
+@pytest.mark.parametrize("offset", [-1000.0, 1000.0])
+def test_decode_prunes_high_score_boxes_that_collapse_after_clipping(
+    offset: float, load_script: Callable[[str], ModuleType]
+) -> None:
+    accuracy = load_script("accuracy")
+    outputs = _board_outputs(accuracy)
+    outputs[0][0, 0, 0, :4] = [offset, offset, 0, 0]
+    outputs[6][0, 0, 0, 1] = 10.0
+    outputs[11][0, 0, 0, 5 * 91 + 18] = 4.0
+
+    rows = accuracy.decode(outputs, 7, 640, 480)
+
+    assert rows.shape == (1, 7)
+    assert rows[0, -1] == 18  # The in-frame dog, not the higher-scoring collapsed box.
+    assert rows[0, 3] > 0 and rows[0, 4] > 0
+
+
+def _scorer(accuracy: ModuleType, **overrides: float) -> SimpleNamespace:
+    stats = dict.fromkeys(accuracy.METRICS.values(), 0.5)
+    stats.update(overrides)
+    return SimpleNamespace(params=SimpleNamespace(maxDets=[1, 10, 100]), stats_as_dict=stats)
+
+
+def test_local_subset_omits_undefined_size_metrics_without_inventing_zero(
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    accuracy = load_script("accuracy")
+    scorer = _scorer(accuracy, AP_small=-1, AR_small=-1)
+
+    measured = accuracy.coco_stats(scorer, allow_missing_size_buckets=True)
+
+    assert measured["coco_map"] == 0.5
+    assert set(accuracy.METRICS) - measured.keys() == {"coco_ap_small", "coco_ar_small"}
+    assert all(value == 0.5 for value in measured.values())
+    with pytest.raises(SystemExit, match="no ground-truth objects"):
+        accuracy.coco_stats(scorer)
+
+
+@pytest.mark.parametrize("metric", ["AP_all", "AP_50", "AR_third"])
+def test_subset_cannot_omit_global_metrics(metric: str, load_script: Callable[[str], ModuleType]) -> None:
+    accuracy = load_script("accuracy")
+    with pytest.raises(SystemExit, match="no ground-truth objects"):
+        accuracy.coco_stats(_scorer(accuracy, **{metric: -1}), allow_missing_size_buckets=True)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 1.1, -2, -0.5])
+@pytest.mark.parametrize("metric", ["AP_all", "AP_small"])
+def test_subset_rejects_invalid_metrics_instead_of_hiding_them(
+    value: float, metric: str, load_script: Callable[[str], ModuleType]
+) -> None:
+    accuracy = load_script("accuracy")
+    with pytest.raises(SystemExit):
+        accuracy.coco_stats(_scorer(accuracy, **{metric: value}), allow_missing_size_buckets=True)
+
+
+def test_accuracy_rejects_missing_required_coco_map(load_script: Callable[[str], ModuleType]) -> None:
+    accuracy = load_script("accuracy")
+    scorer = _scorer(accuracy)
+    del scorer.stats_as_dict["AP_all"]
+    with pytest.raises(KeyError, match="AP_all"):
+        accuracy.coco_stats(scorer, allow_missing_size_buckets=True)

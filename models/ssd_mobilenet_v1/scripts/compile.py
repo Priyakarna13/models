@@ -89,7 +89,78 @@ def _read_mpk_manifest(archive: Path) -> tuple[list[str], dict[str, Any]]:
         return names, json.load(source)
 
 
-def audit_mpk(archive: Path) -> None:
+def _audit_head_contract(plugins: list[dict[str, Any]], precision: str) -> None:
+    """Check this recipe's named float heads and their transform lineage, not Core's carrier parser.
+
+    The public PassThrough names are positional. Its inputs retain the surgery names; their producers
+    declare logical NHWC shapes and convert MLA values (possibly channel-sliced) to public float32.
+    """
+    if precision not in {"w8a8", "w16a16"}:
+        raise RuntimeError(f"unsupported SSD precision: {precision}")
+    terminal = plugins[-1]
+    inputs, outputs = terminal.get("input_nodes", []), terminal.get("output_nodes", [])
+    if len(inputs) != len(OUTPUTS) or len(outputs) != len(OUTPUTS):
+        raise RuntimeError("MPK must expose all twelve SSD heads")
+    if len({node.get("name") for node in outputs}) != len(OUTPUTS):
+        raise RuntimeError("MPK public output names must be unique")
+    producers: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for plugin in plugins[:-1]:
+        for node in plugin.get("output_nodes", []):
+            name = node.get("name")
+            if not isinstance(name, str) or name in producers:
+                raise RuntimeError(f"ambiguous MPK producer: {name}")
+            producers[name] = (plugin, node)
+
+    def upstream(node: dict[str, Any], consumer: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        producer = producers.get(node.get("name"))
+        if producer is None or producer[0]["sequence"] >= consumer["sequence"]:
+            raise RuntimeError(f"missing or late MPK producer: {node.get('name')}")
+        if node.get("size") != producer[1].get("size"):
+            raise RuntimeError(f"MPK producer/consumer byte-size mismatch: {node.get('name')}")
+        return producer
+
+    origins = set()
+    for (name, shape), input_node, output_node in zip(OUTPUTS, inputs, outputs, strict=True):
+        expected_shape = [shape[0], shape[2], shape[3], shape[1]]
+        expected_bytes = math.prod(shape) * 4
+        if str(input_node.get("name", "")).rsplit("/", 1)[-1] != name:
+            raise RuntimeError(f"MPK output identity/order mismatch: expected {name}")
+        if input_node.get("size") != expected_bytes or output_node.get("size") != expected_bytes:
+            raise RuntimeError(f"MPK public head byte-size mismatch: {name}")
+        converter, _ = upstream(input_node, terminal)
+        config = converter.get("config_params", {})
+        params = config.get("params", {})
+        converter_inputs = converter.get("input_nodes", [])
+        scalar_bytes = 1 if precision == "w8a8" else 2
+        if precision == "w8a8":
+            valid_type = config.get("kernel") == "dequantization_transform" and params.get("input_data_type") == "int8"
+        else:
+            valid_type = (
+                config.get("kernel") == "cast_transform"
+                and params.get("in_dtype") == "bfloat16"
+                and params.get("out_dtype") == "float32"
+            )
+        if (
+            not valid_type
+            or params.get("input_shapes") != [expected_shape]
+            or params.get("output_shapes") != [expected_shape]
+        ):
+            raise RuntimeError(f"MPK head shape/type mismatch: {name}")
+        if len(converter_inputs) != 1 or converter_inputs[0].get("size") != math.prod(shape) * scalar_bytes:
+            raise RuntimeError(f"MPK head converter input mismatch: {name}")
+        origin, origin_node = upstream(converter_inputs[0], converter)
+        if origin.get("config_params", {}).get("kernel") == "slice_transform":
+            slice_params = origin["config_params"].get("params", {})
+            source_nodes = origin.get("input_nodes", [])
+            if slice_params.get("output_shapes") != [expected_shape] or len(source_nodes) != 1:
+                raise RuntimeError(f"MPK head slice mismatch: {name}")
+            origin, origin_node = upstream(source_nodes[0], origin)
+        if str(origin.get("processor", "")).upper() != "MLA" or origin_node["name"] in origins:
+            raise RuntimeError(f"MPK head must have its own MLA origin: {name}")
+        origins.add(origin_node["name"])
+
+
+def audit_mpk(archive: Path, precision: str) -> None:
     """Require the whole network on one MLA segment, with no host code, and the declared interface."""
     names, manifest = _read_mpk_manifest(archive)
     elfs = [name for name in names if name.endswith(".elf")]
@@ -114,6 +185,7 @@ def audit_mpk(archive: Path) -> None:
     outputs = [node.get("size") for node in terminal.get("output_nodes", [])]
     if kernel != "pass_through" or outputs != OUTPUT_BYTES:
         raise RuntimeError(f"MPK output interface mismatch: {outputs}")
+    _audit_head_contract(plugins, precision)
 
 
 def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path | None) -> Path:
@@ -157,7 +229,7 @@ def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path
         archives = sorted((build_dir / "mpk").glob("*_mpk.tar.gz"))
         if len(archives) != 1:
             raise RuntimeError(f"expected one MPK, found {len(archives)}")
-        audit_mpk(archives[0])
+        audit_mpk(archives[0], precision)
         archive = component_dir / archives[0].name
         shutil.copyfile(archives[0], archive)
     return archive

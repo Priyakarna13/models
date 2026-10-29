@@ -1,8 +1,9 @@
 """Measure SSD-MobileNet V2 COCO bounding-box AP and AR with its MPK on a Modalix board.
 
-The heads are decoded as the source graph's TensorFlow postprocessing does: MultipleGridAnchorGenerator
-anchors, the FasterRcnnBoxCoder with scales (10, 10, 5, 5), sigmoid scores, and per-class NMS at IoU 0.6
-keeping at most 100 detections above 1e-8 (ssd_mobilenet_v2_coco's eval settings).
+The reference uses TensorFlow's MultipleGridAnchorGenerator anchors, FasterRcnnBoxCoder scales
+(10, 10, 5, 5), sigmoid scores, clipping and positive-area filtering, and per-class NMS at IoU 0.6.
+The AP evaluation policy keeps at most 100 detections above 1e-8; it does not select the full source
+graph's default detection threshold or Neat's customer default.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ OUTPUT_SHAPES = [
 MIN_SCALE, MAX_SCALE = 0.2, 0.95
 ASPECT_RATIOS = (1.0, 2.0, 0.5, 3.0, 1.0 / 3.0)
 BOX_SCALES = np.asarray([10.0, 10.0, 5.0, 5.0], np.float32)
+# AP evaluation policy, not the source graph or Neat customer detection default.
 SCORE_THRESHOLD = 1e-8
 IOU_THRESHOLD = 0.6
 MAX_DETECTIONS = 100
@@ -60,6 +62,7 @@ METRICS = {
     "coco_ar_large": "AR_large",
 }
 COCO_MAX_DETECTIONS = [1, 10, 100]
+SIZE_METRICS = {name for name in METRICS if name.endswith(("_small", "_medium", "_large"))}
 # Images decode on worker threads while the MPK runs.
 WORKERS = 4
 PREFETCH = 8
@@ -153,6 +156,8 @@ def select(boxes: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarra
     common with INT8 logits, rank by class and then by anchor. Pairs are therefore flattened class-major.
     """
     anchor_count = scores.shape[0]
+    # decode_boxes() has already clipped to the image. Boxes outside it can collapse to a line or point.
+    positive_area = np.all(boxes[:, 2:] > boxes[:, :2], axis=1)
     flat = scores.T.ravel()
     count = RANKED_PAIRS
     while True:
@@ -165,6 +170,8 @@ def select(boxes: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarra
                 finished = True
                 break
             label, anchor = divmod(int(pair), anchor_count)
+            if not positive_area[anchor]:
+                continue
             same_class = kept.setdefault(label, [])
             if same_class and (_iou(boxes[anchor], boxes[same_class]) > IOU_THRESHOLD).any():
                 continue
@@ -197,16 +204,25 @@ def decode(outputs: Sequence[np.ndarray], image_id: int, width: int, height: int
     return np.stack([ids, left, top, right - left, bottom - top, scores[anchor, label], label + 1], axis=1)
 
 
-def coco_stats(scorer: COCOeval_faster) -> dict[str, float]:
-    """Return every declared metric by its COCOeval label; COCOeval reports -1 for an empty object-size range."""
+def coco_stats(scorer: COCOeval_faster, *, allow_missing_size_buckets: bool = False) -> dict[str, float]:
+    """Keep undefined size buckets out of local subset reports, never inventing zero accuracy for them.
+
+    COCOeval uses -1 for an empty object-size range. Only --limit may omit these optional metrics;
+    the required coco_map and every full-dataset metric remain mandatory, finite ratios.
+    """
     if list(scorer.params.maxDets) != COCO_MAX_DETECTIONS:
         raise ValueError(f"expected COCOeval maxDets {COCO_MAX_DETECTIONS}, got {scorer.params.maxDets}")
     labelled = scorer.stats_as_dict
     stats = {name: float(labelled[label]) for name, label in METRICS.items()}
-    empty = [name for name, value in stats.items() if value < 0]
-    if empty:
-        raise SystemExit(f"no ground-truth objects to score for: {', '.join(empty)}")
-    return stats
+    invalid = [name for name, value in stats.items() if not np.isfinite(value) or value > 1 or value < -1]
+    if invalid:
+        raise SystemExit(f"invalid COCO metrics: {', '.join(invalid)}")
+    absent = {name for name, value in stats.items() if value == -1 and name in SIZE_METRICS}
+    omitted = absent if allow_missing_size_buckets else set()
+    invalid = [name for name, value in stats.items() if value < 0 and name not in omitted]
+    if invalid:
+        raise SystemExit(f"no ground-truth objects to score for: {', '.join(invalid)}")
+    return {name: value for name, value in stats.items() if name not in omitted}
 
 
 def parse_mpks(values: list[str]) -> Path:
@@ -263,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     scorer.evaluate()
     scorer.accumulate()
     scorer.summarize()
-    stats = coco_stats(scorer)
+    stats = coco_stats(scorer, allow_missing_size_buckets=len(image_ids) < len(available))
     scoring_seconds = time.monotonic() - started
 
     report = model_report.from_accuracy(
@@ -275,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
                 "available_samples": len(available),
                 "details": {
                     "detections": len(detections),
+                    "unavailable_metrics": sorted(set(METRICS) - stats.keys()),
                     "inference_seconds": round(inference_seconds, 1),
                     "scoring_seconds": round(scoring_seconds, 1),
                 },
