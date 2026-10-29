@@ -335,6 +335,12 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         # Pose accuracy scores only images with a labelled person.
         expected = "000000000002.jpg" if options.decode_type == "YoloV26Pose" else ".jpg"
         assert expected in report["workload"]
+    elif getattr(options.preprocess.normalize, "has_explicit_stats", False):
+        # SSD-MobileNet stretches to its 300x300 input, scales to [-1, 1] and is measured at its raw heads.
+        normalize = options.preprocess.normalize
+        assert (options.preprocess.resize.mode, normalize.mean, normalize.stddev) == ("Stretch", [0.5] * 3, [0.5] * 3)
+        assert not hasattr(options, "decode_type")
+        assert ".jpg" in report["workload"]
     else:
         assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Stretch", "ImageNet")
         assert "ILSVRC2012_val_00000001.webp" in report["workload"]
