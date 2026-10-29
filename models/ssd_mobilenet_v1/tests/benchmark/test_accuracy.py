@@ -81,6 +81,32 @@ def test_select_matches_per_class_nms(seed: int, load_script: Callable[[str], Mo
     assert list(zip(anchors.tolist(), labels.tolist())) == _per_class_nms(accuracy, boxes, scores)
 
 
+def test_ranked_cuts_a_stable_descending_sort(load_script: Callable[[str], ModuleType]) -> None:
+    accuracy = load_script("accuracy")
+    rng = np.random.default_rng(0)
+    for size, count in [(0, 5), (4, 5), (5, 5), (1000, 300), (1000, 1)]:
+        values = rng.integers(0, 7, size).astype(np.float32)
+        np.testing.assert_array_equal(accuracy.ranked(values, count), np.argsort(-values, kind="stable")[:count])
+
+
+@pytest.mark.parametrize("ranked_pairs", [1, 64, 1024])
+def test_select_widens_the_ranking_until_it_fills_or_runs_out(
+    ranked_pairs: int, monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str], ModuleType]
+) -> None:
+    accuracy = load_script("accuracy")
+    monkeypatch.setattr(accuracy, "RANKED_PAIRS", ranked_pairs)
+    rng = np.random.default_rng(5)
+    # Two stacks of identical boxes: each class keeps one box per stack, so 12 survive out of 1800 pairs.
+    boxes = np.repeat(np.asarray([[0.1, 0.1, 0.4, 0.4], [0.5, 0.5, 0.9, 0.9]], np.float32), 150, axis=0)
+    scores = rng.uniform(0, 1, (300, 6)).astype(np.float32)
+    scores[:, 5] = 0.0  # Never above the threshold.
+
+    anchors, labels = accuracy.select(boxes, scores)
+
+    assert list(zip(anchors.tolist(), labels.tolist())) == _per_class_nms(accuracy, boxes, scores)
+    assert len(anchors) == 10
+
+
 @pytest.mark.parametrize("output", [0, 6])
 def test_decode_rejects_non_finite_outputs(output: int, load_script: Callable[[str], ModuleType]) -> None:
     accuracy = load_script("accuracy")

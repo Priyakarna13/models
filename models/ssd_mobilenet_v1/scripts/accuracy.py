@@ -41,6 +41,8 @@ BOX_SCALES = np.asarray([10.0, 10.0, 5.0, 5.0], np.float32)
 SCORE_THRESHOLD = 1e-8
 IOU_THRESHOLD = 0.6
 MAX_DETECTIONS = 100
+# Pairs ranked before NMS starts; filling MAX_DETECTIONS on COCO val2017 usually visits a few hundred.
+RANKED_PAIRS = 1024
 # Metric name in model.yaml -> COCOeval_faster.stats_as_dict label. With maxDets [1, 10, 100], AR_all,
 # AR_second and AR_third are the recall at 1, 10 and 100 detections per image.
 METRICS = {
@@ -129,28 +131,48 @@ def _iou(box: np.ndarray, others: np.ndarray) -> np.ndarray:
     return inter / np.maximum(area + areas - inter, 1e-12)
 
 
+def ranked(values: np.ndarray, count: int) -> np.ndarray:
+    """Indices of the count largest values, largest first, ties in index order, like a stable descending sort."""
+    chosen = np.arange(len(values))
+    if len(values) > count:
+        cutoff = np.partition(values, len(values) - count)[len(values) - count]
+        above = np.flatnonzero(values > cutoff)
+        chosen = np.sort(np.concatenate([above, np.flatnonzero(values == cutoff)[: count - len(above)]]))
+    return chosen[np.argsort(-values[chosen], kind="stable")]
+
+
 def select(boxes: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Per-class greedy NMS keeping the MAX_DETECTIONS best detections overall: (anchor indices, class indices).
 
     Visiting every anchor/class pair in descending score and suppressing it against the kept boxes of its own
     class gives TensorFlow's per-class NMS followed by its top-100 merge, without running NMS on every class.
+    The visit usually ends within a few hundred pairs, so only the best RANKED_PAIRS pairs are sorted; when they
+    cannot fill MAX_DETECTIONS, the walk restarts over four times as many, up to every pair.
     """
     flat = scores.ravel()
-    candidates = np.flatnonzero(flat > SCORE_THRESHOLD)
-    order = candidates[np.argsort(-flat[candidates], kind="stable")]
-    kept: dict[int, list[int]] = {}
-    anchors, classes = [], []
-    for pair in order:
-        anchor, label = divmod(int(pair), scores.shape[1])
-        same_class = kept.setdefault(label, [])
-        if same_class and (_iou(boxes[anchor], boxes[same_class]) > IOU_THRESHOLD).any():
-            continue
-        same_class.append(anchor)
-        anchors.append(anchor)
-        classes.append(label)
-        if len(anchors) == MAX_DETECTIONS:
-            break
-    return np.asarray(anchors, np.int64), np.asarray(classes, np.int64)
+    count = RANKED_PAIRS
+    while True:
+        kept: dict[int, list[int]] = {}
+        anchors, classes = [], []
+        # Later pairs score no higher, so reaching the threshold also ends the walk.
+        finished = count >= flat.size
+        for pair in ranked(flat, count):
+            if flat[pair] <= SCORE_THRESHOLD:
+                finished = True
+                break
+            anchor, label = divmod(int(pair), scores.shape[1])
+            same_class = kept.setdefault(label, [])
+            if same_class and (_iou(boxes[anchor], boxes[same_class]) > IOU_THRESHOLD).any():
+                continue
+            same_class.append(anchor)
+            anchors.append(anchor)
+            classes.append(label)
+            if len(anchors) == MAX_DETECTIONS:
+                finished = True
+                break
+        if finished:
+            return np.asarray(anchors, np.int64), np.asarray(classes, np.int64)
+        count *= 4
 
 
 def decode(outputs: Sequence[np.ndarray], image_id: int, width: int, height: int) -> np.ndarray:
