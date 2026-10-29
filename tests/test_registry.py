@@ -683,6 +683,11 @@ def test_publish_retry_reuses_idempotency_keys_across_run_attempts(tmp_path: Pat
     assert publish("1") == publish("2")
 
 
+def _without_conversion_plan(models: dict) -> list[str]:
+    """Models whose compile fingerprints need no saved conversion plan; without one, the catalog leaves the rest out."""
+    return [model_id for model_id, model in models.items() if model["components"][0]["source"]["type"] != "conversion"]
+
+
 def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
     models = load_models(ROOT)
     compiler_version = resolve_model_compiler(ROOT)["identity"]
@@ -712,7 +717,7 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
                         for component_id in entry["component_ids"]
                     ],
                 }
-                for index, model_id in enumerate(models, 1)
+                for index, model_id in enumerate(_without_conversion_plan(models), 1)
             ]
         },
     )
@@ -727,7 +732,7 @@ def test_catalog_records_benchmark_fingerprints_bound_to_their_compile_runs() ->
     models = load_models(ROOT)
     model = models["resnet_50"]
     matrix = build_matrix(
-        models, sorted(models), repository=ROOT, compiler_version=COMPILER_IDENTITY,
+        models, sorted(_without_conversion_plan(models)), repository=ROOT, compiler_version=COMPILER_IDENTITY,
     )["include"]
 
     def snapshot(run_prefix: str) -> dict:

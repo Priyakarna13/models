@@ -278,13 +278,16 @@ def assert_letterboxed_frame(tensor):
     assert (frame[:, IMAGE_COLUMNS] == 200).all()
 
 
-def performance_scripts(*, components: bool) -> list[Path]:
+def performance_scripts(*, components: bool, dataset: bool = True) -> list[Path]:
     """Benchmarked models' scripts: single-component ones run Model.benchmark, multi-component ones time their
-    pipeline and take each component's MLA stats from its own Model.benchmark."""
+    pipeline and take each component's MLA stats from its own Model.benchmark. A model without an accuracy dataset
+    builds its own input."""
     scripts = []
     for path in sorted(REPOSITORY.glob("models/*/model.yaml")):
         model = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if "performance" in model and ("components" in model["compilation"]) == components:
+        if "performance" in model and ("components" in model["compilation"]) == components and (
+            "accuracy" in model
+        ) == dataset:
             scripts.append(path.parent / "scripts/performance.py")
     assert scripts
     return scripts
@@ -341,6 +344,48 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
     assert list(report["components"]) == ["model"]
     assert report["components"]["model"]["mla_layer_stats"] == CORE_REPORT["mla_layer_stats"]
     assert report["components"]["model"]["mla_stage_stats"] == CORE_REPORT["mla_stage_stats"]
+
+
+@pytest.mark.parametrize(
+    "script", performance_scripts(components=False, dataset=False), ids=lambda path: path.parents[1].name
+)
+def test_every_single_component_script_without_a_dataset_benchmarks_its_own_fixed_frame(script, monkeypatch, tmp_path):
+    import numpy as np
+
+    loaded, requests = [], []
+
+    class ScriptModel(Model):
+        def __init__(self, *args):
+            super().__init__("model")
+            loaded.append(args)
+
+        def benchmark(self, options):
+            requests.append(options)
+            return Saved(CORE_REPORT)
+
+    monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
+        __version__="3.0.0", build_info=lambda: {"version": "3.0.0"}, Model=ScriptModel,
+        ModelOptions=ModelOptions, BenchmarkOptions=BenchmarkOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
+    ))
+    for run in range(2):
+        monkeypatch.setattr(sys, "argv", [str(script), "--mpk", "model.tar.gz", "--output", str(tmp_path / f"{run}")])
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert [args[0] for args in loaded] == ["model.tar.gz"] * 2
+    assert [(r.num_samples, r.min_duration_ms, r.include_mla_layer_stats, r.include_mla_stage_stats)
+            for r in requests] == [(1000, 60000, True, True)] * 2
+    options = loaded[0][1]
+    assert options.preprocess.kind == "Image"
+    assert (options.preprocess.enable, options.preprocess.resize.enable, options.preprocess.normalize.enable) == (
+        "On", "On", "On"
+    )
+    # Every run measures the same realistic 720p frame, not a blank one.
+    (first,), (second,) = (request.inputs for request in requests)
+    assert (first.array.shape, str(first.array.dtype), first.options["image_format"]) == ((720, 1280, 3), "uint8", "RGB")
+    assert np.array_equal(first.array, second.array) and first.array.std() > 10
+    report = saved_report(tmp_path / "0")
+    assert report["workload"]
+    assert list(report["components"]) == ["model"]
 
 
 @pytest.mark.parametrize("script", performance_scripts(components=True), ids=lambda path: path.parents[1].name)

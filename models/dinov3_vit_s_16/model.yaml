@@ -1,0 +1,69 @@
+display_name: DINOv3 ViT-S/16
+description: Embeds an image as one vector and a 14×14 grid of patch vectors for image search and dense tasks.
+model_type: vision
+tasks: [image_embedding]
+
+modalities:
+  inputs: [image]
+  outputs: [embeddings]
+
+architecture: dino
+
+license:
+  spdx: LicenseRef-DINOv3
+  redistribution: restricted
+  attribution: Derived from Meta's facebook/dinov3-vits16-pretrain-lvd1689m and distributed under the DINOv3 License, which governs every build derived from it.
+
+upstream:
+  repository: https://huggingface.co/onnx-community/dinov3-vits16-pretrain-lvd1689m-ONNX
+  revision: 48988dfe73065df8d6f5ccc0edc7c8bcf307de41
+  derived_from: https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m/tree/114c1379950215c8b35dfcd4e90a5c251dde0d32
+
+conversion:
+  source:
+    repository: onnx-community/dinov3-vits16-pretrain-lvd1689m-ONNX
+    revision: 48988dfe73065df8d6f5ccc0edc7c8bcf307de41
+    main_file: onnx/model.onnx
+    files:
+      onnx/model.onnx: {sha256: bb75e9e30ff382ecdbd150266445ab41272be4acc85fd3563218dd89781e36da, size_bytes: 137969}
+      onnx/model.onnx_data: {sha256: 1eff0bb9f4fdef831ca61c8bc2b5c88d8cc21ef4756d3b483d9b9c15d8d5d27f, size_bytes: 86347776}
+      config.json: {sha256: e9f41d1c030ec6589280ba417e630b916d6e4d0e38a3efae15c11aa12c22c984, size_bytes: 835}
+      preprocessor_config.json: {sha256: 960c41d1f3a7778b936365769a2d90550b318a6c0a53a0296957adacfe5e0dd7, size_bytes: 585}
+
+compilation:
+  format: onnx
+  source: conversion
+
+calibrations:
+- id: imagenet-2012-cal
+  dataset: {id: imagenet-2012, variant: cal, sha256: e6c18b281f5ac5fc7cf6d36ef9a5f486ce95eb43ead99ee8523bd8162bc49a6f, size_bytes: 112710756}
+
+# AFE calibrates every precision. BF16 activations take no ranges from it, so w16a16 and w8a16 calibrate on the first
+# 4 seeded imagenet-2012 cal images; w8a8 sets its INT8 activation ranges on the first 50.
+build_profiles:
+  w16a16:
+    calibration_dataset: imagenet-2012-cal
+    components:
+      model:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 4}
+
+  w8a16:
+    calibration_dataset: imagenet-2012-cal
+    components:
+      model:
+        parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 4}
+
+  w8a8:
+    calibration_dataset: imagenet-2012-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+
+numerical_fidelity:
+  status: diagnostic
+  dataset: {id: imagenet-2012, variant: cal, sha256: e6c18b281f5ac5fc7cf6d36ef9a5f486ce95eb43ead99ee8523bd8162bc49a6f, size_bytes: 112710756}
+  # The 50 images after the 50 that w8a8 calibrates on.
+  selection: {method: seeded_random_without_replacement, seed: 42, offset: 50, samples: 50}
+  outputs: [class_embedding, patch_embeddings]
+
+performance: {}
