@@ -20,8 +20,8 @@ accuracy:
     w8a8:
       coco-2017-val:
         coco_map: 0.2614
-        coco_ap50: 0.4203
-        coco_ap75: 0.2760
+        coco_ap50: 0.4204
+        coco_ap75: 0.2761
         coco_ap_small: 0.0299
         coco_ap_medium: 0.2236
         coco_ap_large: 0.5582
@@ -30,11 +30,11 @@ accuracy:
         coco_ar100: 0.3599
         coco_ar_small: 0.0633
         coco_ar_medium: 0.3532
-        coco_ar_large: 0.7004
+        coco_ar_large: 0.7013
 performance:
   run_tests: true
   expected:
     w16a16:
-      throughput_fps: 742.2
+      throughput_fps: 738.7
     w8a8:
-      throughput_fps: 1657.4
+      throughput_fps: 1509.6

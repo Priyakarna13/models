@@ -81,6 +81,22 @@ def test_select_matches_per_class_nms(seed: int, load_script: Callable[[str], Mo
     assert list(zip(anchors.tolist(), labels.tolist())) == _per_class_nms(accuracy, boxes, scores)
 
 
+def test_select_ranks_tied_scores_by_class_as_tensorflow_merges_them(
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    accuracy = load_script("accuracy")
+    rng = np.random.default_rng(7)
+    # Small, scattered boxes rarely overlap, and three score levels tie across the 100-detection cutoff.
+    corners = rng.uniform(0, 0.95, (300, 2))
+    boxes = np.hstack([corners, corners + 0.02]).astype(np.float32)
+    scores = rng.choice(np.asarray([0.2, 0.5, 0.8], np.float32), (300, 6))
+
+    anchors, labels = accuracy.select(boxes, scores)
+
+    assert list(zip(anchors.tolist(), labels.tolist())) == _per_class_nms(accuracy, boxes, scores)
+    assert len(anchors) == accuracy.MAX_DETECTIONS
+
+
 def test_ranked_cuts_a_stable_descending_sort(load_script: Callable[[str], ModuleType]) -> None:
     accuracy = load_script("accuracy")
     rng = np.random.default_rng(0)

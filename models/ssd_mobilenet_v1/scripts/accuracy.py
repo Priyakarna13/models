@@ -148,8 +148,12 @@ def select(boxes: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarra
     class gives TensorFlow's per-class NMS followed by its top-100 merge, without running NMS on every class.
     The visit usually ends within a few hundred pairs, so only the best RANKED_PAIRS pairs are sorted; when they
     cannot fill MAX_DETECTIONS, the walk restarts over four times as many, up to every pair.
+
+    TensorFlow concatenates the classes' NMS results in class order before its stable top-100, so equal scores,
+    common with INT8 logits, rank by class and then by anchor. Pairs are therefore flattened class-major.
     """
-    flat = scores.ravel()
+    anchor_count = scores.shape[0]
+    flat = scores.T.ravel()
     count = RANKED_PAIRS
     while True:
         kept: dict[int, list[int]] = {}
@@ -160,7 +164,7 @@ def select(boxes: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarra
             if flat[pair] <= SCORE_THRESHOLD:
                 finished = True
                 break
-            anchor, label = divmod(int(pair), scores.shape[1])
+            label, anchor = divmod(int(pair), anchor_count)
             same_class = kept.setdefault(label, [])
             if same_class and (_iou(boxes[anchor], boxes[same_class]) > IOU_THRESHOLD).any():
                 continue
