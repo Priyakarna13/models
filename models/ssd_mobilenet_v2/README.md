@@ -21,7 +21,7 @@ and divide by 0.5.
 - `ssd_loc_0` to `ssd_loc_5`: four box offsets (y, x, height, width) for each anchor.
 - `ssd_confidence_0` to `ssd_confidence_5`: 91 class logits for each anchor.
 
-Neat's `Ssd` box decoder handles these outputs. To decode them yourself:
+Neat's `Ssd` box decoder is built for these outputs, but the current Neat runtime rejects them, so decode them in your application:
 
 1. Generate the 1,917 anchors: per level, box scales from 0.2 to 0.95 with aspect ratios 1, 2, 0.5, 3 and 1/3, plus one extra square box; level 0 uses a 0.1 square box and the 2 and 0.5 boxes.
 2. Divide the offsets by 10, 10, 5 and 5, then move each anchor's center by the first two and scale its height and width by the exponent of the last two.
