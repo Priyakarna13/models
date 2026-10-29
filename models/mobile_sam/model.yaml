@@ -29,9 +29,9 @@ conversion:
 compilation:
   format: onnx
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/mobile_sam/b3dd739c9b4500d0375b56e5cbfdfcb3cfc63ee4ed13a40ba20f2df8616afaf0/40832407006-1/model.onnx
-    sha256: b3dd739c9b4500d0375b56e5cbfdfcb3cfc63ee4ed13a40ba20f2df8616afaf0
-    size_bytes: 52748077
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/mobile_sam/3d5e0cf74ebe21d1585841bc0968f91c5c3510c0175198307177f11f730d6f96/40895285062-1/model.onnx
+    sha256: 3d5e0cf74ebe21d1585841bc0968f91c5c3510c0175198307177f11f730d6f96
+    size_bytes: 210024174
   # The encoder runs once per image, as two parts compiled apart, since the whole encoder needs more memory to
   # compile than a CI runner has; the decoder runs once per prompt on its embedding.
   components: [image_encoder_0, image_encoder_1, prompt_decoder]
