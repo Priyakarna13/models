@@ -13,7 +13,7 @@ def test_performance_meets_its_expected_values(
 
 
 def test_performance_records_each_components_execution_plan(performance: dict[str, Any]) -> None:
-    assert list(performance["components"]) == ["image_encoder", "prompt_decoder"]
+    assert list(performance["components"]) == ["image_encoder_0", "image_encoder_1", "prompt_decoder"]
     for item in performance["components"].values():
         plan = item["execution_plan"]
         assert (plan["schema"], plan["schema_version"]) == ("sima.neat.execution_plan", 1)

@@ -32,8 +32,9 @@ compilation:
     uri: https://artifacts.stg.neat.sima.ai/models-onnx/mobile_sam/b3dd739c9b4500d0375b56e5cbfdfcb3cfc63ee4ed13a40ba20f2df8616afaf0/40832407006-1/model.onnx
     sha256: b3dd739c9b4500d0375b56e5cbfdfcb3cfc63ee4ed13a40ba20f2df8616afaf0
     size_bytes: 52748077
-  # The encoder runs once per image; the decoder once per prompt on its embedding.
-  components: [image_encoder, prompt_decoder]
+  # The encoder runs once per image, as two parts compiled apart, since the whole encoder needs more memory to
+  # compile than a CI runner has; the decoder runs once per prompt on its embedding.
+  components: [image_encoder_0, image_encoder_1, prompt_decoder]
 
 calibrations:
 - id: coco-2017-cal
@@ -42,23 +43,29 @@ calibrations:
 build_profiles:
   w16a16:
     components:
-      image_encoder:
+      image_encoder_0:
+        parameters: {precision: w16a16}
+      image_encoder_1:
         parameters: {precision: w16a16}
       prompt_decoder:
         parameters: {precision: w16a16}
 
   w8a8:
-    # The decoder calibrates on the float32 encoder's embeddings of the same images, two prompts each.
+    # The second encoder part calibrates on the float32 first part's features of the same images, and the decoder
+    # on the float32 encoder's embeddings of them, two prompts each.
     calibration_dataset: coco-2017-cal
     components:
-      image_encoder:
+      image_encoder_0:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+      image_encoder_1:
         parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
       prompt_decoder:
         parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
 
 pipeline:
 - {cpu: "Resize the longer side to 1024, normalize, pad to 1024x1024"}
-- {component: image_encoder}
+- {component: image_encoder_0}
+- {component: image_encoder_1}
 - {cpu: "Prompt points as normalized coordinates and one-hot point types"}
 - {component: prompt_decoder}
 - {cpu: "Upsample the chosen mask's logits to the image and threshold at 0"}

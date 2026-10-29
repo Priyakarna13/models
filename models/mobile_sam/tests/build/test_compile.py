@@ -137,13 +137,13 @@ def test_fidelity_selection_is_the_declared_seeded_val2017_sample(
 
 
 @pytest.mark.parametrize("profile_id", ["w16a16", "w8a8"])
-def test_compile_binds_both_components_in_each_profile(
+def test_compile_binds_every_component_in_each_profile(
     load_script: Callable[[str], ModuleType], profile_id: str
 ) -> None:
     recipe = load_script("compile")
     parameters = recipe._component_parameters(profile_id)
 
-    assert list(parameters) == ["image_encoder", "prompt_decoder"]
+    assert list(parameters) == ["image_encoder_0", "image_encoder_1", "prompt_decoder"]
     assert {item["precision"] for item in parameters.values()} == {profile_id}
     with pytest.raises(ValueError, match="no build profile 'w8a16'"):
         recipe._component_parameters("w8a16")
@@ -173,14 +173,14 @@ def test_audit_requires_one_mla_segment_and_no_host_code(
     recipe = load_script("compile")
     version = recipe.COMPILER_VERSION
 
-    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"], version), "image_encoder")
+    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"], version), "image_encoder_0")
     for name, processors, compiler in [
         ("two", ["MLA", "MLA"], version),
         ("host", ["MLA", "A65"], version),
         ("old", ["MLA"], "0.0.0"),
     ]:
         with pytest.raises(RuntimeError):
-            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors, compiler), "image_encoder")
+            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors, compiler), "image_encoder_0")
 
 
 def test_compile_main_rejects_an_unknown_invocation(

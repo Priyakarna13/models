@@ -6,9 +6,9 @@
 
 MobileSAM is Segment Anything with a small TinyViT image encoder distilled from
 SAM's ViT-H. Given a click or a box on an image, it returns masks of the object
-there. It runs as two components: the `image_encoder` once per image, then the
-`prompt_decoder` once per prompt on the encoder's embedding, so one image can
-answer many prompts. Builds: `w16a16` (BF16) and `w8a8` (INT8, calibrated on 50
+there. It runs as three components: the image encoder once per image, as
+`image_encoder_0` then `image_encoder_1`, then the `prompt_decoder` once per
+prompt on the encoder's embedding, so one image can answer many prompts. Builds: `w16a16` (BF16) and `w8a8` (INT8, calibrated on 50
 COCO 2017 images).
 
 COCO has no prompt annotations, so the compile stage compares each build with
@@ -17,12 +17,15 @@ the float32 model: the quantized encoder feeds the quantized decoder on COCO
 
 ## Inputs and outputs
 
-**`image_encoder` input.** `image`, 1024×1024 RGB. Resize the image with
+**`image_encoder_0` input.** `image`, 1024×1024 RGB. Resize the image with
 bilinear resampling so its longer side is 1024. Normalize the 0–255 values with
 mean (123.675, 116.28, 103.53) and standard deviation (58.395, 57.12, 57.375).
 Then pad with zeros on the right and bottom.
 
-**`image_encoder` output.** `image_embeddings`, 256 channels on a 64×64 grid.
+**Between the encoder parts.** `image_encoder_0` returns `features`, 160
+channels on a 64×64 grid; pass them to `image_encoder_1` unchanged.
+
+**`image_encoder_1` output.** `image_embeddings`, 256 channels on a 64×64 grid.
 
 **`prompt_decoder` inputs.** The encoder's `image_embeddings`, and up to five
 prompt points:

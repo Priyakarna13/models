@@ -1,10 +1,11 @@
 """Benchmark MobileSAM with Neat Core and save its report.
 
-Given --mpk image_encoder=<path> --mpk prompt_decoder=<path>, the script measures the whole model on a fixed,
-seeded 720p frame: the image encoder, then the prompt decoder with one foreground click at the frame's centre,
-each stage working on a different frame at the same time. The frame is resized, normalized and padded on the CPU
-once, as segment_anything does, and Neat quantizes and tessellates it inside the measured pipeline. The script also
-records each MPK's MLA layer and stage stats and its execution plan.
+Given one --mpk <component>=<path> per component (image_encoder_0, image_encoder_1, prompt_decoder), the script
+measures the whole model on a fixed, seeded 720p frame: the two image encoder parts, then the prompt decoder with
+one foreground click at the frame's centre, each component working on a different frame at the same time. The
+frame is resized, normalized and padded on the CPU once, as segment_anything does, and Neat quantizes and
+tessellates it inside the measured pipeline. The script also records each MPK's MLA layer and stage stats and its
+execution plan.
 """
 
 from __future__ import annotations
@@ -76,37 +77,43 @@ def mla_stats(mpk: Path) -> tuple[dict[str, object], dict[str, object]]:
     return {"status": layer_stats.status, "layers": layers}, {"status": stage_stats.status, "stages": stages}
 
 
+def stage_inputs(component: str, tensors: list[pyneat.Tensor], prompt: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
+    """A component's inputs from the previous component's outputs; the decoder also takes the prompt."""
+    return [*tensors, *prompt] if component == "prompt_decoder" else tensors
+
+
 def build_runners(
     models: dict[str, pyneat.Model], image: pyneat.Tensor, prompt: list[pyneat.Tensor]
-) -> tuple[pyneat.ModelRunner, ...]:
-    """A runner for each model. The decoder's is built from one real encoder output."""
+) -> list[pyneat.ModelRunner]:
+    """A runner for each component, in COMPONENTS order, each built from one real output of the one before."""
     run_options = pyneat.RunOptions()
     run_options.queue_depth = QUEUE_DEPTH
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
-    encoder = models["image_encoder"].build([image], run_options=run_options)
-    (embeddings,) = encoder.run([image], timeout_ms=TIMEOUT_MS)
-    decoder = models["prompt_decoder"].build([embeddings, *prompt], run_options=run_options)
-    return encoder, decoder
+    runners, tensors = [], [image]
+    for component in COMPONENTS:
+        inputs = stage_inputs(component, tensors, prompt)
+        runners.append(models[component].build(inputs, run_options=run_options))
+        tensors = runners[-1].run(inputs, timeout_ms=TIMEOUT_MS)
+    return runners
 
 
-def infer_one(
-    encoder: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor, prompt: list[pyneat.Tensor]
-) -> None:
-    (embeddings,) = encoder.run([image], timeout_ms=TIMEOUT_MS)
-    decoder.run([embeddings, *prompt], timeout_ms=TIMEOUT_MS)
+def infer_one(runners: list[pyneat.ModelRunner], image: pyneat.Tensor, prompt: list[pyneat.Tensor]) -> None:
+    tensors = [image]
+    for component, runner in zip(COMPONENTS, runners):
+        tensors = runner.run(stage_inputs(component, tensors, prompt), timeout_ms=TIMEOUT_MS)
 
 
 def measure_latency(
-    encoder: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor, prompt: list[pyneat.Tensor]
+    runners: list[pyneat.ModelRunner], image: pyneat.Tensor, prompt: list[pyneat.Tensor]
 ) -> list[float]:
-    """Seconds per frame through both components with nothing else in flight, after the warm-up."""
+    """Seconds per frame through every component with nothing else in flight, after the warm-up."""
     for _ in range(WARMUP_FRAMES):
-        infer_one(encoder, decoder, image, prompt)
+        infer_one(runners, image, prompt)
     seconds: list[float] = []
     ends = time.perf_counter() + MIN_DURATION_S
     while len(seconds) < MEASURED_FRAMES or time.perf_counter() < ends:
         started = time.perf_counter()
-        infer_one(encoder, decoder, image, prompt)
+        infer_one(runners, image, prompt)
         seconds.append(time.perf_counter() - started)
     return seconds
 
@@ -168,38 +175,44 @@ def run_together(*stages: Callable[[], None], runners: tuple[pyneat.ModelRunner,
 
 
 def measure_throughput(
-    encoder: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor, prompt: list[pyneat.Tensor]
+    runners: list[pyneat.ModelRunner], image: pyneat.Tensor, prompt: list[pyneat.Tensor]
 ) -> Throughput:
-    """Frames per second and board telemetry with both components busy, each on a different frame. The measured
+    """Frames per second and board telemetry with every component busy, each on a different frame. The measured
     span starts after WARMUP_FRAMES outputs and lasts at least MEASURED_FRAMES frames and MIN_DURATION_S seconds."""
     monitor = pyneat.TelemetryMonitor()
     measured = threading.Event()
     throughput: Throughput | None = None
-    pushed = {"image_encoder": 0, "prompt_decoder": 0}
+    pushed = dict.fromkeys(COMPONENTS, 0)
 
     def push_images() -> None:
         try:
             while not measured.is_set():
-                push(encoder, [image], "image_encoder")
-                pushed["image_encoder"] += 1
+                push(runners[0], [image], COMPONENTS[0])
+                pushed[COMPONENTS[0]] += 1
         finally:
-            # End of stream follows the last frame through the encoder, then the decoder.
-            encoder.close_input()
+            # End of stream follows the last frame through every component.
+            runners[0].close_input()
 
-    def forward_embeddings() -> None:
-        try:
-            for (embeddings,) in drain(encoder, "image_encoder", pushed):
-                push(decoder, [embeddings, *prompt], "prompt_decoder")
-                pushed["prompt_decoder"] += 1
-                # The decoder holds its inputs now, so the encoder gets its output buffer back.
-                del embeddings
-        finally:
-            decoder.close_input()
+    def forward(index: int) -> Callable[[], None]:
+        source, target = COMPONENTS[index], COMPONENTS[index + 1]
+
+        def forward_outputs() -> None:
+            try:
+                for tensors in drain(runners[index], source, pushed):
+                    push(runners[index + 1], stage_inputs(target, tensors, prompt), target)
+                    pushed[target] += 1
+                    # The next runner holds its inputs now, so this one gets its output buffers back.
+                    del tensors
+            finally:
+                runners[index + 1].close_input()
+
+        forward_outputs.__name__ = f"forward_{source}"
+        return forward_outputs
 
     def pull_masks() -> None:
         nonlocal throughput
         outputs, started = 0, 0.0
-        for tensors in drain(decoder, "prompt_decoder", pushed):
+        for tensors in drain(runners[-1], COMPONENTS[-1], pushed):
             # Return the decoder's output buffers before the next pull.
             del tensors
             outputs += 1
@@ -214,14 +227,15 @@ def measure_throughput(
         if throughput is None:
             raise RuntimeError("the pipeline stopped before the measured span ended")
 
+    stages = [push_images, *(forward(index) for index in range(len(runners) - 1)), pull_masks]
     try:
-        run_together(push_images, forward_embeddings, pull_masks, runners=(encoder, decoder))
+        run_together(*stages, runners=tuple(runners))
     finally:
         # A failure inside the measured span leaves the monitor running.
         if monitor.running():
             monitor.stop()
-        encoder.close()
-        decoder.close()
+        for runner in runners:
+            runner.close()
     return throughput
 
 
@@ -246,8 +260,8 @@ def write_report(
         models,
         workload=(
             f"Seeded synthetic {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, resized, normalized and padded to 1024x1024 "
-            f"once on the CPU; image encoder, then prompt decoder with one foreground click, pipelined "
-            f"{QUEUE_DEPTH} frames deep"
+            "once on the CPU; the two image encoder parts, then the prompt decoder with one foreground click, "
+            f"pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
         mla_layer_stats=mla_layer_stats,
@@ -269,16 +283,16 @@ def benchmark_pipeline(mpks: dict[str, Path], output: Path) -> None:
     image = hwc(preprocess(frame).transpose(2, 0, 1)[None])
     prompt_arrays = prompt_inputs([(FRAME_WIDTH / 2, FRAME_HEIGHT / 2)], ["foreground"], frame.shape[:2])
     prompt = [hwc(prompt_arrays["point_coords"]), hwc(prompt_arrays["point_types"])]
-    encoder, decoder = build_runners(models, image, prompt)
-    latencies = measure_latency(encoder, decoder, image, prompt)
-    throughput = measure_throughput(encoder, decoder, image, prompt)
+    runners = build_runners(models, image, prompt)
+    latencies = measure_latency(runners, image, prompt)
+    throughput = measure_throughput(runners, image, prompt)
     write_report(output, latencies, throughput, models, mla_layer_stats, mla_stage_stats)
 
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:
     mpks = dict(value.split("=", 1) for value in values if "=" in value)
     if len(mpks) != len(values) or set(mpks) != set(COMPONENTS):
-        raise SystemExit("--mpk must name exactly image_encoder=<path> and prompt_decoder=<path>")
+        raise SystemExit(f"--mpk must name exactly {', '.join(f'{name}=<path>' for name in COMPONENTS)}")
     return {name: Path(path) for name, path in mpks.items()}
 
 

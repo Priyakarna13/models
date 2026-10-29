@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Split the verified MobileSAM ONNX into its image encoder and prompt decoder, quantize, and compile each to an MPK.
+"""Split the verified MobileSAM ONNX into its components, quantize, and compile each to an MPK.
 
-The converted ONNX holds both components side by side. Each is extracted, quantized to its build precision and
-compiled in its own process, and its MPK is audited: one MLA segment, no host code. When model.yaml declares
-numerical_fidelity, the quantized encoder feeds the quantized decoder on the declared val2017 images and fixed
-prompts, and their outputs are compared with the float32 ONNX chain. compile-outputs.json records every MPK.
+The converted ONNX holds the two image encoder parts and the prompt decoder side by side. Each is extracted,
+quantized to its build precision and compiled in its own process, and its MPK is audited: one MLA segment, no host
+code. Each component calibrates on the float32 outputs of the components before it. When model.yaml declares
+numerical_fidelity, the quantized components feed each other on the declared val2017 images and fixed prompts, and
+the decoder's outputs are compared with the float32 ONNX chain's. compile-outputs.json records every MPK.
 """
 
 from __future__ import annotations
@@ -127,11 +128,13 @@ def onnx_session(graph: Path) -> Any:
     return ort.InferenceSession(str(graph), sess_options=options, providers=["CPUExecutionProvider"])
 
 
-def float_embeddings(encoder: Path, images: np.ndarray) -> np.ndarray:
-    """The float32 encoder's NCHW embeddings of NHWC encoder inputs."""
-    session = onnx_session(encoder)
-    name = tensor_name("image_encoder", "image")
-    return np.concatenate([session.run(None, {name: image.transpose(2, 0, 1)[None]})[0] for image in images])
+def float_embeddings(graphs: dict[str, Path], images: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The float32 encoder parts' NCHW features and embeddings of NHWC encoder inputs."""
+    first, second = onnx_session(graphs["image_encoder_0"]), onnx_session(graphs["image_encoder_1"])
+    name = tensor_name("image_encoder_0", "image")
+    features = np.concatenate([first.run(None, {name: image.transpose(2, 0, 1)[None]})[0] for image in images])
+    name = tensor_name("image_encoder_1", "features")
+    return features, np.concatenate([second.run(None, {name: feature[None]})[0] for feature in features])
 
 
 def decoder_feeds(embeddings: np.ndarray, sizes: list[tuple[int, int]]) -> list[dict[str, np.ndarray]]:
@@ -266,7 +269,8 @@ def compile_model(
         build = Path(temporary)
         graphs = split(source, build / "graphs")
 
-        # Calibration: the encoder's images, and the decoder's prompts on the float32 encoder's embeddings.
+        # Calibration: the first encoder part's images, the second's float32 features of them, and the decoder's
+        # prompts on the float32 encoder's embeddings.
         int8 = [component for component in COMPONENTS if parameters[component]["precision"] == "w8a8"]
         if int8 and dataset is None:
             raise ValueError("an INT8 component requires --dataset from dataset-registry")
@@ -276,14 +280,15 @@ def compile_model(
             count = max(int(parameters[component]["calibration_samples"]) for component in int8)
             images = calibration_images(dataset, count)
             inputs = encoder_inputs(images)
-            samples["image_encoder"] = [{"image": image.transpose(2, 0, 1)[None]} for image in inputs]
-            if "prompt_decoder" in int8:
-                embeddings = float_embeddings(graphs["image_encoder"], inputs)
+            samples["image_encoder_0"] = [{"image": image.transpose(2, 0, 1)[None]} for image in inputs]
+            if {"image_encoder_1", "prompt_decoder"} & set(int8):
+                features, embeddings = float_embeddings(graphs, inputs)
+                samples["image_encoder_1"] = [{"features": feature[None]} for feature in features]
                 samples["prompt_decoder"] = decoder_feeds(embeddings, [image.shape[:2] for image in images])
         # BF16 derives nothing from representative data, but quantize() still needs one sample.
-        samples.setdefault(
-            "image_encoder", [{"image": rng.uniform(-2, 2, INPUT_SHAPES["image_encoder"]["image"]).astype(np.float32)}]
-        )
+        for component in ("image_encoder_0", "image_encoder_1"):
+            (name, shape), = INPUT_SHAPES[component].items()
+            samples.setdefault(component, [{name: rng.uniform(-2, 2, shape).astype(np.float32)}])
         samples.setdefault(
             "prompt_decoder",
             decoder_feeds(
@@ -307,18 +312,15 @@ def compile_model(
 
         output_dir.mkdir(parents=True)
         archives = {}
-        name = f"{MODEL_ID}_{profile_id}_image_encoder"
-        built, encoded_outputs = _in_process(
-            graphs["image_encoder"],
-            build / name,
-            name,
-            "image_encoder",
-            parameters["image_encoder"],
-            samples["image_encoder"],
-            [{"image": image.transpose(2, 0, 1)[None]} for image in fidelity_inputs],
-        )
-        archives["image_encoder"] = built
-        quantized_embeddings = np.concatenate([outputs[0] for outputs in encoded_outputs]) if sizes else None
+        # The fidelity chain: each quantized component takes the previous one's quantized outputs.
+        feeds = [{"image": image.transpose(2, 0, 1)[None]} for image in fidelity_inputs]
+        for component, output in (("image_encoder_0", "features"), ("image_encoder_1", "image_embeddings")):
+            name = f"{MODEL_ID}_{profile_id}_{component}"
+            archives[component], outputs = _in_process(
+                graphs[component], build / name, name, component, parameters[component], samples[component], feeds
+            )
+            feeds = [{output: item[0]} for item in outputs]
+        quantized_embeddings = np.concatenate([item["image_embeddings"] for item in feeds]) if sizes else None
         name = f"{MODEL_ID}_{profile_id}_prompt_decoder"
         built, decoded_outputs = _in_process(
             graphs["prompt_decoder"],
@@ -358,7 +360,7 @@ def compile_model(
 
         if fidelity is not None:
             reference = onnx_session(graphs["prompt_decoder"])
-            feeds = decoder_feeds(float_embeddings(graphs["image_encoder"], fidelity_inputs), sizes)
+            feeds = decoder_feeds(float_embeddings(graphs, fidelity_inputs)[1], sizes)
             expected = [
                 reference.run(None, {tensor_name("prompt_decoder", key): value for key, value in feed.items()})
                 for feed in feeds
@@ -373,8 +375,8 @@ def compile_model(
                 "model_id": MODEL_ID,
                 "build_profile_id": profile_id,
                 "status": fidelity["status"],
-                "reference": "float32 ONNX encoder and decoder (ONNX Runtime)",
-                "candidate": "quantized encoder feeding the quantized decoder (AFE execute)",
+                "reference": "float32 ONNX encoder parts and decoder (ONNX Runtime)",
+                "candidate": "quantized encoder parts feeding the quantized decoder (AFE execute)",
                 "dataset": {key: fidelity["dataset"][key] for key in ("id", "variant", "sha256")},
                 "selection": fidelity["selection"],
                 "samples": len(sizes),

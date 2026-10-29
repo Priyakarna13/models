@@ -1,8 +1,13 @@
-"""Export MobileSAM's image encoder and prompt decoder side by side in one ONNX and check it against PyTorch.
+"""Export MobileSAM's two image encoder parts and its prompt decoder side by side in one ONNX and check it against
+PyTorch.
 
 MobileSAM is segment_anything's prompt encoder and mask decoder with a TinyViT image encoder. The checkpoint is
 MobileSAM's mobile_sam.pt; the encoder is built from the vendored tiny_vit_sam.py and the rest from the
 segment_anything wheel.
+
+The exported encoder is tiny_vit_4d.ImageEncoder: upstream's TinyViT with its attention stages in the 4D layout
+the compiler handles, as two components (pipeline.py), since the whole encoder needs more memory to compile than a
+CI runner has. Chained, the two parts are checked against upstream's TinyViT before export.
 
 The prompt decoder takes each prompt point as normalized coordinates and a one-hot point type (pipeline.py) and
 embeds it itself, so an application needs no weights on the CPU. Its embedding equals segment_anything's.
@@ -126,14 +131,20 @@ def modules(sam):
             sparse = (encoding + types @ self.table)[None]
             return self.decoder.predict_masks(image_embeddings, self.image_pe, sparse, self.dense)
 
+    from tiny_vit_4d import ImageEncoder
+
     class SideBySide(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.image_encoder = sam.image_encoder
+            self.image_encoder = ImageEncoder(sam.image_encoder)
             self.prompt_decoder = PromptDecoder()
 
-        def forward(self, image, image_embeddings, point_coords, point_types):
-            return self.image_encoder(image), *self.prompt_decoder(image_embeddings, point_coords, point_types)
+        def forward(self, image, features, image_embeddings, point_coords, point_types):
+            return (
+                self.image_encoder.start(image),
+                self.image_encoder.finish(features),
+                *self.prompt_decoder(image_embeddings, point_coords, point_types),
+            )
 
     return SideBySide().eval()
 
@@ -161,6 +172,26 @@ def reference_decoder(sam, image_embeddings, points, types):
     sparse = torch.stack(tokens)[None]
     dense = prompt.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(1, -1, *EMBEDDING_SHAPE[2:])
     return sam.mask_decoder.predict_masks(image_embeddings, prompt.get_dense_pe(), sparse, dense)
+
+
+def seeded_image(seed):
+    """Normalized pixels lie in about [-2.1, 2.7]; the image's bottom rows are padding, as for a 4:3 image."""
+    image = np.random.RandomState(seed).uniform(-2.1, 2.7, INPUT_SHAPES["image_encoder_0"]["image"]).astype(np.float32)
+    image[:, :, 768:] = 0
+    return image
+
+
+def check_encoder(sam, side_by_side):
+    """The 4D encoder's two parts, chained, give upstream TinyViT's embedding on seeded images."""
+    import torch
+
+    for seed in SEEDS[:2]:
+        image = torch.from_numpy(seeded_image(seed))
+        with torch.inference_mode():
+            expected = sam.image_encoder(image).numpy()
+            encoder = side_by_side.image_encoder
+            actual = encoder.finish(encoder.start(image)).numpy()
+        np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4, err_msg=f"4D encoder (seed {seed})")
 
 
 def check_embedding(sam, side_by_side):
@@ -216,7 +247,8 @@ def compare(expected, actual, name):
 
 
 def check_onnx(side_by_side, path):
-    """Each component's ONNX outputs match PyTorch's on seeded images and the check prompts."""
+    """Each component's ONNX outputs match PyTorch's on seeded images and the check prompts. The second encoder
+    part takes the first's PyTorch features of the same image."""
     import onnxruntime as ort
     import torch
 
@@ -225,14 +257,14 @@ def check_onnx(side_by_side, path):
     session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
     outputs = [tensor_name(c, n) for c in COMPONENTS for n in OUTPUT_SHAPES[c]]
     for seed, (points, types) in zip(SEEDS, [*PROMPTS, PROMPTS[0]]):
-        rng = np.random.RandomState(seed)
-        # Normalized pixels lie in about [-2.1, 2.7]; the image's bottom rows are padding, as for a 4:3 image.
-        image = rng.uniform(-2.1, 2.7, INPUT_SHAPES["image_encoder"]["image"]).astype(np.float32)
-        image[:, :, 768:] = 0
-        embeddings = (rng.standard_normal(EMBEDDING_SHAPE) * 0.3).astype(np.float32)
+        image = seeded_image(seed)
+        with torch.inference_mode():
+            features = side_by_side.image_encoder.start(torch.from_numpy(image)).numpy()
+        embeddings = (np.random.RandomState(seed).standard_normal(EMBEDDING_SHAPE) * 0.3).astype(np.float32)
         prompt = prompt_inputs(points, types, ORIGINAL_SIZE)
         feeds = {
-            tensor_name("image_encoder", "image"): image,
+            tensor_name("image_encoder_0", "image"): image,
+            tensor_name("image_encoder_1", "features"): features,
             tensor_name("prompt_decoder", "image_embeddings"): embeddings,
             **{tensor_name("prompt_decoder", key): value for key, value in prompt.items()},
         }
@@ -250,6 +282,7 @@ def convert(source, output_dir):
     output = output_dir / "model.onnx"
     sam = build(source)
     side_by_side = modules(sam)
+    check_encoder(sam, side_by_side)
     check_embedding(sam, side_by_side)
     inputs = [tensor_name(c, n) for c in COMPONENTS for n in INPUT_SHAPES[c]]
     with tempfile.TemporaryDirectory(prefix="mobile-sam-") as temporary:
@@ -268,7 +301,8 @@ def convert(source, output_dir):
         validate_export(exported)
         exported.replace(output)
     check_onnx(side_by_side, output)
-    print(f"Prompt embedding and PyTorch/ONNX checks passed with seeds {SEEDS.start}-{SEEDS.stop - 1}: {output}")
+    seeds = f"{SEEDS.start}-{SEEDS.stop - 1}"
+    print(f"4D encoder, prompt embedding and PyTorch/ONNX checks passed with seeds {seeds}: {output}")
     return output
 
 
