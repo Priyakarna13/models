@@ -4,8 +4,9 @@ Given --mpk image_encoder=<path> --mpk prompt_decoder=<path>, the script measure
 one box prompt per frame: Neat's preprocessing and the image encoder on a fixed 720p frame, the prompt decoder on the
 encoder's embedding with the prompt's point inputs, and the CPU upsampling the best of the decoder's masks to the
 frame, each stage working on a different frame at the same time. The model declares no accuracy dataset, so the
-script builds its frame: a seeded outdoor scene with one object, which the prompt's box surrounds. The script also
-records each MPK's MLA layer and stage stats and its execution plan.
+script builds its frame: a seeded outdoor scene with one object, which the prompt's box surrounds. Before measuring,
+it checks that the compiled models' mask covers that object, which also checks the encoder's MLA code, whose compile
+skips AFE's simulator check. The script also records each MPK's MLA layer and stage stats and its execution plan.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ QUEUE_DEPTH = 4
 FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
 # The object in the benchmark frame, and the box prompt around it: (x0, y0, x1, y1) in frame pixels.
 OBJECT_BOX = (430.0, 210.0, 850.0, 560.0)
+# The least intersection over union with the object that the compiled models' mask must reach.
+MIN_OBJECT_IOU = 0.5
 
 
 def image_options() -> pyneat.ModelOptions:
@@ -77,11 +80,16 @@ def synthetic_frame() -> np.ndarray:
         radius, colour = rng.uniform(30, 120), rng.uniform(20, 235, 3).astype(np.float32)
         weight = np.exp(-((xs - x) ** 2 + (ys - y) ** 2) / (2 * radius**2))[..., None]
         frame = frame * (1 - weight) + colour * weight
-    x0, y0, x1, y1 = OBJECT_BOX
-    inside = (((xs - (x0 + x1) / 2) / ((x1 - x0) / 2 - 20)) ** 2 + ((ys - (y0 + y1) / 2) / ((y1 - y0) / 2 - 20)) ** 2) <= 1
-    frame[inside] = np.asarray([200, 60, 40], np.float32)
+    frame[object_mask()] = np.asarray([200, 60, 40], np.float32)
     frame += rng.normal(0.0, 3.0, frame.shape).astype(np.float32)
     return np.clip(frame, 0, 255).astype(np.uint8)
+
+
+def object_mask() -> np.ndarray:
+    """The pixels of the frame's object: an ellipse 20 pixels inside OBJECT_BOX."""
+    ys, xs = np.mgrid[0:FRAME_HEIGHT, 0:FRAME_WIDTH].astype(np.float32)
+    x0, y0, x1, y1 = OBJECT_BOX
+    return (((xs - (x0 + x1) / 2) / ((x1 - x0) / 2 - 20)) ** 2 + ((ys - (y0 + y1) / 2) / ((y1 - y0) / 2 - 20)) ** 2) <= 1
 
 
 def prompt_array(points: list[tuple[float, float]], types: list[str], size: tuple[int, int]) -> np.ndarray:
@@ -150,6 +158,19 @@ def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor,
     (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
     prompt_decoder = models["prompt_decoder"].build([embeddings, *prompt], run_options=run_options)
     return image_encoder, prompt_decoder
+
+
+def check_mask(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
+               prompt: list[pyneat.Tensor]) -> float:
+    """The intersection over union of the compiled models' mask with the frame's object. Below MIN_OBJECT_IOU the
+    models do not segment what the benchmark feeds them, so the script stops."""
+    (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
+    mask = frame_mask(prompt_decoder.run([embeddings, *prompt], timeout_ms=TIMEOUT_MS))
+    truth = object_mask()
+    iou = float(np.sum(mask & truth) / np.sum(mask | truth))
+    if iou < MIN_OBJECT_IOU:
+        raise RuntimeError(f"the compiled models' mask covers the frame's object with IoU {iou:.3f}, below {MIN_OBJECT_IOU}")
+    return iou
 
 
 def infer_one(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
@@ -333,6 +354,7 @@ def benchmark_pipeline(mpks: dict[str, Path], output: Path) -> None:
                                      memory=pyneat.TensorMemory.EV74)
     prompt = prompt_tensors()
     image_encoder, prompt_decoder = build_runners(models, image, prompt)
+    print(f"Mask IoU with the frame's object: {check_mask(image_encoder, prompt_decoder, image, prompt):.3f}")
     latencies = measure_latency(image_encoder, prompt_decoder, image, prompt)
     throughput = measure_throughput(image_encoder, prompt_decoder, image, prompt)
     write_report(output, latencies, throughput, models, mla_layer_stats, mla_stage_stats)

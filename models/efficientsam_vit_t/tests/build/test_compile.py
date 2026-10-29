@@ -6,6 +6,7 @@ import math
 import random
 import sys
 import tarfile
+import types
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -111,6 +112,30 @@ def test_positional_encoding_is_sine_and_cosine_of_the_projected_point(load_scri
 
     np.testing.assert_allclose(encoding[0], [0, 0, 1, 1], atol=1e-7)
     np.testing.assert_allclose(encoding[1], [1, 0, 0, 1], atol=1e-6)
+
+
+def test_the_encoder_compiles_without_afes_simulator_check(
+    monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str], ModuleType]
+) -> None:
+    recipe = load_script("compile")
+
+    class Config:
+        def __init__(self, **options: object) -> None:
+            self.options = options
+
+    operations = types.ModuleType("afe.backends.mla.afe_to_n2a_compiler.n2a_compiler_operations")
+    networks = types.ModuleType("afe.core.compile_networks")
+    operations.MLACompilerConfig = networks.MLACompilerConfig = Config
+    monkeypatch.setitem(sys.modules, operations.__name__, operations)
+    monkeypatch.setitem(sys.modules, networks.__name__, networks)
+    monkeypatch.setattr(sys.modules["afe.core"], "compile_networks", networks, raising=False)
+
+    recipe._skip_simulator_check()
+    assert networks.MLACompilerConfig(target="mla").options == {"verify_mlc_files": False, "target": "mla"}
+    # A compiler that builds its MLA configuration elsewhere would silently keep the check, so the recipe refuses it.
+    networks.MLACompilerConfig = object
+    with pytest.raises(RuntimeError, match="revisit the simulator check"):
+        recipe._skip_simulator_check()
 
 
 @pytest.mark.parametrize("precision", ["w8a8", "w16a16"])
