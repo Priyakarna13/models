@@ -12,11 +12,14 @@ from model_registry.model_tests import measured_shortfalls
 
 
 class _Tensor:
-    def __init__(self, array: np.ndarray) -> None:
-        self.array = array
+    def __init__(self, array: np.ndarray, memory: str = "CPU") -> None:
+        self.array, self.memory = array, memory
 
     def to_numpy(self, copy: bool = True) -> np.ndarray:
         return self.array.copy() if copy else self.array
+
+    def cvu(self) -> _Tensor:
+        return _Tensor(self.array.copy(), "EV74")
 
 
 def test_mpk_arguments_name_exactly_both_components(load_script: Callable[[str], ModuleType]) -> None:
@@ -45,9 +48,10 @@ def test_the_cpu_step_upsamples_the_mask_with_the_best_score(load_script: Callab
 
 class _Runner:
     def __init__(self, *outputs: np.ndarray) -> None:
-        self.outputs = outputs
+        self.outputs, self.inputs = outputs, []
 
     def run(self, inputs: list[Any], timeout_ms: int) -> list[_Tensor]:
+        self.inputs = inputs
         return [_Tensor(output) for output in self.outputs]
 
 
@@ -58,9 +62,12 @@ def test_the_benchmark_stops_unless_the_mask_covers_the_frames_object(load_scrip
     masks = np.full((1, 256, 256, 3), -5.0, np.float32)
     masks[0, :, :, 1] = np.where(inside, 5.0, -5.0)
     scores = np.asarray([[[0.1, 0.9, 0.2]]], np.float32)
-    encoder = _Runner(np.zeros((1, 64, 64, 256), np.float32))
+    encoder, decoder = _Runner(np.zeros((1, 64, 64, 256), np.float32)), _Runner(scores, masks)
 
-    assert script.check_mask(encoder, _Runner(scores, masks), None, []) > 0.9
+    assert script.check_mask(encoder, decoder, None, []) > 0.9
+    # The decoder gets a copy of the encoder's CPU output in EV74 memory, which Neat binds to its first EV74 stage.
+    (embeddings,) = decoder.inputs
+    assert embeddings.memory == "EV74" and embeddings.array.shape == (1, 64, 64, 256)
     with pytest.raises(RuntimeError, match="below 0.5"):
         script.check_mask(encoder, _Runner(scores, np.full((1, 256, 256, 3), -5.0, np.float32)), None, [])
 

@@ -149,6 +149,16 @@ def mla_stats(mpk: Path) -> tuple[dict[str, object], dict[str, object]]:
     return {"status": layer_stats.status, "layers": layers}, {"status": stage_stats.status, "stages": stages}
 
 
+def decoder_embeddings(embeddings: pyneat.Tensor) -> pyneat.Tensor:
+    """The image encoder's output, copied to EV74 memory for the prompt decoder.
+
+    Neat returns the encoder's output as a CPU tensor, and the decoder's first stage runs on the EV74. Neat Core develop
+    builds since 27 October refuse to bind that tensor to it ("EV74 requires admitted CMA or contiguous camera memory"),
+    so each frame's embedding is copied to EV74 memory, where the prompt is created too.
+    """
+    return embeddings.cvu()
+
+
 def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor,
                   prompt: list[pyneat.Tensor]) -> tuple[pyneat.ModelRunner, pyneat.ModelRunner]:
     run_options = pyneat.RunOptions()
@@ -156,7 +166,7 @@ def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor,
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
     image_encoder = models["image_encoder"].build([image], run_options=run_options)
     (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
-    prompt_decoder = models["prompt_decoder"].build([embeddings, *prompt], run_options=run_options)
+    prompt_decoder = models["prompt_decoder"].build([decoder_embeddings(embeddings), *prompt], run_options=run_options)
     return image_encoder, prompt_decoder
 
 
@@ -165,7 +175,7 @@ def check_mask(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRu
     """The intersection over union of the compiled models' mask with the frame's object. Below MIN_OBJECT_IOU the
     models do not segment what the benchmark feeds them, so the script stops."""
     (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
-    mask = frame_mask(prompt_decoder.run([embeddings, *prompt], timeout_ms=TIMEOUT_MS))
+    mask = frame_mask(prompt_decoder.run([decoder_embeddings(embeddings), *prompt], timeout_ms=TIMEOUT_MS))
     truth = object_mask()
     iou = float(np.sum(mask & truth) / np.sum(mask | truth))
     if iou < MIN_OBJECT_IOU:
@@ -176,7 +186,7 @@ def check_mask(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRu
 def infer_one(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
               prompt: list[pyneat.Tensor]) -> None:
     (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
-    frame_mask(prompt_decoder.run([embeddings, *prompt], timeout_ms=TIMEOUT_MS))
+    frame_mask(prompt_decoder.run([decoder_embeddings(embeddings), *prompt], timeout_ms=TIMEOUT_MS))
 
 
 def measure_latency(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
@@ -270,9 +280,9 @@ def measure_throughput(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat
     def forward_embeddings() -> None:
         try:
             for (embeddings,) in drain(image_encoder, "image encoder", pushed):
-                push(prompt_decoder, [embeddings, *prompt], "prompt decoder")
+                push(prompt_decoder, [decoder_embeddings(embeddings), *prompt], "prompt decoder")
                 pushed["prompt decoder"] += 1
-                # The decoder holds its inputs now, so the image encoder gets its output buffer back.
+                # The decoder holds a copy, so the image encoder gets its output buffer back.
                 del embeddings
         finally:
             prompt_decoder.close_input()
