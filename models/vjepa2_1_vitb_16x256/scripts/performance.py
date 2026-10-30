@@ -68,10 +68,15 @@ def hwc(value: np.ndarray) -> pyneat.Tensor:
 
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
-    """One component's outputs as the next component's inputs: fresh CPU tensors holding a copy. Neat Core builds
-    a runner's input stage from the tensors it receives, and an MLA output tensor passed on as is has media caps the
-    next model's input stage rejects ([misconfig.media_caps])."""
-    return [pyneat.Tensor.from_numpy(tensor.to_numpy(copy=True), copy=True) for tensor in tensors]
+    """One component's outputs as the next component's inputs: fresh CPU [H, W, C] tensors holding a copy, the form
+    hwc() gives the first input. Neat Core builds a runner's input stage from the tensors it receives; an output
+    passed on as is, or with Neat 0.6's leading batch axis, has media caps the next model's input stage rejects
+    ([misconfig.media_caps])."""
+    arrays = [tensor.to_numpy(copy=True) for tensor in tensors]
+    return [
+        pyneat.Tensor.from_numpy(np.ascontiguousarray(array[0] if array.ndim == 4 else array), copy=True)
+        for array in arrays
+    ]
 
 
 def percentile_ms(seconds: list[float], percentile: float) -> float:
