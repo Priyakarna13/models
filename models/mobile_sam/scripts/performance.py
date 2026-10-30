@@ -28,8 +28,9 @@ MIN_DURATION_S = 60
 TIMEOUT_MS = 10000
 # Frames each runner may queue; deeper queues add latency without adding throughput.
 QUEUE_DEPTH = 4
-# The model declares no accuracy dataset, so the benchmark input is a fixed, seeded 720p camera-like frame:
-# smooth colour gradients with sensor-like noise.
+# The benchmark input is a fixed, seeded 720p camera-like frame, smooth colour gradients with sensor-like noise,
+# rather than an accuracy dataset image: the frame is prepared once on the CPU, so its content does not change the
+# measured work.
 FRAME_WIDTH, FRAME_HEIGHT, SEED = 1280, 720, 0
 
 
@@ -319,6 +320,7 @@ def parse_mpks(values: list[str]) -> dict[str, Path]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
+    parser.add_argument("--dataset", help="the accuracy dataset; unused, as the input is a fixed frame")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
     args = parser.parse_args()
     benchmark_pipeline(parse_mpks(args.mpk), Path(args.output))

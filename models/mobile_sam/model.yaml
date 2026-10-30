@@ -77,4 +77,9 @@ numerical_fidelity:
   selection: {method: seeded_random_without_replacement, seed: 42, offset: 0, samples: 8}
   outputs: [masks, iou_predictions]
 
+accuracy:
+  # Each non-crowd object's ground-truth box is the prompt, so the scores measure the masks, not detection.
+  datasets:
+  - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
+
 performance: {}

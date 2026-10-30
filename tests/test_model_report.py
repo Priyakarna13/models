@@ -280,7 +280,7 @@ def assert_letterboxed_frame(tensor):
     assert (frame[:, IMAGE_COLUMNS] == 200).all()
 
 
-# Models with no accuracy dataset get no --dataset and benchmark a fixed frame their script builds.
+# Models that prepare their input once on the CPU benchmark a fixed frame their script builds, even given --dataset.
 FIXED_FRAME_MODELS = {"mobile_sam"}
 
 
