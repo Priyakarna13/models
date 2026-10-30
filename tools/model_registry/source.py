@@ -18,8 +18,10 @@ HF_URI_RE = re.compile(
 )
 HF_RESOLVE_RE = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/resolve/[a-f0-9]{40}/.+$")
 VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx$")
+TORCHVISION_WEIGHTS_RE = re.compile(r"^/models/[a-z][a-z0-9_]*-(?P<hash_prefix>[a-f0-9]{8})\.pth$")
 DEFAULT_HTTPS_HOSTS = {
     "artifacts.stg.neat.sima.ai",
+    "download.pytorch.org",
     "huggingface.co",
 }
 
@@ -113,4 +115,12 @@ class SourceSpec:
             raise SourcePolicyError("Hugging Face HTTPS sources must use a full commit in a resolve URL")
         if hostname == "artifacts.stg.neat.sima.ai" and not VULCAN_ONNX_RE.fullmatch(parts.path):
             raise SourcePolicyError("Vulcan sources must identify a versioned ONNX file")
+        if hostname == "download.pytorch.org":
+            weights = TORCHVISION_WEIGHTS_RE.fullmatch(parts.path)
+            if weights is None or parts.port is not None:
+                raise SourcePolicyError("TorchVision sources must identify an official hashed PTH weight file")
+            if not SHA256_RE.fullmatch(self.sha256) or self.size_bytes < 1:
+                raise SourcePolicyError("TorchVision sources require a full SHA256 and positive byte size")
+            if weights.group("hash_prefix") != self.sha256[:8]:
+                raise SourcePolicyError("TorchVision filename hash prefix must match the declared SHA256")
         return self.uri
