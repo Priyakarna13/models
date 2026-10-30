@@ -45,7 +45,7 @@ build_profiles:
         parameters: {precision: w16a16}
 
 accuracy:
-  # accuracy.py decodes the heads with TensorFlow's anchors, box coder and per-class NMS settings.
+  # accuracy.py measures the native Image/SSD route and retains an independent TensorFlow reference.
   # TensorFlow trained these weights on COCO 2014 train+val minus its 8k minival, so some val2017
   # images were training images and val2017 scores run above the published minival numbers.
   datasets:

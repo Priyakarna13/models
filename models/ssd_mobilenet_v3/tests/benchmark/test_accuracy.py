@@ -241,3 +241,188 @@ def test_undeclared_performance_route_fails_without_a_report(tmp_path):
     assert result.returncode != 0
     assert "not qualified" in result.stderr
     assert not (tmp_path / "model-report.json").exists()
+
+
+# Native-route adapter tests deliberately retain the independent source-oracle tests above.
+def _native_parser(module, monkeypatch, boxes):
+    from types import SimpleNamespace
+
+    calls = []
+    monkeypatch.setattr(module.pyneat.detections, "read_detection_format", lambda tensor: "BBOX", raising=False)
+    monkeypatch.setattr(module.pyneat.detections, "format_is_bbox", lambda value: value == "BBOX", raising=False)
+
+    def parse(tensor, width, height, *, expected_topk, strict):
+        calls.append((width, height, expected_topk, strict))
+        return SimpleNamespace(boxes=boxes)
+
+    monkeypatch.setattr(module.pyneat.detections, "decode_bbox_tensor", parse, raising=False)
+    return calls
+
+
+def _native_box(**values):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(**dict(dict(x1=2, y1=3, x2=8, y2=9, score=0.8, class_id=90), **values))
+
+
+def test_native_policy_is_explicit_and_uses_per_frame_image_geometry(load_script):
+    module = load_script("accuracy")
+    options = module.native_options()
+    assert options.decode_type == module.pyneat.BoxDecodeType.Ssd
+    assert options.preprocess.kind == module.pyneat.InputKind.Image
+    assert options.preprocess.resize.mode == module.pyneat.ResizeMode.Stretch
+    assert options.preprocess.normalize.mean == [0.5, 0.5, 0.5]
+    assert options.preprocess.normalize.stddev == [0.5, 0.5, 0.5]
+    assert options.preprocess.normalize.has_explicit_stats is True
+    assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (1280, 720)
+    assert (options.boxdecode_original_width, options.boxdecode_original_height) == (0, 0)
+    assert (options.score_threshold, options.nms_iou_threshold, options.top_k) == (
+        module.SCORE_THRESHOLD,
+        module.IOU_THRESHOLD,
+        module.MAX_DETECTIONS,
+    )
+
+
+def test_native_rows_preserve_category_ids_and_original_geometry(load_script, monkeypatch):
+    module = load_script("accuracy")
+    calls = _native_parser(module, monkeypatch, [_native_box(class_id=18), _native_box(class_id=90)])
+    rows = module.native_rows([object()], 139, 640, 480)
+    np.testing.assert_array_equal(rows[:, 6], [18, 90])
+    np.testing.assert_array_equal(rows[0, :5], [139, 2, 3, 6, 6])
+    assert calls == [(0, 0, module.MAX_DETECTIONS, True)]
+
+
+def test_native_empty_and_zero_area_or_one_pixel_overhang_are_not_repaired(load_script, monkeypatch):
+    module = load_script("accuracy")
+    _native_parser(module, monkeypatch, [])
+    assert module.native_rows([object()], 1, 10, 10).shape == (0, 7)
+    _native_parser(module, monkeypatch, [_native_box(x1=10, x2=11), _native_box(x1=4, x2=4)])
+    rows = module.native_rows([object()], 1, 10, 10)
+    assert rows[0, 1] + rows[0, 3] == 11
+    assert rows[1, 3] == 0
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"score": float("nan")},
+        {"x1": float("inf")},
+        {"class_id": 0},
+        {"class_id": 91},
+        {"class_id": 18.5},
+        {"score": -1},
+        {"score": 1.1},
+        {"x1": -1},
+        {"x2": 12},
+        {"x2": 1},
+    ],
+)
+def test_native_rejects_invalid_values_instead_of_fixing_them(load_script, monkeypatch, values):
+    module = load_script("accuracy")
+    _native_parser(module, monkeypatch, [_native_box(**values)])
+    with pytest.raises(ValueError):
+        module.native_rows([object()], 1, 10, 10)
+
+
+def test_native_rejects_raw_heads_wrong_format_and_count(load_script, monkeypatch):
+    module = load_script("accuracy")
+    _native_parser(module, monkeypatch, [])
+    for outputs in [[], [object()] * 12]:
+        with pytest.raises(ValueError, match="typed BBOX"):
+            module.native_rows(outputs, 1, 10, 10)
+    monkeypatch.setattr(module.pyneat.detections, "read_detection_format", lambda tensor: "POSE")
+    with pytest.raises(ValueError, match="typed BBOX"):
+        module.native_rows([object()], 1, 10, 10)
+    _native_parser(module, monkeypatch, [_native_box()] * (module.MAX_DETECTIONS + 1))
+    with pytest.raises(ValueError, match="topK"):
+        module.native_rows([object()], 1, 10, 10)
+
+
+def test_native_a_b_a_geometry_and_loans_are_per_frame(load_script, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    module = load_script("accuracy")
+    records = [dict(id=i + 1, width=w, height=h) for i, (w, h) in enumerate([(640, 480), (320, 240), (640, 480)])]
+    monkeypatch.setattr(module, "read_rgb_record", lambda r, _: np.zeros((r["height"], r["width"], 3), np.uint8))
+    monkeypatch.setattr(module.pyneat.Tensor, "from_numpy", lambda image, **kw: SimpleNamespace(image=image, kwargs=kw))
+    outputs, seeds, shapes, closed = [], [], [], []
+
+    class Runner:
+        def run(self, inputs, timeout_ms):
+            assert not outputs  # Prior producer loans were released before this push.
+            (tensor,) = inputs
+            h, w, _ = tensor.image.shape
+            shapes.append((w, h))
+            outputs.append(SimpleNamespace(boxes=[_native_box(x2=w, y2=h)]))
+            return outputs
+
+        def close(self):
+            closed.append(True)
+
+    def build(inputs, *, run_options):
+        (seed,) = inputs
+        seeds.append(seed.image.shape)
+        assert run_options.startup_preflight is False
+        return Runner()
+
+    monkeypatch.setattr(module.pyneat.detections, "read_detection_format", lambda _: "BBOX", raising=False)
+    monkeypatch.setattr(module.pyneat.detections, "format_is_bbox", lambda _: True, raising=False)
+    monkeypatch.setattr(module.pyneat.detections, "decode_bbox_tensor", lambda output, *a, **kw: output, raising=False)
+    rows = module.native_predictions(SimpleNamespace(build=build), records, tmp_path)
+    assert seeds == [(720, 1280, 3)] and closed == [True] and not outputs
+    assert shapes == [(640, 480), (320, 240), (640, 480)]
+    assert [list(r[0, 1:5]) for r in rows] == [[2, 3, 638, 477], [2, 3, 318, 237], [2, 3, 638, 477]]
+
+
+def test_native_rejects_capacity_overflow_before_build(load_script, tmp_path):
+    from unittest.mock import Mock
+
+    module = load_script("accuracy")
+    model = Mock()
+    with pytest.raises(ValueError, match="capacity"):
+        module.native_predictions(model, [dict(id=1, width=1281, height=720)], tmp_path)
+    model.build.assert_not_called()
+
+
+def test_native_rgb_decode_checks_original_annotation_geometry(load_script, tmp_path):
+    import cv2
+
+    module = load_script("accuracy")
+    path = tmp_path / "image.png"
+    assert cv2.imwrite(str(path), np.full((8, 12, 3), [10, 20, 30], np.uint8))
+    record = dict(file_name=path.name, width=12, height=8)
+    image = module.read_rgb_record(record, tmp_path)
+    assert image.shape == (8, 12, 3) and image.dtype == np.uint8
+    np.testing.assert_array_equal(image[0, 0], [30, 20, 10])
+    with pytest.raises(ValueError, match="geometry"):
+        module.read_rgb_record(dict(record, width=13), tmp_path)
+
+
+def test_native_all_empty_detector_constructs_real_empty_coco_result(load_script, monkeypatch):
+    from types import SimpleNamespace
+
+    module = load_script("accuracy")
+    results = SimpleNamespace(createIndex=lambda: None)
+    monkeypatch.setattr(module, "COCO", lambda: results)
+    gt = SimpleNamespace(dataset={"images": [{"id": 1}], "categories": [{"id": 90}]})
+    assert module.coco_results(gt, np.empty((0, 7))) is results
+    assert results.dataset == dict(gt.dataset, annotations=[])
+
+
+def test_native_runner_closes_on_inference_failure(load_script, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    module = load_script("accuracy")
+    record = dict(id=1, width=16, height=8)
+    monkeypatch.setattr(module, "read_rgb_record", lambda *args: np.zeros((8, 16, 3), np.uint8))
+    monkeypatch.setattr(module.pyneat.Tensor, "from_numpy", lambda *args, **kwargs: object())
+    closed = []
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("inference failure")
+
+    runner = SimpleNamespace(run=fail, close=lambda: closed.append(True))
+    model = SimpleNamespace(build=lambda *args, **kwargs: runner)
+    with pytest.raises(RuntimeError, match="inference failure"):
+        module.native_predictions(model, [record], tmp_path)
+    assert closed == [True]

@@ -4,26 +4,41 @@
 
 ## Overview
 
-SSD-MobileNet V3 is a single-shot object detector with a MobileNet V3 Large backbone, trained on COCO. It takes a 320×320 RGB image and returns raw box and class predictions for 3,234 anchors over six grid levels. An anchor is a fixed reference box that each prediction adjusts. A CPU reference decoder turns these predictions into detections. Device-level qualification remains pending.
+SSD-MobileNet V3 is a single-shot object detector with a MobileNet V3 Large
+backbone, trained on COCO. It predicts objects from 3,234 reference boxes across
+six grid levels. The w8a8 build has not passed its existing accuracy gate;
+qualification is incomplete. It uses post-training quantization of the original
+weights, not the historical quantization-aware-trained export.
 
 ## Inputs and outputs
 
-**Input.** Decode RGB, divide by 255, subtract 0.5 and divide by 0.5. Then stretch to 320×320 using bilinear resampling with half-pixel coordinates and no antialiasing. Normalize before resizing; do not use the V1/V2 asymmetric resize.
+**Input.** Pass the original RGB image to the Model API with image preprocessing,
+stretch resizing and explicit mean and standard deviation of 0.5. Neat resizes
+to 320×320; do not resize or normalize again in your application. The source
+reference normalizes before half-pixel bilinear resizing without antialiasing.
+The native path is not claimed to be bit-equivalent.
 
-**Outputs.** Twelve tensors over grids of 20, 10, 5, 3, 2 and 1 cells, with six anchors per cell:
+**Compiled outputs.** Twelve tensors over grids of 20, 10, 5, 3, 2 and 1 cells,
+with six reference boxes per cell:
 
-- `ssd_loc_0` to `ssd_loc_5`: four box offsets (x, y, width, height) for each anchor.
-- `ssd_confidence_0` to `ssd_confidence_5`: 91 class logits for each anchor.
+- `ssd_loc_0` to `ssd_loc_5`: box offsets (x, y, width, height).
+- `ssd_confidence_0` to `ssd_confidence_5`: 91 class logits per reference box.
 
-Use `scripts/accuracy.py` for the reference decoding:
+Set `ModelOptions.decode_type` to `BoxDecodeType.Ssd` for one typed bounding-box
+output. `scripts/accuracy.py` measures original images with threshold 0.001,
+IoU 0.55 and top 300.
 
-1. Generate TorchVision's 3,234 anchors, including its interpolated square boxes and aspect ratios 2 and 3 with their reciprocals.
-2. Divide the offsets by 10, 10, 5 and 5. Shift each anchor's center and scale its width and height by the exponent of the last two offsets, capped at log(1000/16), then clip to the image.
-3. Apply softmax across all 91 logits, including background, and discard background detections.
-4. Keep scores above 0.001 and the best 300 candidates per class before suppressing overlaps above 0.55 intersection over union. Keep the best 300 detections overall.
+Its independent reference functions use TorchVision anchors, offset scales
+(10, 10, 5, 5), an exponential cap of log(1000/16), clipping and softmax including
+background. They retain 300 candidates per class before overlap suppression,
+then 300 overall. This is not a claim of native decoder equivalence.
+Class index i is COCO category ID i; index 0 is background.
 
-Class index i is COCO category ID i; index 0 is background. The native `Ssd` decoder route is not enabled until its device-level checks pass.
+Performance remains undeclared. The standalone entry point produces no report
+until whole-model measurements and accuracy qualification are complete. Its
+prepared application policy is threshold 0.2, IoU 0.6 and top 100.
 
 ## Building applications
 
-Run the package with the [Neat Model API](https://developer.sima.ai/software/develop-apps/development-workflow/model). For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples).
+Run the package with the [Neat Model API](https://developer.sima.ai/software/develop-apps/development-workflow/model).
+For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples).

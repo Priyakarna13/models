@@ -253,7 +253,7 @@ PYNEAT_ENUMS = {
     "NormalizePreset": ("ImageNet",),
     "PixelFormat": ("RGB",),
     "TensorMemory": ("EV74",),
-    "BoxDecodeType": ("YoloV8", "YoloV26", "YoloV26Pose", "YoloV26Seg", "SuperPoint"),
+    "BoxDecodeType": ("YoloV8", "YoloV26", "YoloV26Pose", "YoloV26Seg", "SuperPoint", "Ssd"),
     "SuperPointProfile": ("MagicLeapDemoV1", "LightGlueV1"),
 }
 SCRIPT_PYNEAT = {
@@ -416,11 +416,16 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         assert not hasattr(options.preprocess, "preset")
         assert (options.superpoint.profile, options.top_k) == ("MagicLeapDemoV1", 1000)
         assert "v_scene/1.ppm" in report["workload"]
-    elif getattr(options.preprocess.normalize, "has_explicit_stats", False):
-        # SSD-MobileNet stretches to its 300x300 input, scales to [-1, 1] and is measured at its raw heads.
+    elif getattr(options, "decode_type", "") == "Ssd":
+        # SSD-MobileNet measures the complete native detector, not the former raw-head bypass.
         normalize = options.preprocess.normalize
         assert (options.preprocess.resize.mode, normalize.mean, normalize.stddev) == ("Stretch", [0.5] * 3, [0.5] * 3)
-        assert not hasattr(options, "decode_type")
+        assert (options.decode_type, options.score_threshold, options.nms_iou_threshold, options.top_k) == (
+            "Ssd", 0.2, 0.6, 100
+        )
+        assert options.preprocess.color_convert.input_format == "PreprocessColorFormat.RGB"
+        assert (options.boxdecode_original_width, options.boxdecode_original_height) == (0, 0)
+        assert "complete detector" in report["workload"]
         assert ".jpg" in report["workload"]
     else:
         assert_letterboxed_frame(frame)
