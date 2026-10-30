@@ -117,6 +117,12 @@ input in [what a change reruns](../docs/adding-a-model.md#9-know-what-a-change-r
 
 ## CI flow
 
+Registry release state is a separate production workflow: changes to `state.json`,
+`scripts/publish_registry_state.sh`, or `vulcan-model-state.yml` on `main` publish
+`models/state.json`. Manual runs also require `main`; both jobs and the upload
+script enforce this restriction. Runs share one production concurrency group
+and verify the uploaded file. Merging to `develop` does not deploy this state.
+
 ```text
 push (Vulcan Model Orchestrator, every push)
   -> select: validate the catalog, resolve the compiler pin and base branches
