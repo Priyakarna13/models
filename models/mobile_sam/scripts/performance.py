@@ -57,6 +57,13 @@ def hwc(value: np.ndarray) -> pyneat.Tensor:
     return pyneat.Tensor.from_numpy(np.ascontiguousarray(value[0].transpose(1, 2, 0)), copy=True)
 
 
+def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
+    """One component's outputs as the next component's inputs: fresh CPU tensors holding a copy. Neat Core builds
+    a runner's input stage from the tensors it receives, and an MLA output tensor passed on as is has media caps the
+    next model's input stage rejects ([misconfig.media_caps])."""
+    return [pyneat.Tensor.from_numpy(tensor.to_numpy(copy=True), copy=True) for tensor in tensors]
+
+
 def percentile_ms(seconds: list[float], percentile: float) -> float:
     return float(np.percentile(seconds, percentile) * 1000)
 
@@ -92,15 +99,19 @@ def build_runners(
     runners, tensors = [], [image]
     for component in COMPONENTS:
         inputs = stage_inputs(component, tensors, prompt)
-        runners.append(models[component].build(inputs, run_options=run_options))
-        tensors = runners[-1].run(inputs, timeout_ms=TIMEOUT_MS)
+        try:
+            runners.append(models[component].build(inputs, run_options=run_options))
+        except pyneat.NeatError as error:
+            shapes = [tuple(tensor.shape) for tensor in inputs]
+            raise RuntimeError(f"building the {component} runner on input shapes {shapes} failed") from error
+        tensors = handoff(runners[-1].run(inputs, timeout_ms=TIMEOUT_MS))
     return runners
 
 
 def infer_one(runners: list[pyneat.ModelRunner], image: pyneat.Tensor, prompt: list[pyneat.Tensor]) -> None:
     tensors = [image]
     for component, runner in zip(COMPONENTS, runners):
-        tensors = runner.run(stage_inputs(component, tensors, prompt), timeout_ms=TIMEOUT_MS)
+        tensors = handoff(runner.run(stage_inputs(component, tensors, prompt), timeout_ms=TIMEOUT_MS))
 
 
 def measure_latency(
@@ -199,7 +210,7 @@ def measure_throughput(
         def forward_outputs() -> None:
             try:
                 for tensors in drain(runners[index], source, pushed):
-                    push(runners[index + 1], stage_inputs(target, tensors, prompt), target)
+                    push(runners[index + 1], stage_inputs(target, handoff(tensors), prompt), target)
                     pushed[target] += 1
                     # The next runner holds its inputs now, so this one gets its output buffers back.
                     del tensors
