@@ -64,17 +64,21 @@ def tensor_options() -> pyneat.ModelOptions:
 
 def hwc(value: np.ndarray) -> pyneat.Tensor:
     """An NCHW batch of one as the HWC tensor Neat takes."""
-    return pyneat.Tensor.from_numpy(np.ascontiguousarray(value[0].transpose(1, 2, 0)), copy=True)
+    return pyneat.Tensor.from_numpy(
+        np.ascontiguousarray(value[0].transpose(1, 2, 0)), copy=True, layout=pyneat.TensorLayout.HWC
+    )
 
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
     """One component's outputs as the next component's inputs: fresh CPU [H, W, C] tensors holding a copy, the form
     hwc() gives the first input. Neat Core builds a runner's input stage from the tensors it receives; an output
     passed on as is, or with Neat 0.6's leading batch axis, has media caps the next model's input stage rejects
-    ([misconfig.media_caps])."""
+    ([misconfig.media_caps]). The layout is stated: Neat reads an unlabelled 3D array as CHW."""
     arrays = [tensor.to_numpy(copy=True) for tensor in tensors]
     return [
-        pyneat.Tensor.from_numpy(np.ascontiguousarray(array[0] if array.ndim == 4 else array), copy=True)
+        pyneat.Tensor.from_numpy(
+            np.ascontiguousarray(array[0] if array.ndim == 4 else array), copy=True, layout=pyneat.TensorLayout.HWC
+        )
         for array in arrays
     ]
 
