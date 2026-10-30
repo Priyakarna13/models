@@ -1,18 +1,10 @@
-"""Benchmark one compiled MPK with Neat preprocessing on a COCO image and save its report.
+"""Benchmark the complete native SSD detector on one reproducible COCO image."""
 
-Neat's Ssd box decoder matches these heads (its SSD-Mobile-300-v1 recipe), but pyneat 0.6.0+develop.8bc48932474d
-rejects them at run time (neatkernelrunner.invalid_binding: "kernel input exceeds authored carrier span"), so the
-benchmark stops at the raw heads, as accuracy.py does.
-"""
+from __future__ import annotations
 
 import argparse
 import random
 from pathlib import Path
-
-import cv2
-import model_report
-import numpy as np
-import pyneat
 
 IMAGES = "val2017"
 # The benchmark input is a 720p camera frame, letterboxed with grey padding.
@@ -27,15 +19,20 @@ def sample_image(dataset: Path) -> Path:
     return random.Random(0).choice(images)
 
 
-def read_rgb(path: Path) -> np.ndarray:
+def read_rgb(path: Path):
+    import cv2
+
     image = cv2.imread(str(path), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
     if image is None:
         raise SystemExit(f"could not read {path}")
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
-def letterbox_to_720p(image: np.ndarray) -> np.ndarray:
+def letterbox_to_720p(image):
     """Scale an RGB image to fit a 1280x720 frame and pad it to the frame, centered."""
+    import cv2
+    import numpy as np
+
     scale = min(FRAME_WIDTH / image.shape[1], FRAME_HEIGHT / image.shape[0])
     width, height = round(image.shape[1] * scale), round(image.shape[0] * scale)
     left, top = (FRAME_WIDTH - width) // 2, (FRAME_HEIGHT - height) // 2
@@ -44,41 +41,67 @@ def letterbox_to_720p(image: np.ndarray) -> np.ndarray:
     return frame
 
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--mpk", required=True, help="compiled model archive")
-parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
-parser.add_argument("--output", required=True, help="directory for model-report.json")
-args = parser.parse_args()
-dataset_id, dataset_dir = args.dataset.split("=", 1)
-image = sample_image(Path(dataset_dir))
+SCORE_THRESHOLD, IOU_THRESHOLD, TOP_K = 0.2, 0.6, 100
 
-options = pyneat.ModelOptions()
-# Neat stretches, normalizes, quantizes and tessellates the frame inside the measured pipeline. The model
-# was trained on frames stretched to 300x300, so the frame is stretched, not letterboxed.
-options.preprocess.kind = pyneat.InputKind.Image
-options.preprocess.enable = pyneat.AutoFlag.On
-options.preprocess.resize.enable = pyneat.AutoFlag.On
-options.preprocess.resize.mode = pyneat.ResizeMode.Stretch
-options.preprocess.normalize.enable = pyneat.AutoFlag.On
-# The model takes RGB scaled to [-1, 1]: (pixel / 255 - 0.5) / 0.5.
-options.preprocess.normalize.mean = [0.5, 0.5, 0.5]
-options.preprocess.normalize.stddev = [0.5, 0.5, 0.5]
-options.preprocess.normalize.has_explicit_stats = True
-model = pyneat.Model(args.mpk, options)
-# Request 1000 samples and a 60 s minimum measurement duration.
-benchmark_options = pyneat.BenchmarkOptions()
-benchmark_options.num_samples = 1000
-benchmark_options.min_duration_ms = 60000
-benchmark_options.include_mla_layer_stats = True
-benchmark_options.include_mla_stage_stats = True
-frame = letterbox_to_720p(read_rgb(image))
-benchmark_options.inputs = [pyneat.Tensor.from_numpy(frame, copy=True, image_format=pyneat.PixelFormat.RGB)]
-report = model_report.from_performance(
-    model.benchmark(benchmark_options),
-    {"model": model},
-    workload=(
-        f"{dataset_id} {image.name} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, Neat preprocessing stretched to "
-        "300x300, raw box and class heads"
-    ),
-)
-report.save(args.output)
+
+def native_options():
+    import pyneat
+
+    options = pyneat.ModelOptions()
+    options.preprocess.kind = pyneat.InputKind.Image
+    options.preprocess.enable = pyneat.AutoFlag.On
+    options.preprocess.resize.enable = pyneat.AutoFlag.On
+    options.preprocess.resize.mode = pyneat.ResizeMode.Stretch
+    options.preprocess.color_convert.input_format = pyneat.PreprocessColorFormat.RGB
+    options.preprocess.normalize.enable = pyneat.AutoFlag.On
+    options.preprocess.normalize.mean = [0.5, 0.5, 0.5]
+    options.preprocess.normalize.stddev = [0.5, 0.5, 0.5]
+    options.preprocess.normalize.has_explicit_stats = True
+    options.decode_type = pyneat.BoxDecodeType.Ssd
+    options.score_threshold = SCORE_THRESHOLD
+    options.nms_iou_threshold = IOU_THRESHOLD
+    options.top_k = TOP_K
+    options.boxdecode_original_width = 0
+    options.boxdecode_original_height = 0
+    return options
+
+
+def benchmark(mpk, dataset_id, dataset_dir, output):
+    import model_report
+    import pyneat
+
+    image = sample_image(Path(dataset_dir))
+    model = pyneat.Model(str(mpk), native_options())
+    options = pyneat.BenchmarkOptions()
+    options.num_samples = 1000
+    options.min_duration_ms = 60000
+    options.include_mla_layer_stats = True
+    options.include_mla_stage_stats = True
+    frame = letterbox_to_720p(read_rgb(image))
+    options.inputs = [pyneat.Tensor.from_numpy(frame, copy=True, image_format=pyneat.PixelFormat.RGB)]
+    report = model_report.from_performance(
+        model.benchmark(options),
+        {"model": model},
+        workload=(
+            f"{dataset_id} {image.name} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, "
+            "native RGB stretch preprocessing with mean/stddev 0.5, native Ssd decoder, "
+            f"score threshold {SCORE_THRESHOLD}, NMS IoU {IOU_THRESHOLD}, top {TOP_K}; "
+            "complete detector, not raw heads"
+        ),
+    )
+    report.save(output)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mpk", required=True, help="compiled model archive")
+    parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
+    parser.add_argument("--output", required=True, help="directory for model-report.json")
+    args = parser.parse_args(argv)
+    dataset_id, dataset_dir = args.dataset.split("=", 1)
+    # This customer performance policy is distinct from the lower-threshold AP evaluation policy.
+    benchmark(args.mpk, dataset_id, dataset_dir, args.output)
+
+
+if __name__ == "__main__":
+    main()

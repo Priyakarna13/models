@@ -33,6 +33,7 @@ accuracy:
         coco_ar_large: 0.7130
 performance:
   run_tests: true
+  # Historical raw-head expectations, retained until reviewed whole-detector results are published.
   expected:
     w16a16:
       throughput_fps: 571.1

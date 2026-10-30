@@ -216,7 +216,9 @@ class ModelOptions:
     """PyNeat's ModelOptions, with the preprocessing fields the scripts set."""
 
     def __init__(self):
-        self.preprocess = types.SimpleNamespace(resize=types.SimpleNamespace(), normalize=types.SimpleNamespace())
+        self.preprocess = types.SimpleNamespace(
+            resize=types.SimpleNamespace(), normalize=types.SimpleNamespace(), color_convert=types.SimpleNamespace()
+        )
 
 
 class Tensor:
@@ -238,7 +240,8 @@ PYNEAT_ENUMS = {
     "NormalizePreset": ("ImageNet",),
     "PixelFormat": ("RGB",),
     "TensorMemory": ("EV74",),
-    "BoxDecodeType": ("YoloV26", "YoloV26Pose", "YoloV26Seg"),
+    "PreprocessColorFormat": ("RGB",),
+    "BoxDecodeType": ("YoloV26", "YoloV26Pose", "YoloV26Seg", "Ssd"),
 }
 SCRIPT_PYNEAT = {
     enum: types.SimpleNamespace(**{value: value for value in values}) for enum, values in PYNEAT_ENUMS.items()
@@ -336,10 +339,15 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         expected = "000000000002.jpg" if options.decode_type == "YoloV26Pose" else ".jpg"
         assert expected in report["workload"]
     elif getattr(options.preprocess.normalize, "has_explicit_stats", False):
-        # SSD-MobileNet stretches to its 300x300 input, scales to [-1, 1] and is measured at its raw heads.
+        # SSD-MobileNet measures the complete native detector, not the former raw-head bypass.
         normalize = options.preprocess.normalize
         assert (options.preprocess.resize.mode, normalize.mean, normalize.stddev) == ("Stretch", [0.5] * 3, [0.5] * 3)
-        assert not hasattr(options, "decode_type")
+        assert (options.decode_type, options.score_threshold, options.nms_iou_threshold, options.top_k) == (
+            "Ssd", 0.2, 0.6, 100
+        )
+        assert options.preprocess.color_convert.input_format == "RGB"
+        assert (options.boxdecode_original_width, options.boxdecode_original_height) == (0, 0)
+        assert "complete detector" in report["workload"]
         assert ".jpg" in report["workload"]
     else:
         assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Stretch", "ImageNet")
