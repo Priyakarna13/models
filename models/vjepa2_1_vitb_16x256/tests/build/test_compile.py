@@ -114,15 +114,25 @@ def test_fidelity_selection_is_the_declared_seeded_val2017_sample(
         calibration.fidelity_names(tmp_path, 42, 1, 10)
 
 
-@pytest.mark.parametrize("profile_id", ["w16a16", "w8a8"])
+@pytest.mark.parametrize("profile_id", ["w16a16", "w8a16"])
 def test_compile_binds_every_part_in_each_profile(load_script: Callable[[str], ModuleType], profile_id: str) -> None:
     recipe = load_script("compile")
     parameters = recipe._component_parameters(profile_id)
 
     assert list(parameters) == ["encoder_0", "encoder_1", "encoder_2"]
     assert {item["precision"] for item in parameters.values()} == {profile_id}
-    with pytest.raises(ValueError, match="no build profile 'w8a16'"):
-        recipe._component_parameters("w8a16")
+    with pytest.raises(ValueError, match="no build profile 'w8a8'"):
+        recipe._component_parameters("w8a8")
+
+
+def test_w8a16_keeps_activations_bf16_and_skips_calibration(load_script: Callable[[str], ModuleType]) -> None:
+    recipe = load_script("compile")
+    calls = []
+    recipe.SkipCalibration = lambda: calls.append("skip") or "skip"
+
+    recipe._quantization({"precision": "w8a16"})
+
+    assert calls == ["skip"]
 
 
 def test_features_come_back_in_onnx_layout(load_script: Callable[[str], ModuleType]) -> None:

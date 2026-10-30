@@ -29,6 +29,7 @@ from afe.apis.defines import (
     HistogramMSEMethod,
     InputName,
     RequantizationMode,
+    SkipCalibration,
     bfloat16_scheme,
     default_quantization,
     gen2_target,
@@ -74,6 +75,16 @@ def _quantization(parameters: dict[str, Any]) -> Any:
     elif precision == "w16a16":
         config = default_quantization.with_activation_quantization(bfloat16_scheme()).with_weight_quantization(
             bfloat16_scheme()
+        )
+    elif precision == "w8a16":
+        # INT8 per-channel weights with BF16 activations, quantized per token; nothing is calibrated.
+        return (
+            default_quantization.with_activation_quantization(bfloat16_scheme())
+            .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
+            .with_calibration(SkipCalibration())
+            .with_bias_correction(BiasCorrectionType.NONE)
+            .with_requantization_mode(RequantizationMode.sima)
+            .with_per_token_quant(True)
         )
     else:
         raise ValueError(f"unsupported precision: {precision}")
@@ -264,7 +275,7 @@ def compile_model(
             count = max(int(parameters[component]["calibration_samples"]) for component in int8)
             samples = float_chain(graphs, calibration_clips(dataset, count))
         else:
-            # BF16 derives nothing from representative data, but quantize() still needs one sample each.
+            # BF16 activations derive nothing from representative data, but quantize() still needs one sample each.
             rng = np.random.RandomState(SAMPLE_SEED)
             samples = {
                 component: [rng.uniform(-2, 2, shape).astype(np.float32) for shape in INPUT_SHAPES[component].values()]
