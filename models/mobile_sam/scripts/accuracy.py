@@ -193,8 +193,8 @@ def hwc(value: np.ndarray) -> pyneat.Tensor:
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
     """One component's outputs as fresh HWC inputs of the next, as performance.handoff explains. Neat 0.6 gives
-    them a leading batch axis."""
-    arrays = [tensor.to_numpy(copy=False) for tensor in tensors]
+    them a leading batch axis. Neat's own views of its outputs are read-only, which from_numpy rejects."""
+    arrays = [tensor.to_numpy(copy=True) for tensor in tensors]
     return [
         pyneat.Tensor.from_numpy(
             np.ascontiguousarray(array[0] if array.ndim == 4 else array), copy=True, layout=pyneat.TensorLayout.HWC
