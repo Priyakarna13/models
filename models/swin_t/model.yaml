@@ -33,7 +33,9 @@ calibrations:
   dataset: {id: imagenet-2012, variant: mini, sha256: d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239, size_bytes: 356052889}
 
 build_profiles:
+  # Spot runners twice lost this compile mid-run; it peaks at 10 GB, so the runner size is not the cause.
   w16a16:
+    runner_market: on-demand
     components:
       model:
         parameters:

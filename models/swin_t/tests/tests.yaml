@@ -10,7 +10,7 @@ accuracy:
     w8a8:
       imagenet-2012-mini:
         top1_accuracy: 0.7710
-        top5_accuracy: 0.9348
+        top5_accuracy: 0.9380
     w8a16:
       imagenet-2012-mini:
         top1_accuracy: 0.8178
@@ -21,6 +21,6 @@ performance:
     w16a16:
       throughput_fps: 158.6
     w8a8:
-      throughput_fps: 205.2
+      throughput_fps: 205.1
     w8a16:
-      throughput_fps: 195.5
+      throughput_fps: 195.6
