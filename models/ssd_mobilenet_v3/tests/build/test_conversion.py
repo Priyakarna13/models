@@ -1,0 +1,145 @@
+"""Independent export contracts; heavy source/ORT parity is run by convert.py."""
+
+import importlib.util
+from pathlib import Path
+
+import numpy as np
+import onnx
+import pytest
+
+
+@pytest.fixture(scope="module")
+def converter():
+    path = Path(__file__).resolve().parents[2] / "scripts/convert.py"
+    spec = importlib.util.spec_from_file_location("ssd_v3_convert", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_weight_digest_is_full_and_fail_closed(tmp_path, converter):
+    path = tmp_path / "wrong.pth"
+    path.write_bytes(b"not the official weights")
+    assert len(converter.WEIGHTS_SHA256) == 64
+    with pytest.raises(ValueError, match="digest mismatch"):
+        converter.verified_weights(path)
+
+
+def test_raw_heads_have_3234_anchors_and_91_logits(converter):
+    assert len(converter.OUTPUTS) == 12
+    assert [name for name, _shape in converter.OUTPUTS] == [
+        *[f"ssd_loc_{index}" for index in range(6)],
+        *[f"ssd_confidence_{index}" for index in range(6)],
+    ]
+    assert [shape[1] for _name, shape in converter.OUTPUTS] == [24] * 6 + [546] * 6
+    assert sum(shape[2] * shape[3] * 6 for _name, shape in converter.OUTPUTS[:6]) == 3234
+
+
+def test_flatten_is_cell_anchor_coordinate_order_not_channel_major(converter):
+    # Independent coordinate construction: each scalar labels (cell,anchor,field).
+    head = np.zeros((1, 24, 2, 2), np.float32)
+    expected = []
+    for row in range(2):
+        for column in range(2):
+            for anchor in range(6):
+                values = []
+                for coordinate in range(4):
+                    value = 1000 * row + 100 * column + 10 * anchor + coordinate
+                    head[0, anchor * 4 + coordinate, row, column] = value
+                    values.append(value)
+                expected.append(values)
+    np.testing.assert_array_equal(converter.flatten_heads([head], 4), np.array([expected], np.float32))
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_parity_rejects_nonfinite(bad, converter):
+    with pytest.raises(ValueError, match="nonfinite"):
+        converter.parity(np.array([1.0]), np.array([bad]))
+
+
+def test_parity_rejects_changed_shape_or_large_error(converter):
+    with pytest.raises(ValueError, match="shape"):
+        converter.parity(np.ones(1), np.ones(2))
+    assert not converter.parity(np.ones(1), np.array([1.01]))["within_experimental_limits"]
+    assert converter.EXPERIMENTAL_MAX_NORMALIZED_RMSE == 1e-5
+
+
+def test_actual_export_has_fixed_twelve_head_fp32_contract(converted, converter):
+    report = converter.audit(converted)
+    assert report["operators"]["Conv"] == 98
+    model = onnx.load(converted)
+    properties = {item.key: item.value for item in model.metadata_props}
+    assert properties["sima.precision.source"] == "fp32_pretrained_not_qat"
+    assert properties["sima.input.normalization"] == "rgb_uint8/127.5-1; external to graph"
+    assert properties["sima.torchvision.weights_sha256"] == converter.WEIGHTS_SHA256
+
+
+@pytest.mark.parametrize("case", ["names", "order", "dtype", "shape", "opset"])
+def test_actual_export_corruption_rejected(case, tmp_path, converted, converter):
+    model = onnx.load(converted)
+    if case == "names":
+        # Rename both producer and public binding to retain ONNX validity.
+        old = model.graph.output[0].name
+        model.graph.output[0].name = "wrong_identity"
+        for node in model.graph.node:
+            for index, output in enumerate(node.output):
+                if output == old:
+                    node.output[index] = "wrong_identity"
+    elif case == "order":
+        first, second = onnx.ValueInfoProto(), onnx.ValueInfoProto()
+        first.CopyFrom(model.graph.output[0])
+        second.CopyFrom(model.graph.output[1])
+        model.graph.output[0].CopyFrom(second)
+        model.graph.output[1].CopyFrom(first)
+    elif case == "dtype":
+        model.graph.output[0].type.tensor_type.elem_type = onnx.TensorProto.DOUBLE
+    elif case == "shape":
+        model.graph.output[0].type.tensor_type.shape.dim[2].dim_value = 19
+    else:
+        model.opset_import[0].version = 18
+    path = tmp_path / "corrupted.onnx"
+    onnx.save(model, path)
+    with pytest.raises((ValueError, onnx.checker.ValidationError, onnx.shape_inference.InferenceError)):
+        converter.audit(path)
+
+
+def test_official_weights_use_the_canonical_verified_fetcher(monkeypatch, converter, tmp_path):
+    from model_registry.source import SourceSpec
+
+    path = tmp_path / "weights.pth"
+    seen = []
+
+    class FakeFetcher:
+        def fetch(self, source):
+            assert isinstance(source, SourceSpec)
+            seen.append(source)
+            return path, True
+
+    monkeypatch.setattr(converter, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(converter, "verified_weights", lambda value: value)
+    assert converter.resolve_weights(None) == path
+    assert seen[0].uri == converter.WEIGHTS_URL
+    assert seen[0].sha256 == converter.WEIGHTS_SHA256
+    assert seen[0].size_bytes == 14069355
+
+
+def test_explicit_local_weights_never_trigger_network(monkeypatch, converter, tmp_path):
+    class NoFetcher:
+        def __init__(self):
+            raise AssertionError("an explicit local file must not fetch a fallback")
+
+    monkeypatch.setattr(converter, "Fetcher", NoFetcher)
+    path = tmp_path / "wrong.pth"
+    path.write_bytes(b"wrong weights")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        converter.resolve_weights(path)
+
+
+@pytest.mark.parametrize(("machine", "vision"), [("x86_64", "0.23.0+cpu"), ("aarch64", "0.23.0")])
+def test_conversion_architectures_pin_official_cpu_wheel_versions(converter, machine, vision):
+    assert converter.expected_versions(machine) == {**converter.EXPECTED_VERSIONS, "torchvision": vision}
+
+
+def test_conversion_rejects_unpinned_architecture(converter):
+    with pytest.raises(ValueError, match="unsupported conversion architecture"):
+        converter.expected_versions("unknown")
