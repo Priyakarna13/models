@@ -53,7 +53,8 @@ build_profiles:
 
   w8a16:
     # INT8 weights with BF16 activations: the INT8-activation build lost too much accuracy (cosine 0.776 with
-    # float32), and this one keeps within 1% of w16a16.
+    # float32), and this one keeps within 1% of w16a16. encoder_0's patch embedding stays BF16, since with INT8
+    # weights it fails the Model Compiler's simulator check.
     components:
       encoder_0:
         parameters: {precision: w8a16}

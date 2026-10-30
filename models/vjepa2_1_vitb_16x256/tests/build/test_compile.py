@@ -135,6 +135,38 @@ def test_w8a16_keeps_activations_bf16_and_skips_calibration(load_script: Callabl
     assert calls == ["skip"]
 
 
+def test_w8a16_keeps_only_the_patch_embedding_bf16(tmp_path: Path, load_script: Callable[[str], ModuleType]) -> None:
+    recipe = load_script("compile")
+    onnx = pytest.importorskip("onnx")
+    helper = onnx.helper
+    nodes = [
+        helper.make_node(
+            "Conv", ["video", "weight"], ["patches"], name="/patch/Conv", kernel_shape=[16, 16], strides=[16, 16]
+        ),
+        helper.make_node("Relu", ["patches"], ["tokens"], name="/blocks.0/Relu"),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "g",
+        [helper.make_tensor_value_info("video", onnx.TensorProto.FLOAT, [1, 6, 32, 32])],
+        [helper.make_tensor_value_info("tokens", onnx.TensorProto.FLOAT, [1, 4, 2, 2])],
+        [helper.make_tensor("weight", onnx.TensorProto.FLOAT, [4, 6, 16, 16], [0.0] * (4 * 6 * 16 * 16))],
+    )
+    onnx.save(helper.make_model(graph), tmp_path / "encoder_0.onnx")
+    recipe.onnx = onnx
+
+    marked = onnx.load(recipe.keep_patch_embedding_bf16(tmp_path / "encoder_0.onnx", tmp_path / "marked.onnx"))
+
+    assert [(node.op_type, node.name) for node in marked.graph.node] == [
+        ("Conv", "/patch/Conv"),
+        ("AnnotatePrecision", "/patch/Conv/AnnotatePrecision"),
+        ("Relu", "/blocks.0/Relu"),
+    ]
+    annotation = marked.graph.node[1]
+    assert (annotation.domain, annotation.attribute[0].s) == ("ai.sima", b"bfloat16")
+    assert annotation.output[0] == "patches" and marked.graph.node[0].output[0] == "patches/unannotated"
+
+
 def test_features_come_back_in_onnx_layout(load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
     features = np.random.RandomState(0).normal(size=(1, 768, 1, 2048)).astype(np.float32)

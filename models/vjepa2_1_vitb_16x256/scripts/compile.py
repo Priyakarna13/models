@@ -49,6 +49,8 @@ MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "vjepa2_1_vitb_16x256"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 SAMPLE_SEED = 0
+# encoder_0's patch embedding, which a w8a16 build keeps BF16.
+PATCH_CONV = "/patch/Conv"
 
 
 def _component_parameters(profile_id: str) -> dict[str, dict[str, Any]]:
@@ -178,6 +180,34 @@ def audit_mpk(archive: Path, component: str) -> None:
         raise RuntimeError(f"{component} MPK compiler mismatch: expected {COMPILER_VERSION}, found {found}")
 
 
+def keep_patch_embedding_bf16(graph: Path, target: Path) -> Path:
+    """encoder_0's graph with its patch embedding marked BF16, saved to target.
+
+    With INT8 weights the 16x16, stride-16 patch convolution fails the Model Compiler's simulator check, even
+    compiled alone. AnnotatePrecision gives its precision to the operation producing its input; the operations
+    after it keep the build's precision.
+    """
+    model = onnx.load(graph)
+    (conv,) = [node for node in model.graph.node if node.name == PATCH_CONV]
+    value = conv.output[0]
+    conv.output[0] = f"{value}/unannotated"
+    index = list(model.graph.node).index(conv)
+    model.graph.node.insert(
+        index + 1,
+        onnx.helper.make_node(
+            "AnnotatePrecision",
+            [conv.output[0]],
+            [value],
+            name=f"{PATCH_CONV}/AnnotatePrecision",
+            domain="ai.sima",
+            precision="bfloat16",
+        ),
+    )
+    model.opset_import.append(onnx.helper.make_opsetid("ai.sima", 1))
+    onnx.save(model, target)
+    return target
+
+
 def _build(
     graph: Path,
     build_dir: Path,
@@ -193,6 +223,8 @@ def _build(
     ((input_name, input_shape),) = INPUT_SHAPES[component].items()
     ((_, output_shape),) = OUTPUT_SHAPES[component].items()
     key = InputName(tensor_name(component, input_name))
+    if component == "encoder_0" and parameters["precision"] == "w8a16":
+        graph = keep_patch_embedding_bf16(graph, build_dir.with_name(f"{name}.onnx"))
     importer = onnx_source(str(graph), shape_dict={str(key): input_shape}, layout="NCHW")
     loaded = load_model(importer, target=gen2_target)
     logging.info("Quantizing %s as %s with %d sample(s)", component, parameters["precision"], len(samples))
