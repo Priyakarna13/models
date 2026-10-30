@@ -136,7 +136,7 @@ def test_fidelity_selection_is_the_declared_seeded_val2017_sample(
         calibration.fidelity_names(tmp_path, 42, 1, 10)
 
 
-@pytest.mark.parametrize("profile_id", ["w16a16", "w8a8"])
+@pytest.mark.parametrize("profile_id", ["w16a16", "w8a16"])
 def test_compile_binds_every_component_in_each_profile(
     load_script: Callable[[str], ModuleType], profile_id: str
 ) -> None:
@@ -145,8 +145,8 @@ def test_compile_binds_every_component_in_each_profile(
 
     assert list(parameters) == ["image_encoder_0", "image_encoder_1", "prompt_decoder"]
     assert {item["precision"] for item in parameters.values()} == {profile_id}
-    with pytest.raises(ValueError, match="no build profile 'w8a16'"):
-        recipe._component_parameters("w8a16")
+    with pytest.raises(ValueError, match="no build profile 'w8a8'"):
+        recipe._component_parameters("w8a8")
 
 
 def test_outputs_come_back_in_onnx_order(load_script: Callable[[str], ModuleType]) -> None:
