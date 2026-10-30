@@ -1,2 +1,15 @@
 conversion:
   run_tests: true
+compile:
+  run_tests: true
+accuracy:
+  run_tests: true
+  # Measured original FP32 source AP, NOT a claimed native/quantized baseline.
+  # The repository's unchanged 5% relative-drop policy gates both candidates.
+  expected:
+    w16a16:
+      coco-2017-val:
+        coco_map: 0.2126872437
+    w8a8:
+      coco-2017-val:
+        coco_map: 0.2126872437

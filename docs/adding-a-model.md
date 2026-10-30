@@ -72,8 +72,10 @@ sources](metadata-schema.md#compilation-and-sources). Exceptional members can
 keep explicit URIs.
 
 Hugging Face sources use a full 40-character repository commit. Approved HTTPS
-sources include pinned Hugging Face resources and the ONNX files the registry
-converts. GitHub release assets are not sources; datasets come only from the
+sources include pinned Hugging Face resources, the ONNX files the registry
+converts, and official TorchVision weights at `download.pytorch.org/models/`.
+TorchVision filenames must end in an eight-character hash prefix and `.pth`;
+the prefix must match the declared full SHA-256, and the byte count is required. GitHub release assets are not sources; datasets come only from the
 Dataset Registry.
 Mutable branches, credentials, query parameters, fragments, and unapproved
 hosts are rejected.
