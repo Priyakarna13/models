@@ -1,20 +1,13 @@
 """Independent export contracts; heavy source/ORT parity is run by convert.py."""
 
-import importlib.util
-from pathlib import Path
-
 import numpy as np
 import onnx
 import pytest
 
 
-@pytest.fixture(scope="module")
-def converter():
-    path = Path(__file__).resolve().parents[2] / "scripts/convert.py"
-    spec = importlib.util.spec_from_file_location("ssd_v3_convert", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+@pytest.fixture
+def converter(load_script):
+    return load_script("convert")
 
 
 def test_weight_digest_is_full_and_fail_closed(tmp_path, converter):
@@ -115,6 +108,11 @@ def test_official_weights_use_the_canonical_verified_fetcher(monkeypatch, conver
             seen.append(source)
             return path, True
 
+    monkeypatch.setattr(
+        converter,
+        "load_and_validate_model",
+        lambda _: {"conversion": {"default": {"source": {"type": "file", **converter.WEIGHTS_SOURCE}}}},
+    )
     monkeypatch.setattr(converter, "Fetcher", FakeFetcher)
     monkeypatch.setattr(converter, "verified_weights", lambda value: value)
     assert converter.resolve_weights(None) == path
@@ -143,3 +141,66 @@ def test_conversion_architectures_pin_official_cpu_wheel_versions(converter, mac
 def test_conversion_rejects_unpinned_architecture(converter):
     with pytest.raises(ValueError, match="unsupported conversion architecture"):
         converter.expected_versions("unknown")
+
+
+@pytest.fixture
+def reference(load_script):
+    return load_script("accuracy")
+
+
+@pytest.fixture
+def calibration(load_script):
+    return load_script("calibration")
+
+
+def _png(pixels):
+    import io
+
+    from PIL import Image
+
+    stream = io.BytesIO()
+    Image.fromarray(pixels).save(stream, format="PNG")
+    return stream.getvalue()
+
+
+def test_source_priors_and_postprocessing_against_torchvision(converted, reference):
+    import torch
+    import torchvision
+    from torchvision.models.detection.image_list import ImageList
+
+    model = torchvision.models.detection.ssdlite320_mobilenet_v3_large(weights=None, weights_backbone=None).eval()
+    features = [torch.empty((1, 1, size, size)) for size in reference.GRIDS]
+    anchors = model.anchor_generator(ImageList(torch.empty((1, 3, 320, 320)), [(320, 320)]), features)[0]
+    np.testing.assert_array_equal(reference.ANCHORS, anchors.numpy())
+    reg = np.random.default_rng(1).normal(0, 0.05, (3234, 4)).astype(np.float32)
+    logits = np.full((3234, 91), -100, np.float32)
+    logits[:, 0] = 20
+    for index, label, score in [(0, 1, 7), (300, 2, 8), (1100, 90, 9)]:
+        logits[index, 0] = 0
+        logits[index, label] = score
+    actual = reference.post_numpy(reg, logits)
+    expected = model.postprocess_detections(
+        {"bbox_regression": torch.from_numpy(reg)[None], "cls_logits": torch.from_numpy(logits)[None]},
+        [anchors],
+        [(320, 320)],
+    )[0]
+    np.testing.assert_array_equal(actual["labels"], expected["labels"].numpy())
+    np.testing.assert_allclose(actual["scores"], expected["scores"].numpy(), atol=2e-7, rtol=0)
+    np.testing.assert_allclose(actual["boxes"], expected["boxes"].numpy(), atol=4e-5, rtol=0)
+
+
+def test_rgb_and_half_pixel_normalization_before_resize(converted, calibration):
+    import torch
+    from torchvision.models.detection.transform import GeneralizedRCNNTransform
+
+    y, x = np.indices((450, 600))
+    pixels = np.stack([x % 256, y % 256, (x + y) % 256], axis=-1).astype(np.uint8)
+    actual = calibration.preprocess_image(_png(pixels))
+    transform = GeneralizedRCNNTransform(320, 320, [0.5] * 3, [0.5] * 3, size_divisible=1, fixed_size=(320, 320)).eval()
+    image = torch.from_numpy(pixels).permute(2, 0, 1).float() / 255
+    expected = transform([image])[0].tensors[0].permute(1, 2, 0).numpy()
+    assert actual.shape == (320, 320, 3) and actual.dtype == np.float32
+    np.testing.assert_array_equal(actual, expected)
+    red = np.zeros((17, 29, 3), np.uint8)
+    red[:, :, 0] = 255
+    np.testing.assert_array_equal(calibration.preprocess_image(_png(red))[160, 160], [1, -1, -1])

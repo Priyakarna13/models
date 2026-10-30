@@ -14,29 +14,20 @@ import hashlib
 import importlib.metadata
 import json
 import platform
-from collections import Counter
 from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
 import onnx
 from model_registry.fetch import Fetcher
+from model_registry.model import load_and_validate_model
 from model_registry.source import SourceSpec
+from surgery import FEATURE_SIZES, INPUT_NAME, INPUT_SHAPE, OUTPUTS, audit
 
 WEIGHTS_URL = "https://download.pytorch.org/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth"
 WEIGHTS_SHA256 = "a79551df90c79834bcd3bb3845ef9d966b5449a3a9b2833ae8404778ca5d65d2"
 WEIGHTS_SIZE = 14069355
-# Conversion bootstrap: replace this declaration with the shared model.yaml lookup
-# only after the unchanged Vulcan workflow publishes the actual compilation pin.
 WEIGHTS_SOURCE = {"uri": WEIGHTS_URL, "sha256": WEIGHTS_SHA256, "size_bytes": WEIGHTS_SIZE}
-INPUT_NAME = "images"
-INPUT_SHAPE = (1, 3, 320, 320)
-FEATURE_SIZES = (20, 10, 5, 3, 2, 1)
-OUTPUTS = tuple(
-    (f"ssd_{role}_{level}", (1, 6 * columns, size, size))
-    for role, columns in (("loc", 4), ("confidence", 91))
-    for level, size in enumerate(FEATURE_SIZES)
-)
 # Optional, unapproved numerical experiment only; not a source-acceptance gate.
 EXPECTED_VERSIONS = {
     "torch": "2.8.0+cpu",
@@ -165,43 +156,6 @@ def parity(reference: np.ndarray, actual: np.ndarray) -> dict[str, float]:
     }
 
 
-def audit(path: Path) -> dict:
-    graph = onnx.load(path, load_external_data=False)
-    onnx.checker.check_model(graph, full_check=True)
-    operators = Counter(node.op_type for node in graph.graph.node)
-    if (
-        operators["Conv"] != 98
-        or operators["BatchNormalization"]
-        or operators["QuantizeLinear"]
-        or operators["DequantizeLinear"]
-    ):
-        raise ValueError(f"unexpected FP32 operator contract: {operators}")
-    if [(item.domain, item.version) for item in graph.opset_import] != [("", 17)]:
-        raise ValueError("unexpected ONNX opset")
-
-    def contract(values):
-        return [
-            (
-                item.name,
-                tuple(dim.dim_value for dim in item.type.tensor_type.shape.dim),
-                item.type.tensor_type.elem_type,
-            )
-            for item in values
-        ]
-
-    if contract(graph.graph.input) != [(INPUT_NAME, INPUT_SHAPE, onnx.TensorProto.FLOAT)]:
-        raise ValueError("unexpected public input contract")
-    if contract(graph.graph.output) != [(name, shape, onnx.TensorProto.FLOAT) for name, shape in OUTPUTS]:
-        raise ValueError("unexpected ordered public output contract")
-    if any(tensor.data_location == onnx.TensorProto.EXTERNAL for tensor in graph.graph.initializer):
-        raise ValueError("source must be one self-contained ONNX file")
-    return {
-        "sha256": sha256(path),
-        "size_bytes": path.stat().st_size,
-        "operators": dict(sorted(operators.items())),
-    }
-
-
 def expected_versions(machine: str) -> dict[str, str]:
     if machine not in {"x86_64", "aarch64"}:
         raise ValueError(f"unsupported conversion architecture: {machine}")
@@ -211,7 +165,11 @@ def expected_versions(machine: str) -> dict[str, str]:
 def resolve_weights(path: Path | None) -> Path:
     """Use the canonical verified source cache; an explicit local file is verified too."""
     if path is None:
-        path, _cache_hit = Fetcher().fetch(SourceSpec.from_mapping(WEIGHTS_SOURCE))
+        source = load_and_validate_model(Path(__file__).resolve().parents[1])["conversion"]["default"]["source"]
+        expected = {**WEIGHTS_SOURCE, "type": "file"}
+        if any(source.get(key) != value for key, value in expected.items()):
+            raise ValueError("model.yaml conversion source differs from the pinned TorchVision weights")
+        path, _cache_hit = Fetcher().fetch(SourceSpec.from_mapping(source))
     return verified_weights(path)
 
 

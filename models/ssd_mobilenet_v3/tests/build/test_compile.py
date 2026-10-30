@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import io
+import json
+import tarfile
+from collections.abc import Callable
+from pathlib import Path
+from types import ModuleType
+
+import numpy as np
+import pytest
+
+
+def _mpk_manifest(compile_module: ModuleType, precision: str) -> dict:
+    scalar_bytes = 1 if precision == "w8a8" else 2
+    mla = {"sequence": 1, "processor": "MLA", "config_params": {}, "output_nodes": []}
+    plugins = [{"sequence": 0, "processor": "EV74", "config_params": {"kernel": "quantize"}}, mla]
+    terminal_inputs = []
+    for index, (name, (batch, channels, height, width)) in enumerate(compile_module.OUTPUTS):
+        shape = [batch, height, width, channels]
+        padded_shape = [batch, height, width, channels + (8 if index % 2 == 0 else 0)]
+        source = {"name": f"MLA_0_{index}", "size": int(np.prod(padded_shape)) * scalar_bytes}
+        mla["output_nodes"].append(source)
+        if index % 2 == 0:
+            sliced = {"name": f"slice_{index}", "size": int(np.prod(shape)) * scalar_bytes}
+            plugins.append(
+                {
+                    "sequence": len(plugins),
+                    "processor": "EV74",
+                    "input_nodes": [source.copy()],
+                    "output_nodes": [sliced.copy()],
+                    "config_params": {"kernel": "slice_transform", "params": {"output_shapes": [shape]}},
+                }
+            )
+            source = sliced
+        converted = {"name": f"convert_{index}/{name}", "size": int(np.prod(shape)) * 4}
+        params = {"input_shapes": [shape], "output_shapes": [shape]}
+        if precision == "w8a8":
+            kernel = "dequantization_transform"
+            params["input_data_type"] = "int8"
+        else:
+            kernel = "cast_transform"
+            params.update(in_dtype="bfloat16", out_dtype="float32")
+        plugins.append(
+            {
+                "sequence": len(plugins),
+                "processor": "EV74",
+                "input_nodes": [source.copy()],
+                "output_nodes": [converted.copy()],
+                "config_params": {"kernel": kernel, "params": params},
+            }
+        )
+        terminal_inputs.append(converted)
+    plugins.append(
+        {
+            "sequence": len(plugins),
+            "processor": "EV74",
+            "config_params": {"kernel": "pass_through"},
+            "input_nodes": terminal_inputs,
+            "output_nodes": [
+                {"name": f"pass_through_out_{index}", "size": size}
+                for index, size in enumerate(compile_module.OUTPUT_BYTES)
+            ],
+        }
+    )
+    return {
+        "model_sdk_version": compile_module.COMPILER_VERSION,
+        "input_nodes": [{"name": "images", "size": 1 * 3 * 320 * 320 * 4}],
+        "plugins": plugins,
+    }
+
+
+def _write_mpk(path: Path, manifest: dict) -> None:
+    with tarfile.open(path, "w:gz") as stream:
+        for name, content in (("model.elf", b"elf"), ("model_mpk.json", json.dumps(manifest).encode())):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            stream.addfile(info, io.BytesIO(content))
+
+
+@pytest.mark.parametrize("precision", ["w8a8", "w16a16"])
+@pytest.mark.parametrize("case", ["valid", "reordered", "two_mla", "host", "compiler"])
+def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
+    tmp_path: Path, precision: str, case: str, load_script: Callable[[str], ModuleType]
+) -> None:
+    compile_module = load_script("compile")
+    manifest = _mpk_manifest(compile_module, precision)
+    plugins = manifest["plugins"]
+    if case == "reordered":
+        outputs = plugins[-1]["output_nodes"]
+        outputs[0], outputs[6] = outputs[6], outputs[0]
+    elif case == "two_mla":
+        plugins.insert(2, {"sequence": 1, "processor": "MLA", "config_params": {}})
+    elif case == "host":
+        plugins.insert(2, {"sequence": 1, "processor": "A65", "config_params": {}})
+    elif case == "compiler":
+        manifest["model_sdk_version"] = "0.0.0"
+    archive = tmp_path / "model_mpk.tar.gz"
+    _write_mpk(archive, manifest)
+
+    if case == "valid":
+        compile_module.audit_mpk(archive, precision)
+    else:
+        with pytest.raises(RuntimeError):
+            compile_module.audit_mpk(archive, precision)
+
+
+@pytest.mark.parametrize("profile_id", ["w16a16", "w8a8"])
+def test_compile_reads_the_declared_build_parameters(load_script: Callable[[str], ModuleType], profile_id: str) -> None:
+    expected = {"precision": profile_id}
+    if profile_id == "w8a8":
+        expected |= {"calibration_bins": 2048, "calibration_samples": 128}
+
+    assert load_script("compile")._parameters(profile_id) == expected
+
+
+def test_compile_rejects_an_undeclared_build_profile(load_script: Callable[[str], ModuleType]) -> None:
+    with pytest.raises(ValueError, match="no build profile"):
+        load_script("compile")._parameters("w32a32")
+
+
+@pytest.mark.parametrize("precision", ["w8a8", "w16a16"])
+@pytest.mark.parametrize("case", ["identity", "shape", "type", "lineage", "size", "duplicate", "slice"])
+def test_mpk_audit_rejects_corrupted_head_contracts(
+    tmp_path: Path, precision: str, case: str, load_script: Callable[[str], ModuleType]
+) -> None:
+    compile_module = load_script("compile")
+    manifest = _mpk_manifest(compile_module, precision)
+    terminal = manifest["plugins"][-1]
+    converter = next(
+        p for p in manifest["plugins"] if p.get("output_nodes", [{}])[0].get("name") == "convert_0/ssd_loc_0"
+    )
+    params = converter["config_params"]["params"]
+    if case == "identity":
+        # Rename the head while keeping every byte count unchanged: the old audit accepted this.
+        converter["output_nodes"][0]["name"] = terminal["input_nodes"][0]["name"] = "convert_0/ssd_loc_1"
+    elif case == "shape":
+        # NCHW substituted for NHWC has exactly the same byte count.
+        params["input_shapes"] = params["output_shapes"] = [[1, 24, 20, 20]]
+    elif case == "type":
+        params["input_data_type" if precision == "w8a8" else "out_dtype"] = "float16"
+    elif case == "lineage":
+        converter["input_nodes"][0]["name"] = "not_an_mla_output"
+    elif case == "size":
+        converter["output_nodes"][0]["size"] += 4
+    elif case == "duplicate":
+        terminal["output_nodes"][1]["name"] = terminal["output_nodes"][0]["name"]
+    elif case == "slice":
+        manifest["plugins"][2]["config_params"]["params"]["output_shapes"] = [[1, 24, 20, 20]]
+    archive = tmp_path / "bad_mpk.tar.gz"
+    _write_mpk(archive, manifest)
+
+    with pytest.raises(RuntimeError):
+        compile_module.audit_mpk(archive, precision)
+
+
+def test_compiled_mpk_has_the_declared_head_contract(
+    compiled: Path, build_profile: str, load_script: Callable[[str], ModuleType]
+) -> None:
+    archives = list((compiled / "model").glob("*_mpk.tar.gz"))
+    assert len(archives) == 1, "the compile output must contain exactly one model MPK"
+    load_script("compile").audit_mpk(archives[0], build_profile)
+
+
+def test_prepare_requires_the_real_published_source(tmp_path, load_script):
+    source = tmp_path / "wrong.onnx"
+    source.write_bytes(b"wrong source")
+    with pytest.raises(ValueError, match="published V3 source SHA-256 mismatch"):
+        load_script("surgery").prepare_model(source, tmp_path / "out.onnx")
