@@ -200,6 +200,14 @@ def trace(name: str, array: np.ndarray) -> None:
         f"TRACE {name} shape={tuple(np.shape(array))} dtype={np.asarray(array).dtype} mean={flat.mean():.6g} "
         f"std={flat.std():.6g} min={flat.min():.6g} max={flat.max():.6g} values={values}"
     )
+    # For an HWC feature map: its per-channel, per-row and per-column means, which tell a reordering of channels
+    # from one of rows or columns.
+    grid = np.asarray(array, np.float64)
+    grid = grid[0] if grid.ndim == 4 else grid
+    if grid.ndim == 3 and min(grid.shape) > 8:
+        for axis, label in ((2, "channels"), (0, "rows"), (1, "columns")):
+            means = grid.mean(axis=tuple(i for i in range(3) if i != axis))
+            log(f"TRACE {name} {label}_mean={[round(float(m), 3) for m in means]}")
 
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
