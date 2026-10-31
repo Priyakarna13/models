@@ -58,6 +58,7 @@ def native_options():
     options.preprocess.normalize.stddev = [0.5, 0.5, 0.5]
     options.preprocess.normalize.has_explicit_stats = True
     options.decode_type = pyneat.BoxDecodeType.Ssd
+    options.num_classes = 91
     options.score_threshold = SCORE_THRESHOLD
     options.nms_iou_threshold = IOU_THRESHOLD
     options.top_k = TOP_K
@@ -92,15 +93,31 @@ def benchmark(mpk, dataset_id, dataset_dir, output):
     report.save(output)
 
 
+def one_argument(values, name):
+    if len(values) != 1 or not values[0].strip():
+        raise SystemExit(f"{name} requires exactly one nonempty value")
+    return values[0]
+
+
+def parse_dataset(values):
+    value = one_argument(values, "--dataset")
+    dataset_id, separator, directory = value.partition("=")
+    if dataset_id != "coco-2017-val" or not separator or not directory.strip():
+        raise SystemExit("--dataset must name coco-2017-val=<directory>")
+    return dataset_id, Path(directory)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mpk", required=True, help="compiled model archive")
-    parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
-    parser.add_argument("--output", required=True, help="directory for model-report.json")
+    parser.add_argument("--mpk", action="append", required=True, help="compiled model archive")
+    parser.add_argument("--dataset", action="append", required=True, help="coco-2017-val=<extracted directory>")
+    parser.add_argument("--output", action="append", required=True, help="directory for model-report.json")
     args = parser.parse_args(argv)
-    dataset_id, dataset_dir = args.dataset.split("=", 1)
+    mpk = one_argument(args.mpk, "--mpk")
+    dataset_id, dataset_dir = parse_dataset(args.dataset)
+    output = one_argument(args.output, "--output")
     # This customer performance policy is distinct from the lower-threshold AP evaluation policy.
-    benchmark(args.mpk, dataset_id, dataset_dir, args.output)
+    benchmark(mpk, dataset_id, dataset_dir, output)
 
 
 if __name__ == "__main__":

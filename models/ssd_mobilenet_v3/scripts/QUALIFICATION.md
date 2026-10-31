@@ -1,53 +1,113 @@
-# SSD-MobileNet V3
+# SSD-MobileNet V3 qualification
 
-TorchVision SSDLite320 MobileNet V3 Large, using its original COCO FP32 weights.
-The INT8 profile is a **new PTQ build**, not the historical QAT export.
+This maintainer guide records the source contract and remaining release gates;
+it is not a declaration that the current native route is production-qualified.
+The candidate uses TorchVision's original COCO FP32 weights. Its INT8 profile is
+a new post-training-quantized build, not recovery of the historical QAT export.
 
-## Source and input contract
+## Source contract
 
-`model.yaml` pins the official checkpoint by full SHA-256 and byte count. The
-standard **Vulcan Model Convert** workflow published the converted ONNX in run
-[40979330247](https://github.com/sima-neat/models/actions/runs/40979330247).
-The published ARM export has the same complete graph and initializer bytes as
-the paired FP32 source validation; only export-environment metadata differs.
+`model.yaml` pins the original checkpoint by complete SHA-256 and byte count,
+and pins the converted ONNX published by the standard conversion workflow in
+run [40979330247](https://github.com/sima-neat/models/actions/runs/40979330247).
+The exporter records its pinned tool versions, ordered twelve-head interface,
+98-convolution structure and 70 BatchNorm folds. The converted source has full
+5,000-image source-validation evidence; no original-paper weight identity is
+claimed.
 
-Decode RGB, divide by 255, then normalize with mean and standard deviation
-`[0.5, 0.5, 0.5]` **before** bilinear resizing to 320×320. Resizing uses half-pixel
-coordinates, `align_corners=False`, and no antialiasing. Do not reuse the V1/V2
-TensorFlow asymmetric 300×300 resize or the historical ImageNet-statistics label.
+The original input contract normalizes RGB to [-1, 1] before 320×320 half-pixel
+bilinear resizing with no antialiasing. Source conversion and calibration keep
+that contract; the native image route is separately evaluated, not asserted
+bit-equivalent. The reference decoder uses 3,234 TorchVision anchors, 91-class
+softmax including background, a score floor of 0.001, per-class pre-NMS top-300,
+IoU 0.55 and final top-300. COCO retains maxDets [1, 10, 100].
 
-The FP32 source exposes twelve NCHW heads: six location heads, then six class
-heads, at grids 20, 10, 5, 3, 2 and 1. Six anchors per cell yield 3,234 anchors;
-class heads contain 91 logits including background. The accuracy oracle uses
-TorchVision anchors and box coding, softmax, score threshold 0.001, per-class
-pre-NMS top-300, IoU threshold 0.55 and at most 300 final detections. COCO scoring
-retains its standard maxDets of 100.
+## Data and compilation
 
-## Compilation and accuracy
+Both profiles use the repository-pinned Model Compiler 3.0. INT8 uses the pinned
+Dataset Registry calibration archive, which contains 1,000 cal2017 images. Its
+recipe selects 128 deterministically and uses 2,048 histogram bins. BF16 derives
+no ranges from representative images.
+The canonical calibration does not include scored COCO val2017 IDs. Dataset
+identity, the sampling recipe, compiler identity and profile parameters belong
+to the compile fingerprint; changing them creates a different candidate.
 
-Both profiles use the repository-pinned Model Compiler 3.0. The `w16a16` profile
-uses BF16. The `w8a8` profile uses HistogramMSE with 2,048 bins and 128 images
-selected reproducibly from the pinned Dataset Registry calibration archive.
-Calibration never draws from the validation split. Source conversion and
-calibration retain the original input normalization; no hidden affine rewrite
-or QAT checkpoint is used.
+## Native entry points and remaining gates
 
-The accuracy expectations use the measured **original FP32 source** COCO AP of
-0.2126872437 with the repository's unchanged 5% relative-drop policy. They are
-acceptance gates for both candidate profiles, **not measured native or quantized
-accuracy baselines**. The pinned validation archive's 5,000 images and annotation
-bytes were checked against the source evaluation inputs.
+`accuracy.py` now consumes original RGB images with native preprocessing and
+strict typed-box parsing and explicit `Ssd` selection with all 91
+encoded classes. Core selects the source-multiclass policy for the supported 91-class SSD
+signature. It preserves foreground anchor/class pairs and float classwise
+suppression. Other SSD signatures retain the legacy policy; the supported
+91-class route intentionally changes the former argmax/integer-NMS behavior.
+It retains independent NumPy reference functions;
+Torch and Pillow are needed by the source conversion/calibration environment,
+not by the native board accuracy entry point. Board accuracy requirements are
+listed in `requirements-accuracy.txt`.
 
-Accuracy preprocessing currently requires the pinned CPU Torch and Pillow
-packages in `scripts/requirements-accuracy.txt`. Substituting a lighter resize
-implementation requires a separate source-equivalence check.
+The latest matched runtime passed the canonical Python accuracy stages on all
+5,000 validation images for both V3 profiles: BF16 mAP was 0.2118402269 and INT8
+mAP was 0.2035257312. All twelve COCO metrics passed for each profile, including
+the unchanged source mAP reference of 0.2126872437 with the repository's 5%
+relative-drop policy. All six artifacts built with Model Compiler 3.0 passed accuracy and
+performance across V1, V2 and V3. These are local qualification results, not
+published develop baselines.
 
-## Qualification status
+The eleven additional COCO metric expectations in `tests/tests.yaml` preserve
+the earlier full-data native results; the original source mAP expectation is
+unchanged. Native preprocessing and integer box publication can differ from
+the floating-point source, so do not attribute the combined difference solely
+to quantization.
 
-The source export and paired full-COCO source evaluation are qualified. Native
-compiled accuracy and whole-model performance remain pending. There is no
-performance declaration or invented FPS expectation; `scripts/performance.py`
-fails explicitly rather than publishing MLA-only throughput as model speed.
-The native postprocessing route will be enabled only after its board smoke test.
+The performance candidate is declared together with its public entry point and
+finite per-profile regression references. Those initial references are 681.4 FPS
+(BF16) and 1778.4 FPS (INT8), rounded from earlier native whole-detector C++
+characterization, **not** MLA-only timing or canonical Python-stage acceptance.
+The existing shared relative-drop policy and historical throughput references
+remain unchanged. In addition, each complete INT8 detector must reach at least
+1,700 FPS; the performance stage tests enforce this absolute floor without the
+shared regression tolerance. Source pins and the original mAP gate are unchanged.
 
-The upstream TorchVision BSD-3-Clause license is retained in `scripts/LICENSE.torchvision`.
+The customer workload is a seeded real COCO image in a 1280×720 RGB frame,
+native preprocessing and source-multiclass SSD decode, threshold 0.2, IoU 0.6
+and top-100. It runs through the public `performance.py` entry point and the
+shared `scripts/run_model_performance.sh`, with real Sentinel telemetry,
+execution plans, stage statistics and MLA profiling. The latest optimized
+runtime completed the canonical performance workflow at 683.91 FPS (BF16) and
+1,835.97 FPS (INT8), including genuine sampled power. Both the shared regression
+gates and the additional 1,700 FPS INT8 floor passed without relaxed tolerances.
+The matched V1 and V2 INT8 results were 1,808.50 and 1,711.10 FPS. V2 has only
+11.10 FPS of margin above the floor; this qualification is not a repeatability
+claim or a guarantee for every image.
+
+The full-data accuracy and performance stages used the same MPK per profile and
+the same Core/Runner/Scheduler/Kernels cohort. The canonical performance reports
+include whole-pipeline measurements, execution plans and separate MLA diagnostic
+profiling; the MLA diagnostics are not loaded PRE/MLA/POST attribution. Local
+validation does not replace publication of matching dependencies and models.
+Do not replace canonical evidence with direct calls to `benchmark()` or external
+C++ timing, or silently lower expectations following a regression.
+
+## Source-hosting decision
+
+The exact original PTH has full-hash integrity, but is currently fetched from
+`download.pytorch.org` using the candidate's narrow source-policy extension.
+This is not yet the literal Hugging Face/artifact-store hosting required by
+issue #416. No existing approved mirror of the exact bytes has been verified.
+Do not invent a repository, revision or URL: either publish through an approved
+source route and pin that real revision, or obtain explicit review of the
+narrow official-host policy and issue acceptance. The converted ONNX artifact
+pin is already real and unchanged.
+
+The conversion workflow now has an opt-in `mirror_conversion_source` input,
+disabled by default. Its shared checkpoint publisher verifies the exact original
+PTH, performs create-only uploads beside the converted ONNX, and verifies object
+versions, hashes, sizes and fresh HTTP readback before suggesting a source pin.
+This path has local tooling tests but has not published this checkpoint. A real
+successful publication and the resulting immutable pin are still required;
+renaming the checkpoint `model.onnx` is not a valid workaround. An approved
+Hugging Face mirror can also use the existing full-commit file-source path, but
+must preserve the exact 14,069,355-byte checkpoint and its declared SHA-256.
+No checkpoint mirror is claimed here.
+
+The TorchVision BSD-3-Clause notice is retained in `LICENSE.torchvision`.

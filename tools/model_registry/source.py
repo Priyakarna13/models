@@ -18,6 +18,9 @@ HF_URI_RE = re.compile(
 )
 HF_RESOLVE_RE = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/resolve/[a-f0-9]{40}/.+$")
 VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx$")
+VULCAN_PTH_RE = re.compile(
+    r"^/models-onnx/[a-z][a-z0-9_]*/(?P<sha256>[a-f0-9]{64})/[1-9][0-9]*-[1-9][0-9]*/source\.pth$"
+)
 TORCHVISION_WEIGHTS_RE = re.compile(r"^/models/[a-z][a-z0-9_]*-(?P<hash_prefix>[a-f0-9]{8})\.pth$")
 DEFAULT_HTTPS_HOSTS = {
     "artifacts.stg.neat.sima.ai",
@@ -113,8 +116,12 @@ class SourceSpec:
             raise SourcePolicyError(f"HTTPS source host is not approved: {hostname or '<missing>'}")
         if hostname == "huggingface.co" and not HF_RESOLVE_RE.fullmatch(parts.path):
             raise SourcePolicyError("Hugging Face HTTPS sources must use a full commit in a resolve URL")
-        if hostname == "artifacts.stg.neat.sima.ai" and not VULCAN_ONNX_RE.fullmatch(parts.path):
-            raise SourcePolicyError("Vulcan sources must identify a versioned ONNX file")
+        if hostname == "artifacts.stg.neat.sima.ai":
+            checkpoint = VULCAN_PTH_RE.fullmatch(parts.path)
+            if not VULCAN_ONNX_RE.fullmatch(parts.path) and checkpoint is None:
+                raise SourcePolicyError("Vulcan sources must identify a versioned ONNX or conversion PTH file")
+            if checkpoint is not None and checkpoint.group("sha256") != self.sha256:
+                raise SourcePolicyError("Vulcan conversion PTH path must match its declared SHA256")
         if hostname == "download.pytorch.org":
             weights = TORCHVISION_WEIGHTS_RE.fullmatch(parts.path)
             if weights is None or parts.port is not None:

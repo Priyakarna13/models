@@ -289,3 +289,24 @@ def test_publish_report_measures_each_dataset_apart(tmp_path: Path) -> None:
         (f"{fingerprint}-imagenet-2012-small-top1_accuracy", "model.accuracy.top1_accuracy", 100,
          tuple(sorted({**subject, "dataset": "imagenet-2012-small"}.items()))),
     ])
+
+
+@pytest.mark.parametrize(
+    ("stage", "report"),
+    [("performance", performance_report(["model"])), ("accuracy", accuracy_report())],
+)
+def test_publish_report_retains_the_exact_runner_environment(tmp_path: Path, stage: str, report: dict) -> None:
+    registered_build(tmp_path / "_compiled", "resnet_50", "w8a8", ["model"])
+    calls, _ = publish(tmp_path, "resnet_50", "w8a8", stage, report)
+    path = tmp_path / f"_{stage}" / "environment.json"
+    (artifact,) = [body for _, endpoint, body in calls if endpoint.endswith("/artifacts/environment")]
+    assert artifact["artifact_type"] == "environment"
+    assert artifact["media_type"] == "application/json"
+    assert artifact["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert artifact["size_bytes"] == path.stat().st_size
+    assert artifact["s3_key"].endswith("/environment.json")
+    assert artifact["s3_version_id"] == "version-1"
+    assert artifact["metadata"]["stage"] == stage
+    # Keep the report contract unchanged; environment belongs beside it, not in it.
+    result = next(body for _, endpoint, body in calls if endpoint.endswith(f"/test-results/{stage}/model"))
+    assert result["summary"] == report

@@ -154,16 +154,6 @@ def decode(outputs: Sequence[np.ndarray], image_id: int, width: int, height: int
     return np.column_stack([ids, boxes[:, :2], boxes[:, 2:] - boxes[:, :2], result["scores"], result["labels"]])
 
 
-def tensor_options() -> pyneat.ModelOptions:
-    options = pyneat.ModelOptions()
-    options.preprocess.kind = pyneat.InputKind.Tensor
-    # The script already resized and scaled the image; Neat still quantizes and tessellates.
-    options.preprocess.resize.enable = pyneat.AutoFlag.Off
-    options.preprocess.color_convert.enable = pyneat.AutoFlag.Off
-    options.preprocess.normalize.enable = pyneat.AutoFlag.Off
-    return options
-
-
 def prefetched(load: Callable, items: Sequence) -> Iterator:
     """Yield load(item) in order, keeping at most PREFETCH items in flight."""
     with ThreadPoolExecutor(WORKERS) as pool:
@@ -197,10 +187,26 @@ def coco_stats(scorer: COCOeval_faster, *, allow_missing_size_buckets: bool = Fa
 
 
 def parse_mpks(values: list[str]) -> Path:
-    mpks = dict(value.split("=", 1) for value in values)
-    if set(mpks) != {"model"}:
+    if len(values) != 1:
         raise SystemExit("--mpk must name exactly model=<path>")
-    return Path(mpks["model"])
+    component, separator, path = values[0].partition("=")
+    if component != "model" or not separator or not path.strip():
+        raise SystemExit("--mpk must name exactly model=<path>")
+    return Path(path)
+
+
+def one_argument(values: list[str], name: str) -> str:
+    if len(values) != 1 or not values[0].strip():
+        raise SystemExit(f"{name} requires exactly one nonempty value")
+    return values[0]
+
+
+def parse_dataset(values: list[str]) -> tuple[str, Path]:
+    value = one_argument(values, "--dataset")
+    dataset_id, separator, directory = value.partition("=")
+    if dataset_id != "coco-2017-val" or not separator or not directory.strip():
+        raise SystemExit("--dataset must name coco-2017-val=<directory>")
+    return dataset_id, Path(directory)
 
 
 def log(*values: object) -> None:
@@ -208,7 +214,7 @@ def log(*values: object) -> None:
 
 
 def native_options() -> pyneat.ModelOptions:
-    """The measured native Image route; the independent Float32 oracle remains above."""
+    """Explicit source-multiclass Image route; the independent Float32 oracle remains above."""
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Image
     options.preprocess.enable = pyneat.AutoFlag.On
@@ -223,6 +229,7 @@ def native_options() -> pyneat.ModelOptions:
     options.preprocess.normalize.stddev = [0.5, 0.5, 0.5]
     options.preprocess.normalize.has_explicit_stats = True
     options.decode_type = pyneat.BoxDecodeType.Ssd
+    options.num_classes = CLASSES
     options.score_threshold = SCORE_THRESHOLD
     options.nms_iou_threshold = IOU_THRESHOLD
     options.top_k = MAX_DETECTIONS
@@ -314,14 +321,14 @@ def coco_results(ground_truth, detections: np.ndarray):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="model=<path>")
-    parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
-    parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
+    parser.add_argument("--dataset", action="append", required=True, help="coco-2017-val=<extracted directory>")
+    parser.add_argument("--output", action="append", required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure a seeded sample of images (local runs only)")
     args = parser.parse_args(argv)
-    dataset_id, dataset_dir = args.dataset.split("=", 1)
-    dataset = Path(dataset_dir)
+    mpk = parse_mpks(args.mpk)
+    dataset_id, dataset = parse_dataset(args.dataset)
+    output = Path(one_argument(args.output, "--output"))
 
-    model = pyneat.Model(str(parse_mpks(args.mpk)), native_options())
     with contextlib.redirect_stdout(io.StringIO()):
         ground_truth = COCO(str(dataset / ANNOTATIONS))
     available = sorted(ground_truth.getImgIds())
@@ -330,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     image_ids = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
     records = ground_truth.loadImgs(image_ids)
 
+    model = pyneat.Model(str(mpk), native_options())
     started = time.monotonic()
     rows = native_predictions(model, records, dataset / IMAGES)
     inference_seconds = time.monotonic() - started
@@ -367,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         }
     )
-    report.save(args.output)
+    report.save(output)
     measured = report.document["datasets"][dataset_id]["metrics"]
     print(json.dumps({name: round(value, 4) for name, value in measured.items()}))
     return 0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import random
 import tarfile
 from collections.abc import Callable
 from pathlib import Path
@@ -167,3 +168,91 @@ def test_prepare_requires_the_real_published_source(tmp_path, load_script):
     source.write_bytes(b"wrong source")
     with pytest.raises(ValueError, match="published V3 source SHA-256 mismatch"):
         load_script("surgery").prepare_model(source, tmp_path / "out.onnx")
+
+
+def _archive(path, entries):
+    with tarfile.open(path, "w:gz") as archive:
+        for info, content in entries:
+            archive.addfile(info, io.BytesIO(content) if info.isfile() else None)
+
+
+def _file(name, content=b"image bytes"):
+    info = tarfile.TarInfo(name)
+    info.size = len(content)
+    return info, content
+
+
+def test_directory_and_archive_keep_the_same_canonical_selection_order(load_script, tmp_path):
+    module = load_script("calibration")
+    dataset = tmp_path / "dataset"
+    names = [f"coco/cal2017/{i:012d}.jpg" for i in range(8)]
+    entries = []
+    for i, name in enumerate(reversed(names)):
+        content = f"image{i}".encode()
+        path = dataset / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        entries.append(_file(name, content))
+    archive = tmp_path / "calibration.tgz"
+    _archive(archive, entries)
+    expected = random.Random(module.CALIBRATION_SEED).sample(names, 4)
+    assert module.calibration_names(dataset, 4) == module.calibration_names(archive, 4) == expected
+    assert list(module._image_bytes(dataset, expected)) == list(module._image_bytes(archive, expected))
+
+
+@pytest.mark.parametrize("alias", ["coco/cal2017/a.jpg", "./coco/cal2017/a.jpg"])
+def test_duplicate_archive_names_reject_before_selection(load_script, tmp_path, alias):
+    module = load_script("calibration")
+    archive = tmp_path / "duplicates.tgz"
+    _archive(archive, [_file("coco/cal2017/a.jpg", b"first"), _file(alias, b"last")])
+    with pytest.raises(ValueError, match="duplicate dataset member"):
+        module.calibration_names(archive, 2)
+
+
+@pytest.mark.parametrize("name", ["/cal2017/a.jpg", "../cal2017/a.jpg", "root/../cal2017/a.jpg"])
+def test_unsafe_archive_names_reject(load_script, tmp_path, name):
+    module = load_script("calibration")
+    archive = tmp_path / "unsafe.tgz"
+    _archive(archive, [_file(name)])
+    with pytest.raises(ValueError, match="unsafe dataset member"):
+        module.calibration_names(archive, 1)
+
+
+@pytest.mark.parametrize("kind", [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE, tarfile.FIFOTYPE])
+def test_links_and_special_archive_members_reject(load_script, tmp_path, kind):
+    module = load_script("calibration")
+    info = tarfile.TarInfo("coco/cal2017/link.jpg")
+    info.type = kind
+    info.linkname = "../outside.jpg"
+    archive = tmp_path / "link.tgz"
+    _archive(archive, [(info, b"")])
+    with pytest.raises(ValueError, match="unsafe dataset member"):
+        module.calibration_names(archive, 1)
+
+
+def test_directory_symlink_cannot_escape_the_dataset(load_script, tmp_path):
+    module = load_script("calibration")
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"outside bytes")
+    dataset = tmp_path / "dataset"
+    (dataset / "cal2017").mkdir(parents=True)
+    (dataset / "cal2017/link.jpg").symlink_to(outside)
+    with pytest.raises(ValueError, match="outside dataset"):
+        module.calibration_names(dataset, 1)
+    with pytest.raises(ValueError, match="outside dataset"):
+        list(module._image_bytes(dataset, ["../outside.jpg"]))
+
+
+def test_read_checks_directory_boundary_again_after_selection(load_script, tmp_path):
+    module = load_script("calibration")
+    dataset = tmp_path / "dataset"
+    path = dataset / "cal2017/a.jpg"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"inside bytes")
+    names = module.calibration_names(dataset, 1)
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"outside bytes")
+    path.unlink()
+    path.symlink_to(outside)
+    with pytest.raises(ValueError, match="outside dataset"):
+        list(module._image_bytes(dataset, names))

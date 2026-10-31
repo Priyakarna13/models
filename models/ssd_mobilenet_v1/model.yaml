@@ -46,16 +46,16 @@ build_profiles:
 
 accuracy:
   # accuracy.py measures the native Image/SSD route and retains an independent TensorFlow reference.
-  # TensorFlow trained these weights on COCO 2014 train+val minus its 8k minival, so some val2017
-  # images were training images and val2017 scores run above the published minival numbers.
+  # The source model zoo used a different COCO 2014 minival holdout. Most val2017 images are
+  # outside that holdout; exact training membership of these exports is not independently proven.
   datasets:
   - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
 
 performance: {}
 
 reference_metrics:
-- source: https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/blob/019281f3fcb151a90e491f3b2f0273f9f31bd6be/README.md
-  dataset: {id: coco-2017, split: val}
-  conditions: 300x300, FP32 ONNX
-  note: The card does not name the COCO split; val2017 is inferred from Intel Neural Compressor's default evaluation set.
-  metrics: {coco_map: 0.2303}
+- source: https://github.com/tensorflow/models/blob/ac8d0651935ecf8a5e7c73ff4aaa97ca1b3623b5/research/object_detection/g3doc/tf1_detection_zoo.md
+  dataset: {id: coco-2014, split: minival}
+  conditions: 300x300, TensorFlow Object Detection API, rounded released-model validation reference
+  note: This identifies the released SSD300 family, not weight identity with the original paper experiment.
+  metrics: {coco_map: 0.21}

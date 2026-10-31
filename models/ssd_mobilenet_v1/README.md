@@ -4,37 +4,40 @@
 
 ## Overview
 
-SSD-MobileNet V1 is a single-shot object detector with a MobileNet V1 backbone,
-trained on COCO. It predicts objects from 1,917 reference boxes across six grid
-levels. These reference boxes are also called anchors. Native accuracy qualification is incomplete; do not treat this route as
-a qualified replacement for the reference decoder yet.
+SSD-MobileNet V1 is a lightweight single-shot object detector trained on COCO.
+It combines a MobileNet V1 backbone with predictions from 1,917 reference
+boxes, also called anchors, over six grid levels. The network returns separate
+box offsets and class logits. Your application can decode these predictions
+with the source reference steps below, or select Neat's SSD decoder for a
+single bounding-box result in the original image's coordinates.
 
 ## Inputs and outputs
 
-**Input.** Pass the original RGB image to the Model API with image preprocessing,
-stretch resizing and explicit mean and standard deviation of 0.5. Neat resizes
-to 300×300 and scales RGB to -1 to 1. Do not resize or normalize again in your
-application. The source reference uses TensorFlow asymmetric bilinear resizing;
-the native path is not claimed to be bit-equivalent.
+**Input.** The network expects 300×300 RGB values scaled to -1 to 1. With the
+Model API image route, pass the original RGB image and enable stretch resizing
+with explicit mean and standard deviation of 0.5. Do not resize or normalize
+again in the application. The source reference uses TensorFlow's asymmetric
+bilinear resize; the native image route is not claimed to be bit-equivalent.
 
-**Compiled outputs.** Twelve tensors over grids of 19, 10, 5, 3, 2 and 1 cells:
+**Compiled outputs.** Twelve tensors over grids of 19, 10, 5, 3, 2 and 1 cells.
+The first grid has three anchors per cell; the others have six:
 
-- `ssd_loc_0` to `ssd_loc_5`: box offsets (y, x, height, width).
-- `ssd_confidence_0` to `ssd_confidence_5`: 91 class logits per reference box.
+- `ssd_loc_0` to `ssd_loc_5`: box offsets (y, x, height, width), four values per anchor.
+- `ssd_confidence_0` to `ssd_confidence_5`: 91 class logits per anchor.
 
-Level 0 has three boxes per cell; the other levels have six.
+The independent source reference decodes them as follows:
 
-Set `ModelOptions.decode_type` to `BoxDecodeType.Ssd` for one typed bounding-box
-output. This requires a Neat runtime with prepared SSD carrier support.
-`scripts/accuracy.py` measures original images with threshold 1e-8, IoU 0.6 and
-top 100. `scripts/performance.py` measures the complete detector with threshold
-0.2, IoU 0.6 and top 100 on a reproducible 720p frame.
+1. Reconstruct the source export's exact FP32 reference boxes for the six grids.
+2. Multiply offsets by FP32 0.1, 0.1, 0.2 and 0.2, adjust each reference box, clip to the image and discard nonpositive-area boxes.
+3. Apply a sigmoid to the foreground logits.
+4. Suppress overlapping boxes within each class and keep the best 100 detections overall.
+5. Map the boxes to the original image dimensions.
 
-The independent reference functions retained in `scripts/accuracy.py` use
-TensorFlow anchors, offset scales (10, 10, 5, 5), clipping and positive-area
-filtering, sigmoid scores, per-class overlap suppression and a final top-100
-selection. This reference algorithm is not a claim of native decoder equivalence.
-Class index i is COCO category ID i; index 0 is background and 10 indexes are unused.
+Class index i is COCO category ID i; index 0 is background and ten indexes are
+unused. `BoxDecodeType.Ssd` selects Neat's native multiclass SSD
+policy and returns one typed bounding-box tensor. Its results are not claimed to be bit-equivalent to
+the floating-point source reference. The pinned V1 and V2 exports share this
+TF300 decoding contract; no backbone-specific decoder option is needed.
 
 ## Building applications
 

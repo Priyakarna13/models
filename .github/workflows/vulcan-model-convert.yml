@@ -11,6 +11,10 @@ on:
         description: Conversion entry in the model's model.yaml
         default: default
         type: string
+      mirror_conversion_source:
+        description: Also mirror the verified original TorchVision PTH when redistribution is allowed
+        default: false
+        type: boolean
 permissions:
   contents: read
 jobs:
@@ -80,3 +84,10 @@ jobs:
           cat "$EXPORT_DIR/source.yaml"
           # shellcheck disable=SC2016
           printf '```yaml\n%s\n```\n' "$(cat "$EXPORT_DIR/source.yaml")" >> "$GITHUB_STEP_SUMMARY"
+      - name: Mirror the verified conversion PTH (opt-in)
+        if: ${{ inputs.mirror_conversion_source }}
+        run: >-
+          "$EXPORT_VENV/bin/python" -E -s -m model_registry
+          publish-conversion-source "models/$MODEL_ID"
+          --conversion "$CONVERSION" --output-dir "$EXPORT_DIR"
+          --git-sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"

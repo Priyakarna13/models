@@ -336,6 +336,68 @@ def test_benchmark_fingerprint_requires_a_declared_stage() -> None:
         benchmark_fingerprint(ROOT, model, "w8a8", {"model": RF_DETR_BUILDS["backbone"]}, "accuracy")
 
 
+@pytest.mark.parametrize("field", ["name", "id", "variant", "sha256", "size_bytes"])
+def test_performance_fingerprint_covers_the_selected_input_dataset(field: str) -> None:
+    model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
+    changed = copy.deepcopy(model)
+    name, dataset = next(iter(changed["accuracy"]["datasets"].items()))
+    if field == "name":
+        changed["accuracy"]["datasets"] = {"renamed-source": dataset}
+    elif field == "size_bytes":
+        dataset[field] += 1
+    elif field == "sha256":
+        dataset[field] = "b" * 64
+    else:
+        dataset[field] += "-changed"
+
+    assert benchmark_fingerprint(ROOT, changed, "w8a8_w16a16", RF_DETR_BUILDS, "performance") != benchmark_fingerprint(
+        ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, "performance"
+    )
+
+
+def test_performance_fingerprint_tracks_effective_first_dataset_and_profile_provisioning() -> None:
+    model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
+    first = next(iter(model["accuracy"]["datasets"].values()))
+    model["accuracy"]["datasets"]["coco-2017-mini"] = {**first, "variant": "mini", "sha256": "b" * 64}
+
+    def fingerprint(value: dict) -> str:
+        return benchmark_fingerprint(ROOT, value, "w8a8_w16a16", RF_DETR_BUILDS, "performance")
+
+    baseline = fingerprint(model)
+    reordered = copy.deepcopy(model)
+    reordered["accuracy"]["datasets"] = dict(reversed(list(reordered["accuracy"]["datasets"].items())))
+    assert fingerprint(reordered) != baseline
+
+    excluded = copy.deepcopy(model)
+    excluded["accuracy"]["build_profiles"] = ["w8a16_w16a16"]
+    assert fingerprint(excluded) != baseline
+    without_accuracy = copy.deepcopy(model)
+    del without_accuracy["accuracy"]
+    assert fingerprint(without_accuracy) == fingerprint(excluded)
+
+    # No dataset is supplied to this profile, so changing one must not invalidate it.
+    next(iter(excluded["accuracy"]["datasets"].values()))["sha256"] = "c" * 64
+    assert fingerprint(excluded) == fingerprint(without_accuracy)
+
+
+def test_performance_fingerprint_ignores_unselected_data_and_accuracy_requirements() -> None:
+    model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
+
+    def fingerprint(value: dict) -> str:
+        return benchmark_fingerprint(ROOT, value, "w8a8_w16a16", RF_DETR_BUILDS, "performance")
+
+    baseline = fingerprint(model)
+    changed = copy.deepcopy(model)
+    first = next(iter(changed["accuracy"]["datasets"].values()))
+    changed["accuracy"]["datasets"]["coco-2017-mini"] = {**first, "variant": "mini", "sha256": "b" * 64}
+    assert fingerprint(changed) == baseline
+    changed["accuracy"]["datasets"]["coco-2017-mini"]["sha256"] = "c" * 64
+    assert fingerprint(changed) == baseline
+    first["required_metrics"] = ["coco_map"]
+    changed["accuracy"]["build_profiles"] = ["w8a8_w16a16"]
+    assert fingerprint(changed) == baseline
+
+
 def _copy_repository(repository: Path, model_id: str) -> Path:
     """Copy what the model's fingerprints read into ``repository``; return the copied model directory."""
     for relative in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools", ".github/workflows",
@@ -547,6 +609,8 @@ def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(model
         ("scripts/run_llima_compilation.sh", False),
         ("tools/model_registry/artifact.py", False),
         ("tools/model_registry/cli.py", False),
+        ("tools/model_registry/conversion_publication.py", False),
+        ("tools/model_registry/source.py", False),
         ("tools/model_registry/model.py", True),
         ("tools/model_registry/mla_stage_simulation.py", True),
         ("tools/model_registry/compile_matrix.py", False),

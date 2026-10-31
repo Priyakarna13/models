@@ -33,6 +33,7 @@ accuracy:
         coco_ar_large: 0.7013
 performance:
   run_tests: true
+  # The stage tests also require an absolute 1700 FPS minimum for the complete INT8 detector.
   # Historical raw-head expectations, retained until reviewed whole-detector results are published.
   expected:
     w16a16:

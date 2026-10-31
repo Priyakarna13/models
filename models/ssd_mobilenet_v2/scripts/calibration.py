@@ -53,27 +53,47 @@ def _is_image(name: str) -> bool:
     return name.lower().endswith(IMAGE_SUFFIXES)
 
 
+def _members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    """Admit regular files/directories with unambiguous, dataset-local names."""
+    members = archive.getmembers()
+    files = set()
+    for member in members:
+        name = PurePosixPath(member.name)
+        if not member.name or name.is_absolute() or ".." in name.parts or not (member.isfile() or member.isdir()):
+            raise ValueError(f"unsafe dataset member: {member.name}")
+        if member.isfile():
+            normalized = name.as_posix()
+            if normalized == "." or normalized in files:
+                raise ValueError(f"duplicate dataset member: {member.name}")
+            files.add(normalized)
+    return members
+
+
 def _image_names(dataset: Path) -> list[str]:
     if dataset.is_dir():
-        return sorted(
-            path.relative_to(dataset).as_posix()
-            for path in dataset.rglob("*")
-            if path.is_file() and _is_image(path.name)
-        )
+        root = dataset.resolve()
+        paths = [path for path in dataset.rglob("*") if path.is_file() and _is_image(path.name)]
+        if any(not path.resolve().is_relative_to(root) for path in paths):
+            raise ValueError("dataset image resolves outside dataset")
+        return sorted(path.relative_to(dataset).as_posix() for path in paths)
     if tarfile.is_tarfile(dataset):
         with tarfile.open(dataset) as archive:
-            return sorted(member.name for member in archive.getmembers() if member.isfile() and _is_image(member.name))
+            return sorted(member.name for member in _members(archive) if member.isfile() and _is_image(member.name))
     raise ValueError(f"unsupported image dataset input: {dataset}")
 
 
 def _image_bytes(dataset: Path, names: Sequence[str]) -> Iterator[bytes]:
     if dataset.is_dir():
+        root = dataset.resolve()
         for name in names:
-            yield (dataset / name).read_bytes()
+            path = (dataset / name).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError("dataset image resolves outside dataset")
+            yield path.read_bytes()
         return
     if tarfile.is_tarfile(dataset):
         with tarfile.open(dataset) as archive:
-            members = {member.name: member for member in archive.getmembers()}
+            members = {member.name: member for member in _members(archive)}
             for name in names:
                 stream = archive.extractfile(members[name])
                 if stream is None:
