@@ -50,17 +50,17 @@ build_profiles:
       prompt_decoder:
         parameters: {precision: w16a16}
 
-  w8a16:
-    # INT8 weights with BF16 activations: the INT8-activation build lost too much accuracy (mask cosine 0.899 with
-    # float32). The decoder calibrates on the float32 encoder's embeddings of 50 images, two prompts each.
+  w8a8:
+    # The second encoder part calibrates on the float32 first part's features of the same images, and the decoder
+    # on the float32 encoder's embeddings of them, two prompts each.
     calibration_dataset: coco-2017-cal
     components:
       image_encoder_0:
-        parameters: {precision: w8a16}
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
       image_encoder_1:
-        parameters: {precision: w8a16}
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
       prompt_decoder:
-        parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 50}
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
 
 pipeline:
 - {cpu: "Resize the longer side to 1024, normalize, pad to 1024x1024"}
