@@ -191,25 +191,6 @@ def hwc(value: np.ndarray) -> pyneat.Tensor:
     return pyneat.Tensor.from_numpy(np.ascontiguousarray(value), copy=True, layout=pyneat.TensorLayout.HWC)
 
 
-def trace(name: str, array: np.ndarray) -> None:
-    """One line on stderr describing an array the board computed: shape, statistics and five values of its buffer.
-    The first image's lines can be compared with the float32 model's on the host, to find where they part."""
-    flat = np.asarray(array, np.float64).ravel()
-    values = [round(float(flat[i]), 6) for i in (0, 1, flat.size // 3, flat.size // 2, flat.size - 1)]
-    log(
-        f"TRACE {name} shape={tuple(np.shape(array))} dtype={np.asarray(array).dtype} mean={flat.mean():.6g} "
-        f"std={flat.std():.6g} min={flat.min():.6g} max={flat.max():.6g} values={values}"
-    )
-    # For an HWC feature map: its per-channel, per-row and per-column means, which tell a reordering of channels
-    # from one of rows or columns.
-    grid = np.asarray(array, np.float64)
-    grid = grid[0] if grid.ndim == 4 else grid
-    if grid.ndim == 3 and min(grid.shape) > 8:
-        for axis, label in ((2, "channels"), (0, "rows"), (1, "columns")):
-            means = grid.mean(axis=tuple(i for i in range(3) if i != axis))
-            log(f"TRACE {name} {label}_mean={[round(float(m), 3) for m in means]}")
-
-
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
     """One component's outputs as fresh HWC inputs of the next, as performance.handoff explains. Neat 0.6 gives
     them a leading batch axis. Neat's own views of its outputs are read-only, which from_numpy rejects."""
@@ -228,8 +209,6 @@ class Runners:
     def __init__(self, mpks: dict[str, Path]) -> None:
         self.models = {name: pyneat.Model(str(mpks[name]), tensor_options()) for name in COMPONENTS}
         self.runners: dict[str, pyneat.ModelRunner] = {}
-        # The first image's and first prompt's tensors are traced (trace), once each.
-        self.traced = {"encode": False, "decode": False}
 
     def run(self, component: str, inputs: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
         if component not in self.runners:
@@ -237,28 +216,12 @@ class Runners:
         return self.runners[component].run(inputs, timeout_ms=TIMEOUT_MS)
 
     def encode(self, image: np.ndarray) -> list[pyneat.Tensor]:
-        first = not self.traced["encode"]
-        self.traced["encode"] = True
-        raw = self.run("image_encoder_0", [hwc(image)])
-        if first:
-            trace("encode.image", image)
-            trace("encode.image_encoder_0.features", raw[0].to_numpy(copy=True))
-        features = handoff(raw)
-        raw = self.run("image_encoder_1", features)
-        if first:
-            trace("encode.handoff.features", features[0].to_numpy(copy=True))
-            trace("encode.image_encoder_1.image_embeddings", raw[0].to_numpy(copy=True))
-        return handoff(raw)
+        features = handoff(self.run("image_encoder_0", [hwc(image)]))
+        return handoff(self.run("image_encoder_1", features))
 
     def decode(self, embedding: list[pyneat.Tensor], prompt: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         inputs = [*embedding, hwc(prompt["point_coords"]), hwc(prompt["point_types"])]
         masks, scores = self.run("prompt_decoder", inputs)
-        if not self.traced["decode"]:
-            self.traced["decode"] = True
-            for name, tensor in zip(("embedding", "point_coords", "point_types"), inputs):
-                trace(f"decode.input.{name}", tensor.to_numpy(copy=True))
-            trace("decode.masks", masks.to_numpy(copy=True))
-            trace("decode.iou_predictions", scores.to_numpy(copy=True))
         # Copies, because the runner reuses its output buffers while a worker may still read them.
         return masks.to_numpy(copy=True), scores.to_numpy(copy=True)
 

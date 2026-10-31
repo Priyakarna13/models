@@ -42,25 +42,29 @@ calibrations:
 
 build_profiles:
   w16a16:
-    components:
-      image_encoder_0:
-        parameters: {precision: w16a16}
-      image_encoder_1:
-        parameters: {precision: w16a16}
-      prompt_decoder:
-        parameters: {precision: w16a16}
-
-  w8a8:
-    # The second encoder part calibrates on the float32 first part's features of the same images, and the decoder
-    # on the float32 encoder's embeddings of them, two prompts each.
+    # The compiler runs Sin and Cos as INT8 lookup tables even at BF16, so the decoder's point encoding needs
+    # calibrated ranges: it calibrates on the float32 encoder's embeddings of 50 images, two prompts each. Calibrated on
+    # one centre click instead, real box prompts fell outside the ranges (mask IoU with float32 as low as 0.01).
     calibration_dataset: coco-2017-cal
     components:
       image_encoder_0:
-        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+        parameters: {precision: w16a16}
       image_encoder_1:
-        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+        parameters: {precision: w16a16}
       prompt_decoder:
-        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+
+  w8a16:
+    # INT8 weights with BF16 activations: the INT8-activation build lost too much accuracy (mask cosine 0.899 with
+    # float32). The decoder calibrates on the float32 encoder's embeddings of 50 images, two prompts each.
+    calibration_dataset: coco-2017-cal
+    components:
+      image_encoder_0:
+        parameters: {precision: w8a16}
+      image_encoder_1:
+        parameters: {precision: w8a16}
+      prompt_decoder:
+        parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 50}
 
 pipeline:
 - {cpu: "Resize the longer side to 1024, normalize, pad to 1024x1024"}

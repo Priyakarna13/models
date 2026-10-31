@@ -28,6 +28,7 @@ from afe.apis.defines import (
     HistogramMSEMethod,
     InputName,
     RequantizationMode,
+    SkipCalibration,
     bfloat16_scheme,
     default_quantization,
     gen2_target,
@@ -73,6 +74,21 @@ def _quantization(parameters: dict[str, Any]) -> Any:
     elif precision == "w16a16":
         config = default_quantization.with_activation_quantization(bfloat16_scheme()).with_weight_quantization(
             bfloat16_scheme()
+        )
+        # Sin and Cos run as INT8 lookup tables even at BF16; the decoder declares bins to calibrate their ranges.
+        if parameters.get("calibration_bins"):
+            config = config.with_calibration(HistogramMSEMethod(int(parameters["calibration_bins"])))
+    elif precision == "w8a16":
+        # INT8 per-channel weights with BF16 activations, quantized per token. The encoder parts calibrate nothing;
+        # the decoder will not quantize without calibration, so it declares its bins and samples.
+        bins = parameters.get("calibration_bins")
+        return (
+            default_quantization.with_activation_quantization(bfloat16_scheme())
+            .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
+            .with_calibration(HistogramMSEMethod(int(bins)) if bins else SkipCalibration())
+            .with_bias_correction(BiasCorrectionType.NONE)
+            .with_requantization_mode(RequantizationMode.sima)
+            .with_per_token_quant(True)
         )
     else:
         raise ValueError(f"unsupported precision: {precision}")
@@ -271,21 +287,24 @@ def compile_model(
 
         # Calibration: the first encoder part's images, the second's float32 features of them, and the decoder's
         # prompts on the float32 encoder's embeddings.
-        int8 = [component for component in COMPONENTS if parameters[component]["precision"] == "w8a8"]
-        if int8 and dataset is None:
-            raise ValueError("an INT8 component requires --dataset from dataset-registry")
+        calibrated = [component for component in COMPONENTS if "calibration_samples" in parameters[component]]
+        if calibrated and dataset is None:
+            raise ValueError("a calibrated component requires --dataset from dataset-registry")
         rng = np.random.RandomState(SAMPLE_SEED)
         samples: dict[str, list[dict[str, np.ndarray]]] = {}
-        if int8:
-            count = max(int(parameters[component]["calibration_samples"]) for component in int8)
+        if calibrated:
+            count = max(int(parameters[component]["calibration_samples"]) for component in calibrated)
             images = calibration_images(dataset, count)
             inputs = encoder_inputs(images)
-            samples["image_encoder_0"] = [{"image": image.transpose(2, 0, 1)[None]} for image in inputs]
-            if {"image_encoder_1", "prompt_decoder"} & set(int8):
+            if "image_encoder_0" in calibrated:
+                samples["image_encoder_0"] = [{"image": image.transpose(2, 0, 1)[None]} for image in inputs]
+            if {"image_encoder_1", "prompt_decoder"} & set(calibrated):
                 features, embeddings = float_embeddings(graphs, inputs)
-                samples["image_encoder_1"] = [{"features": feature[None]} for feature in features]
-                samples["prompt_decoder"] = decoder_feeds(embeddings, [image.shape[:2] for image in images])
-        # BF16 derives nothing from representative data, but quantize() still needs one sample.
+                if "image_encoder_1" in calibrated:
+                    samples["image_encoder_1"] = [{"features": feature[None]} for feature in features]
+                if "prompt_decoder" in calibrated:
+                    samples["prompt_decoder"] = decoder_feeds(embeddings, [image.shape[:2] for image in images])
+        # An uncalibrated component derives nothing from representative data, but quantize() still needs one sample.
         for component in ("image_encoder_0", "image_encoder_1"):
             (name, shape), = INPUT_SHAPES[component].items()
             samples.setdefault(component, [{name: rng.uniform(-2, 2, shape).astype(np.float32)}])
