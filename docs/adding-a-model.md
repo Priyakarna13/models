@@ -269,7 +269,7 @@ builds](#on-demand-builds).
 | conversion | what can change the ONNX: the upstream checkpoint, `conversion.outputs`, `convert.py` and the files it uses, and the shared export code. See [when to run Convert again](conversion-artifacts.md#when-to-run-convert-again) |
 | compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, the Model Compiler version, `scripts/run_model_compilation.sh`, the shared model loader, and the MLA stage simulation (`tools/model_registry/mla_stage_simulation.py`) |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
-| performance | the compile run and MPK digest of every component, the `performance` declaration, the profile's optional `benchmark_baseline`, the model's `performance.py`, the shared benchmark tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
+| performance | the compile run and MPK digest of every component, the `performance` declaration, the profile's optional `benchmark_baseline`, the selected input dataset (name, ID, variant, SHA-256 and size, or none), the model's `performance.py`, the shared benchmark tooling, `scripts/run_model_performance.sh` and `scripts/check_benchmark_telemetry.py`, and the DevKit runtime pin |
 | accuracy | the compile run and MPK digest of every component, each `accuracy` dataset's name, pin, and the metrics its `datasets/<id>.yaml` requires for the model's tasks, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
 
 ONNX compile code includes every `.py` and `.sh` under `scripts/` except
@@ -284,6 +284,11 @@ benchmark tooling is `BOARD_STAGE_TOOLING`: the benchmarking workflow,
 A new compile run changes the benchmark fingerprints too, so a recompiled build
 is always benchmarked again.
 
+For performance, the shared runner supplies the first accuracy dataset in declaration
+order when the profile measures accuracy. Changing that selection, its archive
+pin, or whether the profile receives a dataset invalidates performance. Changes
+to later, unselected datasets or accuracy metric requirements do not.
+
 | Change | Reruns |
 | --- | --- |
 | README, display metadata, `pipeline`, `reference_metrics`, `runner_class`, `runner_market`, `tools/model_report/metrics.json`, registry tooling outside a stage's tooling | nothing |
@@ -293,10 +298,12 @@ is always benchmarked again.
 | a model's `fp32_baseline_accuracy.py` | nothing; no stage runs it |
 | a model's `performance.py` or `performance` declaration | that model's performance stages |
 | a profile's `benchmark_baseline` | that profile's performance; no compilation |
-| `accuracy.py`, its requirements, the `accuracy` datasets, or one of their pins | that model's accuracy stages |
+| `accuracy.py` or its requirements | that model's accuracy stages |
+| an `accuracy` dataset or its pin | that model's accuracy stages, and performance stages whose selected input dataset changes |
 | a task's entry in `datasets/<id>.yaml` | the accuracy stages of models with that task that evaluate the dataset |
-| `accuracy.build_profiles`, a new `datasets/` file, or an entry for a task no such model has | nothing; a newly benchmarked profile runs because it has no run yet |
-| `scripts/run_model_performance.sh` | every performance stage |
+| `accuracy.build_profiles` | performance stages that gain or lose their dataset input; a newly benchmarked accuracy profile runs because it has no run yet |
+| a new `datasets/` file, or an entry for a task no such model has | nothing |
+| `scripts/run_model_performance.sh` or `scripts/check_benchmark_telemetry.py` | every performance stage |
 | `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, or `scripts/install_dataset_registry.sh` | every accuracy stage |
 | the DevKit runtime pin, the benchmarking workflow, `tools/model_report/__init__.py`, `schemas/model-report.schema.json`, or `report_publication.py` | every performance and accuracy stage |
 | a source, a component's `parameters`, the profile's calibration, or `numerical_fidelity` | that model's affected builds, then their benchmarks |

@@ -39,9 +39,82 @@ BOXES_PER_CELL = (3, 6, 6, 6, 6, 6)
 OUTPUT_SHAPES = [
     (1, size, size, boxes * channels) for channels in (4, CLASSES) for size, boxes in zip(GRIDS, BOXES_PER_CELL)
 ]
-MIN_SCALE, MAX_SCALE = 0.2, 0.95
-ASPECT_RATIOS = (1.0, 2.0, 0.5, 3.0, 1.0 / 3.0)
-BOX_SCALES = np.asarray([10.0, 10.0, 5.0, 5.0], np.float32)
+# Frozen FP32 width/height constants from the pinned original V1 ONNX anchor
+# graph (SHA256 b8fba5e...); V2 priors were independently verified identical.
+# Source aspect ratio 0.3333 and constant-fold rounding are intentional.
+PRIOR_WIDTHS = (
+    (0.10000000149011612, 0.2828427255153656, 0.1414213627576828),
+    (
+        0.3499999940395355,
+        0.4949747323989868,
+        0.2474873661994934,
+        0.6062177419662476,
+        0.2020624876022339,
+        0.41833001375198364,
+    ),
+    (0.5, 0.7071067690849304, 0.3535533845424652, 0.8660253882408142, 0.2886607050895691, 0.570087730884552),
+    (
+        0.6499999761581421,
+        0.9192387461662292,
+        0.4596193730831146,
+        1.1258329153060913,
+        0.3752588927745819,
+        0.7211102247238159,
+    ),
+    (
+        0.800000011920929,
+        1.1313709020614624,
+        0.5656854510307312,
+        1.3856406211853027,
+        0.4618571400642395,
+        0.8717797994613647,
+    ),
+    (
+        0.949999988079071,
+        1.3435028791427612,
+        0.6717514395713806,
+        1.6454482078552246,
+        0.5484553575515747,
+        0.9746794104576111,
+    ),
+)
+PRIOR_HEIGHTS = (
+    (0.10000000149011612, 0.1414213627576828, 0.2828427255153656),
+    (
+        0.3499999940395355,
+        0.2474873661994934,
+        0.4949747323989868,
+        0.20207259058952332,
+        0.6062480807304382,
+        0.41833001375198364,
+    ),
+    (0.5, 0.3535533845424652, 0.7071067690849304, 0.28867512941360474, 0.8660687208175659, 0.570087730884552),
+    (
+        0.6499999761581421,
+        0.459619402885437,
+        0.919238805770874,
+        0.37527766823768616,
+        1.1258893013000488,
+        0.7211102247238159,
+    ),
+    (
+        0.800000011920929,
+        0.5656854510307312,
+        1.1313709020614624,
+        0.46188023686408997,
+        1.3857098817825317,
+        0.8717797994613647,
+    ),
+    (
+        0.949999988079071,
+        0.6717514395713806,
+        1.3435028791427612,
+        0.5484827756881714,
+        1.6455304622650146,
+        0.9746794104576111,
+    ),
+)
+BOX_RECIPROCALS = np.asarray([0.1, 0.1, 0.2, 0.2], np.float32)
 # AP evaluation policy, not the source graph or Neat customer detection default.
 SCORE_THRESHOLD = 1e-8
 IOU_THRESHOLD = 0.6
@@ -73,18 +146,11 @@ PREFETCH = 8
 
 def make_anchors() -> np.ndarray:
     """[1917, 4] (ymin, xmin, ymax, xmax) anchors in normalized coordinates, in the heads' cell-major order."""
-    scales = [MIN_SCALE + (MAX_SCALE - MIN_SCALE) * level / (len(GRIDS) - 1) for level in range(len(GRIDS))] + [1.0]
     levels = []
-    for level, size in enumerate(GRIDS):
-        if level == 0:
-            # reduce_boxes_in_lowest_layer: a 0.1 square box and the 2:1 and 1:2 boxes at the lowest scale.
-            shapes = [(0.1, 1.0), (scales[0], 2.0), (scales[0], 0.5)]
-        else:
-            shapes = [(scales[level], ratio) for ratio in ASPECT_RATIOS]
-            shapes.append((np.sqrt(scales[level] * scales[level + 1]), 1.0))
-        heights = np.asarray([scale / np.sqrt(ratio) for scale, ratio in shapes], np.float32)
-        widths = np.asarray([scale * np.sqrt(ratio) for scale, ratio in shapes], np.float32)
-        centers = (np.arange(size, dtype=np.float32) + 0.5) / size
+    for size, widths, heights in zip(GRIDS, PRIOR_WIDTHS, PRIOR_HEIGHTS):
+        widths, heights = np.asarray(widths, np.float32), np.asarray(heights, np.float32)
+        step = np.float32(1.0) / np.float32(size)
+        centers = np.arange(size, dtype=np.float32) * step + np.float32(0.5) * step
         center_y, center_x = (axis[..., None] for axis in np.meshgrid(centers, centers, indexing="ij"))
         boxes = np.stack(
             [center_y - heights / 2, center_x - widths / 2, center_y + heights / 2, center_x + widths / 2], axis=-1
@@ -94,16 +160,6 @@ def make_anchors() -> np.ndarray:
 
 
 ANCHORS = make_anchors()
-
-
-def tensor_options() -> pyneat.ModelOptions:
-    options = pyneat.ModelOptions()
-    options.preprocess.kind = pyneat.InputKind.Tensor
-    # The script already resized and scaled the image; Neat still quantizes and tessellates.
-    options.preprocess.resize.enable = pyneat.AutoFlag.Off
-    options.preprocess.color_convert.enable = pyneat.AutoFlag.Off
-    options.preprocess.normalize.enable = pyneat.AutoFlag.Off
-    return options
 
 
 def prefetched(load: Callable, items: Sequence) -> Iterator:
@@ -121,7 +177,7 @@ def decode_boxes(encodings: np.ndarray) -> np.ndarray:
     """Apply the box coder to [1917, 4] (ty, tx, th, tw) encodings; returns (ymin, xmin, ymax, xmax) clipped to 0-1."""
     anchor_height, anchor_width = ANCHORS[:, 2] - ANCHORS[:, 0], ANCHORS[:, 3] - ANCHORS[:, 1]
     anchor_y, anchor_x = ANCHORS[:, 0] + anchor_height / 2, ANCHORS[:, 1] + anchor_width / 2
-    ty, tx, th, tw = (encodings / BOX_SCALES).T
+    ty, tx, th, tw = (encodings * BOX_RECIPROCALS).T
     center_y, center_x = ty * anchor_height + anchor_y, tx * anchor_width + anchor_x
     height, width = np.exp(th) * anchor_height, np.exp(tw) * anchor_width
     boxes = np.stack([center_y - height / 2, center_x - width / 2, center_y + height / 2, center_x + width / 2], -1)
@@ -134,7 +190,8 @@ def _iou(box: np.ndarray, others: np.ndarray) -> np.ndarray:
     inter = np.maximum(bottom - top, 0) * np.maximum(right - left, 0)
     area = (box[2] - box[0]) * (box[3] - box[1])
     areas = (others[:, 2] - others[:, 0]) * (others[:, 3] - others[:, 1])
-    return inter / np.maximum(area + areas - inter, 1e-12)
+    union = area + areas - inter
+    return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
 
 
 def ranked(values: np.ndarray, count: int) -> np.ndarray:
@@ -200,7 +257,10 @@ def decode(outputs: Sequence[np.ndarray], image_id: int, width: int, height: int
         raise ValueError("MPK output contains non-finite values")
     boxes = decode_boxes(encodings)
     # Class 0 is the background; scores cover the 90 label-map ids.
-    scores = 1.0 / (1.0 + np.exp(-np.clip(logits[:, 1:], -80, 80)))
+    # Source sigmoid has no clipping; overflow of exp for a finite very
+    # negative logit correctly produces zero probability.
+    with np.errstate(over="ignore"):
+        scores = 1.0 / (1.0 + np.exp(-logits[:, 1:]))
     anchor, label = select(boxes, scores)
     top, left, bottom, right = (boxes[anchor] * [height, width, height, width]).T
     ids = np.full(anchor.shape, image_id)
@@ -229,10 +289,26 @@ def coco_stats(scorer: COCOeval_faster, *, allow_missing_size_buckets: bool = Fa
 
 
 def parse_mpks(values: list[str]) -> Path:
-    mpks = dict(value.split("=", 1) for value in values)
-    if set(mpks) != {"model"}:
+    if len(values) != 1:
         raise SystemExit("--mpk must name exactly model=<path>")
-    return Path(mpks["model"])
+    component, separator, path = values[0].partition("=")
+    if component != "model" or not separator or not path.strip():
+        raise SystemExit("--mpk must name exactly model=<path>")
+    return Path(path)
+
+
+def one_argument(values: list[str], name: str) -> str:
+    if len(values) != 1 or not values[0].strip():
+        raise SystemExit(f"{name} requires exactly one nonempty value")
+    return values[0]
+
+
+def parse_dataset(values: list[str]) -> tuple[str, Path]:
+    value = one_argument(values, "--dataset")
+    dataset_id, separator, directory = value.partition("=")
+    if dataset_id != "coco-2017-val" or not separator or not directory.strip():
+        raise SystemExit("--dataset must name coco-2017-val=<directory>")
+    return dataset_id, Path(directory)
 
 
 def log(*values: object) -> None:
@@ -240,7 +316,7 @@ def log(*values: object) -> None:
 
 
 def native_options() -> pyneat.ModelOptions:
-    """The measured native Image route; the independent Float32 oracle remains above."""
+    """Explicit source-multiclass Image route; the independent Float32 oracle remains above."""
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Image
     options.preprocess.enable = pyneat.AutoFlag.On
@@ -255,6 +331,7 @@ def native_options() -> pyneat.ModelOptions:
     options.preprocess.normalize.stddev = [0.5, 0.5, 0.5]
     options.preprocess.normalize.has_explicit_stats = True
     options.decode_type = pyneat.BoxDecodeType.Ssd
+    options.num_classes = CLASSES
     options.score_threshold = SCORE_THRESHOLD
     options.nms_iou_threshold = IOU_THRESHOLD
     options.top_k = MAX_DETECTIONS
@@ -346,14 +423,14 @@ def coco_results(ground_truth, detections: np.ndarray):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="model=<path>")
-    parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
-    parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
+    parser.add_argument("--dataset", action="append", required=True, help="coco-2017-val=<extracted directory>")
+    parser.add_argument("--output", action="append", required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure a seeded sample of images (local runs only)")
     args = parser.parse_args(argv)
-    dataset_id, dataset_dir = args.dataset.split("=", 1)
-    dataset = Path(dataset_dir)
+    mpk = parse_mpks(args.mpk)
+    dataset_id, dataset = parse_dataset(args.dataset)
+    output = Path(one_argument(args.output, "--output"))
 
-    model = pyneat.Model(str(parse_mpks(args.mpk)), native_options())
     with contextlib.redirect_stdout(io.StringIO()):
         ground_truth = COCO(str(dataset / ANNOTATIONS))
     available = sorted(ground_truth.getImgIds())
@@ -362,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     image_ids = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
     records = ground_truth.loadImgs(image_ids)
 
+    model = pyneat.Model(str(mpk), native_options())
     started = time.monotonic()
     rows = native_predictions(model, records, dataset / IMAGES)
     inference_seconds = time.monotonic() - started
@@ -399,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         }
     )
-    report.save(args.output)
+    report.save(output)
     measured = report.document["datasets"][dataset_id]["metrics"]
     print(json.dumps({name: round(value, 4) for name, value in measured.items()}))
     return 0

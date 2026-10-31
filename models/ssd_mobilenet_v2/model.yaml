@@ -37,7 +37,7 @@ build_profiles:
     calibration_dataset: coco-2017-cal
     components:
       model:
-        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 128}
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 512}
 
   w16a16:
     components:
@@ -46,8 +46,8 @@ build_profiles:
 
 accuracy:
   # accuracy.py measures the native Image/SSD route and retains an independent TensorFlow reference.
-  # TensorFlow trained these weights on COCO 2014 train+val minus its 8k minival, so some val2017
-  # images were training images and val2017 scores run above the published minival numbers.
+  # The source model zoo used a different COCO 2014 minival holdout. Most val2017 images are
+  # outside that holdout; exact training membership of these exports is not independently proven.
   datasets:
   - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
 

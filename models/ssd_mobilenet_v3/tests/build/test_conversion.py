@@ -204,3 +204,58 @@ def test_rgb_and_half_pixel_normalization_before_resize(converted, calibration):
     red = np.zeros((17, 29, 3), np.uint8)
     red[:, :, 0] = 255
     np.testing.assert_array_equal(calibration.preprocess_image(_png(red))[160, 160], [1, -1, -1])
+
+
+@pytest.mark.parametrize("host", ["artifact", "huggingface"])
+def test_checkpoint_mirror_preserves_original_bytes_and_provenance(monkeypatch, converter, tmp_path, host):
+    source = {"type": "file", **converter.WEIGHTS_SOURCE}
+    source["uri"] = (
+        f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{converter.WEIGHTS_SHA256}/123-1/source.pth"
+        if host == "artifact" else
+        "hf://models/example/ssd@0123456789abcdef0123456789abcdef01234567/source.pth"
+    )
+    path = tmp_path / "verified.pth"
+    seen = []
+    monkeypatch.setattr(converter, "load_and_validate_model", lambda _: {
+        "conversion": {"default": {"source": source}},
+        "upstream": {"derived_from": converter.WEIGHTS_URL},
+    })
+
+    class FakeFetcher:
+        def fetch(self, spec):
+            seen.append(spec)
+            return path, True
+
+    monkeypatch.setattr(converter, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(converter, "verified_weights", lambda value: value)
+    assert converter.resolve_weights(None) == path
+    assert seen[0].uri == source["uri"]
+    assert (seen[0].sha256, seen[0].size_bytes) == (converter.WEIGHTS_SHA256, converter.WEIGHTS_SIZE)
+
+
+@pytest.mark.parametrize("case", ["sha256", "size", "provenance", "wrong_hash_path"])
+def test_checkpoint_mirror_rejects_changed_identity_before_fetch(monkeypatch, converter, case):
+    from model_registry.errors import SourcePolicyError
+
+    source = {"type": "file", **converter.WEIGHTS_SOURCE}
+    source["uri"] = (
+        f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{converter.WEIGHTS_SHA256}/123-1/source.pth"
+    )
+    model = {"conversion": {"default": {"source": source}}, "upstream": {"derived_from": converter.WEIGHTS_URL}}
+    if case == "sha256":
+        source["sha256"] = "0" * 64
+    elif case == "size":
+        source["size_bytes"] -= 1
+    elif case == "provenance":
+        model["upstream"]["derived_from"] = "https://example.invalid/not-the-original"
+    else:
+        source["uri"] = source["uri"].replace(converter.WEIGHTS_SHA256, "0" * 64)
+    monkeypatch.setattr(converter, "load_and_validate_model", lambda _: model)
+
+    class NoFetcher:
+        def __init__(self):
+            raise AssertionError("a rejected checkpoint identity must not fetch")
+
+    monkeypatch.setattr(converter, "Fetcher", NoFetcher)
+    with pytest.raises((ValueError, SourcePolicyError)):
+        converter.resolve_weights(None)

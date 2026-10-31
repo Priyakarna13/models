@@ -173,6 +173,22 @@ def test_accuracy_meets_the_source_relative_gate(accuracy, model_dir, build_prof
     assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy) == []
 
 
+@pytest.mark.parametrize("profile", ["w16a16", "w8a8"])
+def test_accuracy_regression_gates_cover_all_twelve_coco_metrics(model_dir, reference, profile):
+    from model_registry.model_tests import load_model_tests, measured_shortfalls
+
+    expected = load_model_tests(model_dir)["accuracy"]["expected"][profile]["coco-2017-val"]
+    assert set(expected) == set(reference.METRICS)
+    # Additional native metric baselines must not weaken the independent source mAP requirement.
+    assert expected["coco_map"] == 0.2126872437
+    report = {"datasets": {"coco-2017-val": {"metrics": dict(expected)}}}
+    assert measured_shortfalls(model_dir, "accuracy", profile, report) == []
+    for metric, value in expected.items():
+        report["datasets"]["coco-2017-val"]["metrics"] = {**expected, metric: value * 0.94}
+        shortfalls = measured_shortfalls(model_dir, "accuracy", profile, report)
+        assert len(shortfalls) == 1 and metric in shortfalls[0]
+
+
 def _scorer(accuracy: ModuleType, **overrides: float) -> SimpleNamespace:
     stats = dict.fromkeys(accuracy.METRICS.values(), 0.5)
     stats.update(overrides)
@@ -219,7 +235,7 @@ def test_accuracy_rejects_missing_required_coco_map(load_script: Callable[[str],
         accuracy.coco_stats(scorer, allow_missing_size_buckets=True)
 
 
-def test_undeclared_performance_route_fails_without_a_report(tmp_path):
+def test_performance_invalid_dataset_fails_before_model_loading_without_a_report(tmp_path):
     import subprocess
     import sys
 
@@ -231,7 +247,7 @@ def test_undeclared_performance_route_fails_without_a_report(tmp_path):
             "--mpk",
             "unused.tar.gz",
             "--dataset",
-            "coco-2017-val=unused",
+            "other=unused",
             "--output",
             str(tmp_path),
         ],
@@ -239,8 +255,24 @@ def test_undeclared_performance_route_fails_without_a_report(tmp_path):
         text=True,
     )
     assert result.returncode != 0
-    assert "not qualified" in result.stderr
+    assert "--dataset" in result.stderr
     assert not (tmp_path / "model-report.json").exists()
+
+
+def test_performance_declaration_and_whole_detector_references_are_enabled_together():
+    import yaml
+
+    model = Path(__file__).resolve().parents[2]
+    definition = yaml.safe_load((model / "model.yaml").read_text())
+    tests = yaml.safe_load((model / "tests/tests.yaml").read_text())
+    assert definition["performance"] == {}
+    assert tests["performance"] == {
+        "run_tests": True,
+        "expected": {
+            "w16a16": {"throughput_fps": 681.4},
+            "w8a8": {"throughput_fps": 1778.4},
+        },
+    }
 
 
 # Native-route adapter tests deliberately retain the independent source-oracle tests above.
@@ -269,6 +301,7 @@ def test_native_policy_is_explicit_and_uses_per_frame_image_geometry(load_script
     module = load_script("accuracy")
     options = module.native_options()
     assert options.decode_type == module.pyneat.BoxDecodeType.Ssd
+    assert options.num_classes == module.CLASSES == 91
     assert options.preprocess.kind == module.pyneat.InputKind.Image
     assert options.preprocess.resize.mode == module.pyneat.ResizeMode.Stretch
     assert options.preprocess.normalize.mean == [0.5, 0.5, 0.5]
@@ -426,3 +459,58 @@ def test_native_runner_closes_on_inference_failure(load_script, monkeypatch, tmp
     with pytest.raises(RuntimeError, match="inference failure"):
         module.native_predictions(model, [record], tmp_path)
     assert closed == [True]
+
+
+@pytest.mark.parametrize("value", ["", "=", "coco-2017-val=", "coco-2017-val=   ", "other=/data", "coco-2017-val"])
+def test_dataset_argument_is_one_named_nonempty_source(load_script, value):
+    script = load_script("accuracy")
+    with pytest.raises(SystemExit, match="--dataset"):
+        script.parse_dataset([value])
+
+
+def test_dataset_argument_rejects_repeats_instead_of_taking_the_last(load_script):
+    script = load_script("accuracy")
+    with pytest.raises(SystemExit, match="--dataset"):
+        script.parse_dataset(["coco-2017-val=/first", "coco-2017-val=/second"])
+    assert script.parse_dataset(["coco-2017-val=/data"]) == ("coco-2017-val", Path("/data"))
+
+
+@pytest.mark.parametrize(
+    "values", [[], [""], ["model="], ["model=  "], ["model"], ["other=/data"], ["model=/a", "model=/b"]]
+)
+def test_accuracy_requires_exactly_one_nonempty_component_path(load_script, values):
+    script = load_script("accuracy")
+    with pytest.raises(SystemExit, match="exactly model=<path>"):
+        script.parse_mpks(values)
+
+
+@pytest.mark.parametrize("values", [[], [""], ["   "], ["/a", "/b"]])
+def test_output_argument_rejects_empty_or_duplicate_values(load_script, values):
+    script = load_script("accuracy")
+    with pytest.raises(SystemExit, match="--output"):
+        script.one_argument(values, "--output")
+
+
+@pytest.mark.parametrize("flag,value", [("--dataset", "coco-2017-val=/again"), ("--output", "/again")])
+def test_actual_parser_rejects_duplicate_options_before_model(load_script, monkeypatch, flag, value):
+    script = load_script("accuracy")
+
+    def no_model(*args, **kwargs):
+        raise AssertionError("invalid command line must not construct a Model")
+
+    monkeypatch.setattr(script.pyneat, "Model", no_model)
+    mpk = "model=/model.tar.gz"
+    with pytest.raises(SystemExit, match=flag):
+        script.main(["--mpk", mpk, "--dataset", "coco-2017-val=/data", "--output", "/out", flag, value])
+
+
+def test_native_multiclass_policy_matches_all_encoded_confidence_heads(load_script):
+    module = load_script("accuracy")
+    options = module.native_options()
+    assert options.decode_type != module.pyneat.BoxDecodeType.YoloV26
+    assert len(module.OUTPUT_SHAPES) == 12
+    localization, confidence = module.OUTPUT_SHAPES[:6], module.OUTPUT_SHAPES[6:]
+    for loc, scores in zip(localization, confidence):
+        assert loc[:3] == scores[:3]
+        assert loc[-1] % 4 == 0
+        assert scores[-1] == (loc[-1] // 4) * options.num_classes

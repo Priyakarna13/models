@@ -335,7 +335,10 @@ def publish_report(
         f"{stable_key}-parameters",
     )
 
-    files = {"model-report": (REPORT_FILE, "model-report", "application/json")}
+    files = {
+        "model-report": (REPORT_FILE, "model-report", "application/json"),
+        "environment": (ENVIRONMENT_FILE, "environment", "application/json"),
+    }
     if (output / CORE_REPORT_FILE).is_file():
         files["core-benchmark-report"] = (CORE_REPORT_FILE, "benchmark-report", "application/json")
     if (output / f"{stage}.log").is_file():

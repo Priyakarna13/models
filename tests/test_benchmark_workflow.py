@@ -719,3 +719,20 @@ def test_report_command_publishes_both_stages_to_selected_registry(tmp_path, env
     assert len(calls) == 2
     assert all(f'--environment {environment} ' in call for call in calls)
     assert all('--compiled-dir _compiled ' in call for call in calls)
+
+
+@pytest.mark.parametrize(("performance", "required"), [("true", "ON"), ("false", "OFF")])
+def test_trusted_core_install_requires_sentinel_only_for_performance(performance: str, required: str) -> None:
+    steps = load_workflow()["jobs"]["benchmark-dispatched-model"]["steps"]
+    install = step(steps, "Install selected Neat Core")
+    expression = install["env"]["NEAT_INSTALLER_SENTINEL_REQUIRED"]
+    assert evaluate(expression[3:-3], {"steps.stages.outputs.performance": performance}) == required
+
+
+def test_performance_checks_fresh_power_before_running_the_model() -> None:
+    script = (ROOT / "scripts/run_model_performance.sh").read_text(encoding="utf-8")
+    preflight = '"$PYNEAT_PYTHON" "$REPOSITORY/scripts/check_benchmark_telemetry.py"'
+    assert script.index(preflight) < script.index('"$PYNEAT_PYTHON" "$MODEL_DIR/scripts/performance.py"')
+    assert 'tee -a "$OUTPUT_DIR/performance.log"' in script
+    assert "scripts/check_benchmark_telemetry.py" in PERFORMANCE_TOOLING
+    assert "scripts/check_benchmark_telemetry.py" not in ACCURACY_TOOLING

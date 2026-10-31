@@ -47,14 +47,18 @@ def _is_image(name: str) -> bool:
 
 
 def _members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    """Admit regular files/directories with unambiguous, dataset-local names."""
     members = archive.getmembers()
+    files = set()
     for member in members:
         name = PurePosixPath(member.name)
-        if name.is_absolute() or ".." in name.parts or member.issym() or member.islnk():
+        if not member.name or name.is_absolute() or ".." in name.parts or not (member.isfile() or member.isdir()):
             raise ValueError(f"unsafe dataset member: {member.name}")
-    names = [member.name for member in members if member.isfile()]
-    if len(names) != len(set(names)):
-        raise ValueError("duplicate dataset member")
+        if member.isfile():
+            normalized = name.as_posix()
+            if normalized == "." or normalized in files:
+                raise ValueError(f"duplicate dataset member: {member.name}")
+            files.add(normalized)
     return members
 
 
@@ -73,8 +77,12 @@ def _image_names(dataset: Path) -> list[str]:
 
 def _image_bytes(dataset: Path, names: Sequence[str]) -> Iterator[bytes]:
     if dataset.is_dir():
+        root = dataset.resolve()
         for name in names:
-            yield (dataset / name).read_bytes()
+            path = (dataset / name).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError("dataset image resolves outside dataset")
+            yield path.read_bytes()
         return
     if tarfile.is_tarfile(dataset):
         with tarfile.open(dataset) as archive:

@@ -16,6 +16,7 @@ import json
 import platform
 from itertools import pairwise
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import numpy as np
 import onnx
@@ -165,11 +166,21 @@ def expected_versions(machine: str) -> dict[str, str]:
 def resolve_weights(path: Path | None) -> Path:
     """Use the canonical verified source cache; an explicit local file is verified too."""
     if path is None:
-        source = load_and_validate_model(Path(__file__).resolve().parents[1])["conversion"]["default"]["source"]
-        expected = {**WEIGHTS_SOURCE, "type": "file"}
+        model = load_and_validate_model(Path(__file__).resolve().parents[1])
+        source = model["conversion"]["default"]["source"]
+        expected = {"type": "file", "sha256": WEIGHTS_SHA256, "size_bytes": WEIGHTS_SIZE}
         if any(source.get(key) != value for key, value in expected.items()):
             raise ValueError("model.yaml conversion source differs from the pinned TorchVision weights")
-        path, _cache_hit = Fetcher().fetch(SourceSpec.from_mapping(source))
+        spec = SourceSpec.from_mapping(source)
+        if spec.uri != WEIGHTS_URL:
+            # SourceSpec enforces immutable, full-hash artifact/HF paths. A
+            # mirror changes transport only, never the original checkpoint.
+            approved = spec.uri.startswith("hf://models/") or (
+                urlsplit(spec.uri).hostname == "artifacts.stg.neat.sima.ai"
+            )
+            if not approved or model.get("upstream", {}).get("derived_from") != WEIGHTS_URL:
+                raise ValueError("checkpoint mirror requires an approved immutable source and original provenance")
+        path, _cache_hit = Fetcher().fetch(spec)
     return verified_weights(path)
 
 
