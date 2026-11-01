@@ -10,6 +10,6 @@
     "version": "3.0.0"
   },
   "neat-core": {
-    "install_target": "core@develop"
+    "install_target": "core@feat/ssd-mobilenet-port:8c1b2354efec"
   }
 }
