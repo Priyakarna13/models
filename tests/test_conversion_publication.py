@@ -220,3 +220,24 @@ def test_optional_workflow_leaves_default_onnx_publication_unchanged():
     onnx = next(step for step in steps if step.get("name") == "Publish ONNX and print source pin")
     assert "--if-none-match '*'" in onnx["run"]
     assert "source.pth" not in onnx["run"]
+
+
+def test_repeat_publication_from_mirror_uses_recorded_official_origin(conversion, monkeypatch):
+    original = conversion.source.copy()
+    conversion.model["upstream"] = {"derived_from": original["uri"]}
+    conversion.model["conversion"]["default"]["source"] = {
+        **original,
+        "uri": f"{publication.BASE_URI}/models-onnx/test_ssd/{original['sha256']}/122-1/source.pth",
+    }
+    seen = []
+
+    class OriginalFetcher:
+        def fetch(self, spec):
+            seen.append(spec)
+            return conversion.original, False
+
+    monkeypatch.setattr(publication, "Fetcher", OriginalFetcher)
+    result = conversion.publish()
+    assert seen[0].uri == original["uri"]
+    assert result["origin"] == {key: original[key] for key in ("uri", "sha256", "size_bytes")}
+    assert result["mirror"]["sha256"] == original["sha256"]

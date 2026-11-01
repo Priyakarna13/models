@@ -113,7 +113,17 @@ def publish_conversion_source(
     entry = model.get("conversion", {}).get(conversion)
     if entry is None or entry["source"].get("type") != "file":
         raise ConversionPublicationError("Mirroring supports only a declared single-file conversion source")
-    original = SourceSpec.from_mapping(entry["source"])
+    declared = SourceSpec.from_mapping(entry["source"])
+    original = declared
+    # A repeat conversion may already consume a verified mirror. Retain its
+    # exact byte identity and retrieve the explicitly recorded official origin.
+    if urlsplit(original.resolve_url()).hostname != "download.pytorch.org":
+        origin = model.get("upstream", {}).get("derived_from")
+        if not isinstance(origin, str):
+            raise ConversionPublicationError("A checkpoint mirror must retain its official original provenance")
+        original = SourceSpec.from_mapping({
+            "type": "file", "uri": origin, "sha256": declared.sha256, "size_bytes": declared.size_bytes,
+        })
     # This extension mirrors the original hashed TorchVision checkpoint only;
     # it does not start copying HF file sets or unrelated conversion inputs.
     if urlsplit(original.resolve_url()).hostname != "download.pytorch.org" or not original.filename.endswith(".pth"):
