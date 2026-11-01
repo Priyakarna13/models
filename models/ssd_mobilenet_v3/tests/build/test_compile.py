@@ -163,6 +163,23 @@ def test_compiled_mpk_has_the_declared_head_contract(
     load_script("compile").audit_mpk(archives[0], build_profile)
 
 
+def test_compiled_mpk_preserves_the_padded_mla_head_storage(
+    mpk_json: Callable[[str], dict],
+    build_profile: str,
+) -> None:
+    manifest = mpk_json("model")
+    assert manifest["model_sdk_version"] == "3.0.0"
+    mla = [plugin for plugin in manifest["plugins"] if plugin.get("processor") == "MLA"]
+    assert len(mla) == 1
+    # The 320-pixel source has six anchors at every level, unlike TF300's
+    # three-anchor first head. These are physical bytes, not the FP32 outputs.
+    expected = {
+        "w8a8": [12800, 3200, 800, 288, 128, 32, 224000, 56000, 14000, 5040, 2240, 560],
+        "w16a16": [19200, 4800, 1200, 432, 192, 48, 441600, 110400, 27600, 9936, 4416, 1104],
+    }
+    assert [node["size"] for node in mla[0]["output_nodes"]] == expected[build_profile]
+
+
 def test_prepare_requires_the_real_published_source(tmp_path, load_script):
     source = tmp_path / "wrong.onnx"
     source.write_bytes(b"wrong source")
