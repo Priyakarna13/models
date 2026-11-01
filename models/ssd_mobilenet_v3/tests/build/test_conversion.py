@@ -259,3 +259,16 @@ def test_checkpoint_mirror_rejects_changed_identity_before_fetch(monkeypatch, co
     monkeypatch.setattr(converter, "Fetcher", NoFetcher)
     with pytest.raises((ValueError, SourcePolicyError)):
         converter.resolve_weights(None)
+
+
+def test_numpy_source_oracle_does_not_require_board_image_io(load_script, monkeypatch):
+    import sys
+
+    # The conversion environment needs the NumPy oracle, not native image I/O.
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    reference = load_script("accuracy")
+    assert reference.ANCHORS.shape == (3234, 4)
+    logits = np.full((3234, 91), -100, np.float32)
+    logits[:, 0] = 20
+    actual = reference.post_numpy(np.zeros((3234, 4), np.float32), logits)
+    assert len(actual["boxes"]) == 0
