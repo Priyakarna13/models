@@ -8,8 +8,7 @@ MobileSAM is Segment Anything with a small TinyViT image encoder distilled from
 SAM's ViT-H. Given a click or a box on an image, it returns masks of the object
 there. It runs as three components: the image encoder once per image, as
 `image_encoder_0` then `image_encoder_1`, then the `prompt_decoder` once per
-prompt on the encoder's embedding, so one image can answer many prompts. Builds: `w16a16` (BF16) and `w8a16` (INT8 weights,
-BF16 activations).
+prompt on the encoder's embedding, so one image can answer many prompts. Build: `w16a16` (BF16).
 
 COCO has no prompt annotations, so the compile stage compares each build with
 the float32 model: the quantized encoder feeds the quantized decoder on COCO

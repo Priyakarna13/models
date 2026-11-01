@@ -62,7 +62,10 @@ def test_a_result_scores_the_first_mask_by_its_predicted_iou(
     )
 
     (array,) = encoded
-    assert array.shape == (1024, 1024, 1) and array.sum() == 256 * 256
+    # The 64x64 square upsamples 4x to rows and columns 256-511; bilinear leaves its four corner pixels at exactly 0.
+    rows, columns = np.nonzero(array[:, :, 0])
+    assert array.shape == (1024, 1024, 1) and array.sum() == 256 * 256 - 4
+    assert (rows.min(), rows.max(), columns.min(), columns.max()) == (256, 511, 256, 511)
     assert item["segmentation"] == {"counts": "x"}
     assert (item["image_id"], item["category_id"], item["score"]) == (7, 3, pytest.approx(0.9))
 
