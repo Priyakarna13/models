@@ -270,6 +270,23 @@ def test_compiled_mpk_has_the_declared_head_contract(
     load_script("compile").audit_mpk(archives[0], build_profile)
 
 
+def test_compiled_mpk_preserves_the_padded_mla_head_storage(
+    mpk_json: Callable[[str], dict],
+    build_profile: str,
+) -> None:
+    manifest = mpk_json("model")
+    assert manifest["model_sdk_version"] == "3.0.0"
+    mla = [plugin for plugin in manifest["plugins"] if plugin.get("processor") == "MLA"]
+    assert len(mla) == 1
+    # Independent physical-byte expectations, not compile.py's logical FP32
+    # interface. BF16 uses C8 padding; it is not twice the INT8 C16 storage.
+    expected = {
+        "w8a8": [5776, 3200, 800, 288, 128, 32, 103968, 56000, 14000, 5040, 2240, 560],
+        "w16a16": [11552, 4800, 1200, 432, 192, 48, 202160, 110400, 27600, 9936, 4416, 1104],
+    }
+    assert [node["size"] for node in mla[0]["output_nodes"]] == expected[build_profile]
+
+
 def _archive(path, entries):
     with tarfile.open(path, "w:gz") as archive:
         for info, content in entries:

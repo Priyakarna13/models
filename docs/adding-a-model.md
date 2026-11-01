@@ -348,6 +348,19 @@ request. Import a model script with the `load_script` fixture, as in
 `load_script("compile")`; it stubs Model Compiler and DevKit modules the host
 lacks. `build_profile` names the build profile of the given output.
 
+To inspect the actual compiled contract, take the shared `mpk_json` fixture and
+call `mpk_json("model")` (or another component ID). It reads exactly one
+authoritative `mpk.json` or `*_mpk.json` from that component's archive; it never
+uses sidecar JSON. The fixture depends on `compiled`, so these checks run after
+compilation, not during an offline plain pytest run. Keep independent expected
+values in the test rather than generating them from the manifest being checked.
+Do not check copied MPK manifests into a model's test fixtures. For local tests,
+download the model with `sima-cli models download`, stage the verified archive in
+the usual component directory, and record its compile-output inventory with
+`model_registry.artifact.record_compile_outputs`. Then pass that directory to
+`scripts/run_model_tests.sh compile`. This reuses the existing stage-test route;
+it adds no separate downloader or Registry client to model tests.
+
 A failing conversion or compile test stops the ONNX upload or the build's
 publication. A failing measurement test publishes its report with test status
 `failed`, then fails the run.
