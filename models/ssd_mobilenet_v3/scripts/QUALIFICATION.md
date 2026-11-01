@@ -88,26 +88,24 @@ validation does not replace publication of matching dependencies and models.
 Do not replace canonical evidence with direct calls to `benchmark()` or external
 C++ timing, or silently lower expectations following a regression.
 
-## Source-hosting decision
+## Immutable source hosting
 
-The exact original PTH has full-hash integrity, but is currently fetched from
-`download.pytorch.org` using the candidate's narrow source-policy extension.
-This is not yet the literal Hugging Face/artifact-store hosting required by
-issue #416. No existing approved mirror of the exact bytes has been verified.
-Do not invent a repository, revision or URL: either publish through an approved
-source route and pin that real revision, or obtain explicit review of the
-narrow official-host policy and issue acceptance. The converted ONNX artifact
-pin is already real and unchanged.
+The original 14,069,355-byte TorchVision checkpoint is now published through the
+approved artifact-store conversion route. `model.yaml` pins the actual immutable
+`source.pth` object from conversion run41255127615, with SHA-256
+`a79551df90c79834bcd3bb3845ef9d966b5449a3a9b2833ae8404778ca5d65d2`.
+The official TorchVision URL is preserved in `upstream.derived_from`; the BSD-3-Clause
+notice remains in `LICENSE.torchvision`. The workflow verifies object versions,
+checksums, sizes and fresh HTTP readback for both the source and its provenance.
+An independent download verified the same bytes after publication.
 
-The conversion workflow now has an opt-in `mirror_conversion_source` input,
-disabled by default. Its shared checkpoint publisher verifies the exact original
-PTH, performs create-only uploads beside the converted ONNX, and verifies object
-versions, hashes, sizes and fresh HTTP readback before suggesting a source pin.
-This path has local tooling tests but has not published this checkpoint. A real
-successful publication and the resulting immutable pin are still required;
-renaming the checkpoint `model.onnx` is not a valid workaround. An approved
-Hugging Face mirror can also use the existing full-commit file-source path, but
-must preserve the exact 14,069,355-byte checkpoint and its declared SHA-256.
-No checkpoint mirror is claimed here.
+The conversion also reproduced the existing ONNX digest
+`bdd8f4ef575bdc0cb02d33e571992d3c45c63f0bc00aeca5f51583c50e811bd8`.
+The compilation source pin, numerical graph and calibration settings are unchanged.
+The converter accepts the mirrored transport only with the same full checkpoint
+identity and original provenance; it does not silently substitute other weights.
 
-The TorchVision BSD-3-Clause notice is retained in `LICENSE.torchvision`.
+`mirror_conversion_source` remains opt-in and disabled by default. A repeat mirror
+publication uses the recorded official origin and verifies the same original bytes.
+No Hugging Face repository or revision is fabricated or required for this artifact
+store route.
