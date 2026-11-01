@@ -22,7 +22,6 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import cv2
 import model_report
 import numpy as np
 import pyneat
@@ -240,6 +239,8 @@ def native_options() -> pyneat.ModelOptions:
 
 
 def read_rgb_record(record, image_dir: Path) -> np.ndarray:
+    import cv2
+
     image = cv2.imread(str(image_dir / record["file_name"]), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
     if image is None or image.dtype != np.uint8 or image.shape != (record["height"], record["width"], 3):
         raise ValueError(f"image bytes/geometry disagree with annotations: {record['file_name']}")
