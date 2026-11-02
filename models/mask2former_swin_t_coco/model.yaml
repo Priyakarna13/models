@@ -33,9 +33,9 @@ conversion:
 compilation:
   format: onnx
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/mask2former_swin_t_coco/23d5f238618efee10bf0af60722933a0779161e4f6803441bb1b5be7e16a6306/41407462529-1/model.onnx
-    sha256: 23d5f238618efee10bf0af60722933a0779161e4f6803441bb1b5be7e16a6306
-    size_bytes: 227346873
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/mask2former_swin_t_coco/de50dc717764ada152fe610bb460bd6ee095103f537ff0c8bf47011d004404a6/41430780987-1/model.onnx
+    sha256: de50dc717764ada152fe610bb460bd6ee095103f537ff0c8bf47011d004404a6
+    size_bytes: 227346951
   # Each part compiles apart, one MLA segment each; the CPU only prepares the image and decodes the instances. The
   # backbone compiles as two components and the pixel decoder as one per deformable attention layer: compiled
   # whole, each took 25-30 GiB, the CI runner (32 GiB) lost contact compiling them, and even three deformable layers
