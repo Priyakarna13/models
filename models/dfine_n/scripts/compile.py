@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Compile the Nano/default W16A16 pipeline using the registry's existing flow.
+"""Compile Nano/default precision profiles using the registry's existing flow.
 
-Both components request BF16 weights and activations with real chained
-calibration. Compiler defaults are intentional and bound by the repository's
-Model Compiler pin: this recipe does not import RF-DETR-specific precision knobs.
+Every decoder calibrates on its own profile's quantized backbone. The original
+W16A16 profile retains the pinned compiler defaults. Mixed profiles consume a
+frozen Neural Compressor precision map, never run a search during compilation.
 The reference-logit approximation lives in surgery.py and is checked against the
 original floating model before quantization. Full-model fidelity is diagnostic
 because quantization can reorder selected queries; COCO evaluation is the task gate.
@@ -25,8 +25,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
+import onnx
 import onnxruntime as ort
-from afe.apis.defines import HistogramMSEMethod, InputName, bfloat16_scheme, default_quantization
+from afe.apis.defines import (
+    BiasCorrectionType,
+    HistogramMSEMethod,
+    InputName,
+    bfloat16_scheme,
+    default_quantization,
+    quantization_scheme,
+)
 from afe.apis.loaded_net import load_model
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
@@ -39,7 +47,12 @@ from surgery import OUTPUTS, prepare_model
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "dfine_n"
-PROFILE = "w16a16_w16a16"
+PROFILES = {
+    "w16a16_w16a16": "w16a16",
+    "w8a16_w16a16": "w8a16",
+    "w8a8_w16a16": "w8a8",
+    "w8a8_mixed_w16a16": "w8a8",
+}
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 COMPONENTS = ("backbone", "decoder")
 BACKBONE_OUTPUTS = ("attention_memory", "query_content", "proposal_scores", "reference_logits")
@@ -58,30 +71,74 @@ def component_parameters(metadata, profile_id):
     if metadata["id"] != MODEL_ID:
         raise ValueError("Expected D-FINE Nano metadata")
     profiles = [p for p in metadata["build_profiles"] if p["id"] == profile_id]
-    if profile_id != PROFILE or len(profiles) != 1:
-        raise ValueError(f"Only {PROFILE} is supported")
+    if profile_id not in PROFILES or len(profiles) != 1:
+        raise ValueError(f"Unknown or undeclared precision profile: {profile_id}")
     bindings = profiles[0]["components"]
     if [b["id"] for b in bindings] != list(COMPONENTS):
         raise ValueError("Expected ordered backbone and decoder components")
     parameters = {b["id"]: b["parameters"] for b in bindings}
-    for value in parameters.values():
+    for name, value in parameters.items():
+        mixed = name == "backbone" and profile_id == "w8a8_mixed_w16a16"
+        expected = {"precision", "calibration_bins", "calibration_samples"}
+        if mixed:
+            expected.add("precision_map")
         if (
-            set(value) != {"precision", "calibration_bins", "calibration_samples"}
-            or value["precision"] != "w16a16"
+            set(value) != expected
+            or value["precision"] != (PROFILES[profile_id] if name == "backbone" else "w16a16")
             or any(type(value[k]) is not int or value[k] < 1 for k in ("calibration_bins", "calibration_samples"))
         ):
-            raise ValueError("Expected W16A16 and positive calibration bins/sample count")
+            raise ValueError(f"Invalid {name} precision or calibration parameters for {profile_id}")
     if parameters["backbone"]["calibration_samples"] != parameters["decoder"]["calibration_samples"]:
         raise ValueError("Both components must calibrate on the same images")
     return parameters
 
 
 def quantization_config(parameters):
-    return (
-        default_quantization.with_activation_quantization(bfloat16_scheme())
-        .with_weight_quantization(bfloat16_scheme())
+    precision = parameters["precision"]
+    if precision not in ("w16a16", "w8a16", "w8a8"):
+        raise ValueError(f"Unsupported precision: {precision}")
+    int8_weights = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
+    config = (
+        default_quantization.with_activation_quantization(
+            quantization_scheme(asymmetric=True, per_channel=False, bits=8)
+            if precision == "w8a8"
+            else bfloat16_scheme()
+        )
+        .with_weight_quantization(bfloat16_scheme() if precision == "w16a16" else int8_weights)
         .with_calibration(HistogramMSEMethod(parameters["calibration_bins"]))
     )
+    if precision == "w8a8":
+        # The already measured Nano INT8 policy; A16 profiles retain their original defaults.
+        config = config.with_bias_correction(BiasCorrectionType.REGULAR).with_per_token_quant(False)
+    return config
+
+
+def annotate_backbone(graph, precision_map):
+    """Apply a frozen INC map to exactly the graph it was selected for, using the bundled exporter."""
+    if (
+        not isinstance(precision_map, dict)
+        or set(precision_map) != {"graph_sha256", "nodes"}
+        or precision_map["graph_sha256"] != sha256_file(graph)[0]
+        or not isinstance(precision_map["nodes"], dict)
+        or not precision_map["nodes"]
+        or not all(isinstance(value, str) for value in precision_map["nodes"].values())
+        or set(precision_map["nodes"].values()) != {"int8", "bfloat16"}
+    ):
+        raise ValueError("Expected a mixed INC precision map bound to this prepared backbone")
+    model = onnx.load(graph)
+    names = [node.name for node in model.graph.node]
+    if len(names) != len(set(names)) or not set(precision_map["nodes"]) <= set(names):
+        raise ValueError("INC precision map has unknown or ambiguous operation names")
+    from neural_compressor.annotate_precision import annotate_graph
+
+    # The bundled exporter groups fused chains but rebuilds the graph without value_info.
+    # Replace only nodes, retaining the original shapes, metadata and public contract.
+    annotated = annotate_graph(model.graph, precision_map["nodes"])
+    model.graph.ClearField("node")
+    model.graph.node.extend(annotated.node)
+    model.opset_import.append(onnx.helper.make_opsetid("ai.sima", 1))
+    onnx.checker.check_model(model)
+    onnx.save(model, graph)
 
 
 def quantize_component(graph, name, parameters, arrays):
@@ -170,7 +227,7 @@ def decoder_feed(outputs):
     }
 
 
-def prepare_phase(source, dataset, evaluation_names, work):
+def prepare_phase(source, dataset, evaluation_names, work, parameters):
     backbone, decoder = prepare_model(source, work / "graphs")
     reference, before, after = session(source), session(backbone), session(decoder)
     values = {name: [] for name in OUTPUTS}
@@ -188,12 +245,15 @@ def prepare_phase(source, dataset, evaluation_names, work):
             )
             values[name].append(original[0])
     np.savez(work / "reference.npz", **{k: np.stack(v) for k, v in values.items()})
+    if "precision_map" in parameters:
+        # ONNX Runtime validates the unannotated floating split before AFE-only annotations.
+        annotate_backbone(backbone, parameters["precision_map"])
 
 
-def backbone_phase(parameters, dataset, calibration_names, evaluation_names, work):
+def backbone_phase(profile, parameters, dataset, calibration_names, evaluation_names, work):
     images = load_images(dataset, calibration_names)
     model = quantize_component(
-        work / "graphs/backbone.onnx", f"{MODEL_ID}_{PROFILE}_backbone", parameters, {"input": images}
+        work / "graphs/backbone.onnx", f"{MODEL_ID}_{profile}_backbone", parameters, {"input": images}
     )
     calibration = {name: [] for name in DECODER_INPUTS}
     for image in images:
@@ -252,10 +312,10 @@ class _OutputError:
         }
 
 
-def decoder_phase(parameters, metadata, work):
+def decoder_phase(profile, parameters, metadata, work):
     with np.load(work / "decoder-calibration.npz", allow_pickle=False) as saved:
         arrays = {key: saved[key] for key in saved.files}
-    model = quantize_component(work / "graphs/decoder.onnx", f"{MODEL_ID}_{PROFILE}_decoder", parameters, arrays)
+    model = quantize_component(work / "graphs/decoder.onnx", f"{MODEL_ID}_{profile}_decoder", parameters, arrays)
     compile_component(model, work, "decoder")
     errors = [_OutputError(name) for name in OUTPUTS]
     with (
@@ -272,10 +332,10 @@ def decoder_phase(parameters, metadata, work):
     report = {
         "schema_version": 1,
         "model_id": MODEL_ID,
-        "build_profile_id": PROFILE,
+        "build_profile_id": profile,
         "status": config["status"],
         "reference": "Original full ONNX (ONNX Runtime)",
-        "candidate": "AFE W16A16 backbone -> CPU Top300/Gather -> AFE W16A16 bounded-reference decoder (JAX execute)",
+        "candidate": f"AFE profile {profile}: backbone -> CPU Top300/Gather -> bounded-reference decoder (JAX execute)",
         "dataset": {k: config["dataset"][k] for k in ("id", "variant", "sha256")},
         "selection": config["selection"],
         "samples": count,
@@ -316,16 +376,24 @@ def compile_model(source, profile, dataset, fidelity_dataset, output_dir):
         raise FileExistsError(f"output directory already exists: {output_dir}")
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         work = Path(temporary)
-        run_phase(prepare_phase, source=source, dataset=dataset, evaluation_names=evaluation_names, work=work)
+        run_phase(
+            prepare_phase,
+            source=source,
+            dataset=dataset,
+            evaluation_names=evaluation_names,
+            work=work,
+            parameters=parameters["backbone"],
+        )
         run_phase(
             backbone_phase,
+            profile=profile,
             parameters=parameters["backbone"],
             dataset=dataset,
             calibration_names=calibration_names,
             evaluation_names=evaluation_names,
             work=work,
         )
-        run_phase(decoder_phase, parameters=parameters["decoder"], metadata=metadata, work=work)
+        run_phase(decoder_phase, profile=profile, parameters=parameters["decoder"], metadata=metadata, work=work)
         output_dir.mkdir(parents=True)
         outputs = []
         for name in COMPONENTS:
