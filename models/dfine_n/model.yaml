@@ -52,7 +52,6 @@ calibrations:
 build_profiles:
   w16a16_w16a16:
     calibration_dataset: coco-2017-cal
-    runner_market: on-demand
     components:
       backbone:
         parameters:
