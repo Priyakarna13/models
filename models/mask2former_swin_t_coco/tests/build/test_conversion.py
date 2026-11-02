@@ -80,12 +80,12 @@ def test_mask_logits_tolerate_only_rare_mask_flips(case, converter: ModuleType):
     expected = np.random.RandomState(0).normal(0, 8, (1, 100, 96, 96)).astype(np.float32)
     actual = expected + 1e-5
     if case == "few_flips":
-        # One query of 100 moved by a mask decision at a float tie: a few hundred pixels change by up to 0.2.
-        actual[0, 7, :8, :8] += 0.2
+        # One query of 100 moved by a mask decision at a float tie: its logits change by up to 0.2.
+        actual[0, 7] += 0.2 * np.sign(actual[0, 7])
     elif case == "sign_flips":
         actual[0, :20] = -actual[0, :20]
     elif case == "drift":
-        actual = expected + 0.05
+        actual = expected * 1.01
     if case in ("valid", "few_flips"):
         converter.compare_masks(expected, actual, "masks")
     else:

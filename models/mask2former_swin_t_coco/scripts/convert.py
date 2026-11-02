@@ -3,8 +3,14 @@ transformers.
 
 The checkpoint is facebook/mask2former-swin-tiny-coco-instance, built with transformers' Mask2Former. Each exported
 component is mask2former_4d's rearrangement of transformers' modules into the layout the compiler maps to the MLA,
-for a fixed 384x384 input (pipeline.py). Chained, the three components are checked against transformers' whole
-model on seeded images before export, then each component's ONNX against PyTorch.
+for a fixed 384x384 input (pipeline.py). Each component is checked against its transformers counterpart on seeded
+images before export, then each component's ONNX against PyTorch.
+
+The masked attention masks a key by the sign of a mask logit, so a logit within float rounding of 0 can be masked
+in one implementation and not another (different operation order, thread counts or CPUs round differently), and
+through self-attention move every query's logits. The transformer decoder's checks therefore take mask features
+scaled by MASK_SCALE: every mask logit scales with them, which makes such a logit MASK_SCALE times rarer, while the
+masked path is still compared.
 
 Loading reports two expected differences from transformers' current Swin, both checked: the checkpoint lacks the
 Swin classifier's final LayerNorm, which the backbone never uses (it normalizes each feature map with its own
@@ -80,9 +86,6 @@ def modules(model):
                 *self.transformer_decoder(mask_features, s0, s1, s2),
             )
 
-        def chain(self, image):
-            return self.transformer_decoder(*self.pixel_decoder(*self.backbone(image)))
-
     return SideBySide().eval()
 
 
@@ -95,17 +98,28 @@ def seeded_image(seed):
 
 
 def check_parts(model, side_by_side):
-    """Chained, the three components give transformers' class and mask logits on seeded images."""
+    """Each component gives its transformers counterpart's outputs on seeded images, fed transformers' outputs of
+    the component before it: the backbone's feature maps, the pixel decoder's mask and multi-scale features, and
+    the transformer decoder's class and mask logits (with mask features scaled by MASK_SCALE)."""
     import torch
 
+    pixel = model.model.pixel_level_module
     for seed in SEEDS:
         image = torch.from_numpy(seeded_image(seed))
         with torch.inference_mode():
-            expected = model(pixel_values=image)
-            classes, masks = side_by_side.chain(image)
-        classes = classes[0, :, 0].T[None].numpy()
-        compare(expected.class_queries_logits.numpy(), classes, f"class logits (seed {seed})")
-        compare_masks(expected.masks_queries_logits.numpy(), masks.numpy(), f"mask logits (seed {seed})")
+            features = pixel.encoder(image).feature_maps
+            for index, (want, got) in enumerate(zip(features, side_by_side.backbone(image))):
+                compare(want.numpy(), got.numpy(), f"backbone features{index} (seed {seed})")
+            decoded = pixel.decoder(list(features))
+            expected = (decoded.mask_features, *decoded.multi_scale_features)
+            for name, want, got in zip(OUTPUT_SHAPES["pixel_decoder"], expected, side_by_side.pixel_decoder(*features)):
+                compare(want.numpy(), got.numpy(), f"pixel decoder {name} (seed {seed})")
+            mask_features = decoded.mask_features * MASK_SCALE
+            reference = model.model.transformer_module(list(decoded.multi_scale_features), mask_features)
+            classes = model.class_predictor(reference.intermediate_hidden_states[-1].transpose(0, 1))
+            got_classes, got_masks = side_by_side.transformer_decoder(mask_features, *decoded.multi_scale_features)
+        compare_decoder(classes.numpy(), got_classes[0, :, 0].T[None].numpy(), f"class logits (seed {seed})")
+        compare_masks(reference.masks_queries_logits[-1].numpy(), got_masks.numpy(), f"mask logits (seed {seed})")
 
 
 def validate_export(path):
@@ -145,24 +159,27 @@ def compare(expected, actual, name):
     np.testing.assert_allclose(actual, expected, rtol=1e-3, atol=1e-3, err_msg=name)
 
 
-def compare_masks(expected, actual, name):
-    """Mask logits, which the masked attention makes discontinuous: a key whose mask logit lies within float rounding
-    of 0 can be masked in one run and not another (even between thread counts), which moves that query's later
-    logits. So nearly every pixel must agree in sign and within 1e-2, rather than every pixel within 1e-3."""
+def compare_decoder(expected, actual, name, signs=False):
+    """The transformer decoder's logits, which the masked attention makes discontinuous (see the module docstring):
+    a rare flipped mask decision moves about one query's logits. So all but 2% of them, two queries' worth, must
+    agree within compare's tolerance (1e-3 absolute plus 1e-3 relative), and with signs, mask logits must agree in
+    sign at nearly every pixel. A real export error moves far more."""
     if actual.shape != expected.shape or not np.isfinite(actual).all():
         raise ValueError(f"Unexpected or non-finite {name}: {actual.shape} vs {expected.shape}")
-    agreement = float(np.mean((expected > 0) == (actual > 0)))
-    difference = float(np.quantile(np.abs(actual - expected), 0.999))
-    if agreement < 0.9999 or difference > 1e-2:
-        raise ValueError(f"{name}: signs agree at {agreement:.4%} of pixels, 99.9th-percentile difference {difference}")
+    agreement = float(np.mean((expected > 0) == (actual > 0))) if signs else 1.0
+    outside = float(np.mean(np.abs(actual - expected) > 1e-3 + 1e-3 * np.abs(expected)))
+    if agreement < 0.9999 or outside > 0.02:
+        raise ValueError(f"{name}: signs agree at {agreement:.4%} of values, {outside:.4%} outside the tolerance")
+
+
+def compare_masks(expected, actual, name):
+    compare_decoder(expected, actual, name, signs=True)
 
 
 def check_onnx(side_by_side, path):
     """Each component's ONNX outputs match PyTorch's, each component fed the previous one's PyTorch outputs of the
-    same seeded image. The transformer decoder takes those mask features scaled by MASK_SCALE: its masked attention
-    masks a key by the sign of a mask logit, so a logit within float rounding of 0 can be masked in one runtime and
-    not the other, and through self-attention move every query's logits. Scaling the mask logits makes such a logit
-    MASK_SCALE times rarer, while the comparison still covers the masked path."""
+    same seeded image; the transformer decoder takes those mask features scaled by MASK_SCALE (see the module
+    docstring)."""
     import onnxruntime as ort
     import torch
 
@@ -179,8 +196,11 @@ def check_onnx(side_by_side, path):
             expected = side_by_side(*inputs)
         feeds = {name: value.numpy() for name, value in zip(session_inputs(), inputs)}
         for name, want, got in zip(outputs, expected, session.run(outputs, feeds)):
-            check = compare_masks if name == tensor_name("transformer_decoder", "mask_logits") else compare
-            check(want.numpy(), got, f"{name} (seed {seed})")
+            checks = {
+                tensor_name("transformer_decoder", "class_logits"): compare_decoder,
+                tensor_name("transformer_decoder", "mask_logits"): compare_masks,
+            }
+            checks.get(name, compare)(want.numpy(), got, f"{name} (seed {seed})")
 
 
 def session_inputs():
