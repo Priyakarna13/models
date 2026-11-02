@@ -26,7 +26,16 @@ import numpy as np
 import onnx
 from model_registry.fetch import Fetcher
 from model_registry.model import load_and_validate_model
-from pipeline import BACKBONE_SHAPES, COMPONENTS, IMAGE_SIZE, INPUT_SHAPES, OUTPUT_SHAPES, SCALE_SIZES, tensor_name
+from pipeline import (
+    BACKBONE_SHAPES,
+    COMPONENTS,
+    IMAGE_SIZE,
+    INPUT_SHAPES,
+    OUTPUT_SHAPES,
+    SCALE_SIZES,
+    route,
+    tensor_name,
+)
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 
@@ -78,13 +87,26 @@ def modules(model):
             self.transformer_decoder = TransformerDecoder4D(
                 model.model.transformer_module, model.class_predictor, list(SCALE_SIZES)
             )
+            self.parts = {
+                "backbone_0": self.backbone.start,
+                "backbone_1": self.backbone.finish,
+                "pixel_decoder_0": self.pixel_decoder.start,
+                "pixel_decoder_1": self.pixel_decoder.finish,
+                "transformer_decoder": self.transformer_decoder,
+            }
 
-        def forward(self, image, f0, f1, f2, f3, mask_features, s0, s1, s2):
-            return (
-                *self.backbone(image),
-                *self.pixel_decoder(f0, f1, f2, f3),
-                *self.transformer_decoder(mask_features, s0, s1, s2),
-            )
+        def run(self, component, inputs):
+            outputs = self.parts[component](*inputs)
+            return outputs if isinstance(outputs, tuple) else (outputs,)
+
+        def forward(self, *inputs):
+            """Every component side by side, each on its own inputs in session_inputs() order."""
+            outputs, start = [], 0
+            for component in COMPONENTS:
+                count = len(INPUT_SHAPES[component])
+                outputs.extend(self.run(component, inputs[start : start + count]))
+                start += count
+            return tuple(outputs)
 
     return SideBySide().eval()
 
@@ -98,9 +120,10 @@ def seeded_image(seed):
 
 
 def check_parts(model, side_by_side):
-    """Each component gives its transformers counterpart's outputs on seeded images, fed transformers' outputs of
-    the component before it: the backbone's feature maps, the pixel decoder's mask and multi-scale features, and
-    the transformer decoder's class and mask logits (with mask features scaled by MASK_SCALE)."""
+    """The components give their transformers counterparts' outputs on seeded images: the two backbone parts,
+    chained, its feature maps; the two pixel decoder parts, chained on transformers' feature maps, its mask and
+    multi-scale features; and the transformer decoder, on transformers' pixel decoder outputs with mask features
+    scaled by MASK_SCALE, its class and mask logits."""
     import torch
 
     pixel = model.model.pixel_level_module
@@ -108,12 +131,15 @@ def check_parts(model, side_by_side):
         image = torch.from_numpy(seeded_image(seed))
         with torch.inference_mode():
             features = pixel.encoder(image).feature_maps
-            for index, (want, got) in enumerate(zip(features, side_by_side.backbone(image))):
+            *early, stage3_input = side_by_side.backbone.start(image)
+            for index, (want, got) in enumerate(zip(features, (*early, *side_by_side.backbone.finish(stage3_input)))):
                 compare(want.numpy(), got.numpy(), f"backbone features{index} (seed {seed})")
             decoded = pixel.decoder(list(features))
             expected = (decoded.mask_features, *decoded.multi_scale_features)
-            for name, want, got in zip(OUTPUT_SHAPES["pixel_decoder"], expected, side_by_side.pixel_decoder(*features)):
-                compare(want.numpy(), got.numpy(), f"pixel decoder {name} (seed {seed})")
+            tokens = side_by_side.pixel_decoder.start(*features[1:])
+            got = side_by_side.pixel_decoder.finish(tokens, features[0])
+            for name, want, value in zip(OUTPUT_SHAPES["pixel_decoder_1"], expected, got):
+                compare(want.numpy(), value.numpy(), f"pixel decoder {name} (seed {seed})")
             mask_features = decoded.mask_features * MASK_SCALE
             reference = model.model.transformer_module(list(decoded.multi_scale_features), mask_features)
             classes = model.class_predictor(reference.intermediate_hidden_states[-1].transpose(0, 1))
@@ -195,11 +221,15 @@ def check_onnx(side_by_side, path):
     session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
     outputs = [tensor_name(c, n) for c in COMPONENTS for n in OUTPUT_SHAPES[c]]
     for seed in SEEDS[:2]:
-        image = torch.from_numpy(seeded_image(seed))
+        available = {"image": torch.from_numpy(seeded_image(seed))}
+        inputs = []
         with torch.inference_mode():
-            features = side_by_side.backbone(image)
-            mask_features, *scales = side_by_side.pixel_decoder(*features)
-            inputs = (image, *features, mask_features * MASK_SCALE, *scales)
+            for component in COMPONENTS:
+                feeds = route(component, available)
+                if component == "transformer_decoder":
+                    feeds[0] = feeds[0] * MASK_SCALE
+                inputs.extend(feeds)
+                available.update(zip(OUTPUT_SHAPES[component], side_by_side.run(component, feeds)))
             expected = side_by_side(*inputs)
         feeds = {name: value.numpy() for name, value in zip(session_inputs(), inputs)}
         for name, want, got in zip(outputs, expected, session.run(outputs, feeds)):

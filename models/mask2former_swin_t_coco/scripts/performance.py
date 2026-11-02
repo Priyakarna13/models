@@ -1,9 +1,11 @@
 """Benchmark Mask2Former Swin-T with Neat Core and save its report.
 
-Given --mpk backbone=<path> --mpk pixel_decoder=<path> --mpk transformer_decoder=<path> and --dataset
-coco-2017-val=<extracted directory>, the script measures the whole model as it runs on one COCO image in a 720p
-frame: Neat's preprocessing and the backbone, the pixel decoder, and the transformer decoder, each component
-working on a different frame at the same time, up to the class and mask logits. It also records each MPK's MLA
+Given one --mpk <component>=<path> per component (backbone_0, backbone_1, pixel_decoder_0, pixel_decoder_1,
+transformer_decoder) and --dataset coco-2017-val=<extracted directory>, the script measures the whole model as it
+runs on one COCO image in a 720p frame: Neat's preprocessing and the five components, each working on a different
+frame at the same time, up to the class and mask logits. Each component input takes the earlier component output
+of the same name; an output a later component needs (two of the backbone's feature maps) is copied out of the
+runner's buffers and carried along with its frame. It also records each MPK's MLA
 layer and stage stats and its execution plan.
 """
 
@@ -13,6 +15,7 @@ import argparse
 import random
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +25,22 @@ import model_report
 import numpy as np
 import pyneat
 
-COMPONENTS = ("backbone", "pixel_decoder", "transformer_decoder")
+COMPONENTS = ("backbone_0", "backbone_1", "pixel_decoder_0", "pixel_decoder_1", "transformer_decoder")
+# Each component's inputs and outputs by name, as in pipeline.py.
+INPUTS = {
+    "backbone_0": ("image",),
+    "backbone_1": ("stage3_input",),
+    "pixel_decoder_0": ("features1", "features2", "features3"),
+    "pixel_decoder_1": ("tokens", "features0"),
+    "transformer_decoder": ("mask_features", "scale0", "scale1", "scale2"),
+}
+OUTPUTS = {
+    "backbone_0": ("features0", "features1", "stage3_input"),
+    "backbone_1": ("features2", "features3"),
+    "pixel_decoder_0": ("tokens",),
+    "pixel_decoder_1": ("mask_features", "scale0", "scale1", "scale2"),
+    "transformer_decoder": ("class_logits", "mask_logits"),
+}
 IMAGE_SIZE = 384
 WARMUP_FRAMES = 20
 MEASURED_FRAMES = 300
@@ -111,27 +129,50 @@ def frame_tensor(path: Path) -> pyneat.Tensor:
     )
 
 
+def needed_after(index: int) -> set[str]:
+    """The tensor names a component after COMPONENTS[index] reads."""
+    return {name for component in COMPONENTS[index + 1 :] for name in INPUTS[component]}
+
+
+def carried(tensor: pyneat.Tensor) -> pyneat.Tensor:
+    """A copy of an output a later component reads, so the runner can reuse its buffer meanwhile."""
+    return pyneat.Tensor.from_numpy(tensor.to_numpy(copy=True), copy=True, memory=pyneat.TensorMemory.EV74)
+
+
+def step(index: int, available: dict[str, pyneat.Tensor], outputs: list[pyneat.Tensor]) -> dict[str, pyneat.Tensor]:
+    """What the components after COMPONENTS[index] read, given its outputs and what it was carried. The next
+    component's inputs are passed as they are; the rest are copied."""
+    available = {**available, **dict(zip(OUTPUTS[COMPONENTS[index]], outputs))}
+    following = set(INPUTS[COMPONENTS[index + 1]]) if index + 1 < len(COMPONENTS) else set()
+    return {
+        name: tensor if name in following and name not in needed_after(index + 1) else carried(tensor)
+        for name, tensor in available.items()
+        if name in needed_after(index)
+    }
+
+
 def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor) -> tuple[pyneat.ModelRunner, ...]:
-    """A runner for each model, each built from one real output of the component before it."""
+    """A runner for each model, each built from one real input."""
     run_options = pyneat.RunOptions()
     run_options.queue_depth = QUEUE_DEPTH
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
-    runners, inputs = [], [image]
-    for name in COMPONENTS:
+    runners, available = [], {"image": image}
+    for index, name in enumerate(COMPONENTS):
+        inputs = [available[key] for key in INPUTS[name]]
         runner = models[name].build(inputs, run_options=run_options)
         runners.append(runner)
-        inputs = runner.run(inputs, timeout_ms=TIMEOUT_MS)
+        available = step(index, available, runner.run(inputs, timeout_ms=TIMEOUT_MS))
     return tuple(runners)
 
 
 def infer_one(runners: tuple[pyneat.ModelRunner, ...], image: pyneat.Tensor) -> None:
-    inputs = [image]
-    for runner in runners:
-        inputs = runner.run(inputs, timeout_ms=TIMEOUT_MS)
+    available = {"image": image}
+    for index, (name, runner) in enumerate(zip(COMPONENTS, runners)):
+        available = step(index, available, runner.run([available[key] for key in INPUTS[name]], timeout_ms=TIMEOUT_MS))
 
 
 def measure_latency(runners: tuple[pyneat.ModelRunner, ...], image: pyneat.Tensor) -> list[float]:
-    """Seconds per frame through all three components with nothing else in flight, after the warm-up."""
+    """Seconds per frame through every component with nothing else in flight, after the warm-up."""
     for _ in range(WARMUP_FRAMES):
         infer_one(runners, image)
     seconds: list[float] = []
@@ -216,16 +257,28 @@ def measure_throughput(runners: tuple[pyneat.ModelRunner, ...], image: pyneat.Te
             # End of stream follows the last frame through each component in turn.
             runners[0].close_input()
 
+    # What each component's frames carry for later components, in frame order.
+    carries = [deque() for _ in COMPONENTS]
+
     def forwarder(index: int) -> Callable[[], None]:
         source, target = COMPONENTS[index], COMPONENTS[index + 1]
 
         def forward() -> None:
             try:
                 for tensors in drain(runners[index], source, pushed):
-                    push(runners[index + 1], tensors, target)
+                    available = step(index, carries[index].popleft() if index else {}, tensors)
+                    push(
+                        runners[index + 1],
+                        [
+                            available.pop(key) if key not in needed_after(index + 1) else available[key]
+                            for key in INPUTS[target]
+                        ],
+                        target,
+                    )
+                    carries[index + 1].append(available)
                     pushed[target] += 1
                     # The next component holds its inputs now, so this one gets its output buffers back.
-                    del tensors
+                    del tensors, available
             finally:
                 runners[index + 1].close_input()
 
@@ -251,7 +304,7 @@ def measure_throughput(runners: tuple[pyneat.ModelRunner, ...], image: pyneat.Te
             raise RuntimeError("the pipeline stopped before the measured span ended")
 
     try:
-        run_together(push_inputs, forwarder(0), forwarder(1), pull_outputs, runners=runners)
+        run_together(push_inputs, *(forwarder(i) for i in range(len(COMPONENTS) - 1)), pull_outputs, runners=runners)
     finally:
         # A failure inside the measured span leaves the monitor running.
         if monitor.running():
@@ -283,8 +336,8 @@ def write_report(
         models,
         workload=(
             f"{image} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, Neat preprocessing stretched to "
-            f"{IMAGE_SIZE}x{IMAGE_SIZE}, backbone, pixel decoder and transformer decoder up to the class and mask "
-            f"logits, pipelined {QUEUE_DEPTH} frames deep"
+            f"{IMAGE_SIZE}x{IMAGE_SIZE}, the backbone and pixel decoder (two components each) and the transformer "
+            f"decoder up to the class and mask logits, pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
         mla_layer_stats=mla_layer_stats,

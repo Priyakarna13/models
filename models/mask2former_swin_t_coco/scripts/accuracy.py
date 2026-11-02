@@ -1,7 +1,7 @@
 """Measure Mask2Former's COCO mask AP and AR with its MPKs on a Modalix board.
 
 Given one --mpk <component>=<path> per component and --dataset coco-2017-val=<extracted directory>, the script
-runs each val2017 image through the backbone, the pixel decoder and the transformer decoder, and decodes instances
+runs each val2017 image through the five components (pipeline.py), and decodes instances
 as Mask2Former's instance inference does (pipeline.decode): the top 100 (query, class) pairs by class probability,
 each mask upsampled to the image and thresholded at 0, each score the class probability times the mean mask
 probability inside the mask. The instances are scored with COCO's mask AP and AR.
@@ -27,7 +27,7 @@ import numpy as np
 import pyneat
 from faster_coco_eval import COCO, COCOeval_faster
 from faster_coco_eval.core import mask as mask_util
-from pipeline import CLASSES, COMPONENTS, IMAGE_SIZE, MASK_SIZE, QUERIES, preprocess
+from pipeline import CLASSES, COMPONENTS, IMAGE_SIZE, MASK_SIZE, OUTPUT_SHAPES, QUERIES, preprocess, route
 
 ANNOTATIONS = "annotations/instances_val2017.json"
 IMAGES = "val2017"
@@ -202,7 +202,7 @@ def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
 
 
 class Runners:
-    """The three components on the board, each runner built from its first real input."""
+    """Every component on the board, each runner built from its first real input."""
 
     def __init__(self, mpks: dict[str, Path]) -> None:
         self.models = {name: pyneat.Model(str(mpks[name]), tensor_options()) for name in COMPONENTS}
@@ -214,9 +214,11 @@ class Runners:
         return self.runners[component].run(inputs, timeout_ms=TIMEOUT_MS)
 
     def infer(self, image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        features = handoff(self.run("backbone", [hwc(image)]))
-        decoded = handoff(self.run("pixel_decoder", features))
-        classes, masks = self.run("transformer_decoder", decoded)
+        available: dict[str, pyneat.Tensor] = {"image": hwc(image)}
+        for component in COMPONENTS[:-1]:
+            outputs = handoff(self.run(component, route(component, available)))
+            available.update(zip(OUTPUT_SHAPES[component], outputs))
+        classes, masks = self.run(COMPONENTS[-1], route(COMPONENTS[-1], available))
         # Copies, because the runner reuses its output buffers while a worker may still read them.
         return classes.to_numpy(copy=True), masks.to_numpy(copy=True)
 

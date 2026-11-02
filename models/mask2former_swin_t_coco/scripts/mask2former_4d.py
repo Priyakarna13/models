@@ -37,6 +37,9 @@ import torch.nn.functional as F
 
 TILE = 25
 RAMP, BIAS = 1e4, 1e4
+# The backbone compiles as two components, split before this stage (0-based), and the pixel decoder as two,
+# split at the middle of its deformable layers: compiled whole, either needs more memory than a CI runner has.
+SPLIT_STAGE = 2
 
 
 def channel_layer_norm(x, weight, bias, eps):
@@ -195,14 +198,26 @@ class Swin4D(torch.nn.Module):
             self.out_norms.append(Norm(backbone.hidden_states_norms[backbone.out_features[index]]))
             resolution //= 2
 
-    def forward(self, pixel_values):
-        x = self.patch_norm(self.patch(pixel_values))
+    def _stages(self, x, indices):
         features = []
-        for stage, merge, norm in zip(self.stages, self.merges, self.out_norms):
-            x = stage(x)
-            features.append(norm(x))
-            x = merge(x)
-        return tuple(features)
+        for index in indices:
+            x = self.stages[index](x)
+            features.append(self.out_norms[index](x))
+            x = self.merges[index](x)
+        return features, x
+
+    def start(self, pixel_values):
+        """Patch embedding and stages 1 and 2: their feature maps, and stage 3's input."""
+        features, x = self._stages(self.patch_norm(self.patch(pixel_values)), range(SPLIT_STAGE))
+        return (*features, x)
+
+    def finish(self, x):
+        """Stages 3 and 4: their feature maps."""
+        return tuple(self._stages(x, range(SPLIT_STAGE, len(self.stages)))[0])
+
+    def forward(self, pixel_values):
+        *features, x = self.start(pixel_values)
+        return (*features, *self.finish(x))
 
 
 def group_norm(x, norm):
@@ -327,14 +342,22 @@ class PixelDecoder4D(torch.nn.Module):
             DeformableLayer(layer, self.shapes, reference) for layer in decoder.encoder.layers
         )
 
-    def forward(self, f0, f1, f2, f3):
+    def start(self, f1, f2, f3):
+        """The input projections and the first half of the deformable layers: the tokens [1, 256, 1, tokens]."""
         d = self.decoder
         embeds = []
         for level, x in enumerate((f3, f2, f1)):
             conv, norm = d.input_projections[level]
             embeds.append(group_norm(conv(x), norm))
         h = torch.cat([e.reshape(1, e.shape[1], 1, -1) for e in embeds], 3)
-        for layer in self.layers:
+        for layer in self.layers[: len(self.layers) // 2]:
+            h = layer(h, self.position)
+        return h
+
+    def finish(self, h, f0):
+        """The second half of the deformable layers, the FPN level and the mask projection."""
+        d = self.decoder
+        for layer in self.layers[len(self.layers) // 2 :]:
             h = layer(h, self.position)
         sizes = [hh * ww for hh, ww in self.shapes]
         outputs, start = [], 0
@@ -347,6 +370,9 @@ class PixelDecoder4D(torch.nn.Module):
             out = current + F.interpolate(outputs[-1], size=current.shape[-2:], mode="bilinear", align_corners=False)
             outputs.append(F.relu(group_norm(output[0](out), output[1])))
         return (d.mask_projection(outputs[-1]), *outputs[: d.num_feature_levels])
+
+    def forward(self, f0, f1, f2, f3):
+        return self.finish(self.start(f1, f2, f3), f0)
 
 
 def packed_projection(attention, index, order):

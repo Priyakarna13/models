@@ -44,18 +44,28 @@ def test_decode_picks_the_top_query_class_pairs_and_scores_masks(load_script: Ca
     assert binary[:145, :195].all() and not binary[155:].any() and not binary[:, 205:].any()
 
 
-def test_component_shapes_chain(load_script: Callable[[str], ModuleType]) -> None:
+def test_every_component_input_comes_from_an_earlier_output(load_script: Callable[[str], ModuleType]) -> None:
     pipeline = load_script("pipeline")
+    shapes = {"image": pipeline.INPUT_SHAPES["backbone_0"]["image"]}
 
-    assert pipeline.OUTPUT_SHAPES["backbone"] == pipeline.INPUT_SHAPES["pixel_decoder"]
-    assert pipeline.OUTPUT_SHAPES["pixel_decoder"] == pipeline.INPUT_SHAPES["transformer_decoder"]
+    for component in pipeline.COMPONENTS:
+        assert pipeline.route(component, shapes) == list(pipeline.INPUT_SHAPES[component].values())
+        shapes.update(pipeline.OUTPUT_SHAPES[component])
+
+
+def test_performance_script_routes_like_the_pipeline(load_script: Callable[[str], ModuleType]) -> None:
+    pipeline, performance = load_script("pipeline"), load_script("performance")
+
+    assert performance.COMPONENTS == pipeline.COMPONENTS
+    assert performance.INPUTS == {c: tuple(pipeline.INPUT_SHAPES[c]) for c in pipeline.COMPONENTS}
+    assert performance.OUTPUTS == {c: tuple(pipeline.OUTPUT_SHAPES[c]) for c in pipeline.COMPONENTS}
 
 
 def test_compile_binds_every_component(load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
     parameters = recipe._component_parameters("w16a16")
 
-    assert list(parameters) == ["backbone", "pixel_decoder", "transformer_decoder"]
+    assert list(parameters) == ["backbone_0", "backbone_1", "pixel_decoder_0", "pixel_decoder_1", "transformer_decoder"]
     assert {item["precision"] for item in parameters.values()} == {"w16a16"}
     with pytest.raises(ValueError, match="no build profile 'w8a8'"):
         recipe._component_parameters("w8a8")
@@ -98,14 +108,14 @@ def test_audit_requires_one_mla_segment_and_no_host_code(
     recipe = load_script("compile")
     version = recipe.COMPILER_VERSION
 
-    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"], version), "backbone")
+    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"], version), "backbone_0")
     for name, processors, compiler in [
         ("two", ["MLA", "MLA"], version),
         ("host", ["MLA", "A65"], version),
         ("old", ["MLA"], "0.0.0"),
     ]:
         with pytest.raises(RuntimeError):
-            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors, compiler), "backbone")
+            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors, compiler), "backbone_0")
 
 
 def test_compile_main_rejects_an_unknown_invocation(

@@ -1,48 +1,74 @@
-"""Mask2Former's interface, shared by conversion, compile and the application: component shapes, the image
-preprocessing and the instance decoding. It needs only NumPy and Pillow, and no model weights.
+"""Mask2Former's interface, shared by conversion, compile and the application: component shapes, the routing of
+tensors between components, the image preprocessing and the instance decoding. It needs only NumPy and Pillow, and
+no model weights.
 
-The model runs as three components. The backbone (Swin-T) turns a 384x384 image into four feature maps, at 1/4 to
-1/32 of the input. The pixel decoder turns them into per-pixel mask features at 1/4 and three multi-scale feature
-maps at 1/32, 1/16 and 1/8. The transformer decoder predicts, for each of 100 queries, class logits over the 80
-COCO classes plus "no object", and mask logits at 1/4 of the input.
+The model runs as five components. The backbone (Swin-T) turns a 384x384 image into four feature maps, at 1/4 to
+1/32 of the input, as two components: backbone_0 (stages 1 and 2) and backbone_1 (stages 3 and 4). The pixel
+decoder turns them into per-pixel mask features at 1/4 and three multi-scale feature maps at 1/32, 1/16 and 1/8, as
+two components: pixel_decoder_0 (the first three deformable attention layers) and pixel_decoder_1 (the last three
+and the 1/4 level). The backbone and pixel decoder each compile in two parts because, whole, either needs more
+memory to compile than a CI runner has. The transformer decoder predicts, for each of 100 queries, class logits over
+the 80 COCO classes plus "no object", and mask logits at 1/4 of the input.
+
+Each component input takes the earlier component output of the same name (route).
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-COMPONENTS = ("backbone", "pixel_decoder", "transformer_decoder")
+COMPONENTS = ("backbone_0", "backbone_1", "pixel_decoder_0", "pixel_decoder_1", "transformer_decoder")
 IMAGE_SIZE = 384
 QUERIES = 100
 CLASSES = 80
 MASK_SIZE = IMAGE_SIZE // 4
 SCALE_SIZES = (IMAGE_SIZE // 32, IMAGE_SIZE // 16, IMAGE_SIZE // 8)
+TOKENS = sum(size * size for size in SCALE_SIZES)
 BACKBONE_SHAPES = tuple((1, 96 * 2**i, IMAGE_SIZE // 4 // 2**i, IMAGE_SIZE // 4 // 2**i) for i in range(4))
+FEATURES = {f"features{i}": shape for i, shape in enumerate(BACKBONE_SHAPES)}
+DECODED = {
+    "mask_features": (1, 256, MASK_SIZE, MASK_SIZE),
+    **{f"scale{i}": (1, 256, size, size) for i, size in enumerate(SCALE_SIZES)},
+}
 INPUT_SHAPES = {
-    "backbone": {"image": (1, 3, IMAGE_SIZE, IMAGE_SIZE)},
-    "pixel_decoder": {f"features{i}": shape for i, shape in enumerate(BACKBONE_SHAPES)},
-    "transformer_decoder": {
-        "mask_features": (1, 256, MASK_SIZE, MASK_SIZE),
-        **{f"scale{i}": (1, 256, size, size) for i, size in enumerate(SCALE_SIZES)},
-    },
+    "backbone_0": {"image": (1, 3, IMAGE_SIZE, IMAGE_SIZE)},
+    # Stage 3's input: stage 2's output after patch merging.
+    "backbone_1": {"stage3_input": BACKBONE_SHAPES[2]},
+    "pixel_decoder_0": {name: FEATURES[name] for name in ("features1", "features2", "features3")},
+    "pixel_decoder_1": {"tokens": (1, 256, 1, TOKENS), "features0": FEATURES["features0"]},
+    "transformer_decoder": dict(DECODED),
 }
 OUTPUT_SHAPES = {
-    "backbone": dict(INPUT_SHAPES["pixel_decoder"]),
-    "pixel_decoder": dict(INPUT_SHAPES["transformer_decoder"]),
+    "backbone_0": {
+        "features0": FEATURES["features0"],
+        "features1": FEATURES["features1"],
+        "stage3_input": BACKBONE_SHAPES[2],
+    },
+    "backbone_1": {"features2": FEATURES["features2"], "features3": FEATURES["features3"]},
+    # The three scales' tokens after the first half of the deformable attention layers.
+    "pixel_decoder_0": {"tokens": (1, 256, 1, TOKENS)},
+    "pixel_decoder_1": dict(DECODED),
     "transformer_decoder": {
         # Class logits per query, classes along the channels: [1, classes + 1, 1, queries].
         "class_logits": (1, CLASSES + 1, 1, QUERIES),
         "mask_logits": (1, QUERIES, MASK_SIZE, MASK_SIZE),
     },
 }
-# The checkpoint's ImageNet normalization, on 0-255 RGB.
-PIXEL_MEAN = np.asarray([123.675, 116.28, 103.53], dtype=np.float32)
-PIXEL_STD = np.asarray([58.395, 57.12, 57.375], dtype=np.float32)
+
+
+def route(component: str, available: dict[str, object]) -> list[object]:
+    """A component's inputs in INPUT_SHAPES order, from the outputs so far (and the image) by name."""
+    return [available[name] for name in INPUT_SHAPES[component]]
 
 
 def tensor_name(component: str, name: str) -> str:
     """A component's tensor in the side-by-side ONNX that conversion writes."""
     return f"{component}_{name}"
+
+
+# The checkpoint's ImageNet normalization, on 0-255 RGB.
+PIXEL_MEAN = np.asarray([123.675, 116.28, 103.53], dtype=np.float32)
+PIXEL_STD = np.asarray([58.395, 57.12, 57.375], dtype=np.float32)
 
 
 def preprocess(image: np.ndarray) -> np.ndarray:

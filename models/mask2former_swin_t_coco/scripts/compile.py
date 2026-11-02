@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Split the verified Mask2Former ONNX into its components, quantize, and compile each to an MPK.
 
-The converted ONNX holds the backbone, the pixel decoder and the transformer decoder side by side. Each is
-extracted, quantized to its build precision and compiled in its own process, and its MPK is audited: one MLA
-segment, no host code. A component that declares calibration_samples calibrates on seeded cal2017 images, each
-component fed the float32 outputs of the components before it; the others quantize from one synthetic sample.
+The converted ONNX holds the five components (pipeline.py) side by side. Each is extracted, quantized to its build
+precision and compiled in its own process, and its MPK is audited: one MLA segment, no host code. A component that
+declares calibration_samples calibrates on seeded cal2017 images, each component fed the float32 outputs of the
+components before it; the others quantize from one synthetic sample.
 compile-outputs.json records every MPK.
 """
 
@@ -39,7 +39,7 @@ from afe.load.importers.general_importer import onnx_source
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
-from pipeline import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, preprocess, tensor_name
+from pipeline import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, preprocess, route, tensor_name
 from sima_utils.data.data_generator import DataGenerator
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
@@ -149,12 +149,13 @@ def calibration_images(dataset: Path, count: int) -> list[np.ndarray]:
 
 def float_chain(graphs: dict[str, Path], images: list[np.ndarray]) -> dict[str, list[dict[str, np.ndarray]]]:
     """Each component's NCHW inputs for the images: the preprocessed image, then the float32 ONNX outputs of the
-    components before it."""
+    components before it, routed by name."""
     feeds: dict[str, list[dict[str, np.ndarray]]] = {component: [] for component in COMPONENTS}
     sessions = {component: onnx_session(graphs[component]) for component in COMPONENTS[:-1]}
     for image in images:
-        current = {"image": preprocess(image).transpose(2, 0, 1)[None]}
+        available = {"image": preprocess(image).transpose(2, 0, 1)[None]}
         for component in COMPONENTS:
+            current = dict(zip(INPUT_SHAPES[component], route(component, available)))
             feeds[component].append(current)
             if component in sessions:
                 names = list(OUTPUT_SHAPES[component])
@@ -162,7 +163,7 @@ def float_chain(graphs: dict[str, Path], images: list[np.ndarray]) -> dict[str, 
                     [tensor_name(component, name) for name in names],
                     {tensor_name(component, key): value for key, value in current.items()},
                 )
-                current = dict(zip(names, outputs))
+                available.update(zip(names, outputs))
     return feeds
 
 

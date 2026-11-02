@@ -8,19 +8,23 @@ Mask2Former finds every object of the 80 COCO classes in an image and returns
 each one's class and pixel mask. It is a masked-attention transformer with a
 Swin-T backbone: 100 learned queries each predict one object, attending only
 inside the mask they predicted at the previous step. It takes a 384×384 RGB
-image and runs as three components: the `backbone`, the `pixel_decoder` and the
-`transformer_decoder`, each feeding the next. The CPU only prepares the image
-and decodes the instances. Build: `w16a16` (BF16).
+image and runs as five components: the backbone as `backbone_0` and
+`backbone_1`, the pixel decoder as `pixel_decoder_0` and `pixel_decoder_1`, and
+the `transformer_decoder`. The CPU only prepares the image and decodes the
+instances. Build: `w16a16` (BF16).
 
 ## Inputs and outputs
 
-**`backbone` input.** `image`, 384×384 RGB. Stretch the image to 384×384 with
+**`backbone_0` input.** `image`, 384×384 RGB. Stretch the image to 384×384 with
 bilinear resampling, then normalize the 0–255 values with mean (123.675,
 116.28, 103.53) and standard deviation (58.395, 57.12, 57.375).
 
-**Between the components.** Pass the `backbone` outputs `features0` to
-`features3` to the `pixel_decoder` unchanged, and its outputs `mask_features`,
-`scale0`, `scale1` and `scale2` to the `transformer_decoder` unchanged.
+**Between the components.** Each input is the earlier output of the same name,
+unchanged: `backbone_0` returns `features0`, `features1` and `stage3_input`;
+`backbone_1` takes `stage3_input` and returns `features2` and `features3`;
+`pixel_decoder_0` takes `features1` to `features3` and returns `tokens`;
+`pixel_decoder_1` takes `tokens` and `features0` and returns `mask_features`,
+`scale0`, `scale1` and `scale2`, which the `transformer_decoder` takes.
 
 **`transformer_decoder` outputs.**
 

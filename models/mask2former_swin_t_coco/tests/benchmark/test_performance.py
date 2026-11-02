@@ -13,7 +13,13 @@ def test_performance_meets_its_expected_values(
 
 
 def test_performance_records_each_components_execution_plan(performance: dict[str, Any]) -> None:
-    assert list(performance["components"]) == ["backbone", "pixel_decoder", "transformer_decoder"]
+    assert list(performance["components"]) == [
+        "backbone_0",
+        "backbone_1",
+        "pixel_decoder_0",
+        "pixel_decoder_1",
+        "transformer_decoder",
+    ]
     for item in performance["components"].values():
         plan = item["execution_plan"]
         assert (plan["schema"], plan["schema_version"]) == ("sima.neat.execution_plan", 1)
