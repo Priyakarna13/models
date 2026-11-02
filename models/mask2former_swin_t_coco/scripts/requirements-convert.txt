@@ -1,0 +1,8 @@
+transformers==5.16.1
+scipy==1.15.3
+safetensors==0.6.2
+torch==2.8.0
+numpy==1.26.4
+onnx==1.17.0
+onnxruntime==1.21.1
+onnxsim==0.7.3

@@ -65,6 +65,10 @@ architectures:
     display_name: LLaVA
     paradigm: transformer
     allowed_model_types: [vlm]
+  mask2former:
+    display_name: Mask2Former
+    paradigm: transformer
+    allowed_model_types: [vision]
   mistral:
     display_name: Mistral
     paradigm: transformer
