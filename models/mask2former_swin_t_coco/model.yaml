@@ -37,11 +37,13 @@ compilation:
     sha256: aed70d203241d55926326fa141f35ad523c7ad7797fcdc781c81ac392d1b09ce
     size_bytes: 227346436
   # Each part compiles apart, one MLA segment each; the CPU only prepares the image and decodes the instances. The
-  # backbone compiles as two components, and the pixel decoder as one per deformable attention layer plus one for its
-  # 1/4 level: compiled whole, each took 25-30 GiB and the CI runner (32 GiB) lost contact compiling them; even three
-  # deformable layers together took over 31 GiB, and one layer with the 1/4 level 31.7 GiB.
+  # backbone compiles as two components; the pixel decoder as two per deformable attention layer (four heads each),
+  # plus one for its 1/4 level. Compiled whole, the backbone and the pixel decoder each took 25-30 GiB, and the CI
+  # runner (32 GiB) lost contact compiling them; it did again with one deformable layer per component, once the
+  # compiler's check simulation ran beside it. A four-head half compiles locally at 13 GiB.
   components: [backbone_0, backbone_1, pixel_decoder_0, pixel_decoder_1, pixel_decoder_2, pixel_decoder_3,
-    pixel_decoder_4, pixel_decoder_5, pixel_decoder_6, transformer_decoder]
+    pixel_decoder_4, pixel_decoder_5, pixel_decoder_6, pixel_decoder_7, pixel_decoder_8, pixel_decoder_9,
+    pixel_decoder_10, pixel_decoder_11, pixel_decoder_12, transformer_decoder]
 
 build_profiles:
   w16a16:
@@ -64,6 +66,18 @@ build_profiles:
         parameters: {precision: w16a16}
       pixel_decoder_6:
         parameters: {precision: w16a16}
+      pixel_decoder_7:
+        parameters: {precision: w16a16}
+      pixel_decoder_8:
+        parameters: {precision: w16a16}
+      pixel_decoder_9:
+        parameters: {precision: w16a16}
+      pixel_decoder_10:
+        parameters: {precision: w16a16}
+      pixel_decoder_11:
+        parameters: {precision: w16a16}
+      pixel_decoder_12:
+        parameters: {precision: w16a16}
       transformer_decoder:
         parameters: {precision: w16a16}
 
@@ -78,6 +92,12 @@ pipeline:
 - {component: pixel_decoder_4}
 - {component: pixel_decoder_5}
 - {component: pixel_decoder_6}
+- {component: pixel_decoder_7}
+- {component: pixel_decoder_8}
+- {component: pixel_decoder_9}
+- {component: pixel_decoder_10}
+- {component: pixel_decoder_11}
+- {component: pixel_decoder_12}
 - {component: transformer_decoder}
 - {cpu: "Top 100 (query, class) pairs; upsample their masks to the image and threshold at 0"}
 

@@ -1,8 +1,8 @@
 """Benchmark Mask2Former Swin-T with Neat Core and save its report.
 
-Given one --mpk <component>=<path> per component (backbone_0, backbone_1, pixel_decoder_0 to pixel_decoder_6,
+Given one --mpk <component>=<path> per component (backbone_0, backbone_1, pixel_decoder_0 to pixel_decoder_12,
 transformer_decoder) and --dataset coco-2017-val=<extracted directory>, the script measures the whole model as it
-runs on one COCO image in a 720p frame: Neat's preprocessing and the ten components, each working on a different
+runs on one COCO image in a 720p frame: Neat's preprocessing and the sixteen components, each working on a different
 frame at the same time, up to the class and mask logits. Each component input takes the earlier component output
 of the same name; an output a later component needs (two of the backbone's feature maps) is copied out of the
 runner's buffers and carried along with its frame. It also records each MPK's MLA
@@ -29,25 +29,34 @@ PIXEL_LAYERS = 6
 COMPONENTS = (
     "backbone_0",
     "backbone_1",
-    *(f"pixel_decoder_{index}" for index in range(PIXEL_LAYERS + 1)),
+    *(f"pixel_decoder_{index}" for index in range(2 * PIXEL_LAYERS + 1)),
     "transformer_decoder",
 )
-# Each component's inputs and outputs by name, as in pipeline.py.
+# Each component's inputs and outputs by name, as in pipeline.py: each deformable layer runs as two components, the
+# first returning its heads' share of the output projection (partial), the second completing the layer (tokens).
 INPUTS = {
     "backbone_0": ("image",),
     "backbone_1": ("stage3_input",),
     "pixel_decoder_0": ("features1", "features2", "features3"),
-    **{f"pixel_decoder_{index}": (f"tokens{index - 1}",) for index in range(1, PIXEL_LAYERS)},
-    f"pixel_decoder_{PIXEL_LAYERS}": (f"tokens{PIXEL_LAYERS - 1}", "features0"),
+    **{f"pixel_decoder_{2 * layer}": (f"tokens{layer - 1}",) for layer in range(1, PIXEL_LAYERS)},
+    **{
+        f"pixel_decoder_{2 * layer + 1}": ("embedded" if layer == 0 else f"tokens{layer - 1}", f"partial{layer}")
+        for layer in range(PIXEL_LAYERS)
+    },
+    f"pixel_decoder_{2 * PIXEL_LAYERS}": (f"tokens{PIXEL_LAYERS - 1}", "features0"),
     "transformer_decoder": ("mask_features", f"tokens{PIXEL_LAYERS - 1}"),
 }
 OUTPUTS = {
     "backbone_0": ("features0", "features1", "stage3_input"),
     "backbone_1": ("features2", "features3"),
-    **{f"pixel_decoder_{index}": (f"tokens{index}",) for index in range(PIXEL_LAYERS)},
-    f"pixel_decoder_{PIXEL_LAYERS}": ("mask_features",),
+    "pixel_decoder_0": ("embedded", "partial0"),
+    **{f"pixel_decoder_{2 * layer}": (f"partial{layer}",) for layer in range(1, PIXEL_LAYERS)},
+    **{f"pixel_decoder_{2 * layer + 1}": (f"tokens{layer}",) for layer in range(PIXEL_LAYERS)},
+    f"pixel_decoder_{2 * PIXEL_LAYERS}": ("mask_features",),
     "transformer_decoder": ("class_logits", "mask_logits"),
 }
+INPUTS = {component: INPUTS[component] for component in COMPONENTS}
+OUTPUTS = {component: OUTPUTS[component] for component in COMPONENTS}
 IMAGE_SIZE = 384
 WARMUP_FRAMES = 20
 MEASURED_FRAMES = 300
@@ -343,9 +352,9 @@ def write_report(
         models,
         workload=(
             f"{image} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, Neat preprocessing stretched to "
-            f"{IMAGE_SIZE}x{IMAGE_SIZE}, the backbone (two components), the pixel decoder (one component per "
-            f"deformable layer) and the transformer decoder up to the class and mask logits, pipelined "
-            f"{QUEUE_DEPTH} frames deep"
+            f"{IMAGE_SIZE}x{IMAGE_SIZE}, the backbone (two components), the pixel decoder (two components per "
+            f"deformable layer and one for the 1/4 level) and the transformer decoder up to the class and mask "
+            f"logits, pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
         mla_layer_stats=mla_layer_stats,

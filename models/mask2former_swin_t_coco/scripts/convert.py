@@ -94,12 +94,17 @@ def modules(model):
                 "backbone_1": self.backbone.finish,
                 "pixel_decoder_0": self.pixel_decoder.start,
                 **{
-                    f"pixel_decoder_{index}": functools.partial(self.pixel_decoder.layer, index)
-                    for index in range(1, layers)
+                    f"pixel_decoder_{2 * layer}": functools.partial(self.pixel_decoder.first_half, layer)
+                    for layer in range(1, layers)
                 },
-                f"pixel_decoder_{layers}": self.pixel_decoder.finish,
+                **{
+                    f"pixel_decoder_{2 * layer + 1}": functools.partial(self.pixel_decoder.second_half, layer)
+                    for layer in range(layers)
+                },
+                f"pixel_decoder_{2 * layers}": self.pixel_decoder.finish,
                 "transformer_decoder": self.transformer_decoder,
             }
+            self.parts = {component: self.parts[component] for component in COMPONENTS if component in self.parts}
             if list(self.parts) != list(COMPONENTS):
                 raise ValueError(f"the pixel decoder has {layers} deformable layers, pipeline.py expects others")
 
@@ -144,9 +149,11 @@ def check_parts(model, side_by_side):
                 compare(want.numpy(), got.numpy(), f"backbone features{index} (seed {seed})")
             decoded = pixel.decoder(list(features))
             expected = (decoded.mask_features, *decoded.multi_scale_features)
-            tokens = side_by_side.pixel_decoder.start(*features[1:])
-            for index in range(1, len(side_by_side.pixel_decoder.layers)):
-                tokens = side_by_side.pixel_decoder.layer(index, tokens)
+            tokens, partial = side_by_side.pixel_decoder.start(*features[1:])
+            tokens = side_by_side.pixel_decoder.second_half(0, tokens, partial)
+            for layer in range(1, len(side_by_side.pixel_decoder.layers)):
+                partial = side_by_side.pixel_decoder.first_half(layer, tokens)
+                tokens = side_by_side.pixel_decoder.second_half(layer, tokens, partial)
             got = (side_by_side.pixel_decoder.finish(tokens, features[0]), *side_by_side.pixel_decoder.scales(tokens))
             for name, want, value in zip(("mask_features", "scale0", "scale1", "scale2"), expected, got):
                 compare(want.numpy(), value.numpy(), f"pixel decoder {name} (seed {seed})")

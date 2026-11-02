@@ -68,7 +68,7 @@ def test_compile_binds_every_component(load_script: Callable[[str], ModuleType])
     assert list(parameters) == [
         "backbone_0",
         "backbone_1",
-        *(f"pixel_decoder_{index}" for index in range(7)),
+        *(f"pixel_decoder_{index}" for index in range(13)),
         "transformer_decoder",
     ]
     assert {item["precision"] for item in parameters.values()} == {"w16a16"}

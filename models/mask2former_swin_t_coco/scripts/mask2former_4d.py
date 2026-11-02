@@ -37,9 +37,9 @@ import torch.nn.functional as F
 
 TILE = 25
 RAMP, BIAS = 1e4, 1e4
-# The backbone compiles as two components, split before this stage (0-based), and the pixel decoder as one component
-# per deformable layer plus one for its 1/4 level: compiled whole, the backbone needs more memory than a CI runner has,
-# and even three deformable layers together do, or one with the 1/4 level.
+# The backbone compiles as two components, split before this stage (0-based), and the pixel decoder as two components
+# per deformable layer (four heads each) plus one for its 1/4 level: compiled whole, the backbone needs more memory
+# than a CI runner has, and so does a single deformable layer once the compiler's check simulation is counted.
 SPLIT_STAGE = 2
 
 
@@ -291,8 +291,12 @@ class DeformableLayer(torch.nn.Module):
         self.register_buffer("ref_x", (2 * reference[:, 0] - 1).view(1, 1, 1, -1))
         self.register_buffer("ref_y", (2 * reference[:, 1] - 1).view(1, 1, 1, -1))
 
-    def attend(self, h, positioned):
-        heads, levels, points = self.heads, self.levels, self.points
+    def attend(self, h, positioned, heads=None):
+        """The attention output for all heads, or, given heads, only those heads' share of the output projection
+        (without its bias): the projection is linear over the concatenated heads, so the shares add up to it."""
+        selected = range(self.heads) if heads is None else heads
+        levels, points = self.levels, self.points
+        heads = self.heads
         tokens = h.shape[-1]
         value = self.value(h)  # [1, 256, 1, N]
         gx = self.offset_x(positioned) + self.ref_x  # [1, H*L*P, 1, N]
@@ -302,7 +306,7 @@ class DeformableLayer(torch.nn.Module):
         sizes = [hh * ww for hh, ww in self.shapes]
         starts = [sum(sizes[:i]) for i in range(levels)]
         outputs = []
-        for head in range(heads):
+        for head in selected:
             total = 0
             for level, (hh, ww) in enumerate(self.shapes):
                 v = value[:, head * head_dim : (head + 1) * head_dim, :, starts[level] : starts[level] + sizes[level]]
@@ -314,7 +318,21 @@ class DeformableLayer(torch.nn.Module):
                 w = weights[:, level * points : (level + 1) * points, head : head + 1].permute(0, 2, 3, 1)  # [1,1,N,P]
                 total = total + (sampled * w).sum(dim=3, keepdim=True)  # [1, d, N, 1]
             outputs.append(total)
-        return self.output(torch.cat(outputs, 1).reshape(1, heads * head_dim, 1, tokens))
+        concatenated = torch.cat(outputs, 1).reshape(1, len(selected) * head_dim, 1, tokens)
+        if len(selected) == heads:
+            return self.output(concatenated)
+        columns = torch.cat([torch.arange(head * head_dim, (head + 1) * head_dim) for head in selected])
+        return F.conv2d(concatenated, self.output.weight[:, columns])
+
+    def first_half(self, h, position):
+        """The first half of the heads' share of the attention output projection."""
+        return self.attend(h, h + position, range(self.heads // 2))
+
+    def second_half(self, h, partial, position):
+        """The second half of the heads, added to the first half's share, then the residual, LayerNorm and FFN."""
+        attended = partial + self.attend(h, h + position, range(self.heads // 2, self.heads))
+        h = self.norm1(h + attended + self.output.bias.view(1, -1, 1, 1))
+        return self.norm2(h + self.fc2(F.relu(self.fc1(h))))
 
     def forward(self, h, position):
         h = self.norm1(h + self.attend(h, h + position))
@@ -343,19 +361,27 @@ class PixelDecoder4D(torch.nn.Module):
             DeformableLayer(layer, self.shapes, reference) for layer in decoder.encoder.layers
         )
 
-    def start(self, f1, f2, f3):
-        """The input projections and the first deformable layer: the tokens [1, 256, 1, tokens]."""
+    def embed(self, f1, f2, f3):
+        """The input projections: the three scales' tokens [1, 256, 1, tokens], 1/32 to 1/8."""
         d = self.decoder
         embeds = []
         for level, x in enumerate((f3, f2, f1)):
             conv, norm = d.input_projections[level]
             embeds.append(group_norm(conv(x), norm))
-        h = torch.cat([e.reshape(1, e.shape[1], 1, -1) for e in embeds], 3)
-        return self.layers[0](h, self.position)
+        return torch.cat([e.reshape(1, e.shape[1], 1, -1) for e in embeds], 3)
 
-    def layer(self, index, h):
-        """Deformable layer index (1 to 5, 0-based) on the tokens."""
-        return self.layers[index](h, self.position)
+    def start(self, f1, f2, f3):
+        """The input projections' tokens, and deformable layer 0's first half on them."""
+        h = self.embed(f1, f2, f3)
+        return h, self.layers[0].first_half(h, self.position)
+
+    def first_half(self, index, h):
+        """Deformable layer index's first half of the heads on the tokens."""
+        return self.layers[index].first_half(h, self.position)
+
+    def second_half(self, index, h, partial):
+        """Deformable layer index's second half of the heads, completing the layer: the next tokens."""
+        return self.layers[index].second_half(h, partial, self.position)
 
     def scales(self, h):
         """The tokens as the three multi-scale feature maps, 1/32 to 1/8."""
@@ -377,9 +403,10 @@ class PixelDecoder4D(torch.nn.Module):
 
     def forward(self, f0, f1, f2, f3):
         """transformers' pixel decoder outputs: the mask features and the three multi-scale feature maps."""
-        h = self.start(f1, f2, f3)
+        h, partial = self.start(f1, f2, f3)
+        h = self.second_half(0, h, partial)
         for index in range(1, len(self.layers)):
-            h = self.layer(index, h)
+            h = self.second_half(index, h, self.first_half(index, h))
         return (self.finish(h, f0), *self.scales(h))
 
 
