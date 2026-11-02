@@ -428,10 +428,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--build-profile", required=True)
+    parser.add_argument("--compile-invocation", required=True)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--fidelity-dataset", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
+    if args.compile_invocation != args.build_profile:
+        parser.error("a build profile compiles in one invocation named after it")
     for path in (args.model, args.dataset, args.fidelity_dataset):
         if not path.exists():
             parser.error(f"input does not exist: {path}")

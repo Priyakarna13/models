@@ -320,6 +320,39 @@ def test_sdk_system_exit_cannot_look_like_a_successful_phase(compiler):
         compiler.execute_phase(sdk_failure, {})
 
 
+@pytest.mark.parametrize("invocation", ["w16a16_w16a16", "other"])
+def test_registry_compile_cli_requires_the_profile_invocation(compiler, monkeypatch, tmp_path, invocation):
+    calls = []
+    monkeypatch.setattr(compiler, "compile_model", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "compile.py",
+            "--model",
+            str(tmp_path),
+            "--build-profile",
+            "w16a16_w16a16",
+            "--compile-invocation",
+            invocation,
+            "--dataset",
+            str(tmp_path),
+            "--fidelity-dataset",
+            str(tmp_path),
+            "--output-dir",
+            str(tmp_path / "compiled"),
+        ],
+    )
+    if invocation == "other":
+        with pytest.raises(SystemExit) as error:
+            compiler.main()
+        assert error.value.code == 2
+        assert calls == []
+    else:
+        assert compiler.main() == 0
+        assert calls == [(tmp_path, invocation, tmp_path, tmp_path, tmp_path / "compiled")]
+
+
 def test_failed_output_setup_never_builds_runners(load_script, monkeypatch):
     p = load_script("performance")
     called = []
