@@ -25,8 +25,7 @@ unchanged: `backbone_0` returns `features0`, `features1` and `stage3_input`;
 `pixel_decoder_0` takes `features1` to `features3` and returns `tokens0`;
 `pixel_decoder_1` to `pixel_decoder_5` each take the previous `tokens` and
 return the next; `pixel_decoder_6` takes `tokens5` and `features0` and returns
-`mask_features`, `scale0`, `scale1` and `scale2`, which the
-`transformer_decoder` takes.
+`mask_features`; the `transformer_decoder` takes `mask_features` and `tokens5`.
 
 **`transformer_decoder` outputs.**
 

@@ -6,7 +6,8 @@ The model runs as ten components. The backbone (Swin-T) turns a 384x384 image in
 1/32 of the input, as two components: backbone_0 (stages 1 and 2) and backbone_1 (stages 3 and 4). The pixel
 decoder turns them into per-pixel mask features at 1/4 and three multi-scale feature maps at 1/32, 1/16 and 1/8, as
 seven components: pixel_decoder_0 to pixel_decoder_5 run one deformable attention layer each (pixel_decoder_0
-also projects the feature maps to tokens), and pixel_decoder_6 builds the 1/4 level. They are split so because
+also projects the feature maps to tokens), and pixel_decoder_6 builds the 1/4 level and the mask features. The
+transformer decoder takes the last layer's tokens as the multi-scale features. They are split so because
 compiled whole, the backbone needs more memory to compile than a CI runner has, and even three deformable layers
 together do, or one with the 1/4 level. The transformer decoder predicts,
 for each of 100 queries, class logits over the 80 COCO classes plus "no object", and mask logits at 1/4 of the
@@ -34,10 +35,6 @@ SCALE_SIZES = (IMAGE_SIZE // 32, IMAGE_SIZE // 16, IMAGE_SIZE // 8)
 TOKENS = sum(size * size for size in SCALE_SIZES)
 BACKBONE_SHAPES = tuple((1, 96 * 2**i, IMAGE_SIZE // 4 // 2**i, IMAGE_SIZE // 4 // 2**i) for i in range(4))
 FEATURES = {f"features{i}": shape for i, shape in enumerate(BACKBONE_SHAPES)}
-DECODED = {
-    "mask_features": (1, 256, MASK_SIZE, MASK_SIZE),
-    **{f"scale{i}": (1, 256, size, size) for i, size in enumerate(SCALE_SIZES)},
-}
 INPUT_SHAPES = {
     "backbone_0": {"image": (1, 3, IMAGE_SIZE, IMAGE_SIZE)},
     # Stage 3's input: stage 2's output after patch merging.
@@ -49,7 +46,11 @@ INPUT_SHAPES = {
         f"tokens{PIXEL_LAYERS - 1}": (1, 256, 1, TOKENS),
         "features0": FEATURES["features0"],
     },
-    "transformer_decoder": dict(DECODED),
+    # The mask features, and the multi-scale features as the last deformable layer's tokens, 1/32 to 1/8.
+    "transformer_decoder": {
+        "mask_features": (1, 256, MASK_SIZE, MASK_SIZE),
+        f"tokens{PIXEL_LAYERS - 1}": (1, 256, 1, TOKENS),
+    },
 }
 OUTPUT_SHAPES = {
     "backbone_0": {
@@ -59,7 +60,8 @@ OUTPUT_SHAPES = {
     },
     "backbone_1": {"features2": FEATURES["features2"], "features3": FEATURES["features3"]},
     **{f"pixel_decoder_{index}": {f"tokens{index}": (1, 256, 1, TOKENS)} for index in range(PIXEL_LAYERS)},
-    f"pixel_decoder_{PIXEL_LAYERS}": dict(DECODED),
+    # Only the mask features: the compiler gives each independent output branch its own MLA segment.
+    f"pixel_decoder_{PIXEL_LAYERS}": {"mask_features": (1, 256, MASK_SIZE, MASK_SIZE)},
     "transformer_decoder": {
         # Class logits per query, classes along the channels: [1, classes + 1, 1, queries].
         "class_logits": (1, CLASSES + 1, 1, QUERIES),

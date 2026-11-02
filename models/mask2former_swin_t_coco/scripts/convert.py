@@ -147,13 +147,14 @@ def check_parts(model, side_by_side):
             tokens = side_by_side.pixel_decoder.start(*features[1:])
             for index in range(1, len(side_by_side.pixel_decoder.layers)):
                 tokens = side_by_side.pixel_decoder.layer(index, tokens)
-            got = side_by_side.pixel_decoder.finish(tokens, features[0])
-            for name, want, value in zip(OUTPUT_SHAPES[COMPONENTS[-2]], expected, got):
+            got = (side_by_side.pixel_decoder.finish(tokens, features[0]), *side_by_side.pixel_decoder.scales(tokens))
+            for name, want, value in zip(("mask_features", "scale0", "scale1", "scale2"), expected, got):
                 compare(want.numpy(), value.numpy(), f"pixel decoder {name} (seed {seed})")
             mask_features = decoded.mask_features * MASK_SCALE
             reference = model.model.transformer_module(list(decoded.multi_scale_features), mask_features)
             classes = model.class_predictor(reference.intermediate_hidden_states[-1].transpose(0, 1))
-            got_classes, got_masks = side_by_side.transformer_decoder(mask_features, *decoded.multi_scale_features)
+            scales = torch.cat([scale.reshape(1, scale.shape[1], 1, -1) for scale in decoded.multi_scale_features], 3)
+            got_classes, got_masks = side_by_side.transformer_decoder(mask_features, scales)
         compare_decoder(classes.numpy(), got_classes[0, :, 0].T[None].numpy(), f"class logits (seed {seed})")
         compare_masks(reference.masks_queries_logits[-1].numpy(), got_masks.numpy(), f"mask logits (seed {seed})")
 

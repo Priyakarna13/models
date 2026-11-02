@@ -357,26 +357,30 @@ class PixelDecoder4D(torch.nn.Module):
         """Deformable layer index (1 to 5, 0-based) on the tokens."""
         return self.layers[index](h, self.position)
 
+    def scales(self, h):
+        """The tokens as the three multi-scale feature maps, 1/32 to 1/8."""
+        maps, start = [], 0
+        for hh, ww in self.shapes:
+            maps.append(h[:, :, :, start : start + hh * ww].reshape(1, h.shape[1], hh, ww))
+            start += hh * ww
+        return maps
+
     def finish(self, h, f0):
-        """The FPN level and the mask projection, on the tokens after the last deformable layer."""
+        """The mask features: the FPN level from the 1/8 map and features0, then the mask projection. It returns only
+        them, because the compiler gives each independent output branch its own MLA segment; the transformer decoder
+        takes the tokens themselves for the multi-scale features."""
         d = self.decoder
-        sizes = [hh * ww for hh, ww in self.shapes]
-        outputs, start = [], 0
-        for (hh, ww), n in zip(self.shapes, sizes):
-            outputs.append(h[:, :, :, start : start + n].reshape(1, h.shape[1], hh, ww))
-            start += n
-        for idx, feature in enumerate((f0,)):
-            lateral, output = d.lateral_convolutions[idx], d.output_convolutions[idx]
-            current = group_norm(lateral[0](feature), lateral[1])
-            out = current + F.interpolate(outputs[-1], size=current.shape[-2:], mode="bilinear", align_corners=False)
-            outputs.append(F.relu(group_norm(output[0](out), output[1])))
-        return (d.mask_projection(outputs[-1]), *outputs[: d.num_feature_levels])
+        lateral, output = d.lateral_convolutions[0], d.output_convolutions[0]
+        current = group_norm(lateral[0](f0), lateral[1])
+        out = current + F.interpolate(self.scales(h)[-1], size=current.shape[-2:], mode="bilinear", align_corners=False)
+        return d.mask_projection(F.relu(group_norm(output[0](out), output[1])))
 
     def forward(self, f0, f1, f2, f3):
+        """transformers' pixel decoder outputs: the mask features and the three multi-scale feature maps."""
         h = self.start(f1, f2, f3)
         for index in range(1, len(self.layers)):
             h = self.layer(index, h)
-        return self.finish(h, f0)
+        return (self.finish(h, f0), *self.scales(h))
 
 
 def packed_projection(attention, index, order):
@@ -482,18 +486,20 @@ class TransformerDecoder4D(torch.nn.Module):
         self.fc2 = torch.nn.ModuleList(conv_from_linear(layer.fc2) for layer in decoder.layers)
         self.classifier = conv_from_linear(class_predictor)
 
-    def forward(self, mask_features, s0, s1, s2):
+    def forward(self, mask_features, tokens):
+        """tokens: the three multi-scale feature maps as one [1, 256, 1, tokens] sequence, 1/32 to 1/8, as the pixel
+        decoder's deformable layers leave them."""
         dim = mask_features.shape[1]
         scales, keys, resized = [], [], []
         starts = [0]
         for s in self.sizes:
             starts.append(starts[-1] + s * s)
-        for level, x in enumerate((s0, s1, s2)):
-            n = x.shape[2] * x.shape[3]
-            features = x.reshape(1, dim, 1, n) + self.level_embed[level].view(1, -1, 1, 1)
+        for level, size in enumerate(self.sizes):
+            n = size * size
+            features = tokens[:, :, :, starts[level] : starts[level + 1]] + self.level_embed[level].view(1, -1, 1, 1)
             scales.append(features)
             keys.append(features + self.positions[:, :, :, starts[level] : starts[level + 1]])
-            small = F.interpolate(mask_features, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            small = F.interpolate(mask_features, size=(size, size), mode="bilinear", align_corners=False)
             resized.append(small.reshape(1, dim, 1, n))
         h = self.query_features
         embedding = self.mask_embedder(self.norm(h))
