@@ -32,11 +32,10 @@ conversion:
 
 compilation:
   format: onnx
-  # TODO(#403): replace with the source block the Vulcan Model Convert workflow prints for mask2former_swin_t_coco.
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/yolo26n/1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a/38121683651-1/model.onnx
-    sha256: 1746e6f7199c3590ffb7b9f789aafda69bcae194a6f8458dbfa9ea6a7f6caf5a
-    size_bytes: 9917015
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/mask2former_swin_t_coco/172295d5ef4af746439ee94042ca105beab5cb801e438e4d653b1b936076e67b/41398086832-1/model.onnx
+    sha256: 172295d5ef4af746439ee94042ca105beab5cb801e438e4d653b1b936076e67b
+    size_bytes: 227803348
   # Each part compiles apart, one MLA segment each; the CPU only prepares the image and decodes the instances.
   components: [backbone, pixel_decoder, transformer_decoder]
 
