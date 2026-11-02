@@ -5,10 +5,11 @@ no model weights.
 The model runs as five components. The backbone (Swin-T) turns a 384x384 image into four feature maps, at 1/4 to
 1/32 of the input, as two components: backbone_0 (stages 1 and 2) and backbone_1 (stages 3 and 4). The pixel
 decoder turns them into per-pixel mask features at 1/4 and three multi-scale feature maps at 1/32, 1/16 and 1/8, as
-two components: pixel_decoder_0 (the first three deformable attention layers) and pixel_decoder_1 (the last three
-and the 1/4 level). The backbone and pixel decoder each compile in two parts because, whole, either needs more
-memory to compile than a CI runner has. The transformer decoder predicts, for each of 100 queries, class logits over
-the 80 COCO classes plus "no object", and mask logits at 1/4 of the input.
+six components, one per deformable attention layer: pixel_decoder_0 also projects the feature maps to tokens, and
+pixel_decoder_5 also builds the 1/4 level. They are split so because compiled whole, the backbone needs more memory
+to compile than a CI runner has, and even three deformable layers together do. The transformer decoder predicts,
+for each of 100 queries, class logits over the 80 COCO classes plus "no object", and mask logits at 1/4 of the
+input.
 
 Each component input takes the earlier component output of the same name (route).
 """
@@ -17,7 +18,13 @@ from __future__ import annotations
 
 import numpy as np
 
-COMPONENTS = ("backbone_0", "backbone_1", "pixel_decoder_0", "pixel_decoder_1", "transformer_decoder")
+PIXEL_LAYERS = 6
+COMPONENTS = (
+    "backbone_0",
+    "backbone_1",
+    *(f"pixel_decoder_{index}" for index in range(PIXEL_LAYERS)),
+    "transformer_decoder",
+)
 IMAGE_SIZE = 384
 QUERIES = 100
 CLASSES = 80
@@ -35,7 +42,12 @@ INPUT_SHAPES = {
     # Stage 3's input: stage 2's output after patch merging.
     "backbone_1": {"stage3_input": BACKBONE_SHAPES[2]},
     "pixel_decoder_0": {name: FEATURES[name] for name in ("features1", "features2", "features3")},
-    "pixel_decoder_1": {"tokens": (1, 256, 1, TOKENS), "features0": FEATURES["features0"]},
+    # The three scales' tokens after each deformable attention layer.
+    **{f"pixel_decoder_{index}": {f"tokens{index - 1}": (1, 256, 1, TOKENS)} for index in range(1, PIXEL_LAYERS - 1)},
+    f"pixel_decoder_{PIXEL_LAYERS - 1}": {
+        f"tokens{PIXEL_LAYERS - 2}": (1, 256, 1, TOKENS),
+        "features0": FEATURES["features0"],
+    },
     "transformer_decoder": dict(DECODED),
 }
 OUTPUT_SHAPES = {
@@ -45,9 +57,8 @@ OUTPUT_SHAPES = {
         "stage3_input": BACKBONE_SHAPES[2],
     },
     "backbone_1": {"features2": FEATURES["features2"], "features3": FEATURES["features3"]},
-    # The three scales' tokens after the first half of the deformable attention layers.
-    "pixel_decoder_0": {"tokens": (1, 256, 1, TOKENS)},
-    "pixel_decoder_1": dict(DECODED),
+    **{f"pixel_decoder_{index}": {f"tokens{index}": (1, 256, 1, TOKENS)} for index in range(PIXEL_LAYERS - 1)},
+    f"pixel_decoder_{PIXEL_LAYERS - 1}": dict(DECODED),
     "transformer_decoder": {
         # Class logits per query, classes along the channels: [1, classes + 1, 1, queries].
         "class_logits": (1, CLASSES + 1, 1, QUERIES),

@@ -37,9 +37,11 @@ compilation:
     sha256: 23d5f238618efee10bf0af60722933a0779161e4f6803441bb1b5be7e16a6306
     size_bytes: 227346873
   # Each part compiles apart, one MLA segment each; the CPU only prepares the image and decodes the instances. The
-  # backbone and the pixel decoder each compile as two components: compiled whole, each took 25-30 GiB, and the CI
-  # runner (32 GiB) lost contact an hour into the backbone's compile.
-  components: [backbone_0, backbone_1, pixel_decoder_0, pixel_decoder_1, transformer_decoder]
+  # backbone compiles as two components and the pixel decoder as one per deformable attention layer: compiled
+  # whole, each took 25-30 GiB, the CI runner (32 GiB) lost contact compiling them, and even three deformable layers
+  # together took over 31 GiB.
+  components: [backbone_0, backbone_1, pixel_decoder_0, pixel_decoder_1, pixel_decoder_2, pixel_decoder_3,
+    pixel_decoder_4, pixel_decoder_5, transformer_decoder]
 
 build_profiles:
   w16a16:
@@ -52,6 +54,14 @@ build_profiles:
         parameters: {precision: w16a16}
       pixel_decoder_1:
         parameters: {precision: w16a16}
+      pixel_decoder_2:
+        parameters: {precision: w16a16}
+      pixel_decoder_3:
+        parameters: {precision: w16a16}
+      pixel_decoder_4:
+        parameters: {precision: w16a16}
+      pixel_decoder_5:
+        parameters: {precision: w16a16}
       transformer_decoder:
         parameters: {precision: w16a16}
 
@@ -61,6 +71,10 @@ pipeline:
 - {component: backbone_1}
 - {component: pixel_decoder_0}
 - {component: pixel_decoder_1}
+- {component: pixel_decoder_2}
+- {component: pixel_decoder_3}
+- {component: pixel_decoder_4}
+- {component: pixel_decoder_5}
 - {component: transformer_decoder}
 - {cpu: "Top 100 (query, class) pairs; upsample their masks to the image and threshold at 0"}
 

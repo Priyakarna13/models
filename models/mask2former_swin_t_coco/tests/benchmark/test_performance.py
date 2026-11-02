@@ -16,8 +16,7 @@ def test_performance_records_each_components_execution_plan(performance: dict[st
     assert list(performance["components"]) == [
         "backbone_0",
         "backbone_1",
-        "pixel_decoder_0",
-        "pixel_decoder_1",
+        *(f"pixel_decoder_{index}" for index in range(6)),
         "transformer_decoder",
     ]
     for item in performance["components"].values():

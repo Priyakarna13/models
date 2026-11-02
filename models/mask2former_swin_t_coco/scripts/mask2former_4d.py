@@ -37,8 +37,9 @@ import torch.nn.functional as F
 
 TILE = 25
 RAMP, BIAS = 1e4, 1e4
-# The backbone compiles as two components, split before this stage (0-based), and the pixel decoder as two,
-# split at the middle of its deformable layers: compiled whole, either needs more memory than a CI runner has.
+# The backbone compiles as two components, split before this stage (0-based), and the pixel decoder as one component
+# per deformable layer: compiled whole, the backbone needs more memory than a CI runner has, and even three deformable
+# layers together do.
 SPLIT_STAGE = 2
 
 
@@ -343,22 +344,23 @@ class PixelDecoder4D(torch.nn.Module):
         )
 
     def start(self, f1, f2, f3):
-        """The input projections and the first half of the deformable layers: the tokens [1, 256, 1, tokens]."""
+        """The input projections and the first deformable layer: the tokens [1, 256, 1, tokens]."""
         d = self.decoder
         embeds = []
         for level, x in enumerate((f3, f2, f1)):
             conv, norm = d.input_projections[level]
             embeds.append(group_norm(conv(x), norm))
         h = torch.cat([e.reshape(1, e.shape[1], 1, -1) for e in embeds], 3)
-        for layer in self.layers[: len(self.layers) // 2]:
-            h = layer(h, self.position)
-        return h
+        return self.layers[0](h, self.position)
+
+    def layer(self, index, h):
+        """Deformable layer index (1 to 4, 0-based) on the tokens."""
+        return self.layers[index](h, self.position)
 
     def finish(self, h, f0):
-        """The second half of the deformable layers, the FPN level and the mask projection."""
+        """The last deformable layer, the FPN level and the mask projection."""
         d = self.decoder
-        for layer in self.layers[len(self.layers) // 2 :]:
-            h = layer(h, self.position)
+        h = self.layers[-1](h, self.position)
         sizes = [hh * ww for hh, ww in self.shapes]
         outputs, start = [], 0
         for (hh, ww), n in zip(self.shapes, sizes):
@@ -372,7 +374,10 @@ class PixelDecoder4D(torch.nn.Module):
         return (d.mask_projection(outputs[-1]), *outputs[: d.num_feature_levels])
 
     def forward(self, f0, f1, f2, f3):
-        return self.finish(self.start(f1, f2, f3), f0)
+        h = self.start(f1, f2, f3)
+        for index in range(1, len(self.layers) - 1):
+            h = self.layer(index, h)
+        return self.finish(h, f0)
 
 
 def packed_projection(attention, index, order):

@@ -18,6 +18,7 @@ hidden_states_norms), and holds relative_position_index buffers that transformer
 """
 
 import argparse
+import functools
 import shutil
 import tempfile
 from pathlib import Path
@@ -87,13 +88,20 @@ def modules(model):
             self.transformer_decoder = TransformerDecoder4D(
                 model.model.transformer_module, model.class_predictor, list(SCALE_SIZES)
             )
+            layers = len(self.pixel_decoder.layers)
             self.parts = {
                 "backbone_0": self.backbone.start,
                 "backbone_1": self.backbone.finish,
                 "pixel_decoder_0": self.pixel_decoder.start,
-                "pixel_decoder_1": self.pixel_decoder.finish,
+                **{
+                    f"pixel_decoder_{index}": functools.partial(self.pixel_decoder.layer, index)
+                    for index in range(1, layers - 1)
+                },
+                f"pixel_decoder_{layers - 1}": self.pixel_decoder.finish,
                 "transformer_decoder": self.transformer_decoder,
             }
+            if list(self.parts) != list(COMPONENTS):
+                raise ValueError(f"the pixel decoder has {layers} deformable layers, pipeline.py expects others")
 
         def run(self, component, inputs):
             outputs = self.parts[component](*inputs)
@@ -121,7 +129,7 @@ def seeded_image(seed):
 
 def check_parts(model, side_by_side):
     """The components give their transformers counterparts' outputs on seeded images: the two backbone parts,
-    chained, its feature maps; the two pixel decoder parts, chained on transformers' feature maps, its mask and
+    chained, its feature maps; the pixel decoder parts, chained on transformers' feature maps, its mask and
     multi-scale features; and the transformer decoder, on transformers' pixel decoder outputs with mask features
     scaled by MASK_SCALE, its class and mask logits."""
     import torch
@@ -137,8 +145,10 @@ def check_parts(model, side_by_side):
             decoded = pixel.decoder(list(features))
             expected = (decoded.mask_features, *decoded.multi_scale_features)
             tokens = side_by_side.pixel_decoder.start(*features[1:])
+            for index in range(1, len(side_by_side.pixel_decoder.layers) - 1):
+                tokens = side_by_side.pixel_decoder.layer(index, tokens)
             got = side_by_side.pixel_decoder.finish(tokens, features[0])
-            for name, want, value in zip(OUTPUT_SHAPES["pixel_decoder_1"], expected, got):
+            for name, want, value in zip(OUTPUT_SHAPES[COMPONENTS[-2]], expected, got):
                 compare(want.numpy(), value.numpy(), f"pixel decoder {name} (seed {seed})")
             mask_features = decoded.mask_features * MASK_SCALE
             reference = model.model.transformer_module(list(decoded.multi_scale_features), mask_features)

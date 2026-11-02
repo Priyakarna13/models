@@ -65,7 +65,12 @@ def test_compile_binds_every_component(load_script: Callable[[str], ModuleType])
     recipe = load_script("compile")
     parameters = recipe._component_parameters("w16a16")
 
-    assert list(parameters) == ["backbone_0", "backbone_1", "pixel_decoder_0", "pixel_decoder_1", "transformer_decoder"]
+    assert list(parameters) == [
+        "backbone_0",
+        "backbone_1",
+        *(f"pixel_decoder_{index}" for index in range(6)),
+        "transformer_decoder",
+    ]
     assert {item["precision"] for item in parameters.values()} == {"w16a16"}
     with pytest.raises(ValueError, match="no build profile 'w8a8'"):
         recipe._component_parameters("w8a8")
