@@ -217,6 +217,7 @@ class ModelOptions:
 
     def __init__(self):
         self.preprocess = types.SimpleNamespace(resize=types.SimpleNamespace(), normalize=types.SimpleNamespace())
+        self.advanced_execution = types.SimpleNamespace()
 
 
 class Tensor:
@@ -386,9 +387,15 @@ def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script,
     assert_letterboxed_frame(frame)
     assert frame.options["memory"] == "EV74"
     options = functions["image_options"]()
-    assert (options.preprocess.kind, options.preprocess.resize.mode, options.preprocess.preset) == (
-        "Image", "Stretch", "ImageNet"
-    )
+    assert (options.preprocess.kind, options.preprocess.resize.mode) == ("Image", "Stretch")
+    if script.parents[1].name.startswith("dfine_"):
+        # D-FINE uses RGB/255, not RF-DETR's ImageNet normalization.
+        normalization = options.preprocess.normalize
+        assert normalization.has_explicit_stats is True
+        assert normalization.mean == [0.0, 0.0, 0.0] and normalization.stddev == [1.0, 1.0, 1.0]
+        assert options.advanced_execution.postprocess_target == "EV74"
+    else:
+        assert options.preprocess.preset == "ImageNet"
 
 
 def test_model_code_uses_cores_mla_stats_names():

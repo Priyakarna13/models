@@ -1,0 +1,96 @@
+display_name: D-FINE Nano
+description: Nano D-FINE COCO object detector with default deformable-attention sampling.
+model_type: vision
+tasks:
+- object_detection
+modalities:
+  inputs:
+  - image
+  outputs:
+  - bounding_boxes
+  - class_scores
+architecture: dfine
+license:
+  spdx: Apache-2.0
+  redistribution: allowed
+  attribution: D-FINE is distributed by the D-FINE authors under Apache-2.0; this
+    checkpoint is the USTC community Transformers port.
+upstream:
+  repository: https://huggingface.co/ustc-community/dfine-nano-coco
+  revision: 066438d3d8f0da137a37b38fdf3368fd4afceced
+conversion:
+  source:
+    repository: ustc-community/dfine-nano-coco
+    revision: 066438d3d8f0da137a37b38fdf3368fd4afceced
+    main_file: model.safetensors
+    files:
+      model.safetensors:
+        sha256: 19e06bdc873da819920a8d373b879721a5b9759d822f8213220bb09abbdab58b
+        size_bytes: 15278996
+      config.json:
+        sha256: 7edf2d96d3deb10aa4ec920be0e8e444b617454545bb58093e32bd8e2b96fa2f
+        size_bytes: 6557
+      preprocessor_config.json:
+        sha256: cd38cd59999e7a95d68e487fbe5132df3d4e5c32a0836add57e6126ba0c4eaf1
+        size_bytes: 444
+compilation:
+  format: onnx
+  source:
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/dfine_n/5937a2d76d0e88529f2768dbffa52745ca307258021f35f890f8c684df75c8cf/41346195932-1/model.onnx
+    sha256: 5937a2d76d0e88529f2768dbffa52745ca307258021f35f890f8c684df75c8cf
+    size_bytes: 15793939
+  components:
+  - backbone
+  - decoder
+calibrations:
+- id: coco-2017-cal
+  dataset: &id001
+    id: coco-2017
+    variant: cal
+    sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1
+    size_bytes: 187510866
+build_profiles:
+  w16a16_w16a16:
+    calibration_dataset: coco-2017-cal
+    runner_market: on-demand
+    components:
+      backbone:
+        parameters:
+          precision: w16a16
+          calibration_bins: 2048
+          calibration_samples: 50
+      decoder:
+        parameters:
+          precision: w16a16
+          calibration_bins: 2048
+          calibration_samples: 50
+pipeline:
+- component: backbone
+- cpu: Top 300 content/reference queries
+- component: decoder
+numerical_fidelity:
+  status: diagnostic
+  dataset: *id001
+  selection:
+    method: seeded_random_without_replacement
+    seed: 42
+    offset: 50
+    samples: 10
+  outputs:
+  - pred_boxes
+  - pred_logits
+accuracy:
+  datasets:
+  - id: coco-2017
+    variant: val
+    sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da
+    size_bytes: 898368520
+performance: {}
+reference_metrics:
+- source: https://proceedings.iclr.cc/paper_files/paper/2025/file/6cf58a87e3097e7d1f9be3e8693a93de-Paper-Conference.pdf
+  dataset:
+    id: coco-2017
+    split: val
+  conditions: 640x640, D-FINE-N, Table 7
+  metrics:
+    coco_map: 0.428

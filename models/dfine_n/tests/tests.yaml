@@ -1,0 +1,27 @@
+# Initial measured on-device baseline; update from the first published profile.
+conversion:
+  run_tests: true
+compile:
+  run_tests: true
+accuracy:
+  run_tests: true
+  expected:
+    w16a16_w16a16:
+      coco-2017-val:
+        coco_map: 0.4150250830734953
+        coco_ap50: 0.5969580415170108
+        coco_ap75: 0.4400045052655942
+        coco_ap_small: 0.20665518823194398
+        coco_ap_medium: 0.45534593610736174
+        coco_ap_large: 0.6172106844660908
+        coco_ar1: 0.33563890253258144
+        coco_ar10: 0.5569048591578504
+        coco_ar100: 0.6201869849612739
+        coco_ar_small: 0.3727666547336906
+        coco_ar_medium: 0.6869902938960516
+        coco_ar_large: 0.8538070845223211
+performance:
+  run_tests: true
+  expected:
+    w16a16_w16a16:
+      throughput_fps: 169.34414378881831
