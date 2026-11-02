@@ -28,8 +28,14 @@ def test_only_registered_profiles_are_admitted_and_decoder_stays_w16a16(compiler
     assert all(
         p == {"precision": "w16a16", "calibration_bins": 2048, "calibration_samples": 50} for p in parameters.values()
     )
+    for profile, precision, bins in [("w8a16_w16a16", "w8a16", 2048), ("w8a8_w16a16", "w8a8", 1024)]:
+        candidate = compiler.component_parameters(metadata, profile)
+        assert candidate["backbone"] == {"precision": precision, "calibration_bins": bins, "calibration_samples": 50}
+        assert candidate["decoder"] == parameters["decoder"]
     with pytest.raises(ValueError):
-        compiler.component_parameters(metadata, "w8a8_w16a16")
+        compiler.component_parameters(metadata, "w8a8_mixed_w16a16")
+    with pytest.raises(ValueError):
+        compiler.component_parameters(metadata, "unregistered_profile")
     for key, value in [("precision", "w8a8"), ("calibration_bins", 0), ("calibration_samples", True)]:
         changed = copy.deepcopy(metadata)
         changed["build_profiles"][0]["components"][0]["parameters"][key] = value
@@ -68,7 +74,7 @@ def test_candidate_profile_parameters_do_not_change_the_decoder(compiler, model_
     candidate["components"][0]["parameters"]["precision"] = compiler.PROFILES[profile]
     if "mixed" in profile:
         candidate["components"][0]["parameters"]["precision_map"] = {"graph_sha256": "0" * 64, "nodes": {}}
-    metadata["build_profiles"].append(candidate)
+    metadata["build_profiles"] = [metadata["build_profiles"][0], candidate]
     parameters = compiler.component_parameters(metadata, profile)
     assert parameters["decoder"] == metadata["build_profiles"][0]["components"][1]["parameters"]
     candidate["components"][1]["parameters"]["precision"] = "w8a8"

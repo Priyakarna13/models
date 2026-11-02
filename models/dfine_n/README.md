@@ -4,39 +4,50 @@
 
 ## Overview
 
-D-FINE Nano is a compact transformer object detector trained to find the 80
-COCO object classes in ordinary images. It runs as two components: a backbone
-that extracts features and proposes candidate locations, and a decoder that
-refines the best 300 candidates into boxes and class scores. Your application
-selects the candidates on the CPU between the components while retaining the
-original feature tensor. Native preprocessing accepts RGB images at their
-original size, and native decoding can return boxes in those original image
-coordinates without additional overlap suppression.
+D-FINE Nano detects 80 COCO object classes using a backbone and decoder.
+The backbone extracts features and proposes candidate locations; the decoder
+refines the best 300 into boxes and class scores. Select candidates on the
+CPU, retaining the original feature tensor. Native
+preprocessing accepts original-size RGB images; native decoding returns boxes
+in their image coordinates.
 
 ## Inputs and outputs
 
-**Input.** Stretch the RGB image to 640×640 with bilinear resampling, without
-preserving aspect ratio. Scale pixel values to 0–1; do not apply ImageNet mean
-or standard deviation. The scripts let Neat perform these steps on the original
-image and retain its dimensions for decoding.
+**Input.** Stretch RGB images to 640×640 with bilinear resampling. Scale pixels
+to 0–1, without ImageNet mean or standard deviation. The scripts preprocess
+natively and retain original dimensions for decoding.
 
 **Between components.** The backbone returns `attention_memory` and
 `query_content`, each shaped (1, 2000, 128), `proposal_scores` (1, 2000), and
 `reference_logits` (1, 2000, 4). Select the 300 highest proposal scores, breaking
 ties by lower proposal index. Gather the corresponding content and raw reference
-rows. Pass the original attention tensor and those two gathered tensors to the
-decoder; keep their storage alive until execution completes.
+rows. Pass these and the original attention tensor to the decoder; retain
+their storage until execution completes.
 
 **Outputs.** The decoder returns `pred_boxes` (1, 300, 4), normalized
 (cx, cy, width, height), and `pred_logits` (1, 300, 80).
 
-1. Apply sigmoid to the class logits and rank all 300 × 80 box-class pairs.
-2. Keep the 300 best pairs, including different classes from the same box; do not apply overlap suppression.
-3. Convert boxes to corners, scale by the original image dimensions, and clip to that image.
-4. Map each class index through the sorted list of the 80 COCO category IDs, which contains gaps.
+1. Apply sigmoid; rank all 300×80 query/class pairs.
+2. Keep 300 pairs, including different classes per box; do not suppress overlaps.
+3. Convert to corners, scale to original dimensions, and clip to the image.
+4. Map class indices through sorted COCO category IDs, including their gaps.
 
 Neat's `DetrFocal` BoxDecode performs this decoding and publishes integer boxes
 with rounded origins and sizes. It is distinct from classic `Detr` decoding.
+
+**Precision profiles**
+
+| Profile | Backbone weights / activations | Decoder weights / activations |
+| --- | --- | --- |
+| `w16a16_w16a16` | BF16 / BF16 | BF16 / BF16 |
+| `w8a16_w16a16` | INT8 / BF16 | BF16 / BF16 |
+| `w8a8_w16a16` | INT8 / INT8 | BF16 / BF16 |
+
+These policies do not specify every instruction's precision. Public boundaries remain FP32.
+Each decoder calibrates on its own profile's quantized backbone outputs.
+
+W16A16 remains the accuracy reference. W8A8 trades accuracy for throughput;
+W8A16 is not a throughput optimization. Mixed precision is unavailable.
 
 ## Building applications
 
