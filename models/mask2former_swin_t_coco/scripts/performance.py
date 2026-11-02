@@ -1,8 +1,8 @@
 """Benchmark Mask2Former Swin-T with Neat Core and save its report.
 
-Given one --mpk <component>=<path> per component (backbone_0, backbone_1, pixel_decoder_0 to pixel_decoder_5,
+Given one --mpk <component>=<path> per component (backbone_0, backbone_1, pixel_decoder_0 to pixel_decoder_6,
 transformer_decoder) and --dataset coco-2017-val=<extracted directory>, the script measures the whole model as it
-runs on one COCO image in a 720p frame: Neat's preprocessing and the nine components, each working on a different
+runs on one COCO image in a 720p frame: Neat's preprocessing and the ten components, each working on a different
 frame at the same time, up to the class and mask logits. Each component input takes the earlier component output
 of the same name; an output a later component needs (two of the backbone's feature maps) is copied out of the
 runner's buffers and carried along with its frame. It also records each MPK's MLA
@@ -29,7 +29,7 @@ PIXEL_LAYERS = 6
 COMPONENTS = (
     "backbone_0",
     "backbone_1",
-    *(f"pixel_decoder_{index}" for index in range(PIXEL_LAYERS)),
+    *(f"pixel_decoder_{index}" for index in range(PIXEL_LAYERS + 1)),
     "transformer_decoder",
 )
 # Each component's inputs and outputs by name, as in pipeline.py.
@@ -37,15 +37,15 @@ INPUTS = {
     "backbone_0": ("image",),
     "backbone_1": ("stage3_input",),
     "pixel_decoder_0": ("features1", "features2", "features3"),
-    **{f"pixel_decoder_{index}": (f"tokens{index - 1}",) for index in range(1, PIXEL_LAYERS - 1)},
-    f"pixel_decoder_{PIXEL_LAYERS - 1}": (f"tokens{PIXEL_LAYERS - 2}", "features0"),
+    **{f"pixel_decoder_{index}": (f"tokens{index - 1}",) for index in range(1, PIXEL_LAYERS)},
+    f"pixel_decoder_{PIXEL_LAYERS}": (f"tokens{PIXEL_LAYERS - 1}", "features0"),
     "transformer_decoder": ("mask_features", "scale0", "scale1", "scale2"),
 }
 OUTPUTS = {
     "backbone_0": ("features0", "features1", "stage3_input"),
     "backbone_1": ("features2", "features3"),
-    **{f"pixel_decoder_{index}": (f"tokens{index}",) for index in range(PIXEL_LAYERS - 1)},
-    f"pixel_decoder_{PIXEL_LAYERS - 1}": ("mask_features", "scale0", "scale1", "scale2"),
+    **{f"pixel_decoder_{index}": (f"tokens{index}",) for index in range(PIXEL_LAYERS)},
+    f"pixel_decoder_{PIXEL_LAYERS}": ("mask_features", "scale0", "scale1", "scale2"),
     "transformer_decoder": ("class_logits", "mask_logits"),
 }
 IMAGE_SIZE = 384

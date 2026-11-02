@@ -38,8 +38,8 @@ import torch.nn.functional as F
 TILE = 25
 RAMP, BIAS = 1e4, 1e4
 # The backbone compiles as two components, split before this stage (0-based), and the pixel decoder as one component
-# per deformable layer: compiled whole, the backbone needs more memory than a CI runner has, and even three deformable
-# layers together do.
+# per deformable layer plus one for its 1/4 level: compiled whole, the backbone needs more memory than a CI runner has,
+# and even three deformable layers together do, or one with the 1/4 level.
 SPLIT_STAGE = 2
 
 
@@ -354,13 +354,12 @@ class PixelDecoder4D(torch.nn.Module):
         return self.layers[0](h, self.position)
 
     def layer(self, index, h):
-        """Deformable layer index (1 to 4, 0-based) on the tokens."""
+        """Deformable layer index (1 to 5, 0-based) on the tokens."""
         return self.layers[index](h, self.position)
 
     def finish(self, h, f0):
-        """The last deformable layer, the FPN level and the mask projection."""
+        """The FPN level and the mask projection, on the tokens after the last deformable layer."""
         d = self.decoder
-        h = self.layers[-1](h, self.position)
         sizes = [hh * ww for hh, ww in self.shapes]
         outputs, start = [], 0
         for (hh, ww), n in zip(self.shapes, sizes):
@@ -375,7 +374,7 @@ class PixelDecoder4D(torch.nn.Module):
 
     def forward(self, f0, f1, f2, f3):
         h = self.start(f1, f2, f3)
-        for index in range(1, len(self.layers) - 1):
+        for index in range(1, len(self.layers)):
             h = self.layer(index, h)
         return self.finish(h, f0)
 

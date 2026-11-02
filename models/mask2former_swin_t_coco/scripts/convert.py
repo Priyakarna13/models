@@ -95,9 +95,9 @@ def modules(model):
                 "pixel_decoder_0": self.pixel_decoder.start,
                 **{
                     f"pixel_decoder_{index}": functools.partial(self.pixel_decoder.layer, index)
-                    for index in range(1, layers - 1)
+                    for index in range(1, layers)
                 },
-                f"pixel_decoder_{layers - 1}": self.pixel_decoder.finish,
+                f"pixel_decoder_{layers}": self.pixel_decoder.finish,
                 "transformer_decoder": self.transformer_decoder,
             }
             if list(self.parts) != list(COMPONENTS):
@@ -145,7 +145,7 @@ def check_parts(model, side_by_side):
             decoded = pixel.decoder(list(features))
             expected = (decoded.mask_features, *decoded.multi_scale_features)
             tokens = side_by_side.pixel_decoder.start(*features[1:])
-            for index in range(1, len(side_by_side.pixel_decoder.layers) - 1):
+            for index in range(1, len(side_by_side.pixel_decoder.layers)):
                 tokens = side_by_side.pixel_decoder.layer(index, tokens)
             got = side_by_side.pixel_decoder.finish(tokens, features[0])
             for name, want, value in zip(OUTPUT_SHAPES[COMPONENTS[-2]], expected, got):
