@@ -20,12 +20,12 @@ import os
 import shutil
 import tarfile
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
-import onnx
 import onnxruntime as ort
 from afe.apis.defines import (
     BiasCorrectionType,
@@ -36,6 +36,7 @@ from afe.apis.defines import (
     quantization_scheme,
 )
 from afe.apis.loaded_net import load_model
+from afe.core.configs import QuantizationPrecision
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import decoder_inputs, load_images, select_images, to_afe_layout
@@ -43,7 +44,7 @@ from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
-from surgery import OUTPUTS, prepare_model
+from surgery import OUTPUTS, annotate_backbone, prepare_model, region_precision_map, validate_bf16_regions
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "dfine_n"
@@ -57,20 +58,6 @@ COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 COMPONENTS = ("backbone", "decoder")
 BACKBONE_OUTPUTS = ("attention_memory", "query_content", "proposal_scores", "reference_logits")
 DECODER_INPUTS = ("attention_memory", "query_content", "reference_logits")
-BF16_REGIONS = ("backbone", "nonconv", "outputs")
-LAYOUT_OPS = {
-    "Identity",
-    "Reshape",
-    "Transpose",
-    "Flatten",
-    "Slice",
-    "Split",
-    "Concat",
-    "Squeeze",
-    "Unsqueeze",
-    "Tile",
-    "Expand",
-}
 SHAPES = {
     "backbone": {"input": (1, 3, 640, 640)},
     "decoder": dict(zip(DECODER_INPUTS, ((1, 2000, 128), (1, 300, 128), (1, 300, 4)), strict=True)),
@@ -109,72 +96,6 @@ def component_parameters(metadata, profile_id):
     return parameters
 
 
-def validate_bf16_regions(regions):
-    if (
-        not isinstance(regions, list)
-        or not regions
-        or not all(isinstance(region, str) for region in regions)
-        or len(regions) != len(set(regions))
-        or not set(regions) <= set(BF16_REGIONS)
-    ):
-        raise ValueError(f"Expected distinct BF16 regions from {BF16_REGIONS}")
-
-
-def region_precision_map(graph, regions):
-    """Freeze a compact mixed policy onto the exact prepared graph, as RF-DETR does.
-
-    ``backbone`` is the HGNet feature extractor, not the encoder neck/projections.
-    ``nonconv`` keeps other floating operations BF16, matching the INC screening
-    domain. ``outputs`` also promotes numerical producers behind terminal views;
-    marking only a terminal Concat does not establish its inputs' precision.
-    """
-    validate_bf16_regions(regions)
-    model = onnx.load(graph)
-    names = [node.name for node in model.graph.node]
-    if not all(names) or len(names) != len(set(names)):
-        raise ValueError("Expected unique named operations in the prepared backbone")
-    floats = {
-        value.name
-        for value in (*model.graph.input, *model.graph.output, *model.graph.value_info)
-        if value.type.tensor_type.elem_type == onnx.TensorProto.FLOAT
-    }
-    nodes = {
-        node.name: "int8"
-        for node in model.graph.node
-        if node.op_type != "Constant" and (node.op_type == "Conv" or any(v in floats for v in node.output))
-    }
-    resolved = set()
-    for node in model.graph.node:
-        if node.name not in nodes:
-            continue
-        matches = set()
-        if "/backbone/" in node.name:
-            matches.add("backbone")
-        if node.op_type != "Conv":
-            matches.add("nonconv")
-        if matches.intersection(regions):
-            resolved.update(matches.intersection(regions))
-            nodes[node.name] = "bfloat16"
-    if "outputs" in regions:
-        producers = {value: node for node in model.graph.node for value in node.output}
-        pending, visited = [value.name for value in model.graph.output], set()
-        while pending:
-            node = producers.get(pending.pop())
-            if node is None or node.name in visited:
-                continue
-            visited.add(node.name)
-            if node.name in nodes:
-                nodes[node.name] = "bfloat16"
-                resolved.add("outputs")
-            if node.op_type in LAYOUT_OPS:
-                pending.extend(node.input if node.op_type == "Concat" else node.input[:1])
-    if resolved != set(regions):
-        raise ValueError(f"BF16 regions did not resolve: {sorted(set(regions) - resolved)}")
-    if set(nodes.values()) != {"int8", "bfloat16"}:
-        raise ValueError("BF16 regions must retain mixed arithmetic")
-    return {"graph_sha256": sha256_file(graph)[0], "nodes": nodes}
-
-
 def quantization_config(parameters):
     precision = parameters["precision"]
     if precision not in ("w16a16", "w8a16", "w8a8"):
@@ -195,34 +116,6 @@ def quantization_config(parameters):
     return config
 
 
-def annotate_backbone(graph, precision_map):
-    """Apply a frozen INC map to exactly the graph it was selected for, using the bundled exporter."""
-    if (
-        not isinstance(precision_map, dict)
-        or set(precision_map) != {"graph_sha256", "nodes"}
-        or precision_map["graph_sha256"] != sha256_file(graph)[0]
-        or not isinstance(precision_map["nodes"], dict)
-        or not precision_map["nodes"]
-        or not all(isinstance(value, str) for value in precision_map["nodes"].values())
-        or set(precision_map["nodes"].values()) != {"int8", "bfloat16"}
-    ):
-        raise ValueError("Expected a mixed INC precision map bound to this prepared backbone")
-    model = onnx.load(graph)
-    names = [node.name for node in model.graph.node]
-    if len(names) != len(set(names)) or not set(precision_map["nodes"]) <= set(names):
-        raise ValueError("INC precision map has unknown or ambiguous operation names")
-    from neural_compressor.annotate_precision import annotate_graph
-
-    # The bundled exporter groups fused chains but rebuilds the graph without value_info.
-    # Replace only nodes, retaining the original shapes, metadata and public contract.
-    annotated = annotate_graph(model.graph, precision_map["nodes"])
-    model.graph.ClearField("node")
-    model.graph.node.extend(annotated.node)
-    model.opset_import.append(onnx.helper.make_opsetid("ai.sima", 1))
-    onnx.checker.check_model(model)
-    onnx.save(model, graph)
-
-
 def quantize_component(graph, name, parameters, arrays):
     if any(v.dtype != np.float32 or not np.isfinite(v).all() for v in arrays.values()):
         raise ValueError("Expected finite float32 calibration tensors")
@@ -230,12 +123,32 @@ def quantize_component(graph, name, parameters, arrays):
     data = convert_data_generator_to_iterable(
         DataGenerator({InputName(key): to_afe_layout(value) for key, value in arrays.items()})
     )
-    return loaded.quantize(
+    quantized = loaded.quantize(
         calibration_data=data,
         quantization_config=quantization_config(parameters),
         model_name=name,
         log_level=logging.INFO,
     )
+    if "bf16_regions" in parameters:
+        require_mixed_precision(quantized)
+    return quantized
+
+
+def require_mixed_precision(quantized):
+    """Check applied arithmetic, not only annotations, as RF-DETR does.
+
+    Ignore placeholders and adapters: INT8 ingress does not prove an INT8
+    convolution survived AFE's precision propagation and fusion.
+    """
+    counts = Counter(
+        node.ir.quant_config.quantization_precision.value
+        for node in quantized._net.iter_nodes_recursive()
+        if type(getattr(node.ir, "operation", None)).__name__ == "ConvAddActivationOp"
+        and getattr(node.ir, "quant_config", None) is not None
+    )
+    logging.info("Mixed backbone convolution precisions: %s", dict(counts))
+    if not counts[QuantizationPrecision.BFLOAT_16] or not counts[QuantizationPrecision.INT_8]:
+        raise RuntimeError(f"Expected BF16 and INT8 convolutions in the mixed backbone, found {dict(counts)}")
 
 
 def audit_mpk(archive, component):

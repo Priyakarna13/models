@@ -208,3 +208,130 @@ def test_mla_stats_collected(performance: dict[str, Any]) -> None:
         assert (layer_stats["status"], stage_stats["status"]) == ("ok", "ok"), component_id
         assert any(layer["latency_us"] > 0 for layer in layer_stats["layers"]), component_id
         assert stage_stats["stages"], component_id
+
+
+def test_failed_output_setup_never_builds_runners(load_script, monkeypatch):
+    p = load_script("performance")
+    called = []
+    monkeypatch.setattr(p, "mla_stats", lambda *args: called.append("hardware"))
+    monkeypatch.setattr(p, "build_runners", lambda *args: called.append("build"))
+    with pytest.raises(OSError):
+        p.benchmark_pipeline({}, "coco-2017-val", Path("/unused"), Path("/dev/null/not-a-directory"))
+    assert called == []
+
+
+@pytest.mark.parametrize("failure", ["seed", "decoder_build"])
+def test_partial_runner_setup_closes_the_created_backbone(p, monkeypatch, failure):
+    closed, error = [], ValueError(failure)
+
+    def seed(*args, **kwargs):
+        if failure == "seed":
+            raise error
+        return tuple(object() for _ in range(4))
+
+    def build_decoder(*args, **kwargs):
+        raise error
+
+    backbone = types.SimpleNamespace(run=seed, close=lambda: closed.append("backbone"))
+    models = {"backbone": types.SimpleNamespace(build=lambda *args, **kwargs: backbone), "decoder": object()}
+    monkeypatch.setattr(p.pyneat, "RunOptions", types.SimpleNamespace, raising=False)
+    monkeypatch.setattr(p.pyneat, "OutputMemory", types.SimpleNamespace(ZeroCopy="zero_copy"), raising=False)
+    monkeypatch.setattr(p.pyneat, "OverflowPolicy", types.SimpleNamespace(Block="block"), raising=False)
+    monkeypatch.setattr(p, "select_queries", lambda *args: [object(), object()])
+    monkeypatch.setattr(p, "decoder_graph", lambda model: types.SimpleNamespace(build=build_decoder))
+    with pytest.raises(ValueError) as caught:
+        p.build_runners(models, object())
+    assert caught.value is error
+    assert closed == ["backbone"]
+
+
+@pytest.mark.parametrize("failure", [None, "latency", "throughput"])
+def test_benchmark_owns_runner_cleanup_once_on_success_and_failure(p, monkeypatch, tmp_path, failure):
+    closed, reported, error = [], [], ValueError(failure)
+    backbone = types.SimpleNamespace(close=lambda: closed.append("backbone"))
+    decoder = types.SimpleNamespace(close=lambda: closed.append("decoder"))
+    monkeypatch.setattr(p, "mla_stats", lambda path: ({}, {}))
+    monkeypatch.setattr(p.pyneat, "Model", lambda *args: object(), raising=False)
+    monkeypatch.setattr(p, "image_options", lambda: None)
+    monkeypatch.setattr(p, "tensor_options", lambda: None)
+    monkeypatch.setattr(p, "sample_image", lambda path: Path("frame.jpg"))
+    monkeypatch.setattr(p, "frame_tensor", lambda path: object())
+    monkeypatch.setattr(p, "build_runners", lambda *args: (backbone, decoder))
+
+    def measure(stage, result):
+        def run(*args):
+            if failure == stage:
+                raise error
+            return result
+
+        return run
+
+    monkeypatch.setattr(p, "measure_latency", measure("latency", [0.1]))
+    monkeypatch.setattr(p, "measure_throughput", measure("throughput", object()))
+    monkeypatch.setattr(p, "write_report", lambda *args: reported.append(True))
+    args = ({"backbone": Path("backbone"), "decoder": Path("decoder")}, "coco-2017-val", tmp_path, tmp_path)
+    if failure:
+        with pytest.raises(ValueError) as caught:
+            p.benchmark_pipeline(*args)
+        assert caught.value is error
+    else:
+        p.benchmark_pipeline(*args)
+    assert closed == ["decoder", "backbone"]
+    assert reported == ([] if failure else [True])
+
+
+def test_throughput_failure_owns_monitor_cleanup_but_not_runner_lifetime(p, monkeypatch):
+    cleaned, error = [], ValueError("forwarding")
+    monitor = types.SimpleNamespace(running=lambda: True, stop=lambda: cleaned.append("monitor"))
+    monkeypatch.setattr(p.pyneat, "TelemetryMonitor", lambda: monitor, raising=False)
+
+    def fail(*stages, **kwargs):
+        raise error
+
+    monkeypatch.setattr(p, "run_together", fail)
+    runner = types.SimpleNamespace(close=lambda: cleaned.append("runner"))
+    with pytest.raises(ValueError) as caught:
+        p.measure_throughput(runner, runner, object())
+    assert caught.value is error
+    assert cleaned == ["monitor"]
+
+
+def test_forwarding_failure_closes_both_inputs_and_joins_every_stage(p):
+    import threading
+
+    ready = threading.Barrier(3, timeout=2)
+    backbone_closed, decoder_closed = threading.Event(), threading.Event()
+    finished, closed, error = [], [], ValueError("forwarding")
+
+    def close(name, event):
+        closed.append(name)
+        event.set()
+
+    runners = (
+        types.SimpleNamespace(close_input=lambda: close("backbone", backbone_closed)),
+        types.SimpleNamespace(close_input=lambda: close("decoder", decoder_closed)),
+    )
+
+    def push_inputs():
+        ready.wait()
+        assert backbone_closed.wait(2)
+        finished.append("push")
+
+    def forward_proposals():
+        ready.wait()
+        raise error
+
+    def pull_outputs():
+        ready.wait()
+        assert decoder_closed.wait(2)
+        finished.append("pull")
+
+    with pytest.raises(ValueError) as caught:
+        p.run_together(push_inputs, forward_proposals, pull_outputs, runners=runners)
+    assert caught.value is error
+    assert sorted(finished) == ["pull", "push"]
+    assert closed == ["backbone", "decoder"]
+    assert not any(
+        thread.is_alive() and thread.name in {"push_inputs", "forward_proposals", "pull_outputs"}
+        for thread in threading.enumerate()
+    )

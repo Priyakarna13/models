@@ -34,22 +34,8 @@ their storage until execution completes.
 Neat's `DetrFocal` BoxDecode publishes integer boxes with rounded origins and
 sizes. It differs from classic `Detr` decoding.
 
-**Precision profiles**
-
-| Profile | Backbone (weights/activations) | Decoder (weights/activations) |
-| --- | --- | --- |
-| `w16a16_w16a16` | BF16/BF16 | BF16/BF16 |
-| `w8a16_w16a16` | INT8/BF16 | BF16/BF16 |
-| `w8a8_w16a16` | INT8/INT8 | BF16/BF16 |
-| `w8a8_mixed_w16a16` | INT8/INT8 with BF16 regions | BF16/BF16 |
-
-These policies do not specify every instruction's precision. Public boundaries remain FP32.
-Each decoder calibrates on its own profile's quantized backbone outputs.
-
-W16A16 remains the accuracy reference. W8A8 trades accuracy for throughput;
-W8A16 is not a throughput optimization. Mixed precision protects the HGNet
-feature extractor, non-convolution operations and output producers with BF16,
-retaining accuracy rather than maximizing throughput.
+Public tensor boundaries remain FP32. Choose a package that balances accuracy
+and throughput for your application.
 
 ## Building applications
 

@@ -63,6 +63,7 @@ build_profiles:
           precision: w16a16
           calibration_bins: 2048
           calibration_samples: 50
+  # Weight precision choice, not a throughput optimization.
   w8a16_w16a16:
     calibration_dataset: coco-2017-cal
     components:
@@ -97,6 +98,8 @@ build_profiles:
           precision: w8a8
           calibration_bins: 1024
           calibration_samples: 50
+          # Keep HGNet, non-convolution arithmetic and output producers BF16;
+          # the remaining neck/projection convolutions run INT8.
           bf16_regions: [backbone, nonconv, outputs]
       decoder:
         parameters:

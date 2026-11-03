@@ -344,8 +344,6 @@ def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner
         # A failure inside the measured span leaves the monitor running.
         if monitor.running():
             monitor.stop()
-        backbone.close()
-        decoder.close()
     return throughput
 
 

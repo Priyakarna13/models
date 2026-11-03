@@ -21,6 +21,11 @@ def compiler(load_script):
     return load_script("compile")
 
 
+@pytest.fixture
+def surgery(load_script):
+    return load_script("surgery")
+
+
 def test_only_registered_profiles_are_admitted_and_decoder_stays_w16a16(compiler, model_dir):
     metadata = load_model(model_dir)
     parameters = compiler.component_parameters(metadata, "w16a16_w16a16")
@@ -37,7 +42,7 @@ def test_only_registered_profiles_are_admitted_and_decoder_stays_w16a16(compiler
         "precision": "w8a8",
         "calibration_bins": 1024,
         "calibration_samples": 50,
-        "bf16_regions": list(compiler.BF16_REGIONS),
+        "bf16_regions": ["backbone", "nonconv", "outputs"],
     }
     assert mixed["decoder"] == parameters["decoder"]
     with pytest.raises(ValueError):
@@ -79,7 +84,7 @@ def test_candidate_profile_parameters_do_not_change_the_decoder(compiler, model_
     candidate["id"] = profile
     candidate["components"][0]["parameters"]["precision"] = compiler.PROFILES[profile]
     if "mixed" in profile:
-        candidate["components"][0]["parameters"]["bf16_regions"] = list(compiler.BF16_REGIONS)
+        candidate["components"][0]["parameters"]["bf16_regions"] = ["backbone", "nonconv", "outputs"]
     metadata["build_profiles"] = [metadata["build_profiles"][0], candidate]
     parameters = compiler.component_parameters(metadata, profile)
     assert parameters["decoder"] == metadata["build_profiles"][0]["components"][1]["parameters"]
@@ -132,11 +137,11 @@ def regional_graph(tmp_path):
     return path
 
 
-def test_regional_policy_keeps_neck_int8_and_freezes_the_complete_float_domain(compiler, tmp_path):
+def test_regional_policy_keeps_neck_int8_and_freezes_the_complete_float_domain(surgery, tmp_path):
     path = regional_graph(tmp_path)
     before = path.read_bytes()
-    policy = compiler.region_precision_map(path, list(compiler.BF16_REGIONS))
-    assert policy["graph_sha256"] == compiler.sha256_file(path)[0]
+    policy = surgery.region_precision_map(path, list(surgery.BF16_REGIONS))
+    assert policy["graph_sha256"] == surgery.sha256_file(path)[0]
     assert policy["nodes"] == {
         "/model/backbone/stem/Conv": "bfloat16",
         "/model/encoder/Conv": "int8",
@@ -147,27 +152,27 @@ def test_regional_policy_keeps_neck_int8_and_freezes_the_complete_float_domain(c
     assert path.read_bytes() == before
 
 
-def test_outputs_region_reaches_numerical_producers_without_following_shape_inputs(compiler, tmp_path):
+def test_outputs_region_reaches_numerical_producers_without_following_shape_inputs(surgery, tmp_path):
     path = regional_graph(tmp_path)
-    policy = compiler.region_precision_map(path, ["outputs"])["nodes"]
+    policy = surgery.region_precision_map(path, ["outputs"])["nodes"]
     assert policy["activation"] == policy["view"] == policy["concat"] == "bfloat16"
     assert policy["/model/backbone/stem/Conv"] == policy["/model/encoder/Conv"] == "int8"
     assert "shape" not in policy
 
 
-def test_requested_regions_cannot_silently_stop_matching_after_a_graph_change(compiler, tmp_path):
+def test_requested_regions_cannot_silently_stop_matching_after_a_graph_change(surgery, tmp_path):
     path = regional_graph(tmp_path)
     graph = onnx.load(path)
     graph.graph.node[0].name = "/model/renamed/stem/Conv"
     onnx.save(graph, path)
     with pytest.raises(ValueError, match="BF16 regions did not resolve.*backbone"):
-        compiler.region_precision_map(path, list(compiler.BF16_REGIONS))
+        surgery.region_precision_map(path, list(surgery.BF16_REGIONS))
 
 
-def test_regions_do_not_silently_turn_a_mixed_profile_into_all_bf16(compiler, tmp_path):
+def test_regions_do_not_silently_turn_a_mixed_profile_into_all_bf16(surgery, tmp_path):
     graph, _ = precision_graph(tmp_path)
     with pytest.raises(ValueError, match="mixed arithmetic"):
-        compiler.region_precision_map(graph, ["nonconv"])
+        surgery.region_precision_map(graph, ["nonconv"])
 
 
 @pytest.mark.parametrize("precision", ["w8a16", "w8a8"])
@@ -226,7 +231,7 @@ def precision_graph(tmp_path):
 
 
 @pytest.mark.parametrize("case", ["hash", "unknown", "dtype", "not_mixed", "missing", "duplicate"])
-def test_precision_maps_cannot_silently_drift_or_promote_everything(compiler, tmp_path, case):
+def test_precision_maps_cannot_silently_drift_or_promote_everything(surgery, tmp_path, case):
     graph, precision_map = precision_graph(tmp_path)
     original = graph.read_bytes()
     if case == "hash":
@@ -248,11 +253,11 @@ def test_precision_maps_cannot_silently_drift_or_promote_everything(compiler, tm
         precision_map["graph_sha256"] = sha256_file(graph)[0]
         original = graph.read_bytes()
     with pytest.raises(ValueError):
-        compiler.annotate_backbone(graph, precision_map)
+        surgery.annotate_backbone(graph, precision_map)
     assert graph.read_bytes() == original
 
 
-def test_mixed_uses_bundled_exporter_without_changing_model_metadata(compiler, tmp_path, monkeypatch):
+def test_mixed_uses_bundled_exporter_without_changing_model_metadata(surgery, tmp_path, monkeypatch):
     graph, precision_map = precision_graph(tmp_path)
     seen = []
 
@@ -264,7 +269,7 @@ def test_mixed_uses_bundled_exporter_without_changing_model_metadata(compiler, t
     monkeypatch.setitem(
         sys.modules, "neural_compressor.annotate_precision", SimpleNamespace(annotate_graph=annotate_graph)
     )
-    compiler.annotate_backbone(graph, precision_map)
+    surgery.annotate_backbone(graph, precision_map)
     assert seen == [precision_map["nodes"]]
     model = onnx.load(graph)
     assert dict((entry.key, entry.value) for entry in model.metadata_props) == {"contract": "preserved"}
@@ -447,16 +452,6 @@ def test_registry_compile_cli_requires_the_profile_invocation(compiler, monkeypa
         assert calls == [(tmp_path, invocation, tmp_path, tmp_path, tmp_path / "compiled")]
 
 
-def test_failed_output_setup_never_builds_runners(load_script, monkeypatch):
-    p = load_script("performance")
-    called = []
-    monkeypatch.setattr(p, "mla_stats", lambda *args: called.append("hardware"))
-    monkeypatch.setattr(p, "build_runners", lambda *args: called.append("build"))
-    with pytest.raises(OSError):
-        p.benchmark_pipeline({}, "coco-2017-val", Path("/unused"), Path("/dev/null/not-a-directory"))
-    assert called == []
-
-
 def test_compiled_packages_have_native_placement_and_real_checksums(compiler, compiled, build_profile):
     from model_registry.fetch import sha256_file
 
@@ -472,3 +467,52 @@ def test_compiled_packages_have_native_placement_and_real_checksums(compiler, co
     assert fidelity["samples"] == 10 and fidelity["selection"]["offset"] >= 50
     assert [m["name"] for m in fidelity["metrics"]] == ["pred_boxes", "pred_logits"]
     assert len(receipt["derived_graphs"]) == 2
+
+
+@pytest.mark.parametrize("case", ["mixed", "ignored", "all_bf16", "ingress_only", "no_convolutions"])
+def test_mixed_policy_checks_applied_convolutions_not_annotations_or_ingress(compiler, monkeypatch, case):
+    monkeypatch.setattr(compiler, "QuantizationPrecision", SimpleNamespace(BFLOAT_16="bf16", INT_8="int8"))
+    operations = {
+        "mixed": [("ConvAddActivationOp", "bf16"), ("ConvAddActivationOp", "int8")],
+        "ignored": [("ConvAddActivationOp", "int8")],
+        "all_bf16": [("ConvAddActivationOp", "bf16")],
+        "ingress_only": [("ConvAddActivationOp", "bf16"), ("PlaceholderOp", "int8")],
+        "no_convolutions": [("PlaceholderOp", "bf16"), ("PlaceholderOp", "int8")],
+    }
+    nodes = [
+        SimpleNamespace(
+            ir=SimpleNamespace(
+                operation=type(operation, (), {})(),
+                quant_config=SimpleNamespace(quantization_precision=SimpleNamespace(value=precision)),
+            )
+        )
+        for operation, precision in operations[case]
+    ]
+    # AFE's recursive iterator also yields nested network containers, not only operations.
+    nodes.append(SimpleNamespace(ir=SimpleNamespace()))
+    model = SimpleNamespace(_net=SimpleNamespace(iter_nodes_recursive=lambda: iter(nodes)))
+    if case == "mixed":
+        compiler.require_mixed_precision(model)
+    else:
+        with pytest.raises(RuntimeError, match="Expected BF16 and INT8 convolutions"):
+            compiler.require_mixed_precision(model)
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_quantization_enforces_applied_precision_only_for_the_mixed_profile(compiler, monkeypatch, mixed):
+    quantized, checked = object(), []
+    monkeypatch.setattr(compiler, "load_model", lambda source: SimpleNamespace(quantize=lambda **kwargs: quantized))
+    monkeypatch.setattr(compiler, "onnx_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(compiler, "DataGenerator", lambda data: data)
+    monkeypatch.setattr(compiler, "InputName", str)
+    monkeypatch.setattr(compiler, "convert_data_generator_to_iterable", lambda data: data)
+    monkeypatch.setattr(compiler, "quantization_config", lambda parameters: None)
+    monkeypatch.setattr(compiler, "require_mixed_precision", checked.append)
+    parameters = {"precision": "w8a8", "calibration_bins": 1024}
+    if mixed:
+        parameters["bf16_regions"] = ["backbone", "nonconv", "outputs"]
+    result = compiler.quantize_component(
+        Path("unused.onnx"), "candidate", parameters, {"input": np.ones((1, 3, 2, 2), np.float32)}
+    )
+    assert result is quantized
+    assert checked == ([quantized] if mixed else [])
