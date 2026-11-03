@@ -32,8 +32,14 @@ def test_only_registered_profiles_are_admitted_and_decoder_stays_w16a16(compiler
         candidate = compiler.component_parameters(metadata, profile)
         assert candidate["backbone"] == {"precision": precision, "calibration_bins": bins, "calibration_samples": 50}
         assert candidate["decoder"] == parameters["decoder"]
-    with pytest.raises(ValueError):
-        compiler.component_parameters(metadata, "w8a8_mixed_w16a16")
+    mixed = compiler.component_parameters(metadata, "w8a8_mixed_w16a16")
+    assert mixed["backbone"] == {
+        "precision": "w8a8",
+        "calibration_bins": 1024,
+        "calibration_samples": 50,
+        "bf16_regions": list(compiler.BF16_REGIONS),
+    }
+    assert mixed["decoder"] == parameters["decoder"]
     with pytest.raises(ValueError):
         compiler.component_parameters(metadata, "unregistered_profile")
     for key, value in [("precision", "w8a8"), ("calibration_bins", 0), ("calibration_samples", True)]:
@@ -73,13 +79,95 @@ def test_candidate_profile_parameters_do_not_change_the_decoder(compiler, model_
     candidate["id"] = profile
     candidate["components"][0]["parameters"]["precision"] = compiler.PROFILES[profile]
     if "mixed" in profile:
-        candidate["components"][0]["parameters"]["precision_map"] = {"graph_sha256": "0" * 64, "nodes": {}}
+        candidate["components"][0]["parameters"]["bf16_regions"] = list(compiler.BF16_REGIONS)
     metadata["build_profiles"] = [metadata["build_profiles"][0], candidate]
     parameters = compiler.component_parameters(metadata, profile)
     assert parameters["decoder"] == metadata["build_profiles"][0]["components"][1]["parameters"]
     candidate["components"][1]["parameters"]["precision"] = "w8a8"
     with pytest.raises(ValueError, match="decoder"):
         compiler.component_parameters(metadata, profile)
+
+
+@pytest.mark.parametrize("regions", [[], "outputs", ["typo"], ["outputs", "outputs"], [False], [{}]])
+def test_mixed_regions_are_explicit_and_validated(compiler, model_dir, regions):
+    metadata = copy.deepcopy(load_model(model_dir))
+    candidate = copy.deepcopy(metadata["build_profiles"][0])
+    candidate["id"] = "w8a8_mixed_w16a16"
+    candidate["components"][0]["parameters"].update(precision="w8a8", bf16_regions=regions)
+    metadata["build_profiles"] = [candidate]
+    with pytest.raises(ValueError, match="BF16 regions"):
+        compiler.component_parameters(metadata, candidate["id"])
+
+
+def regional_graph(tmp_path):
+    h = onnx.helper
+
+    def value(name, dimensions=(1, 1, 2, 2), dtype=onnx.TensorProto.FLOAT):
+        return h.make_tensor_value_info(name, dtype, dimensions)
+
+    nodes = [
+        h.make_node("Conv", ["input", "weight"], ["hidden"], name="/model/backbone/stem/Conv"),
+        h.make_node("Conv", ["hidden", "weight"], ["projection"], name="/model/encoder/Conv"),
+        h.make_node("Mul", ["projection", "projection"], ["feature"], name="activation"),
+        h.make_node("Shape", ["hidden"], ["dimensions"], name="shape"),
+        h.make_node("Reshape", ["feature", "dimensions"], ["view"], name="view"),
+        h.make_node("Concat", ["view", "view"], ["output"], name="concat", axis=1),
+    ]
+    model = h.make_model(
+        h.make_graph(
+            nodes,
+            "regional",
+            [value("input")],
+            [value("output", (1, 2, 2, 2))],
+            [onnx.numpy_helper.from_array(np.ones((1, 1, 1, 1), np.float32), "weight")],
+            value_info=[value(name) for name in ("hidden", "projection", "feature", "view")]
+            + [value("dimensions", (4,), onnx.TensorProto.INT64)],
+        ),
+        opset_imports=[h.make_opsetid("", 17)],
+        ir_version=8,
+    )
+    onnx.checker.check_model(model)
+    path = tmp_path / "regional.onnx"
+    onnx.save(model, path)
+    return path
+
+
+def test_regional_policy_keeps_neck_int8_and_freezes_the_complete_float_domain(compiler, tmp_path):
+    path = regional_graph(tmp_path)
+    before = path.read_bytes()
+    policy = compiler.region_precision_map(path, list(compiler.BF16_REGIONS))
+    assert policy["graph_sha256"] == compiler.sha256_file(path)[0]
+    assert policy["nodes"] == {
+        "/model/backbone/stem/Conv": "bfloat16",
+        "/model/encoder/Conv": "int8",
+        "activation": "bfloat16",
+        "view": "bfloat16",
+        "concat": "bfloat16",
+    }
+    assert path.read_bytes() == before
+
+
+def test_outputs_region_reaches_numerical_producers_without_following_shape_inputs(compiler, tmp_path):
+    path = regional_graph(tmp_path)
+    policy = compiler.region_precision_map(path, ["outputs"])["nodes"]
+    assert policy["activation"] == policy["view"] == policy["concat"] == "bfloat16"
+    assert policy["/model/backbone/stem/Conv"] == policy["/model/encoder/Conv"] == "int8"
+    assert "shape" not in policy
+
+
+def test_requested_regions_cannot_silently_stop_matching_after_a_graph_change(compiler, tmp_path):
+    path = regional_graph(tmp_path)
+    graph = onnx.load(path)
+    graph.graph.node[0].name = "/model/renamed/stem/Conv"
+    onnx.save(graph, path)
+    with pytest.raises(ValueError, match="BF16 regions did not resolve.*backbone"):
+        compiler.region_precision_map(path, list(compiler.BF16_REGIONS))
+
+
+def test_regions_do_not_silently_turn_a_mixed_profile_into_all_bf16(compiler, tmp_path):
+    graph, _ = precision_graph(tmp_path)
+    with pytest.raises(ValueError, match="mixed arithmetic"):
+        compiler.region_precision_map(graph, ["nonconv"])
 
 
 @pytest.mark.parametrize("precision", ["w8a16", "w8a8"])

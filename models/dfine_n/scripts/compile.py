@@ -57,6 +57,20 @@ COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 COMPONENTS = ("backbone", "decoder")
 BACKBONE_OUTPUTS = ("attention_memory", "query_content", "proposal_scores", "reference_logits")
 DECODER_INPUTS = ("attention_memory", "query_content", "reference_logits")
+BF16_REGIONS = ("backbone", "nonconv", "outputs")
+LAYOUT_OPS = {
+    "Identity",
+    "Reshape",
+    "Transpose",
+    "Flatten",
+    "Slice",
+    "Split",
+    "Concat",
+    "Squeeze",
+    "Unsqueeze",
+    "Tile",
+    "Expand",
+}
 SHAPES = {
     "backbone": {"input": (1, 3, 640, 640)},
     "decoder": dict(zip(DECODER_INPUTS, ((1, 2000, 128), (1, 300, 128), (1, 300, 4)), strict=True)),
@@ -81,16 +95,84 @@ def component_parameters(metadata, profile_id):
         mixed = name == "backbone" and profile_id == "w8a8_mixed_w16a16"
         expected = {"precision", "calibration_bins", "calibration_samples"}
         if mixed:
-            expected.add("precision_map")
+            expected.add("bf16_regions")
         if (
             set(value) != expected
             or value["precision"] != (PROFILES[profile_id] if name == "backbone" else "w16a16")
             or any(type(value[k]) is not int or value[k] < 1 for k in ("calibration_bins", "calibration_samples"))
         ):
             raise ValueError(f"Invalid {name} precision or calibration parameters for {profile_id}")
+        if mixed:
+            validate_bf16_regions(value["bf16_regions"])
     if parameters["backbone"]["calibration_samples"] != parameters["decoder"]["calibration_samples"]:
         raise ValueError("Both components must calibrate on the same images")
     return parameters
+
+
+def validate_bf16_regions(regions):
+    if (
+        not isinstance(regions, list)
+        or not regions
+        or not all(isinstance(region, str) for region in regions)
+        or len(regions) != len(set(regions))
+        or not set(regions) <= set(BF16_REGIONS)
+    ):
+        raise ValueError(f"Expected distinct BF16 regions from {BF16_REGIONS}")
+
+
+def region_precision_map(graph, regions):
+    """Freeze a compact mixed policy onto the exact prepared graph, as RF-DETR does.
+
+    ``backbone`` is the HGNet feature extractor, not the encoder neck/projections.
+    ``nonconv`` keeps other floating operations BF16, matching the INC screening
+    domain. ``outputs`` also promotes numerical producers behind terminal views;
+    marking only a terminal Concat does not establish its inputs' precision.
+    """
+    validate_bf16_regions(regions)
+    model = onnx.load(graph)
+    names = [node.name for node in model.graph.node]
+    if not all(names) or len(names) != len(set(names)):
+        raise ValueError("Expected unique named operations in the prepared backbone")
+    floats = {
+        value.name
+        for value in (*model.graph.input, *model.graph.output, *model.graph.value_info)
+        if value.type.tensor_type.elem_type == onnx.TensorProto.FLOAT
+    }
+    nodes = {
+        node.name: "int8"
+        for node in model.graph.node
+        if node.op_type != "Constant" and (node.op_type == "Conv" or any(v in floats for v in node.output))
+    }
+    resolved = set()
+    for node in model.graph.node:
+        if node.name not in nodes:
+            continue
+        matches = set()
+        if "/backbone/" in node.name:
+            matches.add("backbone")
+        if node.op_type != "Conv":
+            matches.add("nonconv")
+        if matches.intersection(regions):
+            resolved.update(matches.intersection(regions))
+            nodes[node.name] = "bfloat16"
+    if "outputs" in regions:
+        producers = {value: node for node in model.graph.node for value in node.output}
+        pending, visited = [value.name for value in model.graph.output], set()
+        while pending:
+            node = producers.get(pending.pop())
+            if node is None or node.name in visited:
+                continue
+            visited.add(node.name)
+            if node.name in nodes:
+                nodes[node.name] = "bfloat16"
+                resolved.add("outputs")
+            if node.op_type in LAYOUT_OPS:
+                pending.extend(node.input if node.op_type == "Concat" else node.input[:1])
+    if resolved != set(regions):
+        raise ValueError(f"BF16 regions did not resolve: {sorted(set(regions) - resolved)}")
+    if set(nodes.values()) != {"int8", "bfloat16"}:
+        raise ValueError("BF16 regions must retain mixed arithmetic")
+    return {"graph_sha256": sha256_file(graph)[0], "nodes": nodes}
 
 
 def quantization_config(parameters):
@@ -245,9 +327,11 @@ def prepare_phase(source, dataset, evaluation_names, work, parameters):
             )
             values[name].append(original[0])
     np.savez(work / "reference.npz", **{k: np.stack(v) for k, v in values.items()})
-    if "precision_map" in parameters:
+    if "bf16_regions" in parameters:
         # ONNX Runtime validates the unannotated floating split before AFE-only annotations.
-        annotate_backbone(backbone, parameters["precision_map"])
+        precision_map = region_precision_map(backbone, parameters["bf16_regions"])
+        (work / "precision-map.json").write_text(json.dumps(precision_map, indent=2) + "\n")
+        annotate_backbone(backbone, precision_map)
 
 
 def backbone_phase(profile, parameters, dataset, calibration_names, evaluation_names, work):
