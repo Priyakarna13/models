@@ -27,6 +27,7 @@ import numpy as np
 import onnx
 from afe.apis.defines import (
     BiasCorrectionType,
+    HistogramMSEMethod,
     InputName,
     RequantizationMode,
     SkipCalibration,
@@ -59,14 +60,17 @@ def _component_parameters(profile_id: str) -> dict[str, dict[str, Any]]:
     return parameters
 
 
-def _quantization(precision: str) -> Any:
+def _quantization(parameters: dict[str, Any]) -> Any:
+    precision = str(parameters["precision"])
     if precision != "w16a16":
         raise ValueError(f"unsupported precision: {precision}")
-    # BF16 needs no calibrated ranges, and bias correction would only measure the one sample.
+    # BF16 needs no calibrated ranges, except in a component that declares bins: the decoder will not quantize
+    # without them. Bias correction would only measure the samples.
+    bins = parameters.get("calibration_bins")
     return (
         default_quantization.with_activation_quantization(bfloat16_scheme())
         .with_weight_quantization(bfloat16_scheme())
-        .with_calibration(SkipCalibration())
+        .with_calibration(HistogramMSEMethod(int(bins)) if bins else SkipCalibration())
         .with_bias_correction(BiasCorrectionType.NONE)
         .with_requantization_mode(RequantizationMode.sima)
         .with_per_token_quant(False)
@@ -98,10 +102,11 @@ def split(source: Path, directory: Path) -> dict[str, Path]:
     return graphs
 
 
-def samples(graphs: dict[str, Path]) -> dict[str, dict[str, np.ndarray]]:
-    """One seeded NCHW input set of one batch slot per component, at a mid-schedule timestep and class 207: a
-    standard-normal latent for transformer_0 and the decoder, and for each later part the float32 ONNX Runtime
-    output of the parts before it."""
+def samples(graphs: dict[str, Path], decoder_samples: int) -> dict[str, list[dict[str, np.ndarray]]]:
+    """Seeded NCHW input sets of one batch slot per component, the first of which each is scored on. Each
+    transformer part has one, at a mid-schedule timestep and class 207: a standard-normal latent for transformer_0,
+    and for each later part the float32 ONNX Runtime output of the parts before it. The decoder has decoder_samples
+    standard-normal latents."""
     import onnxruntime as ort
 
     rng = np.random.RandomState(SAMPLE_SEED)
@@ -109,12 +114,15 @@ def samples(graphs: dict[str, Path]) -> dict[str, dict[str, np.ndarray]]:
     latent = rng.standard_normal(INPUT_SHAPES[TRANSFORMER[0]]["latent"]).astype(np.float32)
     inputs, value = {}, latent
     for index, part in enumerate(TRANSFORMER):
-        inputs[part] = {"latent" if index == 0 else "previous_hidden": value, **conditioning}
+        inputs[part] = [{"latent" if index == 0 else "previous_hidden": value, **conditioning}]
         if index < len(TRANSFORMER) - 1:
             session = ort.InferenceSession(str(graphs[part]), providers=["CPUExecutionProvider"])
-            (value,) = session.run(None, {tensor_name(part, key): item for key, item in inputs[part].items()})
+            (value,) = session.run(None, {tensor_name(part, key): item for key, item in inputs[part][0].items()})
             del session
-    inputs["vae_decoder"] = {"latent": rng.standard_normal(INPUT_SHAPES["vae_decoder"]["latent"]).astype(np.float32)}
+    shape = INPUT_SHAPES["vae_decoder"]["latent"]
+    inputs["vae_decoder"] = [
+        {"latent": rng.standard_normal(shape).astype(np.float32)} for _ in range(max(1, decoder_samples))
+    ]
     return inputs
 
 
@@ -128,21 +136,23 @@ def _cosine(expected: np.ndarray, actual: np.ndarray) -> float:
 
 
 def quantize(
-    graph: Path, name: str, component: str, precision: str, inputs: dict[str, np.ndarray]
+    graph: Path, name: str, component: str, parameters: dict[str, Any], inputs: list[dict[str, np.ndarray]]
 ) -> tuple[Any, float]:
-    """The quantized component, and its output's cosine with float32 ONNX Runtime on its sample."""
+    """The quantized component, and its output's cosine with float32 ONNX Runtime on its first sample."""
     import onnxruntime as ort
 
-    names = {tensor_name(component, key): value for key, value in inputs.items()}
+    names = {tensor_name(component, key): value for key, value in inputs[0].items()}
     importer = onnx_source(str(graph), shape_dict={key: INPUT_SHAPES[component][key.removeprefix(f"{component}_")]
                                                    for key in names}, layout="NCHW")
     loaded = load_model(importer, target=gen2_target)
+    batches = {
+        InputName(tensor_name(component, key)): np.concatenate([_channels_last(item[key]) for item in inputs])
+        for key in INPUT_SHAPES[component]
+    }
     try:
         quantized = loaded.quantize(
-            calibration_data=convert_data_generator_to_iterable(
-                DataGenerator({InputName(key): _channels_last(value) for key, value in names.items()})
-            ),
-            quantization_config=_quantization(precision),
+            calibration_data=convert_data_generator_to_iterable(DataGenerator(batches)),
+            quantization_config=_quantization(parameters),
             model_name=name,
             log_level=logging.INFO,
         )
@@ -208,11 +218,11 @@ def _compile(quantized: Any, build_dir: Path, component: str, batch_size: int) -
     return archives[0]
 
 
-def _build(graph: Path, build_dir: Path, name: str, component: str, precision: str,
-           batch_size: int, inputs: dict[str, np.ndarray]) -> tuple[Path, float]:
+def _build(graph: Path, build_dir: Path, name: str, component: str, parameters: dict[str, Any],
+           batch_size: int, inputs: list[dict[str, np.ndarray]]) -> tuple[Path, float]:
     """Quantize and compile one component: its MPK and its output's cosine with float32."""
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s", force=True)
-    quantized, similarity = quantize(graph, name, component, precision, inputs)
+    quantized, similarity = quantize(graph, name, component, parameters, inputs)
     return _compile(quantized, build_dir, component, batch_size), similarity
 
 
@@ -224,7 +234,7 @@ def compile_model(source: Path, output_dir: Path, profile_id: str) -> dict[str, 
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         build = Path(temporary)
         graphs = split(source, build / "graphs")
-        inputs = samples(graphs)
+        inputs = samples(graphs, int(parameters["vae_decoder"].get("calibration_samples", 1)))
         output_dir.mkdir(parents=True)
         archives = {}
         for component in COMPONENTS:
@@ -234,8 +244,8 @@ def compile_model(source: Path, output_dir: Path, profile_id: str) -> dict[str, 
             logging.info("Quantizing %s as %s", component, precision)
             # Each component in its own process: the compiler's memory goes back to the system between them.
             with multiprocessing.get_context("spawn").Pool(1) as pool:
-                built, similarity = pool.apply(_build, (graphs[component], build / name, name, component, precision,
-                                                        batch_size, inputs[component]))
+                built, similarity = pool.apply(_build, (graphs[component], build / name, name, component,
+                                                        parameters[component], batch_size, inputs[component]))
             plan = plan_of(built)
             logging.info("FEASIBILITY %s", json.dumps({"component": component, "batch_size": batch_size,
                                                         "float32_cosine": similarity, **plan}))

@@ -55,8 +55,10 @@ build_profiles:
         parameters: {precision: w16a16}
       transformer_3:
         parameters: {precision: w16a16}
+      # The decoder will not quantize without calibration (its SiLUs and 4D GroupNorms need ranges), so it calibrates
+      # on seeded standard-normal latents, the scale its input has once denoised.
       vae_decoder:
-        parameters: {precision: w16a16}
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 4}
 
 pipeline:
 - {cpu: "Seed a [1, 4, 32, 32] noise latent; DDIM timesteps; timestep features and class one-hot"}
