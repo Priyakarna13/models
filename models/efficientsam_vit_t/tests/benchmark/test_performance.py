@@ -5,7 +5,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-import cv2
 import numpy as np
 import pytest
 from model_registry.model_tests import measured_shortfalls
@@ -56,6 +55,9 @@ class _Runner:
 
 
 def test_the_benchmark_stops_unless_the_mask_covers_the_frames_object(load_script: Callable[[str], ModuleType]) -> None:
+    # Imported here: a stage runner installs only the tests extra, without OpenCV, and must still collect this file.
+    import cv2
+
     script = load_script("performance")
     # The object at the masks' 256x256 resolution, which stretches over the whole frame.
     inside = cv2.resize(script.object_mask().astype(np.float32), (256, 256), interpolation=cv2.INTER_AREA) > 0.5

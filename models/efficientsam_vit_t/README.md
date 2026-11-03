@@ -16,8 +16,9 @@ Run the decoder again on the same embedding for each new prompt.
 
 **Image input.** Resize the image straight to 1024×1024 without keeping its
 aspect ratio, and scale the RGB values to 0–1. The encoder subtracts ImageNet's
-mean and divides by its standard deviation itself. Pass its 1×256×64×64
-`image_embeddings` to the prompt decoder as it is.
+mean and divides by its standard deviation itself. Neat returns
+`image_embeddings` as a 1×64×64×256 (HWC) CPU tensor; copy it to EV74 memory
+with `Tensor.cvu()` for the decoder.
 
 **Prompt input.** A prompt has up to 6 points: a box is its top-left and
 bottom-right corners, and a click is a positive or a negative point. Pass them as
