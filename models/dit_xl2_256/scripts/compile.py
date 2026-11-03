@@ -3,8 +3,10 @@
 
 The converted ONNX holds both components side by side. Each is extracted, quantized to its build precision with one
 seeded sample, compared with float32 ONNX Runtime on that sample, and compiled at its build profile's batch
-size. For the feasibility check in #406 every MPK's plan is logged as a
-FEASIBILITY line, which processor runs each plugin, instead of being required to be a single MLA segment.
+size. Each transformer part after the first takes, as its sample, the float32 parts' output before it: the hidden
+states grow to thousands by the last part, and on a standard-normal grid instead that part scored a cosine of 0.70,
+while the same build scores 0.99998 on real hidden states. For the feasibility check in #406 every MPK's plan is
+logged as a FEASIBILITY line, which processor runs each plugin, instead of being required to be a single MLA segment.
 compile-outputs.json records every MPK and derived graph.
 """
 
@@ -35,7 +37,7 @@ from afe.apis.defines import (
 from afe.apis.loaded_net import load_model
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
-from dit import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, class_one_hot, tensor_name, timestep_features
+from dit import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, TRANSFORMER, class_one_hot, tensor_name, timestep_features
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
@@ -96,13 +98,24 @@ def split(source: Path, directory: Path) -> dict[str, Path]:
     return graphs
 
 
-def sample(component: str) -> dict[str, np.ndarray]:
-    """One seeded NCHW input set of one batch slot: a mid-schedule timestep, class 207, and a standard-normal latent
-    or hidden grid."""
+def samples(graphs: dict[str, Path]) -> dict[str, dict[str, np.ndarray]]:
+    """One seeded NCHW input set of one batch slot per component, at a mid-schedule timestep and class 207: a
+    standard-normal latent for transformer_0 and the decoder, and for each later part the float32 ONNX Runtime
+    output of the parts before it."""
+    import onnxruntime as ort
+
     rng = np.random.RandomState(SAMPLE_SEED)
     conditioning = {"timestep_features": timestep_features(500.0)[:1], "class_one_hot": class_one_hot(207)[:1]}
-    return {name: conditioning[name] if name in conditioning else rng.standard_normal(shape).astype(np.float32)
-            for name, shape in INPUT_SHAPES[component].items()}
+    latent = rng.standard_normal(INPUT_SHAPES[TRANSFORMER[0]]["latent"]).astype(np.float32)
+    inputs, value = {}, latent
+    for index, part in enumerate(TRANSFORMER):
+        inputs[part] = {"latent" if index == 0 else "previous_hidden": value, **conditioning}
+        if index < len(TRANSFORMER) - 1:
+            session = ort.InferenceSession(str(graphs[part]), providers=["CPUExecutionProvider"])
+            (value,) = session.run(None, {tensor_name(part, key): item for key, item in inputs[part].items()})
+            del session
+    inputs["vae_decoder"] = {"latent": rng.standard_normal(INPUT_SHAPES["vae_decoder"]["latent"]).astype(np.float32)}
+    return inputs
 
 
 def _channels_last(value: np.ndarray) -> np.ndarray:
@@ -114,11 +127,12 @@ def _cosine(expected: np.ndarray, actual: np.ndarray) -> float:
     return float(expected @ actual / (np.linalg.norm(expected) * np.linalg.norm(actual)))
 
 
-def quantize(graph: Path, name: str, component: str, precision: str) -> tuple[Any, float]:
-    """The quantized component, and its output's cosine with float32 ONNX Runtime on the seeded sample."""
+def quantize(
+    graph: Path, name: str, component: str, precision: str, inputs: dict[str, np.ndarray]
+) -> tuple[Any, float]:
+    """The quantized component, and its output's cosine with float32 ONNX Runtime on its sample."""
     import onnxruntime as ort
 
-    inputs = sample(component)
     names = {tensor_name(component, key): value for key, value in inputs.items()}
     importer = onnx_source(str(graph), shape_dict={key: INPUT_SHAPES[component][key.removeprefix(f"{component}_")]
                                                    for key in names}, layout="NCHW")
@@ -195,10 +209,10 @@ def _compile(quantized: Any, build_dir: Path, component: str, batch_size: int) -
 
 
 def _build(graph: Path, build_dir: Path, name: str, component: str, precision: str,
-           batch_size: int) -> tuple[Path, float]:
+           batch_size: int, inputs: dict[str, np.ndarray]) -> tuple[Path, float]:
     """Quantize and compile one component: its MPK and its output's cosine with float32."""
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s", force=True)
-    quantized, similarity = quantize(graph, name, component, precision)
+    quantized, similarity = quantize(graph, name, component, precision, inputs)
     return _compile(quantized, build_dir, component, batch_size), similarity
 
 
@@ -210,6 +224,7 @@ def compile_model(source: Path, output_dir: Path, profile_id: str) -> dict[str, 
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         build = Path(temporary)
         graphs = split(source, build / "graphs")
+        inputs = samples(graphs)
         output_dir.mkdir(parents=True)
         archives = {}
         for component in COMPONENTS:
@@ -220,7 +235,7 @@ def compile_model(source: Path, output_dir: Path, profile_id: str) -> dict[str, 
             # Each component in its own process: the compiler's memory goes back to the system between them.
             with multiprocessing.get_context("spawn").Pool(1) as pool:
                 built, similarity = pool.apply(_build, (graphs[component], build / name, name, component, precision,
-                                                        batch_size))
+                                                        batch_size, inputs[component]))
             plan = plan_of(built)
             logging.info("FEASIBILITY %s", json.dumps({"component": component, "batch_size": batch_size,
                                                         "float32_cosine": similarity, **plan}))

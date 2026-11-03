@@ -12,6 +12,7 @@ check compares ONNX Runtime with PyTorch running the same float16-rounded weight
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import json
 from pathlib import Path
@@ -92,6 +93,37 @@ def build(root: Path):
         layer.bias.data = linear.bias.data * scale
         return layer
 
+    class GroupNorm4D(torch.nn.Module):
+        """GroupNorm with every tensor 4D: per-channel means over H and W, averaged within each group by a constant
+        1x1 convolution, with the variance taken about the group mean. Exported as is, GroupNorm reshapes the
+        decoder's 128x256x256 activations to [1, 32, 4 x 256 x 256], which kept compiler 3.0.0 in its large-tensor
+        segmentation for over 4 hours; this form leaves it there for minutes."""
+
+        def __init__(self, norm):
+            super().__init__()
+            channels, groups = norm.num_channels, norm.num_groups
+            size = channels // groups
+            average = torch.zeros(channels, channels, 1, 1)
+            for group in range(groups):
+                average[group * size:(group + 1) * size, group * size:(group + 1) * size] = 1.0 / size
+            self.average = torch.nn.Conv2d(channels, channels, 1, bias=False)
+            self.average.weight.data = average
+            self.eps = norm.eps
+            self.weight = torch.nn.Parameter(norm.weight.detach().clone().view(1, -1, 1, 1))
+            self.bias = torch.nn.Parameter(norm.bias.detach().clone().view(1, -1, 1, 1))
+
+        def forward(self, x):
+            centred = x - self.average(x.mean(dim=(2, 3), keepdim=True))
+            variance = self.average((centred * centred).mean(dim=(2, 3), keepdim=True))
+            return centred / torch.sqrt(variance + self.eps) * self.weight + self.bias
+
+    def replace_norms(module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.GroupNorm):
+                setattr(module, name, GroupNorm4D(child))
+            else:
+                replace_norms(child)
+
     class Attention4D(torch.nn.Module):
         """The decoder's mid-block attention over its 1024 latent pixels as 4D Einsums on [1, 512, 1, 1024], the
         softmax over keys on axis 1, for QUERY_CHUNKS groups of queries at a time: one [1, 1024, 1, 1024] score
@@ -120,6 +152,8 @@ def build(root: Path):
 
     vae_attention = vae.decoder.mid_block.attentions[0]
     vae.decoder.mid_block.attentions[0] = Attention4D(vae_attention)
+    reference_decoder = copy.deepcopy(vae.decoder)
+    replace_norms(vae.decoder)
 
     class Part(torch.nn.Module):
         """Blocks part_blocks(part) of diffusers' Transformer2DModel.forward on patched input: the first part also
@@ -162,7 +196,7 @@ def build(root: Path):
             outputs = [part(*inputs[3 * index:3 * index + 3]) for index, part in enumerate(self.parts)]
             return (*outputs, self.vae.decode(inputs[-1] / VAE_SCALING).sample)
 
-    return SideBySide().eval(), transformer, original, vae_attention
+    return SideBySide().eval(), transformer, original, vae_attention, reference_decoder
 
 
 def check_embedding(transformer, original) -> None:
@@ -174,6 +208,16 @@ def check_embedding(transformer, original) -> None:
         actual = transformer.transformer_blocks[0].norm1.emb(
             torch.from_numpy(timestep_features(500.0)), torch.from_numpy(class_one_hot(207)))
     np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=1e-4, atol=1e-4, err_msg="embedding")
+
+
+def check_vae_norms(model, reference_decoder) -> None:
+    """The decoder with 4D GroupNorms equals it with torch's GroupNorm, on a seeded latent."""
+    import torch
+
+    latent = torch.from_numpy(np.random.RandomState(1).standard_normal((1, LATENT_CHANNELS, 32, 32)).astype(np.float32))
+    with torch.inference_mode():
+        expected, actual = reference_decoder(latent), model.vae.decoder(latent)
+    np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=1e-4, atol=1e-4, err_msg="VAE GroupNorm")
 
 
 def check_vae_attention(model, original) -> None:
@@ -308,10 +352,11 @@ def convert(source: Path, output_dir: Path) -> Path:
     output = output_dir / "model.onnx"
     torch.set_num_threads(4)
     validate_config(root)
-    model, transformer, original, vae_attention = build(root)
+    model, transformer, original, vae_attention, reference_decoder = build(root)
     check_embedding(transformer, original)
     check_vae_attention(model, vae_attention)
-    del original, vae_attention
+    check_vae_norms(model, reference_decoder)
+    del original, vae_attention, reference_decoder
     round_to_float16(model)
     inputs = sample_inputs(model)
     check_parts(model, transformer, inputs)
