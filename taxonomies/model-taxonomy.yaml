@@ -49,6 +49,10 @@ architectures:
     display_name: DepthART
     paradigm: transformer
     allowed_model_types: [vision]
+  faster_rcnn:
+    display_name: Faster R-CNN
+    paradigm: cnn
+    allowed_model_types: [vision]
   gemma:
     display_name: Gemma
     paradigm: transformer

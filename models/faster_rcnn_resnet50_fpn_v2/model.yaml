@@ -1,0 +1,73 @@
+display_name: Faster R-CNN ResNet-50 FPN v2
+description: Torchvision's two-stage ResNet-50 FPN detector for COCO objects.
+model_type: vision
+tasks: [object_detection]
+
+modalities:
+  inputs: [image]
+  outputs: [bounding_boxes, class_scores]
+
+architecture: faster_rcnn
+
+# Torchvision's fasterrcnn_resnet50_fpn_v2 COCO weights (BSD-3-Clause), exported to ONNX by the ONNX Model Zoo,
+# whose model card lists Apache-2.0.
+license:
+  spdx: BSD-3-Clause
+  redistribution: allowed
+  attribution: Derived from torchvision's fasterrcnn_resnet50_fpn_v2 COCO weights, distributed under BSD-3-Clause.
+
+upstream:
+  repository: https://huggingface.co/onnxmodelzoo/fasterrcnn_resnet50_fpn_v2_Opset18
+  revision: 3f400058316e802d9ca602b1e64b35c2ae71b859
+  derived_from: https://github.com/pytorch/vision/blob/v0.23.0/torchvision/models/detection/faster_rcnn.py
+
+# The export runs the whole detector at a fixed 224x224 input. surgery.py keeps its two networks: the backbone
+# (ResNet-50, FPN and RPN head) folded to a 1344x1344 input, where torchvision's resize (short side 800, long
+# side at most 1333) fits every image, and the box head rewritten to run all 1,000 regions as one image.
+compilation:
+  format: onnx
+  source:
+    uri: hf://models/onnxmodelzoo/fasterrcnn_resnet50_fpn_v2_Opset18@3f400058316e802d9ca602b1e64b35c2ae71b859/fasterrcnn_resnet50_fpn_v2_Opset18.onnx
+    sha256: 44963ac8566b3741ca4d93543b1cf2712e40d9425382abd338592a8df5c275e4
+    size_bytes: 174994133
+  components: [backbone, box_head]
+
+calibrations:
+- id: coco-2017-cal
+  dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
+
+build_profiles:
+  w8a8:
+    calibration_dataset: coco-2017-cal
+    components:
+      backbone:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 64}
+      # Calibrates on the first 32 of those images, each with the 1,000 regions the FP32 backbone proposes.
+      box_head:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32}
+
+  w16a16:
+    components:
+      backbone:
+        parameters: {precision: w16a16}
+      box_head:
+        parameters: {precision: w16a16}
+
+pipeline:
+- {component: backbone}
+- {cpu: "Proposals and RoIAlign of 1,000 regions"}
+- {component: box_head}
+- {cpu: Box decoding and NMS}
+
+accuracy:
+  # accuracy.py follows torchvision's evaluation: COCO val2017, at most 100 detections per image.
+  datasets:
+  - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
+
+performance: {}
+
+reference_metrics:
+- source: https://github.com/pytorch/vision/blob/v0.23.0/torchvision/models/detection/faster_rcnn.py
+  dataset: {id: coco-2017, split: val}
+  conditions: Torchvision's FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1, FP32
+  metrics: {coco_map: 0.467}

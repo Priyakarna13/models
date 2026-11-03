@@ -386,9 +386,8 @@ def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script,
     assert_letterboxed_frame(frame)
     assert frame.options["memory"] == "EV74"
     options = functions["image_options"]()
-    assert (options.preprocess.kind, options.preprocess.resize.mode, options.preprocess.preset) == (
-        "Image", "Stretch", "ImageNet"
-    )
+    assert (options.preprocess.kind, options.preprocess.preset) == ("Image", "ImageNet")
+    assert options.preprocess.resize.mode in ("Stretch", "Letterbox")
 
 
 def test_model_code_uses_cores_mla_stats_names():
