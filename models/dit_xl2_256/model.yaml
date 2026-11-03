@@ -35,9 +35,9 @@ conversion:
 compilation:
   format: onnx
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/dit_xl2_256/3bd0334a2985d09cb759de36e7e70c1e9f79e1267e7f0bf430fbc3046e79e145/40723433270-1/model.onnx
-    sha256: 3bd0334a2985d09cb759de36e7e70c1e9f79e1267e7f0bf430fbc3046e79e145
-    size_bytes: 1451749574
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/dit_xl2_256/27cf32ad3e265dbd53f7297c38205a0ab9b268d60cc47b8424f7450d6ef09f56/41586144443-1/model.onnx
+    sha256: 27cf32ad3e265dbd53f7297c38205a0ab9b268d60cc47b8424f7450d6ef09f56
+    size_bytes: 1452458642
   # The transformer's 28 blocks in four parts of 7 (compiling all 28 at once ran out of the runner's memory),
   # then the decoder of the final latent.
   components: [transformer_0, transformer_1, transformer_2, transformer_3, vae_decoder]
