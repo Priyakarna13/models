@@ -37,6 +37,8 @@ architecture_paradigms:
     display_name: CNN
   transformer:
     display_name: Transformer
+  mlp:
+    display_name: MLP
 
 # A family is the upstream model line, named without generation or size
 # (YOLO, not YOLO26n). The model's id and display_name carry those.
@@ -57,6 +59,10 @@ architectures:
     display_name: LFM
     paradigm: transformer
     allowed_model_types: [llm]
+  lenet:
+    display_name: LeNet
+    paradigm: cnn
+    allowed_model_types: [vision]
   llama:
     display_name: Llama
     paradigm: transformer
@@ -69,6 +75,10 @@ architectures:
     display_name: Mistral
     paradigm: transformer
     allowed_model_types: [llm]
+  mlp:
+    display_name: MLP
+    paradigm: mlp
+    allowed_model_types: [vision]
   phi:
     display_name: Phi
     paradigm: transformer

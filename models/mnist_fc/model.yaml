@@ -1,0 +1,61 @@
+display_name: MNIST FC
+description: Classifies a handwritten digit in a 28x28 grayscale image as 0 to 9 with a three-layer fully connected network.
+model_type: vision
+tasks: [handwriting_classification]
+
+modalities:
+  inputs: [image]
+  outputs: [class_scores]
+
+architecture: mlp
+
+# Until Vulcan Model Convert publishes this model's ONNX and compilation.source pins it, pushes must not compile it.
+build-on-demand: true
+
+license:
+  spdx: Apache-2.0
+  redistribution: allowed
+  attribution: MNIST-MLP by David Corvoysier (dacorvo), distributed under Apache-2.0.
+
+upstream:
+  repository: https://huggingface.co/dacorvo/mnist-mlp
+  revision: 7ed1e96d182395fd7380ea8495b9eb2364ce9dc1
+
+conversion:
+  source:
+    repository: dacorvo/mnist-mlp
+    revision: 7ed1e96d182395fd7380ea8495b9eb2364ce9dc1
+    main_file: config.json
+    files:
+      config.json: {sha256: f80ec7ed191e6fd0146c8b5201c5b3ced536be364afb6a2205b3f99c02fa88ea, size_bytes: 296}
+      model.safetensors: {sha256: 59dfd2968fc0c60192c8e41ecff29f9271ec625684c9c3368ceae4166d089aec, size_bytes: 1077824}
+
+compilation:
+  format: onnx
+  # TODO(#547): replace with the source block Vulcan Model Convert prints for mnist_fc, and drop build-on-demand.
+  # Until then this pins mnist_cnn's ONNX only to keep the definition valid; build-on-demand stops it compiling.
+  source:
+    uri: hf://models/onnxmodelzoo/mnist-12@1cd752f4a3d818fa215aa621c78b8a10a4a1a3a5/mnist-12.onnx
+    sha256: 5c688690f8bacf667d4c2074af5ad0646ca328d7ab03eccf944a65b320171bdd
+    size_bytes: 26143
+
+build_profiles:
+  w16a16:
+    components:
+      model:
+        parameters:
+          precision: w16a16
+          input_name: image
+          input_shape: [1, 1, 28, 28]
+
+  # INT8 calibrates on MNIST training images from the Dataset Registry's mnist archive; it is enabled with that
+  # archive's pin. Locally it scores within 0.02% of w16a16 on the 10,000 test images.
+  # w8a8:
+  #   calibration_dataset: mnist-default
+  #   components:
+  #     model:
+  #       parameters:
+  #         precision: w8a8
+  #         input_name: image
+  #         input_shape: [1, 1, 28, 28]
+  #         calibration_samples: 500
