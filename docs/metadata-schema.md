@@ -73,8 +73,10 @@ conversion:
 A model that declares `conversion` must also provide `scripts/convert.py` and
 `scripts/requirements-convert.txt`, which the **Vulcan Model Convert** workflow
 runs through `scripts/run_model_conversion.sh` in a fresh Python environment.
-The workflow publishes `model.onnx` and prints the source pin to copy into
-`compilation.source` after surgery and compiler validation.
+The workflow publishes a validated ONNX bundle to Vulcan. Set
+`compilation.source: conversion` to resolve its latest compatible output during
+compile planning. The declaration remains environment independent; see
+[conversion artifacts](conversion-artifacts.md) for rollout and reproduction.
 
 ## Compilation and sources
 

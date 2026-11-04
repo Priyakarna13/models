@@ -47,7 +47,7 @@
       "type": "object", "additionalProperties": false, "required": ["format", "source"],
       "properties": {
         "format": {"enum": ["onnx", "huggingface"]},
-        "source": {"$ref": "#/$defs/source"},
+        "source": {"oneOf": [{"$ref": "#/$defs/source"}, {"const": "conversion"}]},
         "components": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
         "entrypoint": {"description": "The package's public entrypoint when it is not default, such as generate.", "$ref": "#/$defs/id"}
       }
