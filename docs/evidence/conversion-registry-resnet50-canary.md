@@ -32,3 +32,19 @@ Evidence to collect: conversion run/fingerprint, exact versioned ONNX bundle,
 compile-plan selection, compile fetch and provenance input, compiled package
 publication, and any downstream benchmark results. A failed stage must be recorded
 with its diagnostics; starting a workflow alone is not end-to-end success.
+
+## Runner availability adjustment
+
+The initial production conversion dispatch, run 41873074919, remained queued
+without a worker for ten minutes while four matching production compile workers
+were occupied. The scratch branch switches only conversion to GitHub-hosted
+`ubuntu-24.04-arm` and temporary directories under `/tmp`. Export, stage
+tests, credentials and registry publication remain the same. Compilation still
+uses the normal production Model Compiler workflow. This runner override is
+canary-only and is not a proposed change to PR #370.
+
+Local real export passed on macOS ARM64 with Python 3.12.8. Three seeded inputs
+agreed with PyTorch at rtol=0.001, atol=0.0001; the maximum absolute logit error
+was 0.00001049041748046875. The real conversion stage test also passed. After
+isolating pinned-source unit-test fixtures from the ResNet50 catalog opt-in,
+251 model, matrix, CLI and planner tests passed.

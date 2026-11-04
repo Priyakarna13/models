@@ -414,7 +414,7 @@ def test_conversion_workflow_uses_shared_environment_and_passed_tests():
     job = workflow["jobs"]["convert"]
     assert job["environment"] == "${{ inputs.environment }}"
     assert job["env"]["VULCAN_ENVIRONMENT"] == "${{ inputs.environment }}"
-    assert job["runs-on"][3] == "${{ inputs.environment == 'staging' && 'vulcan-stg' || 'vulcan-production' }}"
+    assert job["runs-on"] == "ubuntu-24.04-arm"  # Scratch canary runner override.
     # The shared config resolver emits stg/prod, not canonical GitHub environment names.
     assert "needs.config.outputs.vulcan_env" not in str(job)
     tests = next(step for step in job["steps"] if step.get("name", "").startswith("Test the converted"))

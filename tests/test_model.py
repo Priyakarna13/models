@@ -544,9 +544,8 @@ def test_catalog_model_is_valid() -> None:
     categorization = validate_model_categorization(model, load_taxonomy(TAXONOMY))
     assert categorization is not None
     assert categorization["architecture"] == {"id": "resnet", "paradigm": "cnn"}
-    assert model["components"][0]["source"]["sha256"] == (
-        "de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50"
-    )
+    assert model["components"][0]["source"] == {"type": "conversion"}
+    assert model["conversion"]["default"]["source"]["entrypoint"] == "model.safetensors"
     profiles = {profile["id"]: profile for profile in model["build_profiles"]}
     assert set(profiles) == {"w16a16", "w8a8", "w8a16"}
     assert profiles["w16a16"]["components"][0]["parameters"]["precision"] == "w16a16"

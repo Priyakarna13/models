@@ -284,10 +284,10 @@ def test_invalid_model_has_nonzero_exit(capsys) -> None:
 
 
 def test_matrix_emits_workflow_json(capsys) -> None:
-    result = main(["matrix", "--repository", str(ROOT), "--models", "resnet_50", "--compiler-version", "fixture"])
+    result = main(["matrix", "--repository", str(ROOT), "--models", "yolo26n", "--compiler-version", "fixture"])
     assert result == 0
     entries = json.loads(capsys.readouterr().out)["include"]
-    assert {entry["model_id"] for entry in entries} == {"resnet_50"}
+    assert {entry["model_id"] for entry in entries} == {"yolo26n"}
     assert all(len(entry["compile_fingerprint"]) == 64 for entry in entries)
 
 

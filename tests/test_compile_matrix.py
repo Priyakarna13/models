@@ -15,6 +15,8 @@ from model_registry.fingerprints import COMPILE_TOOLING, benchmark_fingerprint, 
 from model_registry.model import load_and_validate_model, load_models
 from model_registry.registry import RegistryPublicationError, publish_catalog
 
+from tests.pinned_source import pin_fixture_source
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "fixture_model"
 SCHEMA = ROOT / "schemas" / "model.schema.json"
@@ -565,6 +567,7 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
         shutil.copytree(ROOT / folder, repository / folder, ignore=shutil.ignore_patterns("__pycache__"))
     for name in (native_id, "resnet_50"):
         shutil.copytree(ROOT / "models" / name, repository / "models" / name)
+    pin_fixture_source(repository / "models/resnet_50")
 
     def fingerprints():
         return [
@@ -586,6 +589,7 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
 def test_checkpoint_repository_name_does_not_change_compile_fingerprint(tmp_path, model_id, profile_id):
     for folder in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools", f"models/{model_id}"):
         shutil.copytree(ROOT / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
+    pin_fixture_source(tmp_path / "models" / model_id)
     manifest = tmp_path / "models" / model_id / "model.yaml"
     model = yaml.safe_load(manifest.read_text())
     before = compile_fingerprint(tmp_path, model_id, profile_id, profile_id, "compiler")

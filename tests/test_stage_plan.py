@@ -225,6 +225,9 @@ def repository_without_w16a16_accuracy(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
     for relative in ("schemas", "taxonomies", "datasets", "models/resnet_50"):
         shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
+    from tests.pinned_source import pin_fixture_source
+
+    pin_fixture_source(repository / "models/resnet_50")
     model_yaml = repository / "models" / "resnet_50" / "model.yaml"
     model = yaml.safe_load(model_yaml.read_text(encoding="utf-8"))
     model["accuracy"]["build_profiles"] = ["w8a8", "w8a16"]
