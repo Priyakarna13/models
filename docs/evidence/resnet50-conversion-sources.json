@@ -1,0 +1,14 @@
+{
+  "resnet_50": {
+    "s3_bucket": "sima-neat-artifacts-production",
+    "s3_key": "models/conversions/resnet_50/cd1756d20e9335ae613c272c6dc3238b04e50d09136ed609f7ae5285a839d0f1/onnx.tar.gz",
+    "s3_version_id": "n.m_51uuIs_FauAqDVkBdsWbaT40_o_H",
+    "sha256": "cd1756d20e9335ae613c272c6dc3238b04e50d09136ed609f7ae5285a839d0f1",
+    "size_bytes": 95020747,
+    "media_type": "application/gzip",
+    "run_id": "f284a26c-4579-485c-afe9-2e7690aa3056",
+    "artifact_id": "d2efdf8e-ca84-48be-9bbd-8c89e2662564",
+    "conversion_fingerprint": "be082e1d5056a7dec6aab50bd6adde6d13fef68b972c0841fcf1318fa63a270a",
+    "read_api_url": "https://models-registry.neat.sima.ai"
+  }
+}

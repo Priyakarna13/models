@@ -1,0 +1,66 @@
+{
+  "tested_commit": "ab4bab5e406424ecbf9d1b4eedad345a783e5985",
+  "orchestrator_run_id": "41876165659",
+  "compiler_identity": "3.0.0+develop.8681769b526b",
+  "compile_plan_run_id": "ed0e8659-6c0b-48ea-b9ce-fc3fe6aea0f6",
+  "catalog_canonical_sha256": "6b52f6b023d118deaa3d2d3e02a0f043b96139bb413557df5517fcaeb5f31d16",
+  "builds": [
+    {
+      "profile": "w16a16",
+      "compile_run_id": "e59562b9-d6ea-4e19-89e2-c08a530f9103",
+      "compile_fingerprint": "9d9ca1ac2be588cb53cb6365a2db793a9b4dd2149058cdb3120b1d22a667a04c",
+      "artifact_sha256": "be9ba5e191bd46906aff1a1d278f4786ad67302de59e1104a1a03b7b7e8f244e",
+      "package_run_id": "dc7f36e0-24ee-479b-a031-7101216288cc",
+      "package_fingerprint": "d758e4fec635c08eda35ae4498ffad33f27f1f9cfc87acff7a9960a1d20a9111",
+      "source": {
+        "input_type": "onnx",
+        "source_reference": "run:f284a26c-4579-485c-afe9-2e7690aa3056/artifacts/onnx",
+        "sha256": "cd1756d20e9335ae613c272c6dc3238b04e50d09136ed609f7ae5285a839d0f1",
+        "s3_version_id": "n.m_51uuIs_FauAqDVkBdsWbaT40_o_H",
+        "metadata": {
+          "artifact_id": "d2efdf8e-ca84-48be-9bbd-8c89e2662564",
+          "conversion_run_id": "f284a26c-4579-485c-afe9-2e7690aa3056",
+          "conversion_fingerprint": "be082e1d5056a7dec6aab50bd6adde6d13fef68b972c0841fcf1318fa63a270a"
+        }
+      }
+    },
+    {
+      "profile": "w8a16",
+      "compile_run_id": "52ce8923-e7e2-4584-9a22-833cee38e58f",
+      "compile_fingerprint": "fa740a660775c9b7add2a0f1ad64660bd3f95074d7524e516a585888a479cba2",
+      "artifact_sha256": "7dd752872a3c2eba8e7a97f617fab20bfefd56b977eefe00d5399dc0cb44f1ca",
+      "package_run_id": "bf68abc5-fefc-4d97-b510-a2a08d4b525a",
+      "package_fingerprint": "6483c648b76b6cde8d59762fbcf15217e04f9e5bbee7b4814c0058b551317801",
+      "source": {
+        "input_type": "onnx",
+        "source_reference": "run:f284a26c-4579-485c-afe9-2e7690aa3056/artifacts/onnx",
+        "sha256": "cd1756d20e9335ae613c272c6dc3238b04e50d09136ed609f7ae5285a839d0f1",
+        "s3_version_id": "n.m_51uuIs_FauAqDVkBdsWbaT40_o_H",
+        "metadata": {
+          "artifact_id": "d2efdf8e-ca84-48be-9bbd-8c89e2662564",
+          "conversion_run_id": "f284a26c-4579-485c-afe9-2e7690aa3056",
+          "conversion_fingerprint": "be082e1d5056a7dec6aab50bd6adde6d13fef68b972c0841fcf1318fa63a270a"
+        }
+      }
+    },
+    {
+      "profile": "w8a8",
+      "compile_run_id": "b4cd0450-b22f-4b4e-9d1a-217c6e0b3399",
+      "compile_fingerprint": "3de064f972fd5da29ba2d21f944255b32ae67b9c2750583b48a6dba109c0522d",
+      "artifact_sha256": "14afc6f2ce3836484ad2d93eae0d91cf0c3f5e5eb05ac7f2df141a36abca786b",
+      "package_run_id": "13b45950-0f22-4c01-965a-18f9662597af",
+      "package_fingerprint": "5c22e4aef541d682fb04363ce6553a6ec3e11a6d5b41fe9aeddfbf6d02303cc9",
+      "source": {
+        "input_type": "onnx",
+        "source_reference": "run:f284a26c-4579-485c-afe9-2e7690aa3056/artifacts/onnx",
+        "sha256": "cd1756d20e9335ae613c272c6dc3238b04e50d09136ed609f7ae5285a839d0f1",
+        "s3_version_id": "n.m_51uuIs_FauAqDVkBdsWbaT40_o_H",
+        "metadata": {
+          "artifact_id": "d2efdf8e-ca84-48be-9bbd-8c89e2662564",
+          "conversion_run_id": "f284a26c-4579-485c-afe9-2e7690aa3056",
+          "conversion_fingerprint": "be082e1d5056a7dec6aab50bd6adde6d13fef68b972c0841fcf1318fa63a270a"
+        }
+      }
+    }
+  ]
+}
