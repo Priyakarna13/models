@@ -69,3 +69,6 @@ pipeline:
 - {cpu: "Guide the noise (class pass, null-class pass) and take the DDIM step; repeat per timestep"}
 - {component: vae_decoder}
 - {cpu: "Map the image from [-1, 1] to 8-bit RGB"}
+
+# A fixed input (class 207, seed 0, 50 DDIM steps): the model takes no image, so performance.py builds it.
+performance: {}
