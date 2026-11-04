@@ -148,7 +148,10 @@ an application gets from a 720p frame to decoded results, not the MPK alone:
    scaling of pixels to [0, 1]. ResNet-50 and RF-DETR's backbone resize with
    `ResizeMode.Stretch` and set `preprocess.preset =
    NormalizePreset.ImageNet`; without a preset, Neat applies no mean or
-   standard deviation.
+   standard deviation. The MNIST digit classifiers pick one test digit from
+   the dataset's IDX file, letterbox it as an RGB image, and have Neat convert
+   the frame to grayscale (`PreprocessColorFormat.GRAY8`) and stretch it to
+   28x28 with no preset.
 
 The report's `workload` names the dataset, the image, the frame, and the
 decoder settings. Preprocessing is part of the measurement and can bound
