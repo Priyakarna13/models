@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import runpy
 import shutil
 import sys
 import tarfile
@@ -22,14 +23,18 @@ STAGED = ROOT / "contrib/lewam_pusht"
 
 
 @pytest.fixture
-def script(monkeypatch):
+def model_dir():
+    return STAGED / "model"
+
+
+@pytest.fixture
+def script(load_script, monkeypatch):
     def load(name):
-        path = STAGED / (
-            f"{name}.py" if name in {"stage", "stage_data", "ci_sources", "promote"} else f"model/scripts/{name}.py"
-        )
+        if name not in {"publication", "stage_data"}:
+            return load_script(name)
+        path = STAGED / f"{name}.py"
         monkeypatch.syspath_prepend(str(STAGED / "model/scripts"))
-        for sibling in ("surgery", "calibration", "performance"):
-            monkeypatch.delitem(sys.modules, sibling, raising=False)
+        monkeypatch.delitem(sys.modules, "validation", raising=False)
         spec = importlib.util.spec_from_file_location(f"lewam_test_{name}", path)
         module = importlib.util.module_from_spec(spec)
         monkeypatch.setitem(sys.modules, spec.name, module)
@@ -40,22 +45,21 @@ def script(monkeypatch):
 
 
 @pytest.fixture
-def request_data(script):
+def request_data():
     return {
         "images": np.zeros((2, 224, 224, 3), np.uint8),
         "history_pad": np.array([True, False]),
         "noise": np.zeros((10, 2), np.float32),
         "time_features": np.arange(8 * 192, dtype=np.float32).reshape(8, 192),
         "horizon_features": np.ones(192, np.float32),
-        "attention_mask": script("accuracy").attention_mask(True),
     }
 
 
 def toy_graphs(directory, script):
-    surgery = script("surgery")
+    validation = script("validation")
     paths = {}
-    for name, (input_shape, output_shape) in surgery.SHAPES.items():
-        input_name = "policy_input" if name == "policy" else "input"
+    for name, (input_shape, output_shape) in validation.SHAPES.items():
+        input_name = validation.INPUT_NAMES[name]
         output_name = "velocity_padded" if name == "policy" else "output"
         graph = onnx.helper.make_graph(
             [onnx.helper.make_node("ConstantOfShape", ["shape"], [output_name])],
@@ -70,81 +74,41 @@ def toy_graphs(directory, script):
     return paths
 
 
-def test_source_stage_hashes_every_graph_and_never_uploads(tmp_path, script):
-    graphs = toy_graphs(tmp_path, script)
-    report = script("stage").stage(graphs, tmp_path / "stage")
-    assert len(report["files"]) == 4
-    assert "not numerical or native qualification" in report["scope"]
-    for name, row in report["files"].items():
-        assert row["sha256"] == hashlib.sha256((tmp_path / "stage" / name).read_bytes()).hexdigest()
+def test_preparation_hashes_every_graph_without_uploading(tmp_path, script):
+    module = script("publication")
+    report = module.prepare(toy_graphs(tmp_path, script), tmp_path / "prepared")
+    assert set(report["files"]) == {"front", "body", "head", "policy"}
+    for component, row in report["files"].items():
+        assert row["path"] == f"{component}/model.onnx"
+        assert row["sha256"] == hashlib.sha256((tmp_path / "prepared" / row["path"]).read_bytes()).hexdigest()
         assert "uri" not in row
+    assert module.read_prepared(tmp_path / "prepared") == report
     with pytest.raises(FileExistsError):
-        script("stage").stage(graphs, tmp_path / "stage")
+        module.prepare(toy_graphs(tmp_path, script), tmp_path / "prepared")
 
 
-def test_stage_rejects_missing_component_before_writing(tmp_path, script):
+def test_preparation_rejects_missing_component_before_writing(tmp_path, script):
     with pytest.raises(ValueError, match="Exactly"):
-        script("stage").stage({}, tmp_path / "absent")
+        script("publication").prepare({}, tmp_path / "absent")
     assert not (tmp_path / "absent").exists()
 
 
-def test_stage_rejects_changed_policy_abi(tmp_path, script):
+def test_preparation_rejects_changed_policy_abi(tmp_path, script):
     graphs = toy_graphs(tmp_path, script)
     proto = onnx.load(graphs["policy"])
     proto.graph.input[0].name = "reduced_policy"
     onnx.save(proto, graphs["policy"])
     with pytest.raises(ValueError, match="original full19"):
-        script("stage").stage(graphs, tmp_path / "absent")
+        script("publication").prepare(graphs, tmp_path / "absent")
 
 
-def publication_receipt(tmp_path, script):
-    report = script("stage").stage(toy_graphs(tmp_path, script), tmp_path / "source-stage")
-    for name, row in report["files"].items():
-        # Unit-test network identity only; never a real production pin.
-        row["uri"] = f"https://artifacts.stg.neat.sima.ai/models-onnx/lewam_pusht/{row['sha256']}/1-1/model.onnx"
-    return report
-
-
-def test_definition_uses_one_profile_four_components_and_no_fake_benchmarks(tmp_path, script):
-    receipt = publication_receipt(tmp_path, script)
-    calibration = {"id": "pusht", "variant": "cal", "sha256": "a" * 64, "size_bytes": 1}
-    metadata = script("promote").definition(receipt, calibration)
-    assert metadata["compilation"]["components"] == ["front", "body", "head", "policy"]
-    assert list(metadata["build_profiles"]) == ["w16a16"]
-    assert not {"performance", "accuracy", "reference_metrics", "build-on-demand"} & set(metadata)
-
-
-def test_promotion_fetches_before_atomic_catalog_entry(tmp_path, script, monkeypatch):
-    receipt = publication_receipt(tmp_path, script)
-    repository = tmp_path / "repository"
-    for path in ("schemas", "taxonomies", "deps"):
-        shutil.copytree(ROOT / path, repository / path)
-    (repository / "models").mkdir()
-    calibration = {"id": "pusht", "variant": "cal", "sha256": "a" * 64, "size_bytes": 1}
-    module = script("promote")
-    calls = []
-
-    def fail_fetch(self, source):
-        calls.append(source)
-        raise RuntimeError("not published")
-
-    monkeypatch.setattr(module.Fetcher, "fetch_source", fail_fetch)
-    with pytest.raises(RuntimeError, match="not published"):
-        module.promote(receipt, calibration, repository, tmp_path / "cache")
-    assert not (repository / "models/lewam_pusht").exists()
-    assert len(calls) == 1 and len(calls[0]["files"]) == 4
-    monkeypatch.setattr(module.Fetcher, "fetch_source", lambda *args: None)
-    destination = module.promote(receipt, calibration, repository, tmp_path / "cache")
-    assert (destination / "model.yaml").is_file()
-    assert not (destination / "definition.yaml").exists()
-
-
-@pytest.mark.parametrize("field,value", [("checkpoint_sha256", "0" * 64), ("source_revision", "0" * 40)])
-def test_promotion_rejects_identity_drift(tmp_path, script, field, value):
-    receipt = publication_receipt(tmp_path, script)
-    receipt[field] = value
-    with pytest.raises(ValueError, match="identity"):
-        script("promote").definition(receipt, {})
+def test_preparation_rejects_changed_image_input_name(tmp_path, script):
+    graphs = toy_graphs(tmp_path, script)
+    proto = onnx.load(graphs["front"])
+    proto.graph.input[0].name = "unknown_pixels"
+    onnx.save(proto, graphs["front"])
+    with pytest.raises(ValueError, match="expected input name pixels"):
+        script("publication").prepare(graphs, tmp_path / "absent")
 
 
 def test_compile_disables_both_fp32_normalizations(script):
@@ -209,7 +173,7 @@ def test_eight_step_feedback_and_original_packing(script, request_data):
         np.testing.assert_array_equal(packed[0, :, 0, 13], request_data["time_features"][step])
         assert np.all(packed[:, 2:, :, 3:13] == 0)
         x = np.add(x, np.divide(np.add(x, np.float32(1)), np.float32(8)), dtype=np.float32)
-    expected = np.add(np.multiply(x, module.STD, dtype=np.float32), module.MEAN, dtype=np.float32)
+    expected = np.add(np.multiply(x, module.ACTION_STD, dtype=np.float32), module.ACTION_MEAN, dtype=np.float32)
     np.testing.assert_array_equal(output, expected)
 
 
@@ -267,35 +231,13 @@ def test_measure_counts_completed_replans_not_actions(script):
     assert len(samples) == 3 and len(calls) == 5 and elapsed > 0
 
 
-def test_new_metric_is_a_ratio_and_has_matching_browser_label(monkeypatch):
-    from types import SimpleNamespace
+def test_pusht_metric_uses_success_ratio():
+    from model_report import METRICS
 
-    monkeypatch.setitem(sys.modules, "pyneat", SimpleNamespace(__version__="host-test", build_info=lambda: {}))
-    from model_report import from_accuracy
-
-    result = from_accuracy(
-        {
-            "pusht-reproduction": {
-                "metrics": {"pusht_success_rate": 0.8},
-                "split": "reproduction-non-held-out",
-                "evaluated_samples": 150,
-                "available_samples": 150,
-            }
-        }
-    )
-    assert result is not None
-    assert 'pusht_success_rate: "PushT success rate"' in (ROOT / "artifact-browser/accuracy-metrics.js").read_text()
-    with pytest.raises(ValueError, match="ratio"):
-        from_accuracy(
-            {
-                "pusht-reproduction": {
-                    "metrics": {"pusht_success_rate": 80},
-                    "split": "reproduction-non-held-out",
-                    "evaluated_samples": 150,
-                    "available_samples": 150,
-                }
-            }
-        )
+    metric = METRICS["pusht_success_rate"]
+    assert metric["unit"] == "ratio"
+    assert metric["direction"] == "higher"
+    assert metric["registry_name"] == "model.accuracy.pusht_success_rate"
 
 
 def test_staged_model_is_not_an_active_catalog_entry():
@@ -398,15 +340,12 @@ def test_public_runtime_keeps_four_runners_and_owns_borrowed_outputs(script, req
     np.testing.assert_array_equal(packed[:, :, :, 0], 0)
     np.testing.assert_array_equal(packed[:, :, :, 1], 1)
     np.testing.assert_array_equal(packed[:, :, :, 2], 2)
-    policy.reset()
     request = dict(
         request_data,
         images=np.zeros((3, 224, 224, 3), np.uint8),
         history_pad=np.zeros(2, np.bool_),
-        attention_mask=module.attention_mask(False),
     )
     policy.replan(request)
-    assert policy.generation == 1
     assert pn.builds == list(module.COMPONENTS)
     assert len([row for row in pn.log if row == ("run", "policy")]) == 16
     assert len([row for row in pn.log if row == ("run", "front")]) == 5
@@ -428,8 +367,6 @@ def test_public_runtime_never_retries_native_timeout(script, request_data):
     calls = len(pn.log)
     with pytest.raises(RuntimeError, match="failed"):
         policy.replan(request_data)
-    with pytest.raises(RuntimeError, match="failed"):
-        policy.reset()
     assert len(pn.log) == calls
     policy.close()
     assert not policy.runners
@@ -449,13 +386,13 @@ def test_public_runtime_reports_and_retains_failed_close(script, request_data):
     assert not policy.runners
 
 
-def test_public_runtime_rejects_overlapping_replan_reset_and_close(script, request_data):
+def test_public_runtime_rejects_overlapping_replan_and_close(script, request_data):
     module = script("performance")
     pn = fake_neat(module)
     policy = module.Policy({name: Path(name) for name in module.COMPONENTS}, pn)
     policy._request_lock.acquire()
     try:
-        for operation in (lambda: policy.replan(request_data), policy.reset, policy.close):
+        for operation in (lambda: policy.replan(request_data), policy.close):
             with pytest.raises(RuntimeError, match="in flight"):
                 operation()
     finally:
@@ -465,11 +402,20 @@ def test_public_runtime_rejects_overlapping_replan_reset_and_close(script, reque
     policy.close()
 
 
-def test_mask_rejects_new_future_token_attention(script, request_data):
+def test_request_rejects_caller_supplied_attention_mask(script, request_data):
+    request_data["attention_mask"] = np.zeros((19, 19), np.float32)
+    with pytest.raises(ValueError, match="exactly"):
+        script("performance").validate_request(request_data)
+
+
+def test_boolean_list_padding_is_normalized_before_native_work(script, request_data):
     module = script("performance")
-    request_data["attention_mask"][18, 9] = 0
-    with pytest.raises(ValueError, match="topology"):
-        module.validate_request(request_data)
+    request_data["history_pad"] = [True, False]
+    pn = fake_neat(module)
+    policy = module.Policy({name: Path(name) for name in module.COMPONENTS}, pn)
+    assert policy.replan(request_data).shape == (10, 2)
+    assert not policy.failed
+    policy.close()
 
 
 def test_real_calibration_layout_count_and_hash_contract(tmp_path, script):
@@ -534,106 +480,26 @@ def test_evaluation_archive_has_deterministic_metadata(tmp_path, script, monkeyp
         module.stage(source, tmp_path / "first")
 
 
-def test_closed_loop_uses_native_prefix_actions_and_alive_rng_batches(script):
-    module = script("accuracy")
-    from types import SimpleNamespace as NS
-
-    policy = NS(resets=0, requests=[])
-    actions = np.arange(20, dtype=np.float32).reshape(10, 2)
-
-    def reset():
-        policy.resets += 1
-
-    def replan(request):
-        policy.requests.append(request)
-        return actions
-
-    policy.reset, policy.replan = reset, replan
-    environments, draws, seeds = [], [], []
-
-    class Environment:
-        def __init__(self):
-            self.order, self.steps, self.closed = [], 0, False
-            environments.append(self)
-
-        def reset(self, *, seed):
-            self.order.append(("reset", seed))
-
-        def _set_state(self, state):
-            self.order.append(("state",))
-
-        def _set_goal_state(self, goal):
-            self.order.append(("goal",))
-            self.goal = goal.copy()
-
-        def render(self):
-            return np.zeros((224, 224, 3), np.uint8)
-
-        def step(self, action):
-            np.testing.assert_array_equal(action, actions[self.steps])
-            self.steps += 1
-            reached = self.steps == 2
-            state = self.goal.copy()
-            if not reached:
-                state[0] += 30
-            return {"state": state}, 0.0, reached, False, {}
-
-        def close(self):
-            self.closed = True
-
-    def noise_factory(seed):
-        seeds.append(seed)
-
-        def noise(count):
-            draws.append(count)
-            return np.zeros((count, 10, 2), np.float32)
-
-        return noise
-
-    rows = [
-        {"episode": i, "start": 0, "reset_seed": i, "seed": seed}
-        for i, seed in enumerate([42] * 50 + [0] * 50 + [1] * 50)
-    ]
-    arrays = {
-        "initial_states": np.zeros((150, 7), np.float64),
-        "goal_states": np.zeros((150, 7), np.float64),
-        "goal_images": np.zeros((150, 224, 224, 3), np.uint8),
-        "time_features": np.zeros((8, 192), np.float32),
-        "horizon_features": np.zeros((10, 192), np.float32),
-    }
-    results = module.evaluate(policy, rows, arrays, Environment, noise_factory)
-    assert len(results) == 150 and all(row["success"] and row["steps"] == 2 for row in results)
-    assert policy.resets == 3 and seeds == [42, 0, 1] and draws == [50, 50, 50]
-    assert len(policy.requests) == 150
-    assert all(env.closed and [x[0] for x in env.order] == ["reset", "state", "goal"] for env in environments)
-
-
-def test_ci_sources_use_standard_filename_without_claiming_publication(tmp_path, script):
-    receipt = script("stage").stage(toy_graphs(tmp_path, script), tmp_path / "stage")
-    module = script("ci_sources")
-    prepared = module.prepare(tmp_path / "stage", tmp_path / "ci")
-    assert prepared["status"] == "STAGED_NOT_PUBLISHED"
-    for component, entry in prepared["sources"].items():
-        assert entry["file"] == f"{component}/model.onnx"
-        assert entry["sha256"] == receipt["files"][f"{component}.onnx"]["sha256"]
-        assert hashlib.sha256((tmp_path / "ci" / entry["file"]).read_bytes()).hexdigest() == entry["sha256"]
-        assert "uri" not in entry
-
-
-def test_ci_pin_binding_checks_all_bytes_and_all_downloads(tmp_path, script, monkeypatch):
-    receipt = publication_receipt(tmp_path, script)
-    module = script("ci_sources")
+def test_pin_binding_checks_all_bytes_and_downloads_before_committing(tmp_path, script, monkeypatch):
+    module = script("publication")
+    receipt = module.prepare(toy_graphs(tmp_path, script), tmp_path / "prepared")
     pins = {
-        name.removesuffix(".onnx"): {
-            "source": dict(type="file", **{key: row[key] for key in ("uri", "sha256", "size_bytes")})
+        name: {
+            "source": {
+                "type": "file",
+                "uri": f"https://artifacts.stg.neat.sima.ai/models-onnx/lewam_pusht/{row['sha256']}/1-1/model.onnx",
+                "sha256": row["sha256"],
+                "size_bytes": row["size_bytes"],
+            }
         }
         for name, row in receipt["files"].items()
     }
+    output = tmp_path / "source.yaml"
     bad = copy.deepcopy(pins)
     bad["body"]["source"]["sha256"] = "0" * 64
     with pytest.raises(ValueError, match="differs"):
-        module.bind(tmp_path / "source-stage", bad, tmp_path / "cache", tmp_path / "receipt.json")
-    assert not (tmp_path / "receipt.json").exists()
+        module.bind(tmp_path / "prepared", bad, tmp_path / "cache", output)
+    assert not output.exists()
     calls = []
 
     def download(self, spec):
@@ -644,15 +510,57 @@ def test_ci_pin_binding_checks_all_bytes_and_all_downloads(tmp_path, script, mon
 
     monkeypatch.setattr(module.Fetcher, "fetch", download)
     with pytest.raises(RuntimeError, match="not published"):
-        module.bind(tmp_path / "source-stage", pins, tmp_path / "cache", tmp_path / "receipt.json")
-    assert not (tmp_path / "receipt.json").exists()
+        module.bind(tmp_path / "prepared", pins, tmp_path / "cache", output)
+    assert not output.exists()
     calls.clear()
     monkeypatch.setattr(module.Fetcher, "fetch", lambda self, spec: calls.append(spec))
-    bound = module.bind(tmp_path / "source-stage", pins, tmp_path / "cache", tmp_path / "receipt.json")
+    bound = module.bind(tmp_path / "prepared", pins, tmp_path / "cache", output)
     assert len(calls) == 4
-    assert all("uri" in row for row in bound["files"].values())
+    assert bound == yaml.safe_load(output.read_text())
+    source = bound["compilation"]["source"]
+    assert source["main_file"] == "front.onnx"
+    assert source["files"] == {
+        f"{name}.onnx": {key: row["source"][key] for key in ("uri", "sha256", "size_bytes")}
+        for name, row in pins.items()
+    }
     with pytest.raises(FileExistsError):
-        module.bind(tmp_path / "source-stage", pins, tmp_path / "cache", tmp_path / "receipt.json")
+        module.bind(tmp_path / "prepared", pins, tmp_path / "cache", output)
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_pin_binding_uses_shared_fetch_byte_verification(tmp_path, script, monkeypatch, corrupt):
+    from model_registry.errors import FetchError
+    from model_registry.fetch import Fetcher
+
+    module = script("publication")
+    prepared = tmp_path / "prepared"
+    receipt = module.prepare(toy_graphs(tmp_path, script), prepared)
+    pins, bodies = {}, {}
+    for component, row in receipt["files"].items():
+        uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/lewam_pusht/{row['sha256']}/1-1/model.onnx"
+        pins[component] = {
+            "source": {"type": "file", "uri": uri, "sha256": row["sha256"], "size_bytes": row["size_bytes"]}
+        }
+        bodies[uri] = (prepared / row["path"]).read_bytes()
+    if corrupt:
+        uri = pins["head"]["source"]["uri"]
+        bodies[uri] = b"x" * len(bodies[uri])
+    # Only transport is replaced; hashing, caching and source policy remain real.
+    monkeypatch.setattr(
+        module,
+        "Fetcher",
+        lambda cache: Fetcher(
+            cache, opener=lambda request, **kwargs: io.BytesIO(bodies[request.full_url]), max_attempts=1
+        ),
+    )
+    output = tmp_path / "source.yaml"
+    if corrupt:
+        with pytest.raises(FetchError, match="SHA-256 mismatch"):
+            module.bind(prepared, pins, tmp_path / "cache", output)
+        assert not output.exists()
+    else:
+        module.bind(prepared, pins, tmp_path / "cache", output)
+        assert output.is_file()
 
 
 def mpk_fixture(tmp_path, script, *, change=None, extra=None):
@@ -696,6 +604,66 @@ def test_mpk_audit_uses_real_registry_manifest_convention(tmp_path, script):
     assert "no_fp32_mla" not in receipt  # Structural acceptance is not precision proof.
 
 
+@pytest.mark.parametrize("payload", [b"not an MPK", b"invalid ELF"])
+def test_stage_acceptance_reads_archives_not_success_booleans(tmp_path, script, payload):
+    """A checksum-bound manifest and claimed PASS cannot make a fake package valid."""
+    from model_registry.dependencies import resolve_model_compiler
+
+    outputs = []
+    version = resolve_model_compiler(ROOT)["version"]
+    for component in ("front", "body", "head", "policy"):
+        path = tmp_path / component / f"lewam_pusht_w16a16_{component}_mpk.tar.gz"
+        path.parent.mkdir()
+        if payload == b"not an MPK":
+            path.write_bytes(payload)
+        else:
+            # Well-formed tar, wrong public interface and payload; still not a build.
+            with tarfile.open(path, "w:gz") as archive:
+                for name, data in {
+                    "model_mpk.json": json.dumps({"model_sdk_version": version}).encode(),
+                    "model.elf": payload,
+                }.items():
+                    member = tarfile.TarInfo(name)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+        outputs.append(
+            {
+                "component_id": component,
+                "mpk_path": str(path.relative_to(tmp_path)),
+                "mpk_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    manifest = {
+        "model_id": "lewam_pusht",
+        "build_profile_id": "w16a16",
+        "compile_invocation_id": "w16a16",
+        "outputs": outputs,
+        "derived_graphs": [{"component_id": row["component_id"], "sha256": "a" * 64} for row in outputs],
+    }
+    (tmp_path / "compile-outputs.json").write_text(json.dumps(manifest))
+    (tmp_path / "qualification.json").write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "model_id": "lewam_pusht",
+                "build_profile_id": "w16a16",
+                "components": {
+                    row["component_id"]: {
+                        "mpk_sha256": row["mpk_sha256"],
+                        "no_fp32_mla": True,
+                        "public_neat_native_parity": True,
+                        "source_equivalence": True,
+                    }
+                    for row in outputs
+                },
+            }
+        )
+    )
+    acceptance = runpy.run_path(STAGED / "model/tests/build/test_compile.py")["test_all_four_standard_components"]
+    with pytest.raises((tarfile.ReadError, ValueError)):
+        acceptance(tmp_path, "w16a16", ROOT / "models/lewam_pusht", script)
+
+
 @pytest.mark.parametrize(
     "change,match",
     [
@@ -728,26 +696,26 @@ def test_mpk_audit_rejects_private_payloads_and_unsafe_members(tmp_path, script,
         module.audit_archive(path, name, "3.0.0", graph)
 
 
-def test_source_stage_is_atomic_when_copy_verification_fails(tmp_path, script, monkeypatch):
+def test_preparation_is_atomic_when_copy_verification_fails(tmp_path, script, monkeypatch):
     graphs = toy_graphs(tmp_path, script)
-    module = script("stage")
+    module = script("publication")
     monkeypatch.setattr(module.shutil, "copyfile", lambda source, target: target.write_bytes(b"changed"))
-    with pytest.raises(ValueError, match="changed while staging"):
-        module.stage(graphs, tmp_path / "output")
+    with pytest.raises(ValueError, match="changed while preparing"):
+        module.prepare(graphs, tmp_path / "output")
     assert not (tmp_path / "output").exists()
-    assert not list(tmp_path.glob(".lewam-source-*"))
+    assert not list(tmp_path.glob(".lewam-publication-*"))
 
 
 @pytest.mark.parametrize("field", ["checkpoint_sha256", "source_revision"])
-def test_ci_preparation_rejects_provenance_drift(tmp_path, script, field):
-    script("stage").stage(toy_graphs(tmp_path, script), tmp_path / "stage")
-    receipt = tmp_path / "stage/source-stage.json"
+def test_binding_rejects_prepared_provenance_drift(tmp_path, script, field):
+    module = script("publication")
+    module.prepare(toy_graphs(tmp_path, script), tmp_path / "prepared")
+    receipt = tmp_path / "prepared" / module.RECEIPT
     metadata = json.loads(receipt.read_text())
     metadata[field] = "0" * len(metadata[field])
     receipt.write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="identity"):
-        script("ci_sources").prepare(tmp_path / "stage", tmp_path / "output")
-    assert not (tmp_path / "output").exists()
+        module.read_prepared(tmp_path / "prepared")
 
 
 def test_accuracy_closes_all_environments_if_one_close_fails(script):
@@ -785,12 +753,13 @@ def test_accuracy_closes_all_environments_if_one_close_fails(script):
     rows = [{"seed": 42, "episode": i, "start": 0, "reset_seed": i} for i in range(150)]
     arrays = {
         "initial_states": np.zeros((150, 7), np.float64),
+        "initial_images": np.zeros((150, 224, 224, 3), np.uint8),
         "goal_states": np.zeros((150, 7), np.float64),
         "goal_images": np.zeros((150, 224, 224, 3), np.uint8),
         "time_features": np.zeros((8, 192), np.float32),
         "horizon_features": np.zeros((10, 192), np.float32),
     }
-    policy = NS(reset=lambda: None, replan=lambda request: np.zeros((10, 2), np.float32))
+    policy = NS(replan=lambda request: np.zeros((10, 2), np.float32))
     with pytest.raises(RuntimeError, match="1 PushT environment"):
         module.evaluate(
             policy, rows, arrays, Environment, lambda seed: lambda count: np.zeros((count, 10, 2), np.float32)

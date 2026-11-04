@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 from calibration import read_calibration
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.model import load_model as load_metadata
-from surgery import COMPONENTS, digest, validate_sources
+from validation import COMPONENTS, digest, validate_sources
 
 MODEL_ID = "lewam_pusht"
 MODEL_DIR = Path(__file__).resolve().parents[1]
@@ -240,7 +240,7 @@ def build(source: Path, dataset: Path, profile: str, output: Path) -> None:
         json.dumps(
             {
                 "status": "UNQUALIFIED",
-                "compiler": compiler,
+                "expected_compiler": compiler,
                 "components": receipts,
                 "required": ["final_ELF_no_FP32", "standard_MPK_interface", "source_equivalence", "native_parity"],
             },

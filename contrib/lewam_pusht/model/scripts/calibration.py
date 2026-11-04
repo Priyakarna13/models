@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from surgery import COMPONENTS, SHAPES, digest
+from validation import COMPONENTS, SHAPES, digest
 
 CHECKPOINT_SHA256 = "e649a703b224e4144fa068b73ae6ab3735cf60b81ed2ffe36898c1e26474d5fb"
 SELECTION_SHA256 = "07f15a12ac7c649758ac26783e3632ed7aba91c6e15f6ebe3b46bb0dc33e305a"

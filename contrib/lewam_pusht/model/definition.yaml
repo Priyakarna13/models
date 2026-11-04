@@ -1,5 +1,5 @@
-# Staged definition, not an active catalog entry. promote.py binds published
-# ONNX and Dataset Registry receipts before writing models/lewam_pusht/model.yaml.
+# Staged definition, not an active catalog entry. Add verified publication pins
+# in a reviewed model.yaml only after the compiler and runtime gates are satisfied.
 display_name: LeWAM PushT
 description: Goal-conditioned visual action prediction for the PushT simulation.
 model_type: vision
@@ -20,7 +20,7 @@ upstream:
 compilation:
   format: onnx
   components: [front, body, head, policy]
-  # source is supplied only by promote.py after verifying publication receipts.
+  # publication.py bind supplies the verified compilation.source YAML fragment.
 build_profiles:
   w16a16:
     calibration_dataset: pusht-cal
@@ -42,5 +42,5 @@ pipeline:
 - {cpu: "Eight sequential policy evaluations with Euler feedback, then denormalize ten actions"}
 # No reference scores or 15.39 throughput expectation: the campaign measured a
 # different runtime/input boundary, and two of fourteen numerical cases failed.
-# Promotion does not enable performance or accuracy. Their protocol, dataset
-# receipts and first measured baselines need a separate reviewed change.
+# Performance and accuracy remain undeclared until their protocol, dataset pins
+# and first measured baselines are reviewed.

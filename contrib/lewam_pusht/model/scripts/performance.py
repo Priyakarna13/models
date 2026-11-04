@@ -2,7 +2,7 @@
 
 This standalone board script has no model_registry or YAML dependency. Inputs
 are a Dataset Registry request pack: real RGB224 observation/goal images, the
-original noise, and source-generated time/horizon features and key-first mask.
+original noise, source-generated time/horizon features and explicit history padding.
 Image normalization is timed on Neat's image route. Camera acquisition, image
 resizing before RGB224, and physics are excluded and named in the report.
 It remains undeclared in model.yaml until this input protocol is qualified.
@@ -22,8 +22,8 @@ import numpy as np
 
 COMPONENTS = ("front", "body", "head", "policy")
 WARMUPS, SAMPLES, MIN_SECONDS, TIMEOUT_MS = 100, 1000, 60.0, 10000
-MEAN = np.array([-0.007812565192580223, 0.006860686466097832], np.float32)
-STD = np.array([0.2084674835205078, 0.20674866437911987], np.float32)
+ACTION_MEAN = np.array([-0.007812565192580223, 0.006860686466097832], np.float32)
+ACTION_STD = np.array([0.2084674835205078, 0.20674866437911987], np.float32)
 MASK_SENTINEL = np.float32(-(2**24))
 OUTPUTS = {
     "front": (1, 64, 51, 51),
@@ -60,23 +60,28 @@ def finite(value: np.ndarray, shape: tuple, name: str) -> np.ndarray:
     return value
 
 
-def validate_request(request: dict) -> None:
-    if set(request) != {"images", "history_pad", "noise", "time_features", "horizon_features", "attention_mask"}:
-        raise ValueError("Request must contain exactly images, history_pad, noise, time/horizon features and mask")
-    pad = np.asarray(request["history_pad"])
+def history_padding(value) -> np.ndarray:
+    pad = np.asarray(value)
     if pad.shape != (2,) or pad.dtype != np.bool_ or pad[1]:
         raise ValueError("Current observation must be valid; only the older history may be padded")
+    return pad
+
+
+def validate_request(request: dict) -> dict[str, np.ndarray]:
+    """Normalize admitted arrays before any native runner work; never coerce dtypes."""
+    if set(request) != {"images", "history_pad", "noise", "time_features", "horizon_features"}:
+        raise ValueError("Request must contain exactly images, history_pad, noise and time/horizon features")
+    pad = history_padding(request["history_pad"])
     images = np.asarray(request["images"])
     if images.shape != (int((~pad).sum()) + 1, 224, 224, 3) or images.dtype != np.uint8:
         raise ValueError("Images must be valid history observations followed by goal, RGB224 uint8")
-    finite(request["noise"], (10, 2), "noise")
-    finite(request["time_features"], (8, 192), "time features")
-    finite(request["horizon_features"], (192,), "horizon features")
-    mask = np.asarray(request["attention_mask"])
-    if mask.shape != (19, 19) or mask.dtype != np.float32 or not np.all((mask == 0) | np.isneginf(mask)):
-        raise ValueError("Original zero/-infinity key-first attention mask required")
-    if not np.array_equal(mask, attention_mask(bool(pad[0]))):
-        raise ValueError("Mask topology or explicit history padding differs from the original full19 policy")
+    return {
+        "images": images,
+        "history_pad": pad,
+        "noise": finite(request["noise"], (10, 2), "noise"),
+        "time_features": finite(request["time_features"], (8, 192), "time features"),
+        "horizon_features": finite(request["horizon_features"], (192,), "horizon features"),
+    }
 
 
 def integrate(run_policy, history: np.ndarray, goal: np.ndarray, request: dict) -> np.ndarray:
@@ -86,9 +91,7 @@ def integrate(run_policy, history: np.ndarray, goal: np.ndarray, request: dict) 
     value = finite(request["noise"], (10, 2), "noise").T[None, :, None, :].copy()
     time_features = finite(request["time_features"], (8, 192), "time features")
     horizon = finite(request["horizon_features"], (192,), "horizon features")
-    mask = np.asarray(request["attention_mask"])
-    if mask.shape != (19, 19) or mask.dtype != np.float32 or not np.all((mask == 0) | np.isneginf(mask)):
-        raise ValueError("Invalid attention mask")
+    mask = attention_mask(bool(history_padding(request["history_pad"])[0]))
     packed = np.zeros((1, 192, 1, 34), np.float32)
     packed[:, :, :, :2] = history
     packed[:, :, :, 2:3] = goal
@@ -105,7 +108,7 @@ def integrate(run_policy, history: np.ndarray, goal: np.ndarray, request: dict) 
         if not np.isfinite(value).all():
             raise ValueError("Nonfinite Euler feedback")
     actions = value[0, :, 0, :].T
-    return np.add(np.multiply(actions, STD, dtype=np.float32), MEAN, dtype=np.float32)
+    return np.add(np.multiply(actions, ACTION_STD, dtype=np.float32), ACTION_MEAN, dtype=np.float32)
 
 
 def tensor_options(pn):
@@ -155,17 +158,6 @@ class Policy:
             name: pn.Model(str(mpks[name]), image_options(pn) if name == "front" else tensor_options(pn))
             for name in COMPONENTS
         }
-        self.generation = 0
-
-    def reset(self):
-        if not self._request_lock.acquire(blocking=False):
-            raise RuntimeError("Cannot reset while a replan is in flight")
-        try:
-            if self.failed or self.closed:
-                raise RuntimeError("Cannot reset a failed or closed runner")
-            self.generation += 1
-        finally:
-            self._request_lock.release()
 
     def _call(self, name, tensor):
         if self.failed or self.closed:
@@ -194,7 +186,7 @@ class Policy:
         return as_nchw(self._call("policy", tensor), OUTPUTS["policy"])
 
     def replan(self, request: dict) -> np.ndarray:
-        validate_request(request)
+        request = validate_request(request)
         if not self._request_lock.acquire(blocking=False):
             raise RuntimeError("Only one replan may be in flight")
         try:
@@ -268,8 +260,7 @@ def load_request(dataset: Path) -> tuple[dict, str]:
         raise ValueError("Request bytes changed")
     with np.load(path, allow_pickle=False) as archive:
         request = dict(archive)
-    validate_request(request)
-    return request, path.name
+    return validate_request(request), path.name
 
 
 def measure(infer, *, samples=SAMPLES, seconds=MIN_SECONDS, warmups=WARMUPS, clock=time.perf_counter):
@@ -289,8 +280,61 @@ def measure(infer, *, samples=SAMPLES, seconds=MIN_SECONDS, warmups=WARMUPS, clo
     return times, elapsed
 
 
-def benchmark(mpks: dict, dataset_id: str, dataset: Path, output: Path) -> None:
+def mla_stats(mpk: Path) -> tuple[dict, dict]:
+    """One MPK's idle profiling pass; these timings are not whole-replan FPS."""
+    import pyneat
+
+    options = pyneat.BenchmarkOptions()
+    options.include_mla_layer_stats = True
+    options.include_mla_stage_stats = True
+    stats = pyneat.Model(str(mpk)).benchmark(options)
+    layers = {
+        "status": stats.mla_layer_stats.status,
+        "layers": [
+            {"stage_index": x.stage_index, "name": x.name, "latency_us": x.latency_us}
+            for x in stats.mla_layer_stats.layers
+        ],
+    }
+    stages = {
+        "status": stats.mla_stage_stats.status,
+        "stages": [{"stage_index": x.stage_index, "latency_us": x.latency_us} for x in stats.mla_stage_stats.stages],
+    }
+    return layers, stages
+
+
+def write_report(
+    output: Path,
+    models: dict,
+    latencies: list[float],
+    *,
+    samples: int,
+    duration: float,
+    workload: str,
+    telemetry,
+    mla_layer_stats: dict,
+    mla_stage_stats: dict,
+) -> None:
     import model_report
+    import pyneat
+
+    result = pyneat.BenchmarkReport()
+    result.latency_ms = float(np.mean(latencies) * 1000)
+    result.latency_p50_ms, result.latency_p95_ms, result.latency_p99_ms = (
+        float(np.percentile(latencies, q) * 1000) for q in (50, 95, 99)
+    )
+    result.fps = samples / duration
+    result.throughput_duration_ms, result.throughput_samples = duration * 1000, samples
+    model_report.from_performance(
+        result,
+        models,
+        workload=workload,
+        telemetry=telemetry,
+        mla_layer_stats=mla_layer_stats,
+        mla_stage_stats=mla_stage_stats,
+    ).save(output)
+
+
+def benchmark(mpks: dict, dataset_id: str, dataset: Path, output: Path) -> None:
     import pyneat
 
     request, filename = load_request(dataset)
@@ -310,40 +354,20 @@ def benchmark(mpks: dict, dataset_id: str, dataset: Path, output: Path) -> None:
     # Profiling is a separate idle pass after every inference runner closed.
     layers, stages = {}, {}
     for name, path in mpks.items():
-        options = pyneat.BenchmarkOptions()
-        options.include_mla_layer_stats = True
-        options.include_mla_stage_stats = True
-        stats = pyneat.Model(str(path)).benchmark(options)
-        layers[name] = {
-            "status": stats.mla_layer_stats.status,
-            "layers": [
-                {"stage_index": x.stage_index, "name": x.name, "latency_us": x.latency_us}
-                for x in stats.mla_layer_stats.layers
-            ],
-        }
-        stages[name] = {
-            "status": stats.mla_stage_stats.status,
-            "stages": [
-                {"stage_index": x.stage_index, "latency_us": x.latency_us} for x in stats.mla_stage_stats.stages
-            ],
-        }
-    result = pyneat.BenchmarkReport()
-    result.latency_ms = float(np.mean(latencies) * 1000)
-    result.latency_p50_ms, result.latency_p95_ms, result.latency_p99_ms = (
-        float(np.percentile(latencies, q) * 1000) for q in (50, 95, 99)
-    )
-    result.fps = len(throughputs) / duration
-    result.throughput_duration_ms, result.throughput_samples = duration * 1000, len(throughputs)
-    model_report.from_performance(
-        result,
+        layers[name], stages[name] = mla_stats(path)
+    write_report(
+        output,
         policy.models,
+        latencies,
+        samples=len(throughputs),
+        duration=duration,
         workload=f"{dataset_id}/{filename}; RGB224 + timed Neat ImageNet normalization; uncached images; "
         "front/body/head; eight own-feedback policy calls; ten actions; one replan in flight; "
         "excludes acquisition, upstream resize and physics; not campaign image-ready FPS",
         telemetry=telemetry,
         mla_layer_stats=layers,
         mla_stage_stats=stages,
-    ).save(output)
+    )
 
 
 def main():

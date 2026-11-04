@@ -7,10 +7,12 @@ standard compiler build must succeed and pass the independent precision gate.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
+from model_registry.fetch import sha256_file
+
 COMPONENTS = ("front", "body", "head", "policy")
+INPUT_NAMES = {"front": "pixels", "body": "features", "head": "features", "policy": "policy_input"}
 SHAPES = {
     "front": ((1, 3, 224, 224), (1, 64, 51, 51)),
     "body": ((1, 64, 51, 51), (1, 512, 7, 7)),
@@ -20,11 +22,7 @@ SHAPES = {
 
 
 def digest(path: Path) -> str:
-    result = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
+    return sha256_file(path)[0]
 
 
 def validate_graph(path: Path, component: str) -> dict:
@@ -44,6 +42,8 @@ def validate_graph(path: Path, component: str) -> dict:
             raise ValueError(f"{component}/{value.name}: expected FP32 NCHW source {shape}, got {actual}")
     if component == "policy" and [x.name for x in values] != ["policy_input", "velocity_padded"]:
         raise ValueError("The original full19/full10 policy ABI is required")
+    if values[0].name != INPUT_NAMES[component]:
+        raise ValueError(f"{component}: expected input name {INPUT_NAMES[component]}")
     return {
         "sha256": digest(path),
         "size_bytes": path.stat().st_size,

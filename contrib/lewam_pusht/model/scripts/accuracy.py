@@ -1,9 +1,9 @@
 """Score actual native closed-loop actions on explicitly frozen PushT episodes.
 
 This adapter is staged, not yet a qualified replacement for the source evaluator.
-The dataset must bind the exact reset seeds, source-rendered goal images,
+The dataset must bind the exact reset seeds, recorded initial and goal images,
 original time/horizon features and package versions; none is guessed. Physics
-observations after reset come only from actions returned by the native policy.
+observations after step zero come only from actions returned by the native policy.
 The original 150-row corpus is not held out and is not generalization evidence.
 """
 
@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from performance import Policy, attention_mask, finite, parse_mpks
+from performance import Policy, finite, parse_mpks
 
 SELECTION_SHA256 = "07f15a12ac7c649758ac26783e3632ed7aba91c6e15f6ebe3b46bb0dc33e305a"
 
@@ -61,14 +61,15 @@ def load_episodes(dataset: Path):
         raise ValueError("Episode arrays changed")
     with np.load(path, allow_pickle=False) as saved:
         arrays = dict(saved)
-    expected = {"initial_states", "goal_states", "goal_images", "time_features", "horizon_features"}
+    expected = {"initial_states", "goal_states", "initial_images", "goal_images", "time_features", "horizon_features"}
     if set(arrays) != expected:
         raise ValueError("Unexpected episode arrays")
     for key in ("initial_states", "goal_states"):
         if arrays[key].shape != (150, 7) or arrays[key].dtype != np.float64 or not np.isfinite(arrays[key]).all():
             raise ValueError(f"Invalid {key}")
-    if arrays["goal_images"].shape != (150, 224, 224, 3) or arrays["goal_images"].dtype != np.uint8:
-        raise ValueError("Source-rendered RGB224 goal images required")
+    for key in ("initial_images", "goal_images"):
+        if arrays[key].shape != (150, 224, 224, 3) or arrays[key].dtype != np.uint8:
+            raise ValueError(f"Source-recorded RGB224 uint8 {key} required")
     finite(arrays["time_features"], (8, 192), "source time features")
     finite(arrays["horizon_features"], (10, 192), "source horizon features for all ten replans")
     required = {"stable-worldmodel", "pymunk", "pygame", "torch"}
@@ -89,7 +90,6 @@ def evaluate(policy, rows, arrays, environment_factory, noise_factory):
         done = np.zeros(50, np.bool_)
         steps = np.zeros(50, np.int64)
         noise = noise_factory(rows[offset]["seed"])
-        policy.reset()
         try:
             for i in range(50):
                 env = environment_factory()
@@ -103,7 +103,9 @@ def evaluate(policy, rows, arrays, environment_factory, noise_factory):
                 if not alive:
                     break
                 for i in alive:
-                    frames[i][step] = environments[i].render().copy()
+                    # Upstream supplies recorded pixels at step zero, not a post-reset render.
+                    image = arrays["initial_images"][offset + i] if step == 0 else environments[i].render()
+                    frames[i][step] = image.copy()
                     frames[i] = {k: v for k, v in frames[i].items() if k >= step - 5}
                 replanning = [i for i in alive if not queues[i]]
                 if replanning:
@@ -117,7 +119,6 @@ def evaluate(policy, rows, arrays, environment_factory, noise_factory):
                             "noise": initial_noise[row],
                             "time_features": arrays["time_features"],
                             "horizon_features": arrays["horizon_features"][step // 5],
-                            "attention_mask": attention_mask(step < 5),
                         }
                         actions = finite(policy.replan(request), (10, 2), "native actions")
                         queues[i] = list(actions[:5].copy())
