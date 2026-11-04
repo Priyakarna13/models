@@ -8,7 +8,8 @@ ResNet-50 is Microsoft's 50-layer residual network for image classification,
 trained on the 1,000 classes of ImageNet-1k. It takes a 224×224 RGB image and
 returns one score for each class. Your application turns the scores into
 probabilities with a softmax and reports the most likely classes. The model runs
-as one component.
+as one component. This canary exports the pinned Microsoft checkpoint; conversion
+agreement checks do not establish new classification accuracy results.
 
 ## Inputs and outputs
 

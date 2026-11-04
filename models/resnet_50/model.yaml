@@ -15,16 +15,25 @@ license:
   attribution: Derived from microsoft/resnet-50 and distributed under Apache-2.0.
 
 upstream:
-  repository: https://huggingface.co/onnx-community/resnet-50-ONNX
-  revision: b6ef686fe842388c9449c7acb7269d02c69bacfb
-  derived_from: https://huggingface.co/microsoft/resnet-50/tree/34c2154c194f829b11125337b98c8f5f9965ff19
+  repository: https://huggingface.co/microsoft/resnet-50
+  revision: 34c2154c194f829b11125337b98c8f5f9965ff19
+
+conversion:
+  source:
+    repository: microsoft/resnet-50
+    revision: 34c2154c194f829b11125337b98c8f5f9965ff19
+    main_file: model.safetensors
+    files:
+      model.safetensors:
+        sha256: 9c6061af1f450bb0847e529fd742aa5066017be379c71bbf5546b198e5b13a1e
+        size_bytes: 102482854
+      config.json:
+        sha256: a1be0f56d516d0b55f9844ce0fbfe5fb359195cba6c6c102d41ae6c202c84d5e
+        size_bytes: 69556
 
 compilation:
   format: onnx
-  source:
-    uri: hf://models/onnx-community/resnet-50-ONNX@b6ef686fe842388c9449c7acb7269d02c69bacfb/onnx/model.onnx
-    sha256: de5d34d98e29c8f436264685f0b0e6a83b0d023516e40df0f96e02d5dd8e4c50
-    size_bytes: 102182062
+  source: conversion
 
 calibrations:
 - id: imagenet-2012-mini
