@@ -9,9 +9,6 @@ modalities:
 
 architecture: mlp
 
-# Until Vulcan Model Convert publishes this model's ONNX and compilation.source pins it, pushes must not compile it.
-build-on-demand: true
-
 license:
   spdx: Apache-2.0
   redistribution: allowed
@@ -32,12 +29,11 @@ conversion:
 
 compilation:
   format: onnx
-  # TODO(#547): replace with the source block Vulcan Model Convert prints for mnist_fc, and drop build-on-demand.
-  # Until then this pins mnist_cnn's ONNX only to keep the definition valid; build-on-demand stops it compiling.
+  # Vulcan Model Convert run 41783190168: the 4D export of convert.py.
   source:
-    uri: hf://models/onnxmodelzoo/mnist-12@1cd752f4a3d818fa215aa621c78b8a10a4a1a3a5/mnist-12.onnx
-    sha256: 5c688690f8bacf667d4c2074af5ad0646ca328d7ab03eccf944a65b320171bdd
-    size_bytes: 26143
+    uri: https://artifacts.stg.neat.sima.ai/models-onnx/mnist_fc/79819d9bcae38cc6a689f785636f34d9198a1aa79e2e5e4e4a4081536736501e/41783190168-1/model.onnx
+    sha256: 79819d9bcae38cc6a689f785636f34d9198a1aa79e2e5e4e4a4081536736501e
+    size_bytes: 1078063
 
 build_profiles:
   w16a16:
