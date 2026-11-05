@@ -174,6 +174,12 @@ The Model Browser shows variant IDs in uppercase, while
 Each component's `parameters.precision` is its precision token, and the
 recipe maps it to compiler settings. The target is `modalix`.
 
+A profile may declare `benchmark_baseline: {model_id: gemma_4_e2b_it_textonly,
+build_profile: w4a16}` to link to a normal-decoding build. Both references are
+validated. This changes only its performance fingerprint; it neither compiles
+nor benchmarks the baseline. Future comparison runners must check matching target
+weights and context/image settings.
+
 | Runner field | Values | Default | Access requirement |
 | --- | --- | --- | --- |
 | `runner_class` | `default`, `moderate`, `expensive`, `most-expensive` | `default` | Elevated classes require a sufficient Vulcan maximum-class grant. |
@@ -346,6 +352,10 @@ as `main_file`. Declare the public `entrypoint: generate` or `transcribe`
 separately; do not copy prompt/image/text tensor inventories into YAML. A
 complete LLiMa deployment is one component, `model`, including its vision
 encoder when present.
+For speculative decoding, the source file set includes target and draft files
+under their existing checkpoint folder names. `main_file` names the target's
+nested `config.json`, and `parameters.draft_model_path` selects the draft folder.
+Each deployed checkpoint retains its own `devkit/` and `elf_files/` folders.
 
 The compiled component contains `deployment/` and a sibling
 `deployment-manifest.json`. `compile-outputs.json` carries `artifact_path`

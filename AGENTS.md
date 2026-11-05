@@ -111,15 +111,22 @@ the shared regression thresholds remain gates.
 LLMs and VLMs declare the complete model as one component, with a pinned Hugging
 Face file set, `format: huggingface`, `entrypoint: generate`, and the conventional
 `scripts/compile.sh`. Whisper uses `entrypoint: transcribe`. The
-recipe calls `llima-compile` and saves a standalone `compile.sh` with its complete
-arguments; `scripts/run_llima_compilation.sh` downloads,
-compiles, and runs `llima-deploy` into the component's `deployment/` folder.
+recipe only compiles; use adjacent `compile.py` or `config.py` when needed.
+`scripts/run_llima_compilation.sh` downloads, compiles, and runs `llima-deploy`
+into the component's `deployment/` folder, then writes a direct reproduction
+command with download instructions and the resolved graph arguments, using four
+processes. Include any Python helpers alongside it.
 `model-registry verify-artifact --write-manifest` verifies that folder and writes
 `deployment-manifest.json` beside it. Publication preserves the folder as
 individually registered files; native builds never create a deployment ZIP.
 Do not enumerate generated layers as components or nest model archives in packages.
 Only declared performance and accuracy stages run; omit their sections until
 implemented. See [LLiMa model definitions](docs/adding-a-model.md#llima-language-and-vision-language-models).
+Speculative pairs stay one component: pin both checkpoints in named file-set
+subfolders, use the target's `config.json` as `compilation.source.main_file`, and declare the draft
+subfolder in `parameters.draft_model_path`. Deploy and publish the complete pair.
+An optional profile-level `benchmark_baseline` links to a normal-decoding model
+and build profile; it affects performance fingerprints, never compilation.
 
 Start with one 4K profile per LLM/VLM. Declare `max_num_tokens: 4096` and
 `language_group_size` in its component parameters. Image dimensions are optional

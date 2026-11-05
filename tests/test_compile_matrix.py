@@ -652,6 +652,37 @@ def test_grouped_compile_rejects_conflicting_markets(model_repository):
         load_and_validate_model(path.parent)
 
 
+def test_speculative_compile_fingerprint_tracks_weights_not_benchmark_baseline(tmp_path):
+    model_id = "gemma_4_e2b_it_textonly_mtp"
+    for folder in ("schemas", "taxonomies", f"models/{model_id}", "models/gemma_4_e2b_it_textonly"):
+        shutil.copytree(ROOT / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
+    manifest = tmp_path / "models" / model_id / "model.yaml"
+    model = yaml.safe_load(manifest.read_text())
+    compiler = "3.0.0+develop.000000000000"
+    before = compile_fingerprint(tmp_path, model_id, "w4a16", "w4a16", compiler)
+    model["build_profiles"]["w4a16"].pop("benchmark_baseline")
+    manifest.write_text(yaml.safe_dump(model, sort_keys=False))
+    assert compile_fingerprint(tmp_path, model_id, "w4a16", "w4a16", compiler) == before
+    draft = model["build_profiles"]["w4a16"]["components"]["model"]["parameters"]["draft_model_path"]
+    model["compilation"]["source"]["files"][f"{draft}/model.safetensors"]["sha256"] = "0" * 64
+    manifest.write_text(yaml.safe_dump(model, sort_keys=False))
+    assert compile_fingerprint(tmp_path, model_id, "w4a16", "w4a16", compiler) != before
+
+
+def test_benchmark_baseline_changes_only_its_profiles_performance_fingerprint():
+    model = load_and_validate_model(ROOT / "models/rf_detr_small")
+    builds = {name: {"run_id": name, "artifact_sha256": "a" * 64} for name in ("backbone", "decoder")}
+    before = benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "performance")
+    other = benchmark_fingerprint(ROOT, model, "w8a16_w16a16", builds, "performance")
+    accuracy = benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "accuracy")
+    model["build_profiles"][0]["benchmark_baseline"] = {"model_id": "resnet_50", "build_profile": "w16a16"}
+    assert benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "performance") != before
+    assert benchmark_fingerprint(ROOT, model, "w8a16_w16a16", builds, "performance") == other
+    assert benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "accuracy") == accuracy
+    model["build_profiles"][0].pop("benchmark_baseline")
+    assert benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "performance") == before
+
+
 def test_yolo26x_pose_requests_moderate_on_demand():
     model = load_and_validate_model(ROOT / "models/yolo26x_pose", SCHEMA)
     entries = build_matrix({"yolo26x_pose": model}, ["yolo26x_pose"])["include"]
