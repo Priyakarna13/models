@@ -81,22 +81,21 @@ def _export_like_model(converter: ModuleType) -> onnx.ModelProto:
 
 
 def test_the_rewrites_keep_the_exports_outputs(tmp_path, converter: ModuleType):
-    import onnxruntime as ort
+    # ONNX's own reference evaluator, because the registry's package tests run without ONNX Runtime.
+    from onnx.reference import ReferenceEvaluator
 
     path = tmp_path / "model.onnx"
     onnx.save(_export_like_model(converter), path)
     tokens = np.random.default_rng(0).normal(size=(1, converter.PREFIX + converter.PATCHES, converter.HIDDEN_SIZE))
     feed = {"tokens": tokens.astype(np.float32)}
-    hidden, pooled = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]).run(None, feed)
+    hidden, pooled = ReferenceEvaluator(str(path)).run(None, feed)
 
     converter.make_static(path)
 
     model = onnx.load(path)
     assert [item.version for item in model.opset_import if not item.domain] == [17]
     assert not {node.op_type for node in model.graph.node} & set(converter.DYNAMIC_OPS)
-    class_embedding, patch_embeddings = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]).run(
-        list(converter.OUTPUTS), feed
-    )
+    class_embedding, patch_embeddings = ReferenceEvaluator(model).run(list(converter.OUTPUTS), feed)
     np.testing.assert_allclose(class_embedding, pooled, rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(patch_embeddings, hidden[:, converter.PREFIX :], rtol=1e-5, atol=1e-6)
 
