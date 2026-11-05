@@ -50,22 +50,8 @@ calibrations:
     sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1
     size_bytes: 187510866
 build_profiles:
-  # Not yet natively qualified; keep this profile out of CI and the catalog.
-  # w16a16_w16a16:
-  #   calibration_dataset: coco-2017-cal
-  #   components:
-  #     backbone:
-  #       parameters:
-  #         precision: w16a16
-  #         calibration_bins: 2048
-  #         calibration_samples: 50
-  #     decoder:
-  #       parameters:
-  #         precision: w16a16
-  #         calibration_bins: 2048
-  #         calibration_samples: 50
   # Weight precision choice, not a throughput optimization.
-  # Both profiles peaked at approximately 37.2 GiB PSS on x86. The 64 GiB
+  # Peak x86 PSS was 33.5 GiB (BF16) and about 37.2 GiB (W8A16/W8A8). The 64 GiB
   # Spot request requires an exact dfine_m Vulcan grant before trusted builds;
   # its deployment and successful ARM64 compilation remain unverified.
   w8a16_w16a16:
@@ -92,6 +78,21 @@ build_profiles:
         parameters:
           precision: w8a8
           calibration_bins: 1024
+          calibration_samples: 50
+      decoder:
+        parameters:
+          precision: w16a16
+          calibration_bins: 2048
+          calibration_samples: 50
+  # COCO/FPS/latency validated on DVT; complete SoM/MLA power awaits SoM hardware.
+  w16a16_w16a16:
+    runner_class: moderate
+    calibration_dataset: coco-2017-cal
+    components:
+      backbone:
+        parameters:
+          precision: w16a16
+          calibration_bins: 2048
           calibration_samples: 50
       decoder:
         parameters:

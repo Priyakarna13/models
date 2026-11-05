@@ -44,14 +44,18 @@ def test_medium_proposal_selection_rejects_nano_dimensions(load_script, tokens, 
 
 def test_only_registered_profiles_are_admitted_and_decoder_stays_w16a16(compiler, model_dir):
     metadata = load_model(model_dir)
-    assert [p["id"] for p in metadata["build_profiles"]] == ["w8a16_w16a16", "w8a8_w16a16"]
+    assert [p["id"] for p in metadata["build_profiles"]] == ["w8a16_w16a16", "w8a8_w16a16", "w16a16_w16a16"]
     decoder = {"precision": "w16a16", "calibration_bins": 2048, "calibration_samples": 50}
-    for profile, precision, bins in [("w8a16_w16a16", "w8a16", 2048), ("w8a8_w16a16", "w8a8", 1024)]:
+    for profile, precision, bins in [
+        ("w8a16_w16a16", "w8a16", 2048),
+        ("w8a8_w16a16", "w8a8", 1024),
+        ("w16a16_w16a16", "w16a16", 2048),
+    ]:
         candidate = compiler.component_parameters(metadata, profile)
         assert list(candidate) == ["backbone", "decoder"]
         assert candidate["backbone"] == {"precision": precision, "calibration_bins": bins, "calibration_samples": 50}
         assert candidate["decoder"] == decoder
-    for profile in ("w16a16_w16a16", "w8a8_mixed_w16a16", "unregistered_profile"):
+    for profile in ("w8a8_mixed_w16a16", "unregistered_profile"):
         with pytest.raises(ValueError):
             compiler.component_parameters(metadata, profile)
     for key, value in [("precision", "w8a8"), ("calibration_bins", 0), ("calibration_samples", True)]:

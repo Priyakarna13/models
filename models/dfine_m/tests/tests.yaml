@@ -35,6 +35,20 @@ accuracy:
         coco_ar_small: 0.45496029277592553
         coco_ar_medium: 0.714676028814919
         coco_ar_large: 0.85085351481597
+    w16a16_w16a16:
+      coco-2017-val:
+        coco_map: 0.5011754789692225
+        coco_ap50: 0.6917181822089564
+        coco_ap75: 0.5389784664872175
+        coco_ap_small: 0.2957546755974893
+        coco_ap_medium: 0.5491477505906502
+        coco_ap_large: 0.6972602400889629
+        coco_ar1: 0.3774041939300465
+        coco_ar10: 0.6317302739593066
+        coco_ar100: 0.696359071086624
+        coco_ar_small: 0.4964961205381009
+        coco_ar_medium: 0.7514487340976461
+        coco_ar_large: 0.8855334369822297
 performance:
   run_tests: true
   expected:
@@ -42,3 +56,5 @@ performance:
       throughput_fps: 29.347347646867135
     w8a8_w16a16:
       throughput_fps: 34.2247750495382
+    w16a16_w16a16:
+      throughput_fps: 29.159891543245802
