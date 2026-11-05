@@ -683,13 +683,30 @@ def test_publish_retry_reuses_idempotency_keys_across_run_attempts(tmp_path: Pat
     assert publish("1") == publish("2")
 
 
-def _without_conversion_plan(models: dict) -> list[str]:
-    """Models whose compile fingerprints need no saved conversion plan; without one, the catalog leaves the rest out."""
-    return [model_id for model_id, model in models.items() if model["components"][0]["source"]["type"] != "conversion"]
+def test_conversion_input_keeps_the_model_card_the_browser_links_to() -> None:
+    from model_registry.conversion import FIELDS
+    from model_registry.registry import _conversion_input
+
+    source = {
+        **dict.fromkeys(FIELDS, "value"),
+        "run_id": "conversion-run", "artifact_id": "artifact", "conversion_fingerprint": "f" * 64,
+    }
+    metadata = _conversion_input(source, {"model_card": "https://example.test/card"})["metadata"]
+
+    assert metadata["model_card"] == "https://example.test/card"
+    assert metadata["conversion_run_id"] == "conversion-run"
+
+
+def _direct_source_models() -> dict:
+    """The models whose catalog entries need no saved conversion selection."""
+    return {
+        model_id: model for model_id, model in load_models(ROOT).items()
+        if model["components"][0]["source"]["type"] != "conversion"
+    }
 
 
 def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
-    models = load_models(ROOT)
+    models = _direct_source_models()
     compiler_version = resolve_model_compiler(ROOT)["identity"]
     first = build_catalog_snapshot(
         repository=ROOT,
@@ -717,7 +734,7 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
                         for component_id in entry["component_ids"]
                     ],
                 }
-                for index, model_id in enumerate(_without_conversion_plan(models), 1)
+                for index, model_id in enumerate(models, 1)
             ]
         },
     )
@@ -729,10 +746,10 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
 
 
 def test_catalog_records_benchmark_fingerprints_bound_to_their_compile_runs() -> None:
-    models = load_models(ROOT)
+    models = _direct_source_models()
     model = models["resnet_50"]
     matrix = build_matrix(
-        models, sorted(_without_conversion_plan(models)), repository=ROOT, compiler_version=COMPILER_IDENTITY,
+        models, sorted(models), repository=ROOT, compiler_version=COMPILER_IDENTITY,
     )["include"]
 
     def snapshot(run_prefix: str) -> dict:
