@@ -66,6 +66,12 @@
         "type": "object", "additionalProperties": false, "required": ["components"],
         "properties": {
           "runner_class": {"$ref": "#/$defs/runnerClass"}, "runner_market": {"enum": ["spot", "on-demand"]},
+          "benchmark_baseline": {
+            "type": "object", "additionalProperties": false, "required": ["model_id", "build_profile"],
+            "properties": {
+              "model_id": {"$ref": "#/$defs/id"}, "build_profile": {"$ref": "#/$defs/id"}
+            }
+          },
           "calibration_dataset": {"description": "A calibrations entry.", "$ref": "#/$defs/datasetId"},
           "components": {
             "description": "Each component's build parameters, keyed like compilation.components.",

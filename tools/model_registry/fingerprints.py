@@ -14,7 +14,7 @@ from typing import Any
 from .benchmark_declarations import ACCURACY_REQUIREMENTS, SCRIPTS
 from .dependencies import resolve_benchmark_runtime
 from .errors import ValidationError
-from .model import CONVERSION_FILES, SCRIPTS_DIR, compile_invocations_for, load_and_validate_model
+from .model import CONVERSION_FILES, SCRIPTS_DIR, build_profile_for, compile_invocations_for, load_and_validate_model
 from .source import source_identity
 
 # Shared code used by ONNX builds.
@@ -234,6 +234,7 @@ def benchmark_fingerprint(
     model_dir = f"models/{model_id}"
     required = [f"{model_dir}/{SCRIPTS[stage]}", *(PERFORMANCE_TOOLING if stage == "performance" else ACCURACY_TOOLING)]
     optional = [f"{model_dir}/{ACCURACY_REQUIREMENTS}"] if stage == "accuracy" else []
+    baseline = build_profile_for(model, build_profile_id).get("benchmark_baseline") if stage == "performance" else None
     return _fingerprint({
         "stage": stage,
         "model_id": model_id,
@@ -246,6 +247,7 @@ def benchmark_fingerprint(
             for component_id in components
         },
         stage: {key: value for key, value in model[stage].items() if key != "build_profiles"},
+        **({"benchmark_baseline": baseline} if baseline else {}),
         "files": _file_digests(root, required, optional),
         "runtime": resolve_benchmark_runtime(root),
     })
