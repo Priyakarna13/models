@@ -8,8 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-from afe.apis.defines import CalibrationMethod, QuantizationParams, bfloat16_scheme, gen2_target, quantization_scheme
+from afe.apis.defines import CalibrationMethod, QuantizationParams, gen2_target, quantization_scheme
 from afe.apis.loaded_net import load_model
 from afe.apis.model import Model as AfeModel
 from afe.core.utils import convert_data_generator_to_iterable
@@ -43,39 +42,31 @@ def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: P
     variant = _variant(_metadata(), variant_id)
     parameters = variant["parameters"]
     precision = str(parameters.get("precision"))
-    if variant["target"] != "modalix" or precision not in {"w16a16", "w8a8"}:
-        raise ValueError("this recipe supports only the declared Modalix BF16 and INT8 variants")
+    if variant["target"] != "modalix" or precision != "w8a8":
+        raise ValueError("this recipe supports only the declared Modalix INT8 variant")
 
     input_name = str(parameters["input_name"])
     input_shape = tuple(int(value) for value in parameters["input_shape"])
     if input_shape != INPUT_SHAPE:
         raise ValueError(f"unsupported MNIST input shape: {input_shape}")
 
-    if precision == "w8a8" and dataset is None:
+    if dataset is None:
         raise ValueError("the INT8 variant requires --dataset from dataset-registry")
 
     component_dir.mkdir(parents=True, exist_ok=False)
     importer = onnx_source(str(source), {input_name: input_shape}, {input_name: ScalarType.float32})
     loaded = load_model(importer, target=gen2_target)
-    if precision == "w8a8":
-        sample_count = int(parameters["calibration_samples"])
-        LOG.info("Loading %d MNIST training images for calibration", sample_count)
-        samples = calibration_samples(dataset, sample_count)
-        activation_scheme = quantization_scheme(asymmetric=True, per_channel=False, bits=8)
-        weight_scheme = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
-    else:
-        # BF16 does not derive quantization ranges from representative data.
-        # The API still requires an iterable, so provide one deterministic NHWC sample.
-        samples = np.zeros((1, 28, 28, 1), dtype=np.float32)
-        activation_scheme = weight_scheme = bfloat16_scheme()
+    sample_count = int(parameters["calibration_samples"])
+    LOG.info("Loading %d MNIST training images for calibration", sample_count)
+    samples = calibration_samples(dataset, sample_count)
     data = convert_data_generator_to_iterable(DataGenerator({input_name: samples}))
     model_name = f"{MODEL_ID}_{variant_id}"
     quantized = loaded.quantize(
         data,
         QuantizationParams(
             calibration_method=CalibrationMethod.from_str("mse"),
-            activation_quantization_scheme=activation_scheme,
-            weight_quantization_scheme=weight_scheme,
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
         ),
         model_name=model_name,
     )
@@ -96,7 +87,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-profile", required=True)
     parser.add_argument("--compile-invocation", required=True)
-    parser.add_argument("--dataset", type=Path, help="dataset-registry calibration archive (INT8 only)")
+    parser.add_argument("--dataset", type=Path, help="dataset-registry calibration archive")
     args = parser.parse_args()
     if args.compile_invocation != args.build_profile:
         parser.error("a build profile compiles in one invocation named after it")

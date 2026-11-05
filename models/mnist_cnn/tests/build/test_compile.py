@@ -15,7 +15,7 @@ def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], 
     recipe = load_script("compile")
     metadata = recipe._metadata()
     profiles = [profile["id"] for profile in metadata["build_profiles"]]
-    assert profiles and set(profiles) <= {"w16a16", "w8a8"}
+    assert profiles == ["w8a8"]
 
     for profile_id in profiles:
         variant = recipe._variant(metadata, profile_id)
@@ -28,12 +28,12 @@ def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], 
 def test_compile_rejects_an_undeclared_build_profile(load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
 
-    with pytest.raises(ValueError, match="exactly one build profile named 'w8a16'"):
-        recipe._variant(recipe._metadata(), "w8a16")
+    with pytest.raises(ValueError, match="exactly one build profile named 'w16a16'"):
+        recipe._variant(recipe._metadata(), "w16a16")
 
 
 @pytest.mark.parametrize(("field", "value", "message"), [
-    ("precision", "w8a16", "only the declared Modalix BF16 and INT8 variants"),
+    ("precision", "w16a16", "only the declared Modalix INT8 variant"),
     ("input_shape", [1, 1, 32, 32], "unsupported MNIST input shape"),
 ])
 def test_compile_rejects_an_undeclared_precision_or_shape_before_compiling(
