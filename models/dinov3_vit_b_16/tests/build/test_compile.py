@@ -217,7 +217,7 @@ def test_compile_main_rejects_an_incomplete_invocation(
     assert not (tmp_path / "out").exists()
 
 
-def test_build_holds_one_audited_mpk_and_bf16_matches_the_onnx(
+def test_build_holds_one_audited_mpk_that_matches_the_onnx(
     compiled: Path, build_profile: str, load_script: Callable[[str], ModuleType]
 ) -> None:
     recipe = load_script("compile")
@@ -225,6 +225,8 @@ def test_build_holds_one_audited_mpk_and_bf16_matches_the_onnx(
     recipe.audit_mpk(archive)
     fidelity = json.loads((compiled / "fidelity.json").read_text(encoding="utf-8"))
     assert [metric["name"] for metric in fidelity["metrics"]] == list(recipe.OUTPUTS)
-    if build_profile == "w16a16":
-        # BF16 keeps every output within rounding of the ONNX; a broken operator shows up as a low cosine.
-        assert all(metric["cosine_similarity"] > 0.99 for metric in fidelity["metrics"]), fidelity["metrics"]
+    # BF16 keeps every output within rounding of the ONNX, and INT8 weights add a little more error; a broken
+    # operator or a collapsed quantization (w8a8 measured 0.01) shows up as a low cosine.
+    floor = {"w16a16": 0.99, "w8a16": 0.98}.get(build_profile)
+    if floor is not None:
+        assert all(metric["cosine_similarity"] > floor for metric in fidelity["metrics"]), fidelity["metrics"]
