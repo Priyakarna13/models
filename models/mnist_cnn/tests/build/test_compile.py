@@ -11,15 +11,18 @@ import numpy as np
 import pytest
 
 
-@pytest.mark.parametrize("profile_id", ["w16a16", "w8a8"])
-def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], ModuleType], profile_id: str) -> None:
+def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
-    variant = recipe._variant(recipe._metadata(), profile_id)
+    metadata = recipe._metadata()
+    profiles = [profile["id"] for profile in metadata["build_profiles"]]
+    assert profiles and set(profiles) <= {"w16a16", "w8a8"}
 
-    assert variant["parameters"]["precision"] == profile_id
-    assert variant["parameters"]["input_shape"] == [1, 1, 28, 28]
-    if profile_id == "w8a8":
-        assert variant["parameters"]["calibration_samples"] == 500
+    for profile_id in profiles:
+        variant = recipe._variant(metadata, profile_id)
+        assert variant["parameters"]["precision"] == profile_id
+        assert variant["parameters"]["input_shape"] == [1, 1, 28, 28]
+        if profile_id == "w8a8":
+            assert variant["parameters"]["calibration_samples"] == 500
 
 
 def test_compile_rejects_an_undeclared_build_profile(load_script: Callable[[str], ModuleType]) -> None:

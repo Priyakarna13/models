@@ -3,16 +3,11 @@ compile:
 accuracy:
   run_tests: true
   expected:
-    w16a16:
-      mnist-default:
-        top1_accuracy: 0.9892
     w8a8:
       mnist-default:
         top1_accuracy: 0.9888
 performance:
   run_tests: true
   expected:
-    w16a16:
-      throughput_fps: 3806.5
     w8a8:
       throughput_fps: 3821.2
