@@ -122,7 +122,10 @@ def _calibration_projection(model: dict[str, Any], binding: dict[str, Any]) -> d
 
 
 def _component_compile_projection(component: dict[str, Any]) -> dict[str, Any]:
-    return {key: component[key] for key in ("id", "source")}
+    source = component["source"]
+    if source["type"] == "conversion":
+        source = {"type": "conversion", "sha256": source["sha256"]}
+    return {"id": component["id"], "source": source}
 
 
 def _binding_compile_projection(
@@ -148,6 +151,8 @@ def compile_fingerprint(
     profile_id: str,
     compile_invocation_id: str,
     compiler_version: str,
+    *,
+    conversion_sources: dict[str, Any] | None = None,
 ) -> str:
     """Identity of one compile invocation: what it compiles, how, and with which compiler."""
     root = Path(repository).expanduser().resolve()
@@ -164,6 +169,9 @@ def compile_fingerprint(
         raise ValidationError(
             f"unknown compile invocation: {model_id}/{profile_id}/{compile_invocation_id}"
         ) from exc
+    from .conversion import apply_selection
+
+    apply_selection(model, conversion_sources, root=root)
     components = {item["id"]: item for item in model["components"]}
     bindings = {item["id"]: item for item in profile["components"]}
     if any(components[item]["interface"]["format"] == "huggingface" for item in invocation["components"]):

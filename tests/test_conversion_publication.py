@@ -215,10 +215,10 @@ def test_optional_workflow_leaves_default_onnx_publication_unchanged():
     assert "publish-conversion-source" in mirror["run"]
     names = [step.get("name") for step in steps]
     assert names.index("Test the converted model with the model's conversion tests") < names.index(
-        "Publish ONNX and print source pin"
+        "Publish validated conversion to the registry"
     ) < names.index(mirror["name"])
-    onnx = next(step for step in steps if step.get("name") == "Publish ONNX and print source pin")
-    assert "--if-none-match '*'" in onnx["run"]
+    onnx = next(step for step in steps if step.get("name") == "Publish validated conversion to the registry")
+    assert "publish-conversion " in onnx["run"]
     assert "source.pth" not in onnx["run"]
 
 
