@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from model_registry.compile_matrix import build_matrix
+from model_registry.conversion import conversion_fingerprint
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
 from model_registry.fingerprints import benchmark_fingerprint, compile_fingerprint
@@ -683,8 +684,19 @@ def test_publish_retry_reuses_idempotency_keys_across_run_attempts(tmp_path: Pat
     assert publish("1") == publish("2")
 
 
-def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
+def _resolve_test_conversions(models: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catalog tests use synthetic selections, never a live conversion registry."""
+    selected = {
+        model_id: {"sha256": "e" * 64, "conversion_fingerprint": conversion_fingerprint(ROOT, model)}
+        for model_id, model in models.items()
+        if model["components"][0]["source"]["type"] == "conversion"
+    }
+    monkeypatch.setenv("MODEL_REGISTRY_CONVERSIONS", json.dumps(selected))
+
+
+def test_catalog_snapshot_reuses_unchanged_compile_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     models = load_models(ROOT)
+    _resolve_test_conversions(models, monkeypatch)
     compiler_version = resolve_model_compiler(ROOT)["identity"]
     first = build_catalog_snapshot(
         repository=ROOT,
@@ -723,8 +735,9 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
     assert all("taxonomy_version" not in model["categories"] for model in first["models"])
 
 
-def test_catalog_records_benchmark_fingerprints_bound_to_their_compile_runs() -> None:
+def test_catalog_records_benchmark_fingerprints_bound_to_their_compile_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     models = load_models(ROOT)
+    _resolve_test_conversions(models, monkeypatch)
     model = models["resnet_50"]
     matrix = build_matrix(
         models, sorted(models), repository=ROOT, compiler_version=COMPILER_IDENTITY,
