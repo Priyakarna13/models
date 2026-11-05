@@ -30,17 +30,26 @@ publishes a deterministic bundle under `models/conversions/`. The bundle contain
 Skipped or failed model tests do not publish successful conversions.
 
 Vulcan stores ordinary `model_conversion` runs with upstream inputs, parameters,
-validation and the `onnx` artifact. Fingerprint version 1 covers model identity,
-upstream content, exporter code, local helpers, dependency specification and
-validation code and all files under the model's `tests/`, including binary fixtures
-(excluding generated `__pycache__` and `.pytest_cache` directories).
-A changed recipe or fixture needs a new conversion. Shared conversion code
-is also fingerprinted through `CONVERSION_TOOLING` in
-`tools/model_registry/conversion.py`: the conversion workflow and runners,
-fetch/source and model-loading helpers, validation modules and schemas, shared
-pytest fixtures/configuration, and declared package dependencies. Update that list
-when adding a shared execution or validation dependency. This identifies the declared recipe, not a fully locked
-transitive Python environment; pin exporter requirements for reproducibility.
+validation and the `onnx` artifact.
+
+### When to run Convert again
+
+Run **Vulcan Model Convert** again after changing anything that can change the ONNX:
+
+- the upstream pins under `conversion.source`
+- `scripts/convert.py`, `scripts/requirements-convert.txt`, or a module in `scripts/`
+  that `convert.py` imports
+- any other file under `scripts/` that is not a Python module beside `convert.py`,
+  except `requirements-compile.txt` and `requirements-accuracy.txt`
+- shared export code, listed in `CONVERSION_TOOLING` in
+  `tools/model_registry/conversion.py`
+
+Everything else leaves the conversion valid, including tests, compile and benchmark
+code, and the taxonomy. A changed conversion test runs the next time Convert runs.
+
+Use a normal `import` for helpers, because a module loaded dynamically is not
+detected. Pin exporter requirements too, because packages they pull in indirectly
+are not tracked.
 
 Catalog planning resolves conversion declarations for the requested models (all
 models when no `--models` filter is supplied), including on-demand models,

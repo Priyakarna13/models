@@ -174,6 +174,12 @@ The Model Browser shows variant IDs in uppercase, while
 Each component's `parameters.precision` is its precision token, and the
 recipe maps it to compiler settings. The target is `modalix`.
 
+A profile may declare `benchmark_baseline: {model_id: gemma_4_e2b_it_textonly,
+build_profile: w4a16}` to link to a normal-decoding build. Both references are
+validated. This changes only its performance fingerprint; it neither compiles
+nor benchmarks the baseline. Future comparison runners must check matching target
+weights and context/image settings.
+
 | Runner field | Values | Default | Access requirement |
 | --- | --- | --- | --- |
 | `runner_class` | `default`, `moderate`, `expensive`, `most-expensive` | `default` | Elevated classes require a sufficient Vulcan maximum-class grant. |
@@ -307,7 +313,7 @@ report yet. Each entry has:
 | `dataset` | `id` and `split` of the evaluation set, such as `{id: coco-2017, split: val}`. |
 | `conditions` | How the authors measured, such as input size, preprocessing, and precision. |
 | `note` | Optional caveat a reader needs, such as a split the source does not name. |
-| `metrics` | A map from metric names to values. |
+| `metrics` | A map from accuracy metric names to values, in each metric's unit from `tools/model_report/metrics.json`. |
 
 ```yaml
 reference_metrics:
@@ -318,7 +324,7 @@ reference_metrics:
 ```
 
 Metric names are accuracy metrics from `tools/model_report/metrics.json`, the
-names `accuracy.py` reports, and every value is a ratio from 0 to 1. Record
+names `accuracy.py` reports, and every value is in its metric's unit. Record
 only numbers the source prints, not values derived from them. Two entries may
 not give the same metric for the same dataset. A reference score appears
 beside a measured one only when both name the same dataset `id`. The field
@@ -346,6 +352,10 @@ as `main_file`. Declare the public `entrypoint: generate` or `transcribe`
 separately; do not copy prompt/image/text tensor inventories into YAML. A
 complete LLiMa deployment is one component, `model`, including its vision
 encoder when present.
+For speculative decoding, the source file set includes target and draft files
+under their existing checkpoint folder names. `main_file` names the target's
+nested `config.json`, and `parameters.draft_model_path` selects the draft folder.
+Each deployed checkpoint retains its own `devkit/` and `elf_files/` folders.
 
 The compiled component contains `deployment/` and a sibling
 `deployment-manifest.json`. `compile-outputs.json` carries `artifact_path`
