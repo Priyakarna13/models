@@ -70,3 +70,22 @@ numerical_fidelity:
   outputs: [class_embedding, patch_embeddings]
 
 performance: {}
+
+reference_metrics:
+- source: https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m/blob/ea8dc2863c51be0a264bab82070e3e8836b02d51/README.md
+  dataset: {id: imagenet-real, split: val}
+  conditions: 512x512 center crop, linear classifier on the frozen CLS token, trained on ImageNet-1k train
+  note: >-
+    Top-1 against the ReaL labels of the ImageNet validation images, not the original labels of the registry's
+    imagenet-2012 val. The card refers to the DINOv3 paper (arXiv 2508.10104v1, Table 14 and appendix D.7) for the
+    protocol; Meta's linear classifier is not part of these weights.
+  metrics: {top1_accuracy: 0.902}
+- source: https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m/blob/ea8dc2863c51be0a264bab82070e3e8836b02d51/README.md
+  dataset: {id: imagenet-r, split: test}
+  conditions: 512x512 center crop, linear classifier on the frozen CLS token, trained on ImageNet-1k train
+  note: ImageNet-Rendition.
+  metrics: {top1_accuracy: 0.881}
+- source: https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m/blob/ea8dc2863c51be0a264bab82070e3e8836b02d51/README.md
+  dataset: {id: objectnet, split: test}
+  conditions: 512x512 center crop, linear classifier on the frozen CLS token, trained on ImageNet-1k train
+  metrics: {top1_accuracy: 0.748}
