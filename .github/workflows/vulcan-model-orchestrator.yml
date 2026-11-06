@@ -204,6 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ needs.select.outputs.vulcan_environment }}
     outputs:
+      conversion_sources: ${{ steps.plan.outputs.conversion_sources }}
       compile_count: ${{ steps.plan.outputs.compile_count }}
       compile_matrix: ${{ steps.plan.outputs.compile_matrix }}
       benchmark_count: ${{ steps.plan.outputs.benchmark_count }}
@@ -223,8 +224,7 @@ jobs:
       - name: Install registry tooling
         run: python -m pip install .
 
-      - name: Configure authenticated production registry reads
-        if: needs.select.outputs.vulcan_environment == 'production'
+      - name: Configure registry planning credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
@@ -234,6 +234,7 @@ jobs:
       - name: Compare fingerprints with published runs
         id: plan
         env:
+          VULCAN_ARTIFACT_REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           MODEL_REGISTRY_IAM_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}
           REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL || vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           COMPILER_IDENTITY: ${{ needs.select.outputs.model_compiler_identity }}
@@ -260,6 +261,7 @@ jobs:
             --compiler-version "$COMPILER_IDENTITY" \
             --branch "$GITHUB_REF_NAME" --base-branches "$BASE_BRANCHES" \
             "${scope_args[@]}")"
+          echo "conversion_sources=$(jq -c .conversion_sources <<< "$plan")" >> "$GITHUB_OUTPUT"
           compile_matrix="$(jq -c '.compile' <<< "$plan")"
           # Benchmarks run on Modalix boards only.
           benchmark_matrix="$(jq -c '{include: [.benchmark.include[] | select(.target == "modalix")]}' <<< "$plan")"
@@ -335,7 +337,7 @@ jobs:
 
   initialize-catalog:
     name: Mark the selected builds pending in the catalog
-    needs: [select, resolve-vulcan-config, authorize-runner-classes]
+    needs: [select, plan, resolve-vulcan-config, authorize-runner-classes]
     if: >-
       !cancelled() &&
       needs.resolve-vulcan-config.result == 'success' &&
@@ -366,6 +368,7 @@ jobs:
           BASE_BRANCHES: ${{ needs.select.outputs.base_branches }}
           SELECTED_MATRIX: ${{ needs.authorize-runner-classes.outputs.matrix }}
           REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
+          MODEL_REGISTRY_CONVERSIONS: ${{ needs.plan.outputs.conversion_sources || '{}' }}
           MODEL_REGISTRY_IAM_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}
           REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL || vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           AWS_REGION: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
@@ -387,7 +390,7 @@ jobs:
 
   compile:
     name: Compile ${{ matrix.model_id }}/${{ matrix.compile_invocation_id }} (${{ matrix.build_profile_id }})
-    needs: [select, resolve-vulcan-config, authorize-runner-classes, initialize-catalog]
+    needs: [select, plan, resolve-vulcan-config, authorize-runner-classes, initialize-catalog]
     if: >-
       !cancelled() &&
       needs.resolve-vulcan-config.result == 'success' &&
@@ -412,6 +415,7 @@ jobs:
       base_branches: ${{ needs.select.outputs.base_branches }}
       publishable: ${{ needs.select.outputs.publishable == 'true' }}
       aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      conversion_sources: ${{ needs.plan.outputs.conversion_sources }}
       dataset_bucket: ${{ needs.resolve-vulcan-config.outputs.dataset_bucket }}
       artifact_bucket: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
       artifact_kms_key_id: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
@@ -432,6 +436,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.candidate_matrix) }}
     env:
+      MODEL_REGISTRY_CONVERSIONS: ${{ needs.plan.outputs.conversion_sources || '{}' }}
       MODEL_ID: ${{ matrix.model_id }}
       BUILD_PROFILE_ID: ${{ matrix.build_profile_id }}
       REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
@@ -542,6 +547,7 @@ jobs:
         env:
           BASE_BRANCHES: ${{ needs.select.outputs.base_branches }}
           REGISTRY_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
+          MODEL_REGISTRY_CONVERSIONS: ${{ needs.plan.outputs.conversion_sources || '{}' }}
           MODEL_REGISTRY_IAM_READ_API_URL: ${{ needs.select.outputs.vulcan_environment == 'production' && vars.VULCAN_ARTIFACT_REGISTRY_API_URL || '' }}
           REGISTRY_READ_API_URL: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL || vars.VULCAN_ARTIFACT_REGISTRY_API_URL }}
           AWS_REGION: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
