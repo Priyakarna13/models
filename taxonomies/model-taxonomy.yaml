@@ -45,8 +45,16 @@ architectures:
     display_name: CLIP
     paradigm: transformer
     allowed_model_types: [vlm]
+  convnext:
+    display_name: ConvNeXt
+    paradigm: cnn
+    allowed_model_types: [vision]
   depthart:
     display_name: DepthART
+    paradigm: transformer
+    allowed_model_types: [vision]
+  dino:
+    display_name: DINO
     paradigm: transformer
     allowed_model_types: [vision]
   gemma:
@@ -121,6 +129,9 @@ tasks:
     allowed_model_types: [vision]
   image_classification:
     display_name: Image Classification
+    allowed_model_types: [vision]
+  image_embedding:
+    display_name: Image Embedding
     allowed_model_types: [vision]
   image_super_resolution:
     display_name: Image Super Resolution
