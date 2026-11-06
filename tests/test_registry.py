@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from model_registry.compile_matrix import build_matrix
-from model_registry.conversion import conversion_fingerprint
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
 from model_registry.fingerprints import benchmark_fingerprint, compile_fingerprint
@@ -50,21 +49,6 @@ class FakeStore:
         self.objects.append((path, key, sha256, media_type))
         return S3Object(key=key, version_id="version-1", sha256=sha256, size_bytes=path.stat().st_size)
 
-
-
-@pytest.fixture(autouse=True)
-def synthetic_conversions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Content identities for this checkout's conversion-backed models, as compile planning would resolve them, so the
-    catalog tests can fingerprint every model offline; never registry reads."""
-    selected = {
-        model_id: {
-            "sha256": hashlib.sha256(f"test-conversion:{model_id}".encode()).hexdigest(), "size_bytes": 1000,
-            "conversion_fingerprint": conversion_fingerprint(ROOT, model),
-        }
-        for model_id, model in load_models(ROOT).items()
-        if model["components"][0]["source"]["type"] == "conversion"
-    }
-    monkeypatch.setenv("MODEL_REGISTRY_CONVERSIONS", json.dumps(selected))
 
 def test_publish_model_documentation_creates_finalized_versioned_runs() -> None:
     calls: list[tuple[str, str, dict | None, str]] = []
@@ -699,8 +683,30 @@ def test_publish_retry_reuses_idempotency_keys_across_run_attempts(tmp_path: Pat
     assert publish("1") == publish("2")
 
 
+def test_conversion_input_keeps_the_model_card_the_browser_links_to() -> None:
+    from model_registry.conversion import FIELDS
+    from model_registry.registry import _conversion_input
+
+    source = {
+        **dict.fromkeys(FIELDS, "value"),
+        "run_id": "conversion-run", "artifact_id": "artifact", "conversion_fingerprint": "f" * 64,
+    }
+    metadata = _conversion_input(source, {"model_card": "https://example.test/card"})["metadata"]
+
+    assert metadata["model_card"] == "https://example.test/card"
+    assert metadata["conversion_run_id"] == "conversion-run"
+
+
+def _direct_source_models() -> dict:
+    """The models whose catalog entries need no saved conversion selection."""
+    return {
+        model_id: model for model_id, model in load_models(ROOT).items()
+        if model["components"][0]["source"]["type"] != "conversion"
+    }
+
+
 def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
-    models = load_models(ROOT)
+    models = _direct_source_models()
     compiler_version = resolve_model_compiler(ROOT)["identity"]
     first = build_catalog_snapshot(
         repository=ROOT,
@@ -740,7 +746,7 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
 
 
 def test_catalog_records_benchmark_fingerprints_bound_to_their_compile_runs() -> None:
-    models = load_models(ROOT)
+    models = _direct_source_models()
     model = models["resnet_50"]
     matrix = build_matrix(
         models, sorted(models), repository=ROOT, compiler_version=COMPILER_IDENTITY,

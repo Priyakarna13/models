@@ -87,12 +87,12 @@ this table. Modules marked CI only are removed from the author package by
 | `candidates.py` | complete model/profile candidate contracts, run publication and binding, finalization, feature selection and retry receipts (CI only) |
 | `benchmark_declarations.py` | the `performance` and `accuracy` declarations: the profiles each benchmarks, their scripts and required metrics, and validating `reference_metrics`, which the portal ships |
 | `report_publication.py` | the MPKs a benchmark runs, checking a `model-report.json` against `model.yaml`, and publishing it as one whole-model run under the profile's package run (CI only) |
-| `artifact.py` | compile outputs, MPK/deployed LLiMa verification, and deployment file indexes |
+| `artifact.py` | compile outputs, MPK/deployed LLiMa verification, reproduction recipes, and deployment file indexes |
 | `mla_stage_simulation.py` | after an MPK compile, the Model Compiler simulator's operation counts and latency for each MLA stage (`simulate-mla-stages`) |
 | `package.py` | assembling a profile's `default` package from component MPKs or a complete native deployment folder, with its numerical fidelity report and MLA stage simulation |
 | `dependencies.py` | resolving the Model Compiler and DevKit runtime pins in `deps/` |
 | `fetch.py` | verified downloads, the cache, and dataset resolution |
-| `conversion.py` | conversion fingerprints, validated ONNX bundles, publication, durable plan selections and exact downloads; author CLI exposes only saved-selection fetching |
+| `conversion.py` | conversion fingerprints, declared outputs, validated bundles, publication, durable plan selections and exact downloads; author CLI exposes only saved-selection fetching |
 | `source.py` | source identity and URL redaction |
 | `taxonomy.py` | loading the taxonomy and validating model categories |
 | `documentation.py` | loading a model's README and hero image |
@@ -124,8 +124,14 @@ tooling and that stage's runner scripts, and the DevKit runtime pin. The
 catalog lists each profile's benchmark fingerprints under
 `benchmark_fingerprints`, and the model browser resolves the runs by those
 fingerprints. A recompiled build gets new benchmark fingerprints and is
-therefore benchmarked again. Compile and benchmark fingerprints do not read model tests; conversion
-fingerprints include validation files so a changed check requires revalidation. The contributor guide lists
+therefore benchmarked again. Performance fingerprints also include the profile's
+optional `benchmark_baseline`. Accuracy and compilation fingerprints do not.
+Editing a test reruns nothing, because no fingerprint includes tests. The changed
+test runs the next time its stage runs.
+
+The conversion fingerprint covers only files that can change the ONNX. Keep it
+that narrow: a fingerprint with no published conversion fails the plan for every
+model until someone reruns Convert. The contributor guide lists
 every input in [what a change
 reruns](../docs/adding-a-model.md#9-know-what-a-change-reruns).
 
@@ -384,10 +390,12 @@ approved roots; the CLI downloads and verifies files.
 
 The compile matrix selects `scripts/run_llima_compilation.sh` for a Hugging
 Face component. The shared downloader assembles its pinned, verified file
-set; the recipe calls `llima-compile` and records a standalone `compile.sh` with
-the complete arguments it used. The runner then runs
+set; the recipe only compiles. The runner writes a direct reproduction command
+in `compile.sh` with download instructions and the resolved graph arguments,
+defaulting to four processes, plus any adjacent
+`compile.py` or `config.py`. It then runs
 `llima-deploy` into `<model>/<profile>/<component>/deployment/`, containing
-`devkit/`, `elf_files/`, any `npy_files/`, and that script. `verify-artifact --write-manifest`
+`devkit/`, `elf_files/`, any `npy_files/`, and those reproduction files. `verify-artifact --write-manifest`
 writes `deployment-manifest.json` beside the folder. Compile outputs point to
 that index and its SHA-256. ONNX builds retain their runner and compile-fingerprint
 inputs.

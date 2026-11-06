@@ -56,6 +56,9 @@ each kind of change reruns, are listed once in
 read both before changing what a stage depends on. Conversion
 (`scripts/convert.py`, run by `scripts/run_model_conversion.sh`) produces the
 ONNX consumed as either a pinned source or `compilation.source: conversion`.
+It writes `model.onnx` unless `conversion.outputs` lists other files: several
+ONNX models, or a `.pt`/`.pth` checkpoint that `surgery.py` exports to ONNX.
+`compile.py` receives the first as `--model`, with the rest beside it.
 Registry sources resolve during planning; only resolved content enters the compile
 fingerprint. See [conversion artifacts](docs/conversion-artifacts.md).
 
@@ -93,7 +96,8 @@ or YAML configuration. Keep its `--mpk` and `--output` CLI. A model with accurac
 also takes `--dataset <source id>=<directory>`, as `accuracy.py` does, and benchmarks one
 `random.Random(0)` image from it, letterboxed into a 1280x720 RGB frame by code inside the
 script and passed in `BenchmarkOptions.inputs` on the image route, so Neat preprocessing is
-timed. `run_model_performance.sh` passes only the first dataset, and only for a profile
+timed. A stereo model benchmarks one dataset pair as a side-by-side frame instead.
+`run_model_performance.sh` passes only the first dataset, and only for a profile
 accuracy measures. A model without an accuracy dataset builds a fixed input in its script;
 do not benchmark Core's synthetic inputs ([Benchmark
 input](docs/benchmarking.md#benchmark-input)). `performance.py`
@@ -110,15 +114,22 @@ the shared regression thresholds remain gates.
 LLMs and VLMs declare the complete model as one component, with a pinned Hugging
 Face file set, `format: huggingface`, `entrypoint: generate`, and the conventional
 `scripts/compile.sh`. Whisper uses `entrypoint: transcribe`. The
-recipe calls `llima-compile` and saves a standalone `compile.sh` with its complete
-arguments; `scripts/run_llima_compilation.sh` downloads,
-compiles, and runs `llima-deploy` into the component's `deployment/` folder.
+recipe only compiles; use adjacent `compile.py` or `config.py` when needed.
+`scripts/run_llima_compilation.sh` downloads, compiles, and runs `llima-deploy`
+into the component's `deployment/` folder, then writes a direct reproduction
+command with download instructions and the resolved graph arguments, using four
+processes. Include any Python helpers alongside it.
 `model-registry verify-artifact --write-manifest` verifies that folder and writes
 `deployment-manifest.json` beside it. Publication preserves the folder as
 individually registered files; native builds never create a deployment ZIP.
 Do not enumerate generated layers as components or nest model archives in packages.
 Only declared performance and accuracy stages run; omit their sections until
 implemented. See [LLiMa model definitions](docs/adding-a-model.md#llima-language-and-vision-language-models).
+Speculative pairs stay one component: pin both checkpoints in named file-set
+subfolders, use the target's `config.json` as `compilation.source.main_file`, and declare the draft
+subfolder in `parameters.draft_model_path`. Deploy and publish the complete pair.
+An optional profile-level `benchmark_baseline` links to a normal-decoding model
+and build profile; it affects performance fingerprints, never compilation.
 
 Start with one 4K profile per LLM/VLM. Declare `max_num_tokens: 4096` and
 `language_group_size` in its component parameters. Image dimensions are optional
@@ -168,7 +179,8 @@ profile (`performance.expected.<profile>.throughput_fps`,
 it fails when a
 value falls more than `ACCURACY_ALLOWED_DROP` (5%) or
 `PERFORMANCE_ALLOWED_DROP` (10%) in `model_tests.py` below its expected
-value. A performance test also asserts that each component's
+value, or rises by as much for a metric that `metrics.json` marks lower is
+better. A performance test also asserts that each component's
 `execution_plan` in the report is a `sima.neat.execution_plan` version 1 plan
 with nodes and edges, the plan the model browser draws. These limits are shared by every model. When a reviewed
 change moves a published value, update `expected` to the new published result.
@@ -192,9 +204,8 @@ A test's fixtures decide where it runs:
 runs one stage's file on that output (the benchmarks also take the build
 profile their `model-report.json` measured) and prints `passed`, `failed`, or `skipped` (the
 stage's `run_tests` is `false`); a plain `pytest` deselects every test that
-takes stage output. Compile and benchmark fingerprints do not read `models/<id>/tests/` or
-`run_model_tests.sh`. Conversion fingerprints include validation files, so
-changed checks require a new conversion before registry sources can compile. To apply it now, dispatch `Vulcan Model Orchestrator`
+takes stage output. Editing `models/<id>/tests/` or `run_model_tests.sh` reruns nothing,
+because no fingerprint includes them. The changed test runs the next time its stage runs. To run it now, dispatch `Vulcan Model Orchestrator`
 with `models` set to the model and `force_rebuild_all`, which recompiles and
 remeasures it.
 
@@ -286,6 +297,9 @@ Conventions the code relies on:
   `--fidelity-dataset`, `--mpk`); data enters only through the dataset registry
   declared in `model.yaml`. Benchmark scripts run without registry
   credentials.
+- When a model declares `conversion.outputs`, every script reads those names
+  with `conversion_outputs()` and never hard-codes one, so renaming a file only
+  changes `model.yaml`.
 - Schemas under `schemas/` reject unknown fields. Published reports keep
   their `schema_version` (model report 1, numerical fidelity 1) because the
   artifact browser and `sima-cli` choose a renderer by it. Registry
