@@ -38,6 +38,7 @@ export const ACCURACY_METRIC_LABELS = {
   coco_mask_ar_small: "Mask AR small",
   coco_mask_ar_medium: "Mask AR medium",
   coco_mask_ar_large: "Mask AR large",
+  nme: "NME",
   coco_box_map: "Box mAP 50–95",
   coco_box_ap50: "Box AP50",
 };

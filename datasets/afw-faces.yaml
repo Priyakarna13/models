@@ -1,0 +1,3 @@
+# What every model evaluating its accuracy on AFW must report, by the model's task.
+required_metrics:
+  face_landmark_detection: [nme]

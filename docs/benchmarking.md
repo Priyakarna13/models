@@ -148,7 +148,9 @@ an application gets from a 720p frame to decoded results, not the MPK alone:
    scaling of pixels to [0, 1]. ResNet-50 and RF-DETR's backbone resize with
    `ResizeMode.Stretch` and set `preprocess.preset =
    NormalizePreset.ImageNet`; without a preset, Neat applies no mean or
-   standard deviation.
+   standard deviation. The face landmark model picks an annotated AFW test
+   face, a face crop, and Neat stretches the frame to its 256x256 input with
+   no preset.
 
 The report's `workload` names the dataset, the image, the frame, and the
 decoder settings. Preprocessing is part of the measurement and can bound

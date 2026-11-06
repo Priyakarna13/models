@@ -278,6 +278,11 @@ def assert_letterboxed_frame(tensor):
     assert (frame[:, IMAGE_COLUMNS] == 200).all()
 
 
+# Face landmark models benchmark one seeded AFW test face (a face crop with an iBUG .pts annotation), which Neat
+# stretches to the model input with no normalization preset.
+FACE_CROP_MODELS = {"fld_68landmarks"}
+
+
 def performance_scripts(*, components: bool) -> list[Path]:
     """Benchmarked models' scripts: single-component ones run Model.benchmark, multi-component ones time their
     pipeline and take each component's MLA stats from its own Model.benchmark."""
@@ -290,7 +295,11 @@ def performance_scripts(*, components: bool) -> list[Path]:
     return scripts
 
 
-@pytest.mark.parametrize("script", performance_scripts(components=False), ids=lambda path: path.parents[1].name)
+@pytest.mark.parametrize(
+    "script",
+    [path for path in performance_scripts(components=False) if path.parents[1].name not in FACE_CROP_MODELS],
+    ids=lambda path: path.parents[1].name,
+)
 def test_every_single_component_script_benchmarks_a_dataset_image(script, monkeypatch, tmp_path):
     loaded, requests = [], []
 
@@ -341,6 +350,54 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
     assert list(report["components"]) == ["model"]
     assert report["components"]["model"]["mla_layer_stats"] == CORE_REPORT["mla_layer_stats"]
     assert report["components"]["model"]["mla_stage_stats"] == CORE_REPORT["mla_stage_stats"]
+
+
+@pytest.mark.parametrize("model_name", sorted(FACE_CROP_MODELS))
+def test_every_face_crop_script_benchmarks_a_seeded_annotated_face(model_name, monkeypatch, tmp_path):
+    import random
+
+    script = REPOSITORY / "models" / model_name / "scripts/performance.py"
+    loaded, requests = [], []
+
+    class ScriptModel(Model):
+        def __init__(self, *args):
+            super().__init__("model")
+            loaded.append(args)
+
+        def benchmark(self, options):
+            requests.append(options)
+            return Saved(CORE_REPORT)
+
+    monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
+        __version__="3.0.0", build_info=lambda: {"version": "3.0.0"}, Model=ScriptModel,
+        ModelOptions=ModelOptions, BenchmarkOptions=BenchmarkOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
+    ))
+    # Three annotated faces and one without an annotation, which the script must not pick; macOS metadata is ignored.
+    dataset = tmp_path / "afw"
+    names = [f"{index}_1_0.jpg" for index in range(3)]
+    for name in names:
+        write_image(dataset / "test_data" / name, 200)
+        (dataset / "test_data" / name).with_suffix(".pts").write_text("version: 1\n", encoding="utf-8")
+    write_image(dataset / "test_data/9_1_0.jpg", 200)
+    (dataset / "test_data/._0_1_0.jpg").write_bytes(b"junk")
+    output = tmp_path / "output"
+    monkeypatch.setattr(sys, "argv", [
+        str(script), "--mpk", "model.tar.gz", "--dataset", f"afw-faces-default={dataset}", "--output", str(output),
+    ])
+
+    runpy.run_path(str(script), run_name="__main__")
+
+    assert [args[0] for args in loaded] == ["model.tar.gz"]
+    assert [(r.num_samples, r.min_duration_ms, r.include_mla_layer_stats, r.include_mla_stage_stats)
+            for r in requests] == [(1000, 60000, True, True)]
+    options = loaded[0][1]
+    assert (options.preprocess.kind, options.preprocess.resize.mode) == ("Image", "Stretch")
+    assert not hasattr(options.preprocess, "preset")
+    (frame,) = requests[0].inputs
+    assert_letterboxed_frame(frame)
+    report = saved_report(output)
+    assert f"test_data/{random.Random(0).choice(sorted(names))} " in report["workload"]
+    assert list(report["components"]) == ["model"]
 
 
 @pytest.mark.parametrize("script", performance_scripts(components=True), ids=lambda path: path.parents[1].name)

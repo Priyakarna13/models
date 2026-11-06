@@ -1,0 +1,20 @@
+conversion:
+  run_tests: true
+compile:
+  run_tests: true
+accuracy:
+  run_tests: true
+  expected:
+    w16a16:
+      afw-faces-default:
+        nme: 0.0329
+    w8a16:
+      afw-faces-default:
+        nme: 0.03304
+performance:
+  run_tests: true
+  expected:
+    w16a16:
+      throughput_fps: 267.8
+    w8a16:
+      throughput_fps: 389.0
