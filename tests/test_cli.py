@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from model_registry import cli
 from model_registry.cli import main
 
@@ -29,6 +30,8 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
         "check-report",
         "publish",
         "promotion",
+        "conversion-entrypoint",
+        "publish-conversion",
         "publish-candidate",
         "publish-branch-deployment",
         "publish-report",
@@ -165,9 +168,9 @@ def test_fetch_reports_file_set_root(monkeypatch, tmp_path: Path, capsys) -> Non
     result = main(
         [
             "fetch",
-            str(ROOT / "models" / "rf_detr_small"),
+            str(ROOT / "models" / "resnet_50"),
             "--component",
-            "backbone",
+            "model",
             "--json",
         ]
     )
@@ -525,3 +528,45 @@ def test_publish_catalog_passes_optional_base_branches(monkeypatch, argument, ba
     assert calls[0]["branch"] == "feat/names"
     assert calls[0]["bucket"] == "model-artifacts"
     assert calls[0]["environment"] == "staging"
+
+
+@pytest.mark.parametrize(("declared", "printed"), [({}, "model.onnx"), ({"outputs": ["a.onnx", "b.pth"]}, "a.onnx")])
+def test_conversion_entrypoint_prints_the_first_output(tmp_path, capsys, declared, printed):
+    (tmp_path / "model.yaml").write_text(yaml.safe_dump({"conversion": declared}))
+    assert main(["conversion-entrypoint", str(tmp_path)]) == 0
+    assert capsys.readouterr().out == printed + "\n"
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_publish_conversion_cli_forwards_arguments_and_workflow(monkeypatch, tmp_path, capsys, environment):
+    calls = []
+    client, store = object(), object()
+    monkeypatch.setattr(
+        "model_registry.registry.SigV4RegistryClient", lambda api, region: calls.append((api, region)) or client,
+    )
+    monkeypatch.setattr(
+        "model_registry.registry.S3ArtifactStore", lambda bucket, **kw: calls.append((bucket, kw)) or store,
+    )
+    monkeypatch.setattr(
+        "model_registry.conversion.publish_conversion",
+        lambda *args, **kw: calls.append((args, kw)) or {"run_id": "converted"},
+    )
+    for key, value in {"GITHUB_REF_NAME": "canary", "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123"}.items():
+        monkeypatch.setenv(key, value)
+    assert main(["publish-conversion", "yolo26n", str(tmp_path / "onnx"),
+                 "--repository", str(tmp_path), "--api-url", "https://registry.test",
+                 "--bucket", "artifacts", "--kms-key-id", "key", "--aws-region", "us-west-2",
+                 "--environment", environment, "--validation", "passed"]) == 0
+    assert calls == [("https://registry.test", "us-west-2"), ("artifacts", {"kms_key_id": "key"}),
+                     ((tmp_path, "yolo26n", tmp_path / "onnx"), {
+                         "client": client, "store": store, "bucket": "artifacts", "environment": environment,
+                         "branch": "canary", "git_sha": "a" * 40, "workflow": "123", "validation": "passed"})]
+    assert json.loads(capsys.readouterr().out) == {"run_id": "converted"}
+
+
+@pytest.mark.parametrize("validation", ["failed", "skipped"])
+def test_publish_conversion_cli_rejects_unvalidated_output(validation):
+    with pytest.raises(SystemExit) as error:
+        main(["publish-conversion", "yolo26n", "output", "--api-url", "https://registry.test",
+              "--bucket", "artifacts", "--environment", "production", "--validation", validation])
+    assert error.value.code == 2
