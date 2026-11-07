@@ -163,6 +163,33 @@ def test_compile_rejects_an_undeclared_build_profile(load_script: Callable[[str]
         recipe._variant(metadata, "w32a32")
 
 
+@pytest.mark.parametrize(
+    ("precision", "calibrates", "per_token"), [("w8a8", True, False), ("w8a16", False, True), ("w16a16", False, False)]
+)
+def test_quantization_calibrates_only_int8_activations(
+    load_script: Callable[[str], ModuleType], precision: str, calibrates: bool, per_token: bool
+) -> None:
+    recipe = load_script("compile")
+
+    recipe._quantization(precision)
+
+    arguments = recipe.QuantizationParams.call_args.kwargs
+    calibration = recipe.CalibrationMethod.from_str.return_value if calibrates else recipe.SkipCalibration.return_value
+    assert arguments["calibration_method"] is calibration
+    assert arguments.get("per_token_quant", False) is per_token
+
+
+def test_bf16_builds_quantize_without_calibration_data(
+    tmp_path: Path,
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    recipe = load_script("compile")
+
+    with pytest.raises(RuntimeError, match="expected exactly one MPK archive"):
+        recipe.compile_model(tmp_path / "model.onnx", tmp_path / "model", "w16a16", None)
+    assert recipe.load_model.return_value.quantize.call_args.args[0] is None
+
+
 def test_compile_rejects_an_undeclared_precision_before_compiling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

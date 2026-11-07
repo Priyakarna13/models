@@ -15,6 +15,7 @@ from afe.apis.defines import (
     CalibrationMethod,
     InputName,
     QuantizationParams,
+    SkipCalibration,
     bfloat16_scheme,
     gen2_target,
     quantization_scheme,
@@ -47,6 +48,32 @@ def _variant(metadata: dict[str, Any], variant_id: str) -> dict[str, Any]:
     return {**profile, "parameters": binding["parameters"]}
 
 
+def _quantization(precision: str) -> QuantizationParams:
+    """The compiler's activation and weight formats for a precision. Only INT8 activations need calibration."""
+    if precision == "w8a8":
+        return QuantizationParams(
+            # MSE picks each activation range from the calibration images.
+            calibration_method=CalibrationMethod.from_str("mse"),
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+        )
+    if precision == "w8a16":
+        return QuantizationParams(
+            calibration_method=SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            # Each token's activations get their own INT8 scale before an INT8-weight operation.
+            per_token_quant=True,
+        )
+    if precision == "w16a16":
+        return QuantizationParams(
+            calibration_method=SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=bfloat16_scheme(),
+        )
+    raise ValueError(f"unsupported precision {precision!r}")
+
+
 def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: Path | None) -> AfeModel:
     variant = _variant(_metadata(), variant_id)
     parameters = variant["parameters"]
@@ -63,38 +90,18 @@ def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: P
     importer = onnx_source(str(source), {input_name: input_shape}, {input_name: ScalarType.float32})
     loaded = load_model(importer, target=gen2_target)
 
+    data = None
     if precision == "w8a8":
         if dataset is None:
             raise ValueError("the INT8 variant requires --dataset from dataset-registry")
         sample_count = int(parameters["calibration_samples"])
         LOG.info("Loading %d representative calibration samples", sample_count)
-        samples = calibration_samples(dataset, sample_count)
-        activation_scheme = quantization_scheme(asymmetric=True, per_channel=False, bits=8)
-        weight_scheme = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
-    else:
-        # BF16 does not derive quantization ranges from representative data.
-        # The API still requires an iterable, so provide one deterministic sample.
-        samples = np.zeros((1, 224, 224, 3), dtype=np.float32)
-        activation_scheme = bfloat16_scheme()
-        weight_scheme = (
-            quantization_scheme(asymmetric=False, per_channel=True, bits=8)
-            if precision == "w8a16"
-            else bfloat16_scheme()
+        data = convert_data_generator_to_iterable(
+            DataGenerator({input_name: calibration_samples(dataset, sample_count)})
         )
 
-    data = convert_data_generator_to_iterable(DataGenerator({input_name: samples}))
     model_name = f"{MODEL_ID}_{variant_id}"
-    quantized = loaded.quantize(
-        data,
-        QuantizationParams(
-            calibration_method=CalibrationMethod.from_str("mse"),
-            activation_quantization_scheme=activation_scheme,
-            weight_quantization_scheme=weight_scheme,
-            # W8A16 scales each token's activations on its own before an INT8-weight operation.
-            per_token_quant=precision == "w8a16",
-        ),
-        model_name=model_name,
-    )
+    quantized = loaded.quantize(data, _quantization(precision), model_name=model_name)
     quantized.save(model_name=model_name, output_directory=str(component_dir))
     saved = AfeModel.load(model_name=f"{model_name}.sima", network_directory=str(component_dir))
     saved.compile(output_path=str(component_dir))
