@@ -1,12 +1,13 @@
 """Benchmark EfficientSAM ViT-T with Neat Core and save its report.
 
 Given --mpk image_encoder=<path> --mpk prompt_decoder=<path>, the script measures the whole model on one image and
-one box prompt per frame: Neat's preprocessing and the image encoder on a fixed 720p frame, the prompt decoder on the
-encoder's embedding with the prompt's point inputs, and the CPU upsampling the best of the decoder's masks to the
-frame, each stage working on a different frame at the same time. The model declares no accuracy dataset, so the
-script builds its frame: a seeded outdoor scene with one object, which the prompt's box surrounds. Before measuring,
-it checks that the compiled models' mask covers that object, which also checks the encoder's MLA code, whose compile
-skips AFE's simulator check. The script also records each MPK's MLA layer and stage stats and its execution plan.
+one box prompt per frame: Neat's preprocessing and the image encoder on a fixed 720p frame, the CPU normalizing the
+box prompt's points, the prompt decoder on the encoder's embedding with those points, and the CPU upsampling the
+best of the decoder's masks to the frame, each stage working on a different frame at the same time. The model
+declares no accuracy dataset, so the script builds its frame: a seeded outdoor scene with one object, which the
+prompt's box surrounds. Before measuring, it checks that the compiled models' mask covers that object, which also
+checks the encoder's MLA code, whose compile skips AFE's simulator check. The script also records each MPK's MLA
+layer and stage stats and its execution plan.
 """
 
 from __future__ import annotations
@@ -110,7 +111,8 @@ def prompt_array(points: list[tuple[float, float]], types: list[str], size: tupl
 
 
 def prompt_tensors() -> list[pyneat.Tensor]:
-    """The fixed box prompt around the frame's object, reused for every frame.
+    """The CPU step before the prompt decoder, run for every frame: the box prompt around the frame's object,
+    normalized into the decoder's points and placed in the memory the decoder reads.
 
     Neat sizes the points input as height 1, width 6 and depth 8, so the tensor declares HWC axes; untagged, a 3-D
     tensor counts as CHW.
@@ -159,23 +161,23 @@ def decoder_embeddings(embeddings: pyneat.Tensor) -> pyneat.Tensor:
     return embeddings.cvu()
 
 
-def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor,
-                  prompt: list[pyneat.Tensor]) -> tuple[pyneat.ModelRunner, pyneat.ModelRunner]:
+def build_runners(models: dict[str, pyneat.Model],
+                  image: pyneat.Tensor) -> tuple[pyneat.ModelRunner, pyneat.ModelRunner]:
     run_options = pyneat.RunOptions()
     run_options.queue_depth = QUEUE_DEPTH
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
     image_encoder = models["image_encoder"].build([image], run_options=run_options)
     (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
-    prompt_decoder = models["prompt_decoder"].build([decoder_embeddings(embeddings), *prompt], run_options=run_options)
+    prompt_decoder = models["prompt_decoder"].build([decoder_embeddings(embeddings), *prompt_tensors()],
+                                                    run_options=run_options)
     return image_encoder, prompt_decoder
 
 
-def check_mask(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
-               prompt: list[pyneat.Tensor]) -> float:
+def check_mask(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor) -> float:
     """The intersection over union of the compiled models' mask with the frame's object. Below MIN_OBJECT_IOU the
     models do not segment what the benchmark feeds them, so the script stops."""
     (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
-    mask = frame_mask(prompt_decoder.run([decoder_embeddings(embeddings), *prompt], timeout_ms=TIMEOUT_MS))
+    mask = frame_mask(prompt_decoder.run([decoder_embeddings(embeddings), *prompt_tensors()], timeout_ms=TIMEOUT_MS))
     truth = object_mask()
     iou = float(np.sum(mask & truth) / np.sum(mask | truth))
     if iou < MIN_OBJECT_IOU:
@@ -183,22 +185,21 @@ def check_mask(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRu
     return iou
 
 
-def infer_one(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
-              prompt: list[pyneat.Tensor]) -> None:
+def infer_one(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor) -> None:
     (embeddings,) = image_encoder.run([image], timeout_ms=TIMEOUT_MS)
-    frame_mask(prompt_decoder.run([decoder_embeddings(embeddings), *prompt], timeout_ms=TIMEOUT_MS))
+    frame_mask(prompt_decoder.run([decoder_embeddings(embeddings), *prompt_tensors()], timeout_ms=TIMEOUT_MS))
 
 
-def measure_latency(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
-                    prompt: list[pyneat.Tensor]) -> list[float]:
+def measure_latency(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner,
+                    image: pyneat.Tensor) -> list[float]:
     """Seconds per frame through all four stages with nothing else in flight, after the warm-up."""
     for _ in range(WARMUP_FRAMES):
-        infer_one(image_encoder, prompt_decoder, image, prompt)
+        infer_one(image_encoder, prompt_decoder, image)
     seconds: list[float] = []
     ends = time.perf_counter() + MIN_DURATION_S
     while len(seconds) < MEASURED_FRAMES or time.perf_counter() < ends:
         started = time.perf_counter()
-        infer_one(image_encoder, prompt_decoder, image, prompt)
+        infer_one(image_encoder, prompt_decoder, image)
         seconds.append(time.perf_counter() - started)
     return seconds
 
@@ -259,8 +260,8 @@ def run_together(*stages: Callable[[], None], runners: tuple[pyneat.ModelRunner,
         raise errors[0]
 
 
-def measure_throughput(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner, image: pyneat.Tensor,
-                       prompt: list[pyneat.Tensor]) -> Throughput:
+def measure_throughput(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRunner,
+                       image: pyneat.Tensor) -> Throughput:
     """Frames per second and board telemetry with every stage busy, each on a different frame. The measured span
     starts after WARMUP_FRAMES outputs and lasts at least MEASURED_FRAMES frames and MIN_DURATION_S seconds."""
     monitor = pyneat.TelemetryMonitor()
@@ -280,7 +281,7 @@ def measure_throughput(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat
     def forward_embeddings() -> None:
         try:
             for (embeddings,) in drain(image_encoder, "image encoder", pushed):
-                push(prompt_decoder, [decoder_embeddings(embeddings), *prompt], "prompt decoder")
+                push(prompt_decoder, [decoder_embeddings(embeddings), *prompt_tensors()], "prompt decoder")
                 pushed["prompt decoder"] += 1
                 # The decoder holds a copy, so the image encoder gets its output buffer back.
                 del embeddings
@@ -338,8 +339,8 @@ def write_report(
         models,
         workload=(
             f"a fixed {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame the script builds, Neat preprocessing stretched to "
-            f"{IMAGE_SIZE}x{IMAGE_SIZE}, image encoder, prompt decoder on a fixed box prompt, and the best mask "
-            f"upsampled to the frame on the CPU, pipelined {QUEUE_DEPTH} frames deep"
+            f"{IMAGE_SIZE}x{IMAGE_SIZE}, image encoder, a fixed box prompt's points normalized on the CPU, prompt "
+            f"decoder, and the best mask upsampled to the frame on the CPU, pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
         mla_layer_stats=mla_layer_stats,
@@ -362,11 +363,10 @@ def benchmark_pipeline(mpks: dict[str, Path], output: Path) -> None:
     }
     image = pyneat.Tensor.from_numpy(synthetic_frame(), copy=True, image_format=pyneat.PixelFormat.RGB,
                                      memory=pyneat.TensorMemory.EV74)
-    prompt = prompt_tensors()
-    image_encoder, prompt_decoder = build_runners(models, image, prompt)
-    print(f"Mask IoU with the frame's object: {check_mask(image_encoder, prompt_decoder, image, prompt):.3f}")
-    latencies = measure_latency(image_encoder, prompt_decoder, image, prompt)
-    throughput = measure_throughput(image_encoder, prompt_decoder, image, prompt)
+    image_encoder, prompt_decoder = build_runners(models, image)
+    print(f"Mask IoU with the frame's object: {check_mask(image_encoder, prompt_decoder, image):.3f}")
+    latencies = measure_latency(image_encoder, prompt_decoder, image)
+    throughput = measure_throughput(image_encoder, prompt_decoder, image)
     write_report(output, latencies, throughput, models, mla_layer_stats, mla_stage_stats)
 
 

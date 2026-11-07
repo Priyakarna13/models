@@ -66,12 +66,18 @@ def test_the_benchmark_stops_unless_the_mask_covers_the_frames_object(load_scrip
     scores = np.asarray([[[0.1, 0.9, 0.2]]], np.float32)
     encoder, decoder = _Runner(np.zeros((1, 64, 64, 256), np.float32)), _Runner(scores, masks)
 
-    assert script.check_mask(encoder, decoder, None, []) > 0.9
-    # The decoder gets a copy of the encoder's CPU output in EV74 memory, which Neat binds to its first EV74 stage.
-    (embeddings,) = decoder.inputs
+    assert script.check_mask(encoder, decoder, None) > 0.9
+    # The decoder gets a copy of the encoder's CPU output in EV74 memory, which Neat binds to its first EV74 stage, and
+    # the box prompt's points, which the CPU normalizes for each frame.
+    embeddings, _ = decoder.inputs
     assert embeddings.memory == "EV74" and embeddings.array.shape == (1, 64, 64, 256)
+    (points,), _ = script.pyneat.Tensor.from_numpy.call_args
+    x0, y0, x1, y1 = script.OBJECT_BOX
+    expected = script.prompt_array([(x0, y0), (x1, y1)], ["box_top_left", "box_bottom_right"],
+                                   (script.FRAME_HEIGHT, script.FRAME_WIDTH))
+    np.testing.assert_array_equal(points, expected)
     with pytest.raises(RuntimeError, match="below 0.5"):
-        script.check_mask(encoder, _Runner(scores, np.full((1, 256, 256, 3), -5.0, np.float32)), None, [])
+        script.check_mask(encoder, _Runner(scores, np.full((1, 256, 256, 3), -5.0, np.float32)), None)
 
 
 def test_the_benchmark_frame_is_fixed_and_its_object_fills_the_prompt_box(load_script: Callable[[str], ModuleType]) -> None:
