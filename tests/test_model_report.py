@@ -257,11 +257,11 @@ SCRIPT_PYNEAT = {
 }
 # A 4:3 COCO image letterboxes to 960x720 in the 1280x720 frame, with 160 grey columns on each side.
 SOURCE_SIZE, IMAGE_COLUMNS, FILL = (480, 640), slice(160, 1120), 114
+# The ImageNet image a classifier benchmarks, by the variant of its accuracy dataset, as its workload names it.
+IMAGENET_SAMPLES = {"mini": "n01440764/ILSVRC2012_val_00000001.webp", "val": "val2012/ILSVRC2012_val_00000001.JPEG"}
 # A Scene Flow view is 960x540; a stereo script joins the pair side by side, left then right, unletterboxed.
 STEREO_VIEW, STEREO_LEFT, STEREO_RIGHT = (540, 960), 60, 90
 STEREO_PAIR = "FlyingThings3D/frames_finalpass/TEST/A/0000/{view}/0006.png"
-# The ImageNet image a classifier benchmarks, by the variant of its accuracy dataset, as its workload names it.
-IMAGENET_SAMPLES = {"mini": "n01440764/ILSVRC2012_val_00000001.webp", "val": "val2012/ILSVRC2012_val_00000001.JPEG"}
 
 
 def write_image(path, value, size=SOURCE_SIZE):
