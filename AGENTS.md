@@ -98,7 +98,9 @@ or YAML configuration. Keep its `--mpk` and `--output` CLI. A model with accurac
 also takes `--dataset <source id>=<directory>`, as `accuracy.py` does, and benchmarks one
 `random.Random(0)` image from it, letterboxed into a 1280x720 RGB frame by code inside the
 script and passed in `BenchmarkOptions.inputs` on the image route, so Neat preprocessing is
-timed. A stereo model benchmarks one dataset pair as a side-by-side frame instead.
+timed. A stereo model benchmarks one dataset pair as a side-by-side frame instead. A model whose
+inputs are not images benchmarks one `random.Random(0)` validation sample as tensors on the
+tensor route, and each timed sample runs the CPU steps that produce the model's result.
 `run_model_performance.sh` passes only the first dataset, and only for a profile
 accuracy measures. A model without an accuracy dataset builds a fixed input in its script;
 do not benchmark Core's synthetic inputs ([Benchmark
@@ -110,6 +112,13 @@ contract, and `tools/model_report/metrics.json` names every metric a report may
 hold. Each benchmarked profile needs finite `tests.yaml` expectations covering its
 required metrics (performance: `throughput_fps`); optional expectations and
 the shared regression thresholds remain gates.
+
+When no published score matches a package's setup, the model may add a standalone
+`scripts/fp32_baseline_accuracy.py`, as `models/superglue_outdoor` does. It scores the
+FP32 ONNX the model compiles on a host with the model's own `accuracy.py` scoring, without
+`model_registry` imports, credentials or YAML. Its output becomes the
+`reference_metrics` entry with `origin: fp32_baseline`. No stage runs it and no
+fingerprint includes it ([FP32 baseline](docs/local-accuracy-development.md#fp32-baseline)).
 
 ## LLiMa models
 
@@ -219,7 +228,7 @@ in the same commit.
 | When you change | Also change |
 |---|---|
 | what a stage depends on: a `model.yaml` field its fingerprint reads, or a shared file it runs | the fingerprint function or the `COMPILE_TOOLING`/`BOARD_STAGE_TOOLING`/`PERFORMANCE_TOOLING`/`ACCURACY_TOOLING` list in `fingerprints.py`, the tables in [what a change reruns](docs/adding-a-model.md#9-know-what-a-change-reruns), and a test in `tests/test_compile_matrix.py` or `tests/test_stage_plan.py` |
-| the set of model scripts a benchmark or conversion runs | `SCRIPTS` in `benchmark_declarations.py` or `CONVERSION_FILES` in `model.py`, which make up `NON_COMPILE_SCRIPTS` in `fingerprints.py`; every other `.py`/`.sh` under `scripts/` is an ONNX compile input |
+| the set of model scripts a benchmark or conversion runs | `SCRIPTS` in `benchmark_declarations.py` or `CONVERSION_FILES` in `model.py`, which make up `NON_COMPILE_SCRIPTS` in `fingerprints.py` with `FP32_BASELINE_SCRIPT`; every other `.py`/`.sh` under `scripts/` is an ONNX compile input |
 | board-only code | keep it inside `performance.py` or `accuracy.py`; a helper module under `scripts/` is an ONNX compile input, so editing it recompiles and then remeasures the model |
 | how `performance.py` gets its input | `scripts/run_model_performance.sh`, the dataset steps in `vulcan-model-benchmarking.yml`, [Benchmark input](docs/benchmarking.md#benchmark-input), and `tests/test_model_report.py` and `tests/test_benchmark_workflow.py` |
 | a custom `performance.py` | start from the [canonical script](docs/benchmarking.md#the-performance-script), and for a multi-component model the [multi-component script](docs/benchmarking.md#multi-component-models): hand Core's `BenchmarkReport`, board telemetry, and each component's Model to `model_report.from_performance()` |
