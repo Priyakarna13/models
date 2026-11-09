@@ -21,10 +21,7 @@ conversion:
     size_bytes: 14069355
 compilation:
   format: onnx
-  source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/bdd8f4ef575bdc0cb02d33e571992d3c45c63f0bc00aeca5f51583c50e811bd8/40979330247-1/model.onnx
-    sha256: bdd8f4ef575bdc0cb02d33e571992d3c45c63f0bc00aeca5f51583c50e811bd8
-    size_bytes: 13776070
+  source: conversion
 calibrations:
 - id: coco-2017-cal
   dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}

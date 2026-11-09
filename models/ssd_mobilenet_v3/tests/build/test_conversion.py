@@ -18,7 +18,8 @@ def test_weight_digest_is_full_and_fail_closed(tmp_path, converter):
         converter.verified_weights(path)
 
 
-def test_raw_heads_have_3234_anchors_and_91_logits(converter):
+def test_raw_heads_have_3234_anchors_and_91_logits(load_script):
+    converter = load_script("surgery")
     assert len(converter.OUTPUTS) == 12
     assert [name for name, _shape in converter.OUTPUTS] == [
         *[f"ssd_loc_{index}" for index in range(6)],
@@ -57,13 +58,15 @@ def test_parity_rejects_changed_shape_or_large_error(converter):
     assert converter.EXPERIMENTAL_MAX_NORMALIZED_RMSE == 1e-5
 
 
-def test_actual_export_has_fixed_twelve_head_fp32_contract(converted, converter):
+def test_actual_export_keeps_full_upstream_fp32_contract(converted, converter):
     report = converter.audit(converted)
     assert report["operators"]["Conv"] == 98
+    assert report["operators"]["BatchNormalization"] == 70
+    assert report["operators"]["Softmax"] == 1
     model = onnx.load(converted)
     properties = {item.key: item.value for item in model.metadata_props}
     assert properties["sima.precision.source"] == "fp32_pretrained_not_qat"
-    assert properties["sima.input.normalization"] == "rgb_uint8/127.5-1; external to graph"
+    assert properties["sima.input.normalization"] == "rgb_float32_0_to_1; normalization inside graph"
     assert properties["sima.torchvision.weights_sha256"] == converter.WEIGHTS_SHA256
 
 
@@ -87,7 +90,7 @@ def test_actual_export_corruption_rejected(case, tmp_path, converted, converter)
     elif case == "dtype":
         model.graph.output[0].type.tensor_type.elem_type = onnx.TensorProto.DOUBLE
     elif case == "shape":
-        model.graph.output[0].type.tensor_type.shape.dim[2].dim_value = 19
+        model.graph.output[0].type.tensor_type.shape.dim[1].dim_value = 3
     else:
         model.opset_import[0].version = 18
     path = tmp_path / "corrupted.onnx"
@@ -276,3 +279,50 @@ def test_numpy_source_oracle_does_not_require_board_image_io(load_script, monkey
     logits[:, 0] = 20
     actual = reference.post_numpy(np.zeros((3234, 4), np.float32), logits)
     assert len(actual["boxes"]) == 0
+
+
+def test_actual_surgery_cut_keeps_twelve_heads_and_leaves_folding_to_compile(converted, load_script):
+    from collections import Counter
+
+    surgery = load_script("surgery")
+    surgery.audit_source(converted)
+    raw = surgery.cut_raw_heads(onnx.load(converted))
+    onnx.checker.check_model(raw, full_check=True)
+    assert [value.name for value in raw.graph.input] == ["images"]
+    assert [value.name for value in raw.graph.output] == [name for name, _ in surgery.OUTPUTS]
+    assert [tuple(d.dim_value for d in value.type.tensor_type.shape.dim) for value in raw.graph.output] == [
+        shape for _, shape in surgery.OUTPUTS
+    ]
+    operators = Counter(node.op_type for node in raw.graph.node)
+    assert operators["Conv"] == 98 and operators["BatchNormalization"] == 70
+    assert not any(operators[name] for name in ("Softmax", "TopK", "Resize", "NonMaxSuppression"))
+
+
+@pytest.mark.parametrize("boundary", ["input", "head"])
+def test_actual_surgery_rejects_missing_exact_boundary(converted, load_script, boundary):
+    graph = onnx.load(converted)
+    convolutions = [node for node in graph.graph.node if node.op_type == "Conv"]
+    if boundary == "input":
+        convolutions[0].name = "/unexpected/first/Conv"
+    else:
+        next(
+            node for node in convolutions if node.name.endswith("regression_head/module_list.0/module_list.0.1/Conv")
+        ).output[0] = "/unexpected/head/Conv_output_0"
+    with pytest.raises(ValueError, match="missing unique"):
+        load_script("surgery").cut_raw_heads(graph)
+
+
+@pytest.mark.parametrize("case", ["count", "nonfinite", "error", "shape"])
+def test_kept_head_parity_fails_closed(converter, case):
+    heads = [np.zeros((1, channels, 1, 1), np.float32) for channels in ([24] * 6 + [546] * 6)]
+    expected = {"bbox_regression": np.zeros((1, 36, 4), np.float32), "cls_logits": np.zeros((1, 36, 91), np.float32)}
+    if case == "count":
+        heads.pop()
+    elif case == "nonfinite":
+        heads[0][0, 0, 0, 0] = np.nan
+    elif case == "error":
+        heads[0][0, 0, 0, 0] = 0.01
+    else:
+        expected["bbox_regression"] = np.zeros((1, 35, 4), np.float32)
+    with pytest.raises(ValueError):
+        converter.compare_heads(expected, heads)

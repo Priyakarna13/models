@@ -65,7 +65,7 @@ def _mpk_manifest(compile_module: ModuleType, precision: str) -> dict:
         }
     )
     return {
-        "model_sdk_version": compile_module.COMPILER_VERSION,
+        "model_sdk_version": compile_module.MODEL_SDK_VERSION,
         "input_nodes": [{"name": "images", "size": 1 * 3 * 320 * 320 * 4}],
         "plugins": plugins,
     }
@@ -168,7 +168,7 @@ def test_compiled_mpk_preserves_the_padded_mla_head_storage(
     build_profile: str,
 ) -> None:
     manifest = mpk_json("model")
-    # The artifact audit above owns the current compiler version requirement.
+    # The artifact audit above owns the SDK-version requirement; package identity is a separate workflow check.
     mla = [plugin for plugin in manifest["plugins"] if plugin.get("processor") == "MLA"]
     assert len(mla) == 1
     # The 320-pixel source has six anchors at every level, unlike TF300's
@@ -180,11 +180,15 @@ def test_compiled_mpk_preserves_the_padded_mla_head_storage(
     assert [node["size"] for node in mla[0]["output_nodes"]] == expected[build_profile]
 
 
-def test_prepare_requires_the_real_published_source(tmp_path, load_script):
+def test_prepare_rejects_a_source_without_verified_weight_provenance(tmp_path, load_script):
+    import onnx
+
     source = tmp_path / "wrong.onnx"
-    source.write_bytes(b"wrong source")
-    with pytest.raises(ValueError, match="published V3 source SHA-256 mismatch"):
-        load_script("surgery").prepare_model(source, tmp_path / "out.onnx")
+    value = onnx.helper.make_tensor_value_info("image", onnx.TensorProto.FLOAT, [1, 3, 320, 320])
+    graph = onnx.helper.make_graph([], "wrong", [value], [value])
+    onnx.save(onnx.helper.make_model(graph, opset_imports=[onnx.helper.make_opsetid("", 17)]), source)
+    with pytest.raises(ValueError, match="source weights provenance"):
+        load_script("surgery").audit_source(source)
 
 
 def _archive(path, entries):

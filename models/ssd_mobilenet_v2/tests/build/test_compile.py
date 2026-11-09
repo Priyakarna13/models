@@ -172,7 +172,7 @@ def _mpk_manifest(compile_module: ModuleType, precision: str) -> dict:
         }
     )
     return {
-        "model_sdk_version": compile_module.COMPILER_VERSION,
+        "model_sdk_version": compile_module.MODEL_SDK_VERSION,
         "input_nodes": [{"name": "images", "size": 1 * 3 * 300 * 300 * 4}],
         "plugins": plugins,
     }
@@ -275,7 +275,7 @@ def test_compiled_mpk_preserves_the_padded_mla_head_storage(
     build_profile: str,
 ) -> None:
     manifest = mpk_json("model")
-    # The artifact audit above owns the current compiler version requirement.
+    # The artifact audit above owns the SDK-version requirement; package identity is a separate workflow check.
     mla = [plugin for plugin in manifest["plugins"] if plugin.get("processor") == "MLA"]
     assert len(mla) == 1
     # Independent physical-byte expectations, not compile.py's logical FP32

@@ -101,7 +101,14 @@ An independent download verified the same bytes after publication.
 
 The conversion also reproduced the existing ONNX digest
 `bdd8f4ef575bdc0cb02d33e571992d3c45c63f0bc00aeca5f51583c50e811bd8`.
-The compilation source pin, numerical graph and calibration settings are unchanged.
+This digest remains the historical raw-head comparator, not the current conversion output.
+The current standard conversion exports the full TorchVision forward pass from the
+same pinned checkpoint. `surgery.py` then cuts normalized input/raw heads and folds
+BatchNorm with compiler-declared ONNX tooling. The input/output numerical contract
+and calibration settings are unchanged, but the conversion/compile fingerprints
+change. Fresh source parity, six-profile compilation and native qualification are
+required before calling the new route production-ready; historical results above
+are not fresh results for this source.
 The converter accepts the mirrored transport only with the same full checkpoint
 identity and original provenance; it does not silently substitute other weights.
 

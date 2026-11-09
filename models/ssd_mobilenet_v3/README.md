@@ -20,6 +20,9 @@ again in the application. The source reference normalizes before half-pixel
 bilinear resizing without antialiasing; the native route is not claimed to be
 bit-equivalent.
 
+Conversion preserves the detector; compilation cuts raw heads. The Model API supplies
+preprocessing and decoding.
+
 **Compiled outputs.** Twelve tensors over grids of 20, 10, 5, 3, 2 and 1 cells,
 with six reference boxes per cell:
 
