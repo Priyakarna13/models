@@ -33,7 +33,7 @@ byte size, and SHA-256.
 
 ```text
 .github/workflows/         Compile, build, DevKit-stage, conversion, tool, and branch workflows
-artifact-browser/          Model browser and its local preview server (preview.py)
+artifact-browser/          Model browser, its local preview server (preview.py), and licenses.json
 deps/                      Repository-wide toolchain and DevKit runtime pins
 design-doc/                Architecture and lifecycle design documents
 docs/                      Developer contribution guides
