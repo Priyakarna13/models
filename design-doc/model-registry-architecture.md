@@ -145,6 +145,25 @@ compile key, or when a maintainer forces a rebuild. A reused build is queued
 for the DevKit stages whose keys have no completed run. DevKit stages run only
 in staging and only for Modalix targets.
 
+### Production metadata and protected promotion
+
+The manual **Publish Main model metadata** workflow is discoverable on Main but
+executes only from `develop`. Its `resolve` job selects production; `publish`
+uses the production publisher role, checks out Main and installs that revision's
+producer, then publishes Main's own metadata and requirements without compiling
+or selecting artifacts. The `production-main-model-metadata` concurrency group
+serializes publications without cancelling an earlier run. The exact Main source
+revision is recorded independently of the Develop workflow revision.
+
+The manual **Promote model** workflow also executes only from `develop`. Choose
+`target_branch: develop` or production-only `main`. Main requires a completed
+Develop approval for the exact candidate and digest, then a separate review in
+`production-promote-main` using a Main-only role. Main must already declare the
+matching on-demand model/profile requirements. Selection keeps the candidate's
+S3 object versions; Hugging Face publication is a separate release operation.
+Both manual workflows are exposed on Main for GitHub discovery. Their trusted
+implementation comes from Develop; dispatching either against Main skips it.
+
 ### Branches, merges, and concurrent pushes
 
 - **One registry per environment.** Pushes publish to staging. Each branch has
