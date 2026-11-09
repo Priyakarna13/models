@@ -61,6 +61,10 @@ architectures:
     display_name: LFM
     paradigm: transformer
     allowed_model_types: [llm]
+  lightglue:
+    display_name: LightGlue
+    paradigm: transformer
+    allowed_model_types: [vision]
   llama:
     display_name: Llama
     paradigm: transformer
