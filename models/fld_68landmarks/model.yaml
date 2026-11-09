@@ -79,3 +79,11 @@ accuracy:
   - {id: afw-faces, variant: default, sha256: 246c02499f74aecdcfdd5bc8e96dcc40196621cc879a3066d232ad85b74b5e92, size_bytes: 1378649}
 
 performance: {}
+
+reference_metrics:
+- origin: fp32_baseline
+  script: scripts/fp32_baseline_accuracy.py
+  dataset: {id: afw-faces, split: test}
+  conditions: FP32 ONNX on ONNX Runtime 1.21.1 CPU; all 44 annotated faces in AFW test_data/; 256x256 ibug crops; radius-6.4 heatmap centroid; NME over the outer-eye-corner distance (points 36 and 45)
+  note: The pinned AFW face-crop subset, not full 300-W or a paper benchmark; 8 of the 44 faces also occur in the quantization calibration split.
+  metrics: {nme: 0.03292382306898405}
