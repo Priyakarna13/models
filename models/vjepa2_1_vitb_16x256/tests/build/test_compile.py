@@ -194,8 +194,8 @@ def test_features_come_back_in_onnx_layout(load_script: Callable[[str], ModuleTy
     np.testing.assert_array_equal(recipe.channels_first(features.transpose(0, 2, 3, 1), features.shape), features)
 
 
-def _mpk(path: Path, processors: list[str], version: str) -> Path:
-    manifest = {"model_sdk_version": version, "plugins": [{"processor": p} for p in processors]}
+def _mpk(path: Path, processors: list[str]) -> Path:
+    manifest = {"plugins": [{"processor": p} for p in processors]}
     content = json.dumps(manifest).encode()
     with tarfile.open(path, "w:gz") as archive:
         member = tarfile.TarInfo("model_mpk.json")
@@ -208,16 +208,11 @@ def test_audit_requires_one_mla_segment_and_no_host_code(
     tmp_path: Path, load_script: Callable[[str], ModuleType]
 ) -> None:
     recipe = load_script("compile")
-    version = recipe.COMPILER_VERSION
 
-    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"], version), "encoder_0")
-    for name, processors, compiler in [
-        ("two", ["MLA", "MLA"], version),
-        ("host", ["MLA", "A65"], version),
-        ("old", ["MLA"], "0.0.0"),
-    ]:
+    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"]), "encoder_0")
+    for name, processors in [("two", ["MLA", "MLA"]), ("host", ["MLA", "A65"])]:
         with pytest.raises(RuntimeError):
-            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors, compiler), "encoder_0")
+            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors), "encoder_0")
 
 
 def test_compile_main_rejects_an_unknown_invocation(

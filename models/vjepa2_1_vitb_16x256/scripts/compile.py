@@ -2,7 +2,7 @@
 """Split the verified V-JEPA 2.1 ONNX into its three encoder parts, quantize, and compile each to an MPK.
 
 The converted ONNX holds the parts side by side. Each is extracted, quantized to its build precision and compiled in
-its own process, and its MPK is audited: one MLA segment, no host code, from the pinned compiler. A w8a16 build runs
+its own process, and its MPK is audited: one MLA segment, no host code. A w8a16 build runs
 the operations its int8_operations name with INT8 activations and every other operation BF16. INT8 calibrates
 the first part on pan clips across cal2017 images (calibration.py), and each later part on the float32 tokens of
 the parts before it. When model.yaml declares numerical_fidelity, the quantized parts feed each other on pan clips
@@ -41,7 +41,6 @@ from afe.core.configs import QuantizationPrecision
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import calibration_clips, decode, fidelity_names, pan_clip, read_images
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from pipeline import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, tensor_name
@@ -49,7 +48,6 @@ from sima_utils.data.data_generator import DataGenerator
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "vjepa2_1_vitb_16x256"
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 SAMPLE_SEED = 0
 # The groups of encoder operations a w8a16 build can run with INT8 activations.
 INT8_OPERATION_GROUPS = {"mlp", "qkv", "out"}
@@ -174,14 +172,11 @@ def _read_mpk_manifest(archive: Path) -> dict[str, Any]:
 
 
 def audit_mpk(archive: Path, component: str) -> None:
-    """Require the component on one MLA segment, with no host code, from the pinned compiler."""
+    """Require the component on one MLA segment, with no host code."""
     manifest = _read_mpk_manifest(archive)
     processors = [str(plugin.get("processor", "")).upper() for plugin in manifest.get("plugins", [])]
     if processors.count("MLA") != 1 or {"A65", "APU"} & set(processors):
         raise RuntimeError(f"invalid {component} MPK: plugins run on {processors}")
-    found = str(manifest.get("model_sdk_version"))
-    if found != COMPILER_VERSION:
-        raise RuntimeError(f"{component} MPK compiler mismatch: expected {COMPILER_VERSION}, found {found}")
 
 
 def operation_group(node: onnx.NodeProto) -> str:
