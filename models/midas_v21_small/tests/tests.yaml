@@ -3,8 +3,20 @@ conversion:
 compile:
   run_tests: true
 accuracy:
-  run_tests: false
-  skip_reason: MiDaS v2.1 Small has no published accuracy report to expect values from yet.
+  run_tests: true
+  expected:
+    w16a16:
+      nyu-depth-v2-val:
+        abs_rel: 0.117
+        delta1: 0.8645
+    w8a8:
+      nyu-depth-v2-val:
+        abs_rel: 0.1203
+        delta1: 0.8561
 performance:
-  run_tests: false
-  skip_reason: MiDaS v2.1 Small has no published performance report to expect values from yet.
+  run_tests: true
+  expected:
+    w16a16:
+      throughput_fps: 441.8
+    w8a8:
+      throughput_fps: 1249.4
