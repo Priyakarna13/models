@@ -52,16 +52,18 @@ build_profiles:
         parameters: {precision: w16a16}
 
   w8a16:
-    # INT8 weights with BF16 activations: the INT8-activation build lost too much accuracy (cosine 0.776 with
-    # float32), and this one keeps within 1% of w16a16. encoder_0's patch embedding stays BF16, since with INT8
-    # weights it fails the Model Compiler's simulator check.
+    # INT8 weights with BF16 activations, except the MLP, query/key/value and attention-output operations, whose
+    # activations are INT8: 8.0 clips/s on a DevKit against 6.6 with BF16 activations throughout, at cosine 0.967 with
+    # float32. The attention Einsums stay BF16 (INT8 made them slower and failed the 5% rule together), and so does the
+    # Softmax (INT8 alone gave cosine 0.57). The whole-INT8-activation build reached only cosine 0.776.
+    calibration_dataset: coco-2017-cal
     components:
       encoder_0:
-        parameters: {precision: w8a16}
+        parameters: {precision: w8a16, int8_operations: [mlp, qkv, out], calibration_bins: 1024, calibration_samples: 8}
       encoder_1:
-        parameters: {precision: w8a16}
+        parameters: {precision: w8a16, int8_operations: [mlp, qkv, out], calibration_bins: 1024, calibration_samples: 8}
       encoder_2:
-        parameters: {precision: w8a16}
+        parameters: {precision: w8a16, int8_operations: [mlp, qkv, out], calibration_bins: 1024, calibration_samples: 8}
 
 pipeline:
 - {cpu: "Resize each frame's shorter side to 256, centre-crop to 256x256, normalize, stack tubelets"}

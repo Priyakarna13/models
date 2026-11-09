@@ -2,7 +2,8 @@
 """Split the verified V-JEPA 2.1 ONNX into its three encoder parts, quantize, and compile each to an MPK.
 
 The converted ONNX holds the parts side by side. Each is extracted, quantized to its build precision and compiled in
-its own process, and its MPK is audited: one MLA segment, no host code, from the pinned compiler. INT8 calibrates
+its own process, and its MPK is audited: one MLA segment, no host code, from the pinned compiler. A w8a16 build runs
+the operations its int8_operations name with INT8 activations and every other operation BF16. INT8 calibrates
 the first part on pan clips across cal2017 images (calibration.py), and each later part on the float32 tokens of
 the parts before it. When model.yaml declares numerical_fidelity, the quantized parts feed each other on pan clips
 across the declared val2017 images, and the last part's features are compared with the float32 ONNX chain's.
@@ -36,6 +37,7 @@ from afe.apis.defines import (
     quantization_scheme,
 )
 from afe.apis.loaded_net import load_model
+from afe.core.configs import QuantizationPrecision
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import calibration_clips, decode, fidelity_names, pan_clip, read_images
@@ -49,8 +51,8 @@ MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "vjepa2_1_vitb_16x256"
 COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 SAMPLE_SEED = 0
-# encoder_0's patch embedding, which a w8a16 build keeps BF16.
-PATCH_CONV = "/patch/Conv"
+# The groups of encoder operations a w8a16 build can run with INT8 activations.
+INT8_OPERATION_GROUPS = {"mlp", "qkv", "out"}
 
 
 def _component_parameters(profile_id: str) -> dict[str, dict[str, Any]]:
@@ -79,11 +81,13 @@ def _quantization(parameters: dict[str, Any]) -> Any:
             bfloat16_scheme()
         )
     elif precision == "w8a16":
-        # INT8 per-channel weights with BF16 activations, quantized per token; nothing is calibrated.
+        # INT8 per-channel weights with BF16 activations, quantized per token; only INT8-marked operations calibrate.
+        calibrates = bool(parameters.get("int8_operations"))
+        calibration = HistogramMSEMethod(int(parameters["calibration_bins"])) if calibrates else SkipCalibration()
         return (
             default_quantization.with_activation_quantization(bfloat16_scheme())
             .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
-            .with_calibration(SkipCalibration())
+            .with_calibration(calibration)
             .with_bias_correction(BiasCorrectionType.NONE)
             .with_requantization_mode(RequantizationMode.sima)
             .with_per_token_quant(True)
@@ -180,32 +184,80 @@ def audit_mpk(archive: Path, component: str) -> None:
         raise RuntimeError(f"{component} MPK compiler mismatch: expected {COMPILER_VERSION}, found {found}")
 
 
-def keep_patch_embedding_bf16(graph: Path, target: Path) -> Path:
-    """encoder_0's graph with its patch embedding marked BF16, saved to target.
+def operation_group(node: onnx.NodeProto) -> str:
+    """The precision group of one exported encoder operation, read from its name: mlp, qkv (the query, key and value
+    projections, with RoPE and the layout before attention), out (the attention output convolution and residual Adds),
+    attention (the Einsums, the Softmax and the layout after them), or bf16 (the norms and the patch embedding)."""
+    parts = node.name.split("/")
+    leaf = parts[-1]
+    kind, _, suffix = leaf.partition("_")
+    index = int(suffix) if suffix.isdigit() else 0
+    if "norm1" in parts or "norm2" in parts or "blocks" not in node.name:
+        return "bf16"
+    if node.op_type in ("Einsum", "Softmax"):
+        return "attention"
+    if {"query", "key", "value", "rotate", "rotate_1"} & set(parts):
+        return "qkv"
+    if {"fc1", "fc2"} & set(parts):
+        return "mlp"
+    if "output" in parts:
+        return "out"
+    if kind == "Slice" or (kind in ("Reshape", "Transpose") and index <= 2) or (kind == "Add" and index <= 1):
+        return "qkv"
+    if kind == "Mul" and index <= 10:
+        return "qkv"
+    if kind in ("Concat", "Reshape", "Transpose"):
+        return "attention"
+    if kind in ("Div", "Erf") or (kind == "Add" and index == 4) or (kind == "Mul" and index in (12, 13)):
+        return "mlp"
+    return "out"
 
-    With INT8 weights the 16x16, stride-16 patch convolution fails the Model Compiler's simulator check, even
-    compiled alone. AnnotatePrecision gives its precision to the operation producing its input; the operations
-    after it keep the build's precision.
-    """
+
+def mark_precisions(graph: Path, target: Path, int8_groups: set[str]) -> Path:
+    """The part's graph with an AnnotatePrecision after every operation: INT8 for those in int8_groups, BF16 for the
+    rest, so the graph's inputs and outputs and the Softmax stay BF16. AFE gives an AnnotatePrecision's precision to the
+    operation producing its input. With INT8 weights the patch embedding fails the Model Compiler's simulator check, and
+    an INT8 Softmax ruins the features, so both stay in BF16 groups."""
+    unknown = int8_groups - INT8_OPERATION_GROUPS
+    if unknown:
+        raise ValueError(f"unsupported int8_operations: {sorted(unknown)}")
     model = onnx.load(graph)
-    (conv,) = [node for node in model.graph.node if node.name == PATCH_CONV]
-    value = conv.output[0]
-    conv.output[0] = f"{value}/unannotated"
-    index = list(model.graph.node).index(conv)
-    model.graph.node.insert(
-        index + 1,
-        onnx.helper.make_node(
-            "AnnotatePrecision",
-            [conv.output[0]],
-            [value],
-            name=f"{PATCH_CONV}/AnnotatePrecision",
-            domain="ai.sima",
-            precision="bfloat16",
-        ),
-    )
+    nodes = []
+    for node in model.graph.node:
+        nodes.append(node)
+        if node.op_type == "Constant":
+            continue
+        value = node.output[0]
+        node.output[0] = f"{value}/unannotated"
+        nodes.append(
+            onnx.helper.make_node(
+                "AnnotatePrecision",
+                [node.output[0]],
+                [value],
+                name=f"{node.name}/AnnotatePrecision",
+                domain="ai.sima",
+                precision="int8" if operation_group(node) in int8_groups else "bfloat16",
+            )
+        )
+    del model.graph.node[:]
+    model.graph.node.extend(nodes)
     model.opset_import.append(onnx.helper.make_opsetid("ai.sima", 1))
     onnx.save(model, target)
     return target
+
+
+def require_bf16_attention(quantized: Any, component: str) -> None:
+    """Fail when AFE ignored the precision marks: every Softmax BF16, and some convolutions INT8."""
+    precisions = [
+        (type(node.ir.operation).__name__, node.ir.quant_config.quantization_precision.value)
+        for node in quantized._net.iter_nodes_recursive()
+        if getattr(node.ir, "quant_config", None) is not None
+    ]
+    softmaxes = {precision for name, precision in precisions if name == "SoftmaxOp"}
+    if softmaxes != {QuantizationPrecision.BFLOAT_16}:
+        raise RuntimeError(f"{component}: expected every Softmax BF16, found {softmaxes}")
+    if ("ConvAddActivationOp", QuantizationPrecision.INT_8) not in precisions:
+        raise RuntimeError(f"{component}: the precision marks left no INT8 convolution")
 
 
 def _build(
@@ -223,8 +275,9 @@ def _build(
     ((input_name, input_shape),) = INPUT_SHAPES[component].items()
     ((_, output_shape),) = OUTPUT_SHAPES[component].items()
     key = InputName(tensor_name(component, input_name))
-    if component == "encoder_0" and parameters["precision"] == "w8a16":
-        graph = keep_patch_embedding_bf16(graph, build_dir.with_name(f"{name}.onnx"))
+    int8_operations = set(parameters.get("int8_operations", ()))
+    if int8_operations:
+        graph = mark_precisions(graph, build_dir.with_name(f"{name}.onnx"), int8_operations)
     importer = onnx_source(str(graph), shape_dict={str(key): input_shape}, layout="NCHW")
     loaded = load_model(importer, target=gen2_target)
     logging.info("Quantizing %s as %s with %d sample(s)", component, parameters["precision"], len(samples))
@@ -238,6 +291,8 @@ def _build(
         )
     except SystemExit as error:
         raise RuntimeError(f"quantizing {component} failed; the AFE log above names the cause") from error
+    if int8_operations:
+        require_bf16_attention(quantized, component)
     outputs = [
         channels_first(quantized.execute({key: channels_last(value)}, fast_mode=True)[0], output_shape)
         for value in fidelity_inputs
@@ -300,7 +355,11 @@ def compile_model(
         graphs = split(source, build / "graphs")
 
         # Calibration: pan clips for the first part, and the float32 tokens of the parts before it for each other.
-        int8 = [component for component in COMPONENTS if parameters[component]["precision"] == "w8a8"]
+        int8 = [
+            component
+            for component in COMPONENTS
+            if parameters[component]["precision"] == "w8a8" or parameters[component].get("int8_operations")
+        ]
         if int8 and dataset is None:
             raise ValueError("an INT8 component requires --dataset from dataset-registry")
         if int8:

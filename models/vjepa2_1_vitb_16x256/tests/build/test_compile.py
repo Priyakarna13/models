@@ -125,46 +125,66 @@ def test_compile_binds_every_part_in_each_profile(load_script: Callable[[str], M
         recipe._component_parameters("w8a8")
 
 
-def test_w8a16_keeps_activations_bf16_and_skips_calibration(load_script: Callable[[str], ModuleType]) -> None:
+def test_w8a16_calibrates_only_when_it_marks_int8_operations(load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
     calls = []
     recipe.SkipCalibration = lambda: calls.append("skip") or "skip"
+    recipe.HistogramMSEMethod = lambda bins: calls.append(bins) or "mse"
 
     recipe._quantization({"precision": "w8a16"})
+    recipe._quantization({"precision": "w8a16", "int8_operations": ["mlp"], "calibration_bins": 1024})
 
-    assert calls == ["skip"]
+    assert calls == ["skip", 1024]
 
 
-def test_w8a16_keeps_only_the_patch_embedding_bf16(tmp_path: Path, load_script: Callable[[str], ModuleType]) -> None:
+@pytest.mark.parametrize(
+    ("op_type", "name", "group"),
+    [
+        ("Conv", "/patch/Conv", "bf16"),
+        ("Sqrt", "/blocks.4/norm1/Sqrt", "bf16"),
+        ("Einsum", "/blocks.4/Einsum_3", "attention"),
+        ("Softmax", "/blocks.4/Softmax_7", "attention"),
+        ("Concat", "/blocks.4/Concat", "attention"),
+        ("Reshape", "/blocks.4/Reshape_3", "attention"),
+        ("Conv", "/blocks.4/query/Conv", "qkv"),
+        ("Slice", "/blocks.4/Slice_7", "qkv"),
+        ("Mul", "/blocks.4/Mul_3", "qkv"),
+        ("Conv", "/blocks.4/fc1/Conv", "mlp"),
+        ("Erf", "/blocks.4/Erf", "mlp"),
+        ("Mul", "/blocks.4/Mul_13", "mlp"),
+        ("Conv", "/blocks.4/output/Conv", "out"),
+        ("Add", "/blocks.4/Add_5", "out"),
+    ],
+)
+def test_operations_fall_in_their_precision_groups(
+    load_script: Callable[[str], ModuleType], op_type: str, name: str, group: str
+) -> None:
+    recipe = load_script("compile")
+    node = type("Node", (), {"op_type": op_type, "name": name})()
+
+    assert recipe.operation_group(node) == group
+
+
+def test_precision_marks_follow_the_int8_groups(tmp_path: Path, load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
     onnx = pytest.importorskip("onnx")
     helper = onnx.helper
     nodes = [
-        helper.make_node(
-            "Conv", ["video", "weight"], ["patches"], name="/patch/Conv", kernel_shape=[16, 16], strides=[16, 16]
-        ),
-        helper.make_node("Relu", ["patches"], ["tokens"], name="/blocks.0/Relu"),
+        helper.make_node("Relu", ["x"], ["a"], name="/blocks.0/fc1/Relu"),
+        helper.make_node("Softmax", ["a"], ["b"], name="/blocks.0/Softmax"),
     ]
-    graph = helper.make_graph(
-        nodes,
-        "g",
-        [helper.make_tensor_value_info("video", onnx.TensorProto.FLOAT, [1, 6, 32, 32])],
-        [helper.make_tensor_value_info("tokens", onnx.TensorProto.FLOAT, [1, 4, 2, 2])],
-        [helper.make_tensor("weight", onnx.TensorProto.FLOAT, [4, 6, 16, 16], [0.0] * (4 * 6 * 16 * 16))],
-    )
-    onnx.save(helper.make_model(graph), tmp_path / "encoder_0.onnx")
+    value = lambda name: helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [1, 4, 2, 2])  # noqa: E731
+    onnx.save(helper.make_model(helper.make_graph(nodes, "g", [value("x")], [value("b")])), tmp_path / "part.onnx")
     recipe.onnx = onnx
 
-    marked = onnx.load(recipe.keep_patch_embedding_bf16(tmp_path / "encoder_0.onnx", tmp_path / "marked.onnx"))
+    marked = onnx.load(recipe.mark_precisions(tmp_path / "part.onnx", tmp_path / "marked.onnx", {"mlp"}))
 
-    assert [(node.op_type, node.name) for node in marked.graph.node] == [
-        ("Conv", "/patch/Conv"),
-        ("AnnotatePrecision", "/patch/Conv/AnnotatePrecision"),
-        ("Relu", "/blocks.0/Relu"),
-    ]
-    annotation = marked.graph.node[1]
-    assert (annotation.domain, annotation.attribute[0].s) == ("ai.sima", b"bfloat16")
-    assert annotation.output[0] == "patches" and marked.graph.node[0].output[0] == "patches/unannotated"
+    annotations = [node for node in marked.graph.node if node.op_type == "AnnotatePrecision"]
+    assert [node.domain for node in annotations] == ["ai.sima", "ai.sima"]
+    assert [node.attribute[0].s for node in annotations] == [b"int8", b"bfloat16"]
+    assert annotations[0].output[0] == "a" and marked.graph.node[0].output[0] == "a/unannotated"
+    with pytest.raises(ValueError, match="unsupported int8_operations"):
+        recipe.mark_precisions(tmp_path / "part.onnx", tmp_path / "other.onnx", {"attention"})
 
 
 def test_features_come_back_in_onnx_layout(load_script: Callable[[str], ModuleType]) -> None:
