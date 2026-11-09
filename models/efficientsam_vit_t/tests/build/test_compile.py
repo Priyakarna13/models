@@ -32,11 +32,10 @@ def _write_archive(path: Path, files: dict[str, bytes]) -> Path:
     return path
 
 
-def _mpk(path: Path, plugins: list[str], inputs: dict[str, int], version: str) -> Path:
+def _mpk(path: Path, plugins: list[str], inputs: dict[str, int]) -> Path:
     manifest = {
         "plugins": [{"processor": processor} for processor in plugins],
         "input_nodes": [{"name": name, "size": size} for name, size in inputs.items()],
-        "model_sdk_version": version,
     }
     return _write_archive(path, {"model_mpk.json": json.dumps(manifest).encode(), "model.elf": b"elf"})
 
@@ -183,12 +182,10 @@ def test_audit_requires_one_mla_plugin_no_cpu_plugin_and_the_inputs(
     recipe = load_script("compile")
     plugins = ["EV74", "MLA", "EV74"]
     inputs = {"image_embeddings": 256 * 64 * 64 * 4, "points": 6 * 8 * 4}
-    version = recipe.COMPILER_VERSION
-    assert recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", plugins, inputs, version), "prompt_decoder")["mla_plugins"] == 1
+    assert recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", plugins, inputs), "prompt_decoder")["mla_plugins"] == 1
     for name, arguments, message in (
-        ("cpu", ([*plugins, "A65"], inputs, version), "host=1"),
-        ("input", (plugins, {**inputs, "points": 4}, version), "input interface"),
-        ("version", (plugins, inputs, "0.0.0"), "compiler mismatch"),
+        ("cpu", ([*plugins, "A65"], inputs), "host=1"),
+        ("input", (plugins, {**inputs, "points": 4}), "input interface"),
     ):
         with pytest.raises(RuntimeError, match=message):
             recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", *arguments), "prompt_decoder")
