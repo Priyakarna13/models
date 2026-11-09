@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Compile the converted MiDaS v2.1 Small ONNX into a Modalix MPK and measure its numerical fidelity."""
+"""Compile the converted MiDaS v2.1 Small ONNX into a Modalix MPK and measure its numerical fidelity.
+
+surgery.py first moves each RefineNet projection ahead of its upsample, an exact rewrite; fidelity compares the
+compiled graph with the converted ONNX as published.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +33,8 @@ from afe.load.importers.general_importer import onnx_source
 from calibration import HEIGHT, WIDTH, calibration_samples, fidelity_names, preprocess_image, read_images
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
+from surgery import prepare_model
 
-LOG = logging.getLogger("midas_v21_small.compile")
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "midas_v21_small"
 COMPONENT_ID = "model"
@@ -72,22 +77,24 @@ def compile_model(source: Path, component_dir: Path, profile_id: str, dataset: P
     if input_shape != (1, 3, HEIGHT, WIDTH):
         raise ValueError(f"unsupported MiDaS v2.1 Small input shape: {input_shape}")
 
-    component_dir.mkdir(parents=True, exist_ok=False)
-    importer = onnx_source(str(source), {input_name: input_shape}, {input_name: ScalarType.float32})
-    loaded = load_model(importer, target=gen2_target)
-
     data = None
     if precision == "w8a8":
         if dataset is None:
             raise ValueError("the INT8 build requires --dataset from dataset-registry")
         sample_count = int(parameters["calibration_samples"])
-        LOG.info("Loading %d representative calibration samples", sample_count)
+        print(f"Calibrating on {sample_count} nyu-depth-v2 cal images", flush=True)
         data = convert_data_generator_to_iterable(
             DataGenerator({input_name: calibration_samples(dataset, sample_count)})
         )
 
+    component_dir.mkdir(parents=True, exist_ok=False)
     model_name = f"{MODEL_ID}_{profile_id}"
-    quantized = loaded.quantize(data, _quantization(precision), model_name=model_name)
+    # The rewritten graph is a build input only, so it stays out of the published outputs.
+    with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
+        prepared = prepare_model(source, Path(temporary) / "model.onnx")
+        importer = onnx_source(str(prepared), {input_name: input_shape}, {input_name: ScalarType.float32})
+        loaded = load_model(importer, target=gen2_target)
+        quantized = loaded.quantize(data, _quantization(precision), model_name=model_name)
     quantized.save(model_name=model_name, output_directory=str(component_dir))
     saved = AfeModel.load(model_name=f"{model_name}.sima", network_directory=str(component_dir))
     saved.compile(output_path=str(component_dir))
@@ -95,7 +102,7 @@ def compile_model(source: Path, component_dir: Path, profile_id: str, dataset: P
     archives = sorted(component_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
         raise RuntimeError(f"expected exactly one MPK archive, found {len(archives)} in {component_dir}")
-    LOG.info("Compiled MPK: %s", archives[0])
+    print(f"Compiled MPK: {archives[0]}", flush=True)
     return saved
 
 
@@ -160,7 +167,6 @@ def main() -> int:
     args = parser.parse_args()
     if args.compile_invocation != args.build_profile:
         parser.error("a build profile compiles in one invocation named after it")
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     source = args.model.expanduser().resolve()
     if not source.is_file():
@@ -173,13 +179,18 @@ def main() -> int:
     dataset = args.dataset.expanduser().resolve() if args.dataset else None
     candidate = compile_model(source, component_dir, args.build_profile, dataset)
     if fidelity is not None:
-        LOG.info("Measuring numerical fidelity on %d images", fidelity["selection"]["samples"])
+        print(f"Measuring numerical fidelity on {fidelity['selection']['samples']} images", flush=True)
         fidelity_dataset = args.fidelity_dataset.expanduser().resolve()
         report = measure_fidelity(source, candidate, fidelity_dataset, fidelity, args.build_profile)
         (output_dir / "fidelity.json").write_text(
             json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        LOG.info("Fidelity: %s", report["metrics"][0])
+        metric = report["metrics"][0]
+        print(
+            f"Fidelity {metric['name']}: cosine {metric['cosine_similarity']:.5f}, "
+            f"normalized RMSE {metric['normalized_rmse']:.4f}",
+            flush=True,
+        )
     return 0
 
 

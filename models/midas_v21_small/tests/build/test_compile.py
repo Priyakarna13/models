@@ -9,7 +9,9 @@ from pathlib import Path
 from types import ModuleType
 
 import numpy as np
+import onnx
 import pytest
+from onnx import numpy_helper
 
 
 def _image(width: int, height: int, colour: tuple[int, int, int] = (255, 0, 0)) -> bytes:
@@ -177,9 +179,13 @@ def test_bf16_builds_quantize_without_calibration_data(
         "_parameters",
         lambda profile_id: {"precision": "w16a16", "input_name": "pixel_values", "input_shape": [1, 3, 256, 256]},
     )
+    prepared = tmp_path / "prepared.onnx"
+    monkeypatch.setattr(recipe, "prepare_model", lambda source, output: prepared)
 
     with pytest.raises(RuntimeError, match="expected exactly one MPK archive"):
         recipe.compile_model(tmp_path / "model.onnx", tmp_path / "model", "w16a16", None)
+    # The compiler imports the rewritten graph, and BF16 needs no calibration data.
+    assert recipe.onnx_source.call_args.args[0] == str(prepared)
     assert recipe.load_model.return_value.quantize.call_args.args[0] is None
 
 
@@ -206,6 +212,66 @@ def test_compile_rejects_an_undeclared_precision_or_input_shape_before_compiling
     with pytest.raises(ValueError, match=message):
         recipe.compile_model(tmp_path / "model.onnx", tmp_path / "model", "w16a16", None)
     assert not (tmp_path / "model").exists()
+
+
+def _upsample_then_project(path: Path, kernel: int = 1) -> Path:
+    """A RefineNet-style block: a 2x align-corners bilinear upsample, then a projection convolution."""
+    helper = onnx.helper
+    rng = np.random.default_rng(0)
+    initializers = [
+        numpy_helper.from_array(np.asarray([1, 1, 2, 2], np.float32), "scales"),
+        numpy_helper.from_array(rng.standard_normal((2, 4, kernel, kernel)).astype(np.float32), "weight"),
+        numpy_helper.from_array(rng.standard_normal(2).astype(np.float32), "bias"),
+    ]
+    nodes = [
+        helper.make_node(
+            "Resize", ["x", "", "scales"], ["up"], mode="linear", coordinate_transformation_mode="align_corners"
+        ),
+        helper.make_node("Conv", ["up", "weight", "bias"], ["y"], pads=[kernel // 2] * 4),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "block",
+        [helper.make_tensor_value_info("x", onnx.TensorProto.FLOAT, [1, 4, 5, 6])],
+        [helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, [1, 2, 10, 12])],
+        initializers,
+    )
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]), path)
+    return path
+
+
+def test_a_projection_moves_ahead_of_its_upsample_without_changing_the_output(
+    tmp_path: Path, load_script: Callable[[str], ModuleType]
+) -> None:
+    from onnx.reference import ReferenceEvaluator
+
+    surgery = load_script("surgery")
+    model = onnx.load(_upsample_then_project(tmp_path / "block.onnx"))
+    x = np.random.default_rng(1).standard_normal((1, 4, 5, 6)).astype(np.float32)
+    expected = ReferenceEvaluator(model).run(None, {"x": x})[0]
+
+    assert surgery.commute_projections(model) == 1
+
+    assert [node.op_type for node in model.graph.node] == ["Conv", "Resize"]
+    assert model.graph.node[1].output[0] == "y"
+    np.testing.assert_allclose(ReferenceEvaluator(model).run(None, {"x": x})[0], expected, rtol=1e-5, atol=1e-5)
+
+
+def test_a_wider_convolution_stays_after_its_upsample(tmp_path: Path, load_script: Callable[[str], ModuleType]) -> None:
+    surgery = load_script("surgery")
+    model = onnx.load(_upsample_then_project(tmp_path / "block.onnx", kernel=3))
+
+    assert surgery.commute_projections(model) == 0
+    assert [node.op_type for node in model.graph.node] == ["Resize", "Conv"]
+
+
+def test_the_recipe_moves_exactly_the_four_refinenet_projections(
+    tmp_path: Path, load_script: Callable[[str], ModuleType]
+) -> None:
+    surgery = load_script("surgery")
+
+    with pytest.raises(ValueError, match="moved 1 projections, expected 4"):
+        surgery.prepare_model(_upsample_then_project(tmp_path / "block.onnx"), tmp_path / "prepared.onnx")
 
 
 @pytest.mark.parametrize(
