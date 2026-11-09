@@ -139,3 +139,42 @@ def test_heatmap_adapter_rejects_multiple_faces_instead_of_silently_taking_first
     tensor = SimpleNamespace(to_numpy=lambda **kwargs: np.zeros((2, 64, 64, 68), np.float32))
     with pytest.raises(ValueError, match="one face"):
         load_script("accuracy").heatmaps_of(tensor)
+
+
+@pytest.mark.parametrize("copy", [False, True])
+@pytest.mark.parametrize("shape", [(64, 64, 68), (1, 64, 64, 68)])
+def test_heatmap_adapter_explicit_borrow_is_read_only_and_retains_array(load_script, copy, shape):
+    import gc
+    import weakref
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    source = np.ones(shape, np.float32)
+    source.flags.writeable = False
+    owner = weakref.ref(source)
+    tensor = SimpleNamespace(to_numpy=lambda *, copy, owner=source: owner.copy() if copy else owner)
+    heatmaps = load_script("accuracy").heatmaps_of(tensor, copy=copy)
+    assert np.shares_memory(source, heatmaps) == (not copy)
+    del source, tensor
+    gc.collect()
+    assert (owner() is not None) == (not copy)
+    assert heatmaps.shape == (68, 64, 64) and (heatmaps == 1).all()
+    if not copy:
+        assert not heatmaps.flags.writeable
+    del heatmaps
+    gc.collect()
+    assert owner() is None
+
+
+@pytest.mark.parametrize("copy", [False, True])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_heatmap_adapter_rejects_nonfinite_in_both_ownership_modes(load_script, copy, value):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    source = np.full((64, 64, 68), value, np.float32)
+    tensor = SimpleNamespace(to_numpy=lambda **kwargs: source)
+    with pytest.raises(ValueError, match="unexpected heatmaps"):
+        load_script("accuracy").heatmaps_of(tensor, copy=copy)

@@ -58,10 +58,25 @@ def crop(image_rgb: np.ndarray, face_box: np.ndarray) -> tuple[np.ndarray, np.nd
     box = crop_box(face_box)
     left, top, right, bottom = box
     pad = [max(0, -top), max(0, bottom - image_rgb.shape[0]), max(0, -left), max(0, right - image_rgb.shape[1])]
-    padded = np.pad(image_rgb, ((pad[0], pad[1]), (pad[2], pad[3]), (0, 0))) if any(pad) else image_rgb
+    padded = cv2.copyMakeBorder(image_rgb, *pad, cv2.BORDER_CONSTANT, value=(0, 0, 0)) if any(pad) else image_rgb
     patch = padded[top + pad[0] : bottom + pad[0], left + pad[2] : right + pad[2]]
     resized = cv2.resize(patch, (INPUT_SIZE, INPUT_SIZE))
     return resized.astype(np.float32) / np.float32(255), box
+
+
+def _spatial_argmax(heatmaps: np.ndarray) -> np.ndarray:
+    """First spatial peak per channel, without packing a full HWC-backed view into CHW."""
+    hwc = heatmaps.transpose(1, 2, 0)
+    if not hwc.flags.c_contiguous:
+        return heatmaps.reshape(LANDMARKS, -1).argmax(axis=1)
+    # Cache-local reductions for Neat's HWC output. Two first-index argmaxes
+    # preserve the original flatten/argmax tie rule across and within blocks.
+    block_size = 64
+    tiles = hwc.reshape(HEATMAP_SIZE * HEATMAP_SIZE // block_size, block_size, LANDMARKS)
+    maxima = tiles.max(axis=1)
+    blocks = maxima.argmax(axis=0)
+    selected = tiles[blocks, :, np.arange(LANDMARKS)]
+    return blocks * block_size + selected.argmax(axis=1)
 
 
 def decode(heatmaps: np.ndarray, box: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -70,7 +85,7 @@ def decode(heatmaps: np.ndarray, box: np.ndarray) -> tuple[np.ndarray, np.ndarra
     if heatmaps.shape != (LANDMARKS, HEATMAP_SIZE, HEATMAP_SIZE) or not np.isfinite(heatmaps).all():
         raise ValueError("heatmaps must be finite [68, 64, 64] values")
     box = checked_box(box)
-    flat = heatmaps.reshape(LANDMARKS, -1).argmax(axis=1)
+    flat = _spatial_argmax(heatmaps)
     rows = flat[:, None, None] // HEATMAP_SIZE + _DY
     columns = flat[:, None, None] % HEATMAP_SIZE + _DX
     valid = _DISC & (rows >= 0) & (rows < HEATMAP_SIZE) & (columns >= 0) & (columns < HEATMAP_SIZE)

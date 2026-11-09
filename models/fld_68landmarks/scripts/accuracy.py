@@ -35,9 +35,9 @@ def parse_mpks(values: list[str]) -> Path:
     return Path(values[0][6:])
 
 
-def heatmaps_of(tensor: pyneat.Tensor) -> np.ndarray:
-    """The MPK's [64, 64, 68] (or batched) heatmaps as [68, 64, 64]."""
-    array = tensor.to_numpy(copy=True)
+def heatmaps_of(tensor: pyneat.Tensor, *, copy: bool = True) -> np.ndarray:
+    """The MPK's one face as [68, 64, 64]; a borrowed view retains its tensor owner until released."""
+    array = tensor.to_numpy(copy=copy)
     if array.ndim == 4:
         if array.shape[0] != 1:
             raise ValueError(f"expected one face heatmap batch, got {array.shape}")

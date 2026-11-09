@@ -216,7 +216,8 @@ def dense_decode_oracle(heatmaps, box):
 
 
 @pytest.mark.parametrize("case", ["random", "ties", "corners", "zero", "negative", "tiny", "strided"])
-def test_local_centroid_matches_independent_dense_oracle(landmarks, case):
+@pytest.mark.parametrize("layout", ["chw", "hwc", "reverse", "padded", "fortran", "float64"])
+def test_local_centroid_matches_independent_dense_oracle(landmarks, case, layout):
     heatmaps = np.random.default_rng(42).normal(size=(68, 64, 64)).astype(np.float32)
     if case == "ties":
         heatmaps[:, 10, 10] = heatmaps[:, 10, 11] = 10
@@ -231,6 +232,18 @@ def test_local_centroid_matches_independent_dense_oracle(landmarks, case):
         heatmaps *= 1e-10
     elif case == "strided":
         heatmaps = heatmaps.transpose(0, 2, 1)
+    if layout == "hwc":
+        heatmaps = np.ascontiguousarray(heatmaps.transpose(1, 2, 0)).transpose(2, 0, 1)
+    elif layout == "reverse":
+        heatmaps = heatmaps[:, ::-1, ::-1]
+    elif layout == "padded":
+        padded = np.zeros((68, 128, 128), np.float32)
+        padded[:, ::2, ::2] = heatmaps
+        heatmaps = padded[:, ::2, ::2]
+    elif layout == "fortran":
+        heatmaps = np.asfortranarray(heatmaps)
+    elif layout == "float64":
+        heatmaps = heatmaps.astype(np.float64)
     heatmaps.flags.writeable = False
     before = heatmaps.copy()
     box = np.array([-77, 31, 1348, 946])
@@ -240,6 +253,49 @@ def test_local_centroid_matches_independent_dense_oracle(landmarks, case):
     np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=3e-4)
     np.testing.assert_array_equal(scores, peak_scores)
     np.testing.assert_array_equal(heatmaps, before)
+
+
+@pytest.mark.parametrize("signed_zero", [False, True])
+def test_hwc_argmax_keeps_first_ties_across_block_boundaries(landmarks, signed_zero):
+    hwc = np.full((64, 64, 68), -0.0 if signed_zero else -1, np.float32)
+    hwc[0, 63] = hwc[1, 0] = hwc[63, 63] = 0 if signed_zero else 1
+    heatmaps = hwc.transpose(2, 0, 1)
+    expected = heatmaps.reshape(68, -1).argmax(axis=1)
+    np.testing.assert_array_equal(landmarks._spatial_argmax(heatmaps), expected)
+    _, scores = landmarks.decode(heatmaps, np.array([0, 0, 256, 256]))
+    reference_scores = heatmaps[np.arange(68), expected // 64, expected % 64]
+    np.testing.assert_array_equal(scores.view(np.uint32), reference_scores.view(np.uint32))
+
+
+@pytest.mark.parametrize("view", ["contiguous", "reverse", "slice", "fortran"])
+@pytest.mark.parametrize("bounds", ["whole", "inside", "straddle", "outside"])
+def test_border_crop_matches_original_numpy_padding(landmarks, view, bounds):
+    import cv2
+
+    image = np.random.default_rng(19).integers(0, 256, (31, 47, 3), dtype=np.uint8)
+    if view == "reverse":
+        image = image[::-1, ::-1]
+    elif view == "slice":
+        image = image[::2, ::2]
+    elif view == "fortran":
+        image = np.asfortranarray(image)
+    face_box = {
+        "whole": landmarks.whole_image_box(image),
+        "inside": np.array([10, 10, 14, 14]),
+        "straddle": np.array([-5, -8, 20, 22]),
+        "outside": np.array([-40, -35, -25, -20]),
+    }[bounds]
+    box = landmarks.crop_box(face_box)
+    left, top, right, bottom = box
+    pad = [max(0, -top), max(0, bottom - image.shape[0]), max(0, -left), max(0, right - image.shape[1])]
+    padded = np.pad(image, ((pad[0], pad[1]), (pad[2], pad[3]), (0, 0)))
+    patch = padded[top + pad[0] : bottom + pad[0], left + pad[2] : right + pad[2]]
+    expected = cv2.resize(patch, (256, 256)).astype(np.float32) / np.float32(255)
+    before = image.copy()
+    actual, actual_box = landmarks.crop(image, face_box)
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(actual_box, box)
+    np.testing.assert_array_equal(image, before)
 
 
 @pytest.mark.parametrize("bad", [np.zeros((68, 4096)), np.full((68, 64, 64), np.nan), np.full((68, 64, 64), np.inf)])

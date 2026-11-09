@@ -82,7 +82,7 @@ def prepare_input(frame, face_box):
 def consume_outputs(tensors, box):
     if len(tensors) != 1:
         raise ValueError(f"expected one heatmap output, got {len(tensors)}")
-    points, scores = decode(heatmaps_of(tensors[0]), box)
+    points, scores = decode(heatmaps_of(tensors[0], copy=False), box)
     if not np.isfinite(points).all() or not np.isfinite(scores).all():
         raise ValueError("landmark decode produced nonfinite values")
     return points, scores

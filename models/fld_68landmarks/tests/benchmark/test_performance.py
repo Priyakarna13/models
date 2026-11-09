@@ -67,6 +67,25 @@ def test_sequential_frame_includes_prepare_and_same_decode(load_script, monkeypa
     assert calls == ["prepare", ("run", ["crop"]), ("decode", ["heatmap"], "box")]
 
 
+def test_performance_borrows_heatmaps_only_until_decode_finishes(load_script, monkeypatch):
+    import numpy as np
+
+    script = load_script("performance")
+    calls = []
+    heatmaps = np.ones((68, 64, 64), np.float32)
+    heatmaps.flags.writeable = False
+
+    def adapt(tensor, *, copy):
+        calls.append((tensor, copy))
+        return heatmaps
+
+    monkeypatch.setattr(script, "heatmaps_of", adapt)
+    points, scores = script.consume_outputs(["tensor"], np.array([0, 0, 256, 256]))
+    assert calls == [("tensor", False)]
+    assert not np.shares_memory(points, heatmaps) and not np.shares_memory(scores, heatmaps)
+    assert (heatmaps == 1).all()
+
+
 def _throughput_fixture(script, monkeypatch, *, decode_failure=False, push_failure=False):
     import queue
     import threading
