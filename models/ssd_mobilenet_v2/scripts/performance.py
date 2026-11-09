@@ -49,6 +49,8 @@ def native_options():
 
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Image
+    options.preprocess.input_max_width = FRAME_WIDTH
+    options.preprocess.input_max_height = FRAME_HEIGHT
     options.preprocess.enable = pyneat.AutoFlag.On
     options.preprocess.resize.enable = pyneat.AutoFlag.On
     options.preprocess.resize.mode = pyneat.ResizeMode.Stretch

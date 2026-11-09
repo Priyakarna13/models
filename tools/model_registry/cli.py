@@ -255,16 +255,6 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     package.add_argument("--all", action="store_true", dest="all_packages")
     package.add_argument("--json", action="store_true", dest="json_output")
 
-    mirror = subcommands.add_parser(
-        "publish-conversion-source", help="mirror a verified original TorchVision PTH after ONNX conversion publication"
-    )
-    mirror.add_argument("model_dir", type=Path)
-    mirror.add_argument("--conversion", default="default")
-    mirror.add_argument("--output-dir", type=Path, required=True)
-    mirror.add_argument("--git-sha", required=True)
-    mirror.add_argument("--run-id", required=True)
-    mirror.add_argument("--run-attempt", required=True)
-
     publish = subcommands.add_parser("publish", help="publish completed model compilations to the Vulcan registry")
     publish.add_argument("--repository", type=Path, default=Path.cwd())
     publish.add_argument("--dist-dir", type=Path, required=True)
@@ -993,15 +983,6 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
             return _assemble_package(args)
         if args.command == "publish":
             return _publish(args)
-        if args.command == "publish-conversion-source":
-            from .conversion_publication import publish_conversion_source
-
-            result = publish_conversion_source(
-                args.model_dir, args.output_dir, conversion=args.conversion,
-                git_sha=args.git_sha, run_id=args.run_id, run_attempt=args.run_attempt,
-            )
-            print(json.dumps(result, sort_keys=True))
-            return 0
         if args.command == "publish-candidate":
             return _publish_candidate(args)
         if args.command == "publish-branch-deployment":

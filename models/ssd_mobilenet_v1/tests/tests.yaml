@@ -34,7 +34,8 @@ accuracy:
 performance:
   run_tests: true
   # The stage tests also require an absolute 1700 FPS minimum for the complete INT8 detector.
-  # Historical raw-head expectations, retained until reviewed whole-detector results are published.
+  # Historical raw-head references, not new whole-detector qualification. Refresh only
+  # from reviewed current-stack target results; the absolute 1700 FPS gate stays unchanged.
   expected:
     w16a16:
       throughput_fps: 738.7

@@ -723,7 +723,7 @@ def test_report_command_publishes_both_stages_to_selected_registry(tmp_path, env
 
 @pytest.mark.parametrize(("performance", "required"), [("true", "ON"), ("false", "OFF")])
 def test_trusted_core_install_requires_sentinel_only_for_performance(performance: str, required: str) -> None:
-    steps = load_workflow()["jobs"]["benchmark-dispatched-model"]["steps"]
+    steps = load_workflow()["jobs"]["benchmark"]["steps"]
     install = step(steps, "Install selected Neat Core")
     expression = install["env"]["NEAT_INSTALLER_SENTINEL_REQUIRED"]
     assert evaluate(expression[3:-3], {"steps.stages.outputs.performance": performance}) == required

@@ -617,7 +617,6 @@ def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(model
         ("scripts/run_llima_compilation.sh", False),
         ("tools/model_registry/artifact.py", False),
         ("tools/model_registry/cli.py", False),
-        ("tools/model_registry/conversion_publication.py", False),
         ("tools/model_registry/source.py", False),
         ("tools/model_registry/model.py", True),
         ("tools/model_registry/mla_stage_simulation.py", True),

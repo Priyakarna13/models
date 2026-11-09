@@ -275,7 +275,7 @@ def test_compiled_mpk_preserves_the_padded_mla_head_storage(
     build_profile: str,
 ) -> None:
     manifest = mpk_json("model")
-    assert manifest["model_sdk_version"] == "3.0.0"
+    # The artifact audit above owns the current compiler version requirement.
     mla = [plugin for plugin in manifest["plugins"] if plugin.get("processor") == "MLA"]
     assert len(mla) == 1
     # Independent physical-byte expectations, not compile.py's logical FP32

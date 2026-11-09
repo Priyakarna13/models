@@ -21,7 +21,6 @@ byte size, and SHA-256.
 | Model-owned `scripts/performance.py` | Measures a build profile's whole model on a Modalix DevKit with Neat Core and writes its report with `tools/model_report`, when declared. |
 | Model-owned `scripts/accuracy.py` | Measures a build profile's whole-model task accuracy on a Modalix DevKit and writes its report with `tools/model_report`, when declared. |
 | `tools/model_report` | Board-side report writer, standard library only: builds `model-report.json` from what Core returned, with the metric vocabulary in `metrics.json`. |
-| `tools/model_registry/conversion_publication.py` | CI-only, opt-in mirroring of one verified official TorchVision PTH after conversion tests and ONNX publication; preserves source provenance and emits a pin only after immutable uploads and readback. |
 | Runner scripts in `scripts/` | Run each stage the same way locally and in CI: `run_model_compilation.sh`, `run_llima_compilation.sh`, `run_model_performance.sh`, `run_model_accuracy.sh`, and `run_model_conversion.sh`. |
 | `model-registry` | Author-safe `sima-cli` package for validation, verified input handling, the compile matrix, and compile-output and MPK checks. CI installs the full command surface for stage planning, packaging, provenance, and publication. |
 | GitHub Actions | Plans stages from their fingerprints, runs them, publishes results, and reports status. Pull requests run only `Target Branch Checks` and the description check, `PR Sanitization`. |

@@ -95,7 +95,7 @@ approved artifact-store conversion route. `model.yaml` pins the actual immutable
 `source.pth` object from conversion run41255127615, with SHA-256
 `a79551df90c79834bcd3bb3845ef9d966b5449a3a9b2833ae8404778ca5d65d2`.
 The official TorchVision URL is preserved in `upstream.derived_from`; the BSD-3-Clause
-notice remains in `LICENSE.torchvision`. The workflow verifies object versions,
+notice remains in `LICENSE.torchvision`. The original publication verified object versions,
 checksums, sizes and fresh HTTP readback for both the source and its provenance.
 An independent download verified the same bytes after publication.
 
@@ -105,7 +105,7 @@ The compilation source pin, numerical graph and calibration settings are unchang
 The converter accepts the mirrored transport only with the same full checkpoint
 identity and original provenance; it does not silently substitute other weights.
 
-`mirror_conversion_source` remains opt-in and disabled by default. A repeat mirror
-publication uses the recorded official origin and verifies the same original bytes.
-No Hugging Face repository or revision is fabricated or required for this artifact
-store route.
+The original mirror is already published; repeating conversion consumes that
+verified source without publishing another checkpoint. Conversion outputs use the
+shared registry publisher and its resolved environment, not a model-specific
+publication route. No Hugging Face repository or revision is fabricated or required.

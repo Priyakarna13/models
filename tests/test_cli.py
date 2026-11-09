@@ -35,7 +35,6 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
         "publish-candidate",
         "publish-branch-deployment",
         "publish-report",
-        "publish-conversion-source",
         "publish-catalog",
         "resolve-base",
         "resolve-benchmark-runtime",
@@ -58,27 +57,6 @@ def test_repository_cli_retains_ci_only_commands() -> None:
         subcommands.choices
     )
     assert {"package", "fetch-previous"}.isdisjoint(subcommands.choices)
-
-
-def test_conversion_source_publication_dispatch(monkeypatch, tmp_path, capsys) -> None:
-    from model_registry import conversion_publication
-
-    calls = []
-    result = {"mirror": {"uri": "verified-publication-only"}}
-
-    def publish(model_dir, output_dir, **identity):
-        calls.append((model_dir, output_dir, identity))
-        return result
-
-    monkeypatch.setattr(conversion_publication, "publish_conversion_source", publish)
-    assert main([
-        "publish-conversion-source", str(tmp_path / "model"), "--output-dir", str(tmp_path / "output"),
-        "--git-sha", "a" * 40, "--run-id", "123", "--run-attempt", "2",
-    ]) == 0
-    assert calls == [(tmp_path / "model", tmp_path / "output", {
-        "conversion": "default", "git_sha": "a" * 40, "run_id": "123", "run_attempt": "2",
-    })]
-    assert json.loads(capsys.readouterr().out) == result
 
 
 @pytest.mark.parametrize("entrypoint", [main, cli.author_main])

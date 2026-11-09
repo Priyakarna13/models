@@ -99,6 +99,38 @@ def test_performance_records_the_complete_native_execution_plan(performance):
     assert_native_plan(component["execution_plan"])
 
 
+def test_performance_records_latency_power_and_thermal_measurements(performance):
+    metrics = performance["metrics"]
+    required = (
+        "latency_avg_ms",
+        "latency_p50_ms",
+        "latency_p95_ms",
+        "latency_p99_ms",
+        "throughput_fps",
+        "avg_power_watts",
+        "peak_power_watts",
+        "energy_per_inference_joules",
+        "avg_mla_power_watts",
+        "peak_mla_power_watts",
+        "avg_die_temperature_c",
+        "peak_die_temperature_c",
+        "avg_board_temperature_c",
+        "peak_board_temperature_c",
+    )
+    assert all(name in metrics and math.isfinite(metrics[name]) for name in required)
+    assert all(metrics[name] > 0 for name in required if name.startswith("latency_") or "power_watts" in name)
+    assert metrics["latency_p50_ms"] <= metrics["latency_p95_ms"] <= metrics["latency_p99_ms"]
+    assert metrics["avg_power_watts"] <= metrics["peak_power_watts"]
+    assert metrics["avg_die_temperature_c"] <= metrics["peak_die_temperature_c"]
+    assert metrics["avg_board_temperature_c"] <= metrics["peak_board_temperature_c"]
+
+
+def test_execution_plan_takes_the_benchmark_frame(performance):
+    (component,) = performance["components"].values()
+    (frame,) = component["execution_plan"]["edges"][0]["tensors"]
+    assert frame["shape"] == [1, 720, 1280, 3]
+
+
 def test_mla_stats_collected(performance):
     (component,) = performance["components"].values()
     layer_stats, stage_stats = component["mla_layer_stats"], component["mla_stage_stats"]
@@ -114,6 +146,7 @@ def test_performance_explicit_native_customer_policy(load_script):
     assert options.num_classes == 91
     assert (options.score_threshold, options.nms_iou_threshold, options.top_k) == (0.2, 0.6, 100)
     assert options.preprocess.kind == sys.modules["pyneat"].InputKind.Image
+    assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (1280, 720)
     assert options.preprocess.resize.mode == sys.modules["pyneat"].ResizeMode.Stretch
     assert options.preprocess.normalize.mean == [0.5] * 3
     assert options.preprocess.normalize.stddev == [0.5] * 3
@@ -167,8 +200,7 @@ def test_performance_is_standalone_without_registry_or_sibling_imports(model_dir
 
 
 def _plan(preproc_backend="EV74", fused=True):
-    # Model.execution_plan may describe a prototype rather than the supplied frame.
-    # The actual720p input is asserted separately in BenchmarkOptions.inputs.
+    # This helper exercises topology; the stage-output test checks actual frame geometry.
     nodes = [
         dict(id="in", kind="Input", runs_on="A65"),
         dict(id="pre", kind="Preproc", runs_on=preproc_backend, kernel="preproc_quant_tess" if fused else "preproc"),

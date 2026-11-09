@@ -211,15 +211,19 @@ def test_checkpoint_mirror_preserves_original_bytes_and_provenance(monkeypatch, 
     source = {"type": "file", **converter.WEIGHTS_SOURCE}
     source["uri"] = (
         f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{converter.WEIGHTS_SHA256}/123-1/source.pth"
-        if host == "artifact" else
-        "hf://models/example/ssd@0123456789abcdef0123456789abcdef01234567/source.pth"
+        if host == "artifact"
+        else "hf://models/example/ssd@0123456789abcdef0123456789abcdef01234567/source.pth"
     )
     path = tmp_path / "verified.pth"
     seen = []
-    monkeypatch.setattr(converter, "load_and_validate_model", lambda _: {
-        "conversion": {"default": {"source": source}},
-        "upstream": {"derived_from": converter.WEIGHTS_URL},
-    })
+    monkeypatch.setattr(
+        converter,
+        "load_and_validate_model",
+        lambda _: {
+            "conversion": {"default": {"source": source}},
+            "upstream": {"derived_from": converter.WEIGHTS_URL},
+        },
+    )
 
     class FakeFetcher:
         def fetch(self, spec):
