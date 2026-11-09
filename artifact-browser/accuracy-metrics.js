@@ -47,6 +47,8 @@ export const ACCURACY_METRIC_LABELS = {
   pose_auc_20: "Pose AUC@20°",
   match_precision: "Match precision",
   matching_score: "Matching score",
+  abs_rel: "AbsRel",
+  delta1: "δ1",
   recall_at_1: "Recall@1",
   recall_at_5: "Recall@5",
   recall_at_10: "Recall@10",
@@ -59,6 +61,7 @@ export const ACCURACY_METRIC_LABELS = {
 export const ACCURACY_METRIC_SCALES = {
   epe: { unit: "px", direction: "lower" },
   d1_all: { unit: "%", direction: "lower" },
+  abs_rel: { unit: "ratio", direction: "lower" },
 };
 
 export function accuracyMetricLabel(name) {

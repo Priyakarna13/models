@@ -70,6 +70,7 @@ test('ratios show as percentages and other units as reported, each with its dire
   assert.deepEqual(accuracyDisplay('coco_map', 0.401), {number: 40.1, unit: '%', direction: 'higher'});
   assert.deepEqual(accuracyDisplay('epe', 0.73), {number: 0.73, unit: 'px', direction: 'lower'});
   assert.deepEqual(accuracyDisplay('d1_all', 2.82), {number: 2.82, unit: '%', direction: 'lower'});
+  assert.deepEqual(accuracyDisplay('abs_rel', 0.25), {number: 25, unit: '%', direction: 'lower'});
 });
 
 test('disparity metrics lead with EPE', () => {

@@ -282,8 +282,8 @@ def write_image(path, value, size=SOURCE_SIZE):
 
 def benchmark_dataset(root):
     """A dataset with the files each script samples from: COCO val2017, ImageNet's val2012 and ImageNet mini's val
-    split, an HPatches val sequence, and the Scene Flow test list. Only the second COCO image labels a person, so a
-    pose script must pick it."""
+    split, an HPatches val sequence, NYU Depth V2's test split, and the Scene Flow test list. Only the second COCO
+    image labels a person, so a pose script must pick it."""
     write_image(root / STEREO_PAIR.format(view="left"), STEREO_LEFT, STEREO_VIEW)
     write_image(root / STEREO_PAIR.format(view="right"), STEREO_RIGHT, STEREO_VIEW)
     disparity = STEREO_PAIR.replace("frames_finalpass", "disparity").format(view="left").replace(".png", ".pfm")
@@ -294,6 +294,7 @@ def benchmark_dataset(root):
     write_image(root / "val2012/ILSVRC2012_val_00000001.JPEG", 200)
     write_image(root / "val/n01440764/ILSVRC2012_val_00000001.webp", 200)
     write_image(root / "val/v_scene/1.ppm", 200)
+    write_image(root / "test/rgb_00000.jpg", 200)
     keypoints = {
         "images": [{"id": 1, "file_name": "000000000001.jpg"}, {"id": 2, "file_name": "000000000002.jpg"}],
         "annotations": [{"image_id": 1, "num_keypoints": 0}, {"image_id": 2, "num_keypoints": 17}],
@@ -424,7 +425,10 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         else:
             assert options.preprocess.preset == "ImageNet"
         metadata = yaml.safe_load((script.parents[1] / "model.yaml").read_text(encoding="utf-8"))
-        assert IMAGENET_SAMPLES[metadata["accuracy"]["datasets"][0]["variant"]] in report["workload"]
+        dataset = metadata["accuracy"]["datasets"][0]
+        # A depth model benchmarks an NYU Depth V2 test image; a classifier, its ImageNet split's sample.
+        expected = "rgb_00000.jpg" if dataset["id"] == "nyu-depth-v2" else IMAGENET_SAMPLES[dataset["variant"]]
+        assert expected in report["workload"]
     assert list(report["components"]) == ["model"]
     assert report["components"]["model"]["mla_layer_stats"] == CORE_REPORT["mla_layer_stats"]
     assert report["components"]["model"]["mla_stage_stats"] == CORE_REPORT["mla_stage_stats"]
