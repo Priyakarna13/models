@@ -5,8 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-import torch.nn as nn
 from einops import rearrange
+
+import torch.nn as nn
 
 
 class AudioPatchEmbed(nn.Module):
