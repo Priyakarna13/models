@@ -253,7 +253,7 @@ PYNEAT_ENUMS = {
     "NormalizePreset": ("ImageNet",),
     "PixelFormat": ("RGB",),
     "TensorMemory": ("EV74",),
-    "BoxDecodeType": ("YoloV26", "YoloV26Pose", "YoloV26Seg", "SuperPoint"),
+    "BoxDecodeType": ("YoloV8", "YoloV26", "YoloV26Pose", "YoloV26Seg", "SuperPoint"),
     "SuperPointProfile": ("MagicLeapDemoV1", "LightGlueV1"),
 }
 SCRIPT_PYNEAT = {
@@ -395,9 +395,12 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         assert_side_by_side_frame(frame)
         assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Stretch", "ImageNet")
         assert STEREO_PAIR.format(view="left") in report["workload"]
-    elif getattr(options, "decode_type", "").startswith("YoloV26"):
+    elif getattr(options, "decode_type", "").startswith(("YoloV26", "YoloV8")):
         assert_letterboxed_frame(frame)
         assert (options.preprocess.resize.mode, options.top_k, options.score_threshold) == ("Letterbox", 10, 0.25)
+        if options.decode_type == "YoloV8":
+            assert options.nms_iou_threshold == 0.7
+            assert "NMS IoU 0.7" in report["workload"]
         # Pose accuracy scores only images with a labelled person.
         expected = "000000000002.jpg" if options.decode_type == "YoloV26Pose" else ".jpg"
         assert expected in report["workload"]
