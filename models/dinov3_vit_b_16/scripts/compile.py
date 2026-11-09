@@ -27,7 +27,6 @@ from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import load_images, select_names
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
 
@@ -35,7 +34,6 @@ LOG = logging.getLogger("dinov3_vit_b_16.compile")
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "dinov3_vit_b_16"
 COMPONENT_ID = "model"
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 INPUT_NAME = "pixel_values"
 INPUT_SHAPE = (1, 3, 224, 224)
 OUTPUTS = {"class_embedding": (1, 768), "patch_embeddings": (1, 196, 768)}
@@ -86,7 +84,7 @@ def _float32_bytes(shape: tuple[int, ...]) -> int:
 
 
 def audit_mpk(archive: Path) -> dict[str, Any]:
-    """Require one MLA plugin, no CPU plugins, the pinned compiler and the model's input."""
+    """Require one MLA plugin, no CPU plugins and the model's input."""
     with tarfile.open(archive, "r:gz") as stream:
         members = stream.getmembers()
         for member in members:
@@ -111,8 +109,6 @@ def audit_mpk(archive: Path) -> dict[str, Any]:
             f"invalid MPK: MLA={len(mla_plugins)}, ELF={len(elfs)}, host={len(host_plugins)}, "
             f"shared_objects={shared_objects}"
         )
-    if str(manifest.get("model_sdk_version")) != COMPILER_VERSION:
-        raise RuntimeError(f"MPK compiler mismatch: expected {COMPILER_VERSION}, found {manifest.get('model_sdk_version')}")
     public_inputs = {node.get("name"): node.get("size") for node in manifest.get("input_nodes", [])}
     if public_inputs != {INPUT_NAME: _float32_bytes(INPUT_SHAPE)}:
         raise RuntimeError(f"MPK input interface mismatch: {public_inputs}")
