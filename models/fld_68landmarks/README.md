@@ -29,15 +29,15 @@ Pass the crop as `image`, a 256×256×3 (height, width, channel) float tensor.
 
 Heatmap index i is landmark i of the iBUG 68-point scheme: 0–16 jaw, 17–26 eyebrows, 27–35 nose, 36–47 eyes, 48–67 mouth.
 
+`scripts/performance.py` times a known face box through CPU cropping, model
+inference and landmark decoding. Face detection is excluded. A real AFW face is
+letterboxed into a 720p frame; Neat receives the prepared 256×256 crop. `--heatmap-only`
+runs the older, narrower diagnostic separately. `scripts/fp32_baseline_accuracy.py`
+scores the exported ONNX with the same accuracy evaluator.
+
 ## Building applications
 
 Run the package with the [Neat Model
 API](https://developer.sima.ai/software/develop-apps/development-workflow/model).
 For complete applications, start from the [Neat example
 apps](https://developer.sima.ai/examples).
-
-`scripts/performance.py` times a known face box through CPU cropping, model
-inference and landmark decoding. Face detection is excluded. A real AFW face is
-letterboxed into a 720p frame; Neat receives the prepared 256×256 crop. `--heatmap-only`
-runs the older, narrower diagnostic separately. `scripts/fp32_baseline_accuracy.py`
-scores the exported ONNX with the same accuracy evaluator.

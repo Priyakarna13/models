@@ -58,6 +58,7 @@ export const ACCURACY_METRIC_LABELS = {
 // The accuracy metrics that are not ratios from 0 to 1 with higher better; metrics.json gives the same units and
 // directions.
 export const ACCURACY_METRIC_SCALES = {
+  nme: { unit: "ratio", direction: "lower" },
   epe: { unit: "px", direction: "lower" },
   d1_all: { unit: "%", direction: "lower" },
 };
