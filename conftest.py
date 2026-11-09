@@ -13,9 +13,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tarfile
 from collections.abc import Callable
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock
@@ -185,6 +186,49 @@ def converted(request: pytest.FixtureRequest) -> Path:
 def compiled(request: pytest.FixtureRequest) -> Path:
     """One build's compile output: compile-outputs.json and a folder per component holding its MPK."""
     return _given(request, "compiled")
+
+
+@pytest.fixture
+def mpk_json(compiled: Path) -> Callable[[str], dict[str, Any]]:
+    """Read a component's actual MPK manifest; use mpk_json() for component `model`.
+
+    The existing compiled fixture owns stage selection. It may point at a fresh
+    compile output or a Registry download staged in the same component layout.
+    No network call or copied JSON snapshot belongs in the model test itself.
+    """
+
+    def read(component_id: str = "model") -> dict[str, Any]:
+        if not component_id or Path(component_id).name != component_id or component_id in {".", ".."}:
+            raise pytest.UsageError("mpk_json requires a single component directory name")
+        archives = sorted((compiled / component_id).glob("*_mpk.tar.gz"))
+        if len(archives) != 1:
+            raise pytest.UsageError(f"{compiled / component_id}: expected exactly one compiled MPK")
+        with tarfile.open(archives[0], "r:gz") as archive:
+            manifests = [
+                member
+                for member in archive
+                if PurePosixPath(member.name).name == "mpk.json"
+                or PurePosixPath(member.name).name.endswith("_mpk.json")
+            ]
+            if len(manifests) != 1:
+                raise pytest.UsageError(f"{archives[0]}: expected exactly one authoritative MPK manifest")
+            member = manifests[0]
+            path = PurePosixPath(member.name)
+            if (
+                not member.isfile()
+                or path.is_absolute()
+                or ".." in path.parts
+                or "\\" in member.name
+                or not 0 < member.size <= 8 * 1024 * 1024
+            ):
+                raise pytest.UsageError(f"{archives[0]}: unsafe MPK manifest member")
+            with archive.extractfile(member) as stream:
+                manifest = json.load(stream)
+            if not isinstance(manifest, dict):
+                raise pytest.UsageError(f"{archives[0]}: MPK manifest must be a JSON object")
+            return manifest
+
+    return read
 
 
 @pytest.fixture

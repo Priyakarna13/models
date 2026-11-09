@@ -19,7 +19,7 @@ license:
 
 upstream:
   repository: https://github.com/ibug-group/face_alignment
-  revision: master
+  revision: b52975cfec7a08edbb247ac1db0f860827235070
   derived_from: https://github.com/hhj1897/fan_training
 
 # The weights, byte-identical to ibug-group/face_alignment's ibug/face_alignment/fan/weights/2dfan2_alt.pth.
@@ -59,6 +59,20 @@ build_profiles:
           input_name: image
           input_shape: [1, 3, 256, 256]
           calibration_samples: 8
+
+  # Candidate only: uncomment after fresh compiled-artifact, accuracy and whole-landmark performance qualification.
+  # Earlier percentile calibration improved NME, but no qualified full-pipeline baseline exists for this profile.
+  # w8a8:
+  #   calibration_dataset: afw-faces-default
+  #   components:
+  #     model:
+  #       parameters:
+  #         precision: w8a8
+  #         input_name: image
+  #         input_shape: [1, 3, 256, 256]
+  #         calibration_samples: 8
+  #         calibration_method: percentile
+  #         calibration_percentile: 99.99
 
 accuracy:
   datasets:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +42,10 @@ def calibration_method(parameters: dict[str, Any]) -> Any:
     if name not in CALIBRATION_METHODS:
         raise ValueError(f"unsupported calibration method: {name}")
     if name == "percentile":
-        return HistogramPercentileMethod(percentile_value=float(parameters["calibration_percentile"]), num_bins=1024)
+        value = float(parameters.get("calibration_percentile", float("nan")))
+        if not math.isfinite(value) or not 0 < value <= 100:
+            raise ValueError("calibration_percentile must be finite and in (0,100]")
+        return HistogramPercentileMethod(percentile_value=value, num_bins=1024)
     return CalibrationMethod.from_str(name)
 
 

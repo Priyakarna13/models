@@ -13,6 +13,8 @@ accuracy:
         nme: 0.03304
 performance:
   run_tests: true
+  # Historical heatmap-only references retained unchanged until the new face-box-to-landmarks workload is
+  # measured and its baseline is explicitly reviewed. They are not evidence of complete-pipeline throughput.
   expected:
     w16a16:
       throughput_fps: 267.8

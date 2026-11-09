@@ -5,6 +5,7 @@ public-data/ibug-face-alignment. FAN (Bulat and Tzimiropoulos, ICCV 2017) is a s
 ibug trained this one on 300W-LP. Its network code is reproduced below from ibug's `fan.py` (MIT, Copyright (c) 2020
 Jie Shen) with the 2dfan2_alt configuration: crop ratio 0.55, 256x256 input, two modules, 256 hourglass features,
 depth 4, max pooling, batch normalization, a 7x7 stride-2 stem and a 2x2 stem pool, 68 landmarks.
+The corresponding upstream source is ibug/face_alignment/fan/fan.py at b52975cfec7a08edbb247ac1db0f860827235070.
 
 The export takes one [1, 3, 256, 256] RGB face crop in [0, 1] and returns the last hourglass's heatmaps,
 [1, 68, 64, 64]. The crop around the face box and the heatmap-to-coordinate decode stay on the CPU (landmarks.py).

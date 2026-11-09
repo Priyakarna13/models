@@ -19,3 +19,99 @@ def test_mpk_argument_names_exactly_the_model_component(load_script: Callable[[s
 
 def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path, build_profile: str) -> None:
     assert measured_shortfalls(model_dir, "accuracy", build_profile, accuracy) == []
+
+
+@pytest.mark.parametrize("values", [["model="], ["model=/a", "model=/b"], ["missing-equals"]])
+def test_mpk_argument_rejects_empty_duplicate_and_malformed_paths(load_script, values):
+    with pytest.raises(SystemExit, match="exactly model"):
+        load_script("accuracy").parse_mpks(values)
+
+
+@pytest.mark.parametrize("value", ["other=/data", "afw-faces-default=", "afw-faces-default", "afw-faces-default= "])
+def test_accuracy_requires_its_pinned_dataset_id(load_script, value):
+    with pytest.raises(ValueError, match="--dataset"):
+        load_script("landmarks").dataset_path(value)
+
+
+def test_fp32_baseline_reuses_the_same_evaluator_without_neat(load_script, monkeypatch, tmp_path):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    script = load_script("fp32_baseline_accuracy")
+    observed = []
+
+    class Session:
+        def __init__(self, path, providers):
+            assert path == "source.onnx" and providers == ["CPUExecutionProvider"]
+
+        def get_inputs(self):
+            return [SimpleNamespace(name="image", shape=[1, 3, 256, 256])]
+
+        def get_outputs(self):
+            return [SimpleNamespace(name="heatmaps", shape=[1, 68, 64, 64])]
+
+        def run(self, names, feeds):
+            assert names == ["heatmaps"] and feeds["image"].shape == (1, 3, 256, 256)
+            assert feeds["image"].flags.c_contiguous
+            observed.append(feeds["image"])
+            return [np.zeros((1, 68, 64, 64), np.float32)]
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(InferenceSession=Session))
+    monkeypatch.setattr(script, "test_faces", lambda path: ["real face"])
+
+    def evaluate(faces, infer):
+        assert faces == ["real face"]
+        assert infer(np.zeros((256, 256, 3), np.float32)).shape == (68, 64, 64)
+        return {"nme": 0.03}, {"median_nme": 0.03}
+
+    monkeypatch.setattr(script, "evaluate", evaluate)
+    destination = tmp_path / "baseline.json"
+    script.main(["--onnx", "source.onnx", "--dataset", "afw-faces-default=/data", "--output", str(destination)])
+    report = json.loads(destination.read_text())
+    assert len(observed) == 1 and report["metrics"] == {"nme": 0.03} and report["samples"] == 1
+
+
+@pytest.mark.parametrize("failure", [None, "inference", "decode"])
+def test_accuracy_closes_its_runner_on_success_and_failure(load_script, monkeypatch, tmp_path, failure):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    script = load_script("accuracy")
+    closed = []
+
+    def run(inputs, timeout_ms):
+        if failure == "inference":
+            raise RuntimeError("inference fault")
+        return ["heatmap"]
+
+    runner = SimpleNamespace(run=run, close=lambda: closed.append(True))
+    monkeypatch.setattr(script, "test_faces", lambda path: ["face"])
+    monkeypatch.setattr(script.pyneat, "Model", lambda *args: SimpleNamespace(build=lambda inputs: runner))
+    monkeypatch.setattr(script, "heatmaps_of", lambda tensor: np.zeros((68, 64, 64), np.float32))
+
+    def evaluate(faces, infer):
+        infer(np.zeros((256, 256, 3), np.float32))
+        if failure == "decode":
+            raise ValueError("decode fault")
+        return {"nme": 0.03}, {"median_nme": 0.03}
+
+    monkeypatch.setattr(script, "evaluate", evaluate)
+    monkeypatch.setattr(
+        script.model_report,
+        "from_accuracy",
+        lambda document: SimpleNamespace(
+            save=lambda output: None,
+            document={"datasets": document},
+        ),
+    )
+    args = ["--mpk", "model=/model", "--dataset", "afw-faces-default=/data", "--output", str(tmp_path)]
+    if failure:
+        with pytest.raises((ValueError, RuntimeError), match=f"{failure} fault"):
+            script.main(args)
+    else:
+        assert script.main(args) == 0
+    assert closed == [True]

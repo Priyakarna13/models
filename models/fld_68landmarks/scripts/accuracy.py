@@ -16,7 +16,7 @@ from pathlib import Path
 import model_report
 import numpy as np
 import pyneat
-from landmarks import HEATMAP_SIZE, LANDMARKS, TEST_SPLIT, crop, decode, nme, test_faces, whole_image_box
+from landmarks import DATASET_ID, HEATMAP_SIZE, LANDMARKS, TEST_SPLIT, dataset_path, evaluate, test_faces
 
 
 def tensor_options() -> pyneat.ModelOptions:
@@ -30,10 +30,9 @@ def tensor_options() -> pyneat.ModelOptions:
 
 
 def parse_mpks(values: list[str]) -> Path:
-    mpks = dict(value.split("=", 1) for value in values)
-    if set(mpks) != {"model"}:
+    if len(values) != 1 or not values[0].startswith("model=") or not values[0][6:].strip():
         raise SystemExit("--mpk must name exactly model=<path>")
-    return Path(mpks["model"])
+    return Path(values[0][6:])
 
 
 def heatmaps_of(tensor: pyneat.Tensor) -> np.ndarray:
@@ -51,31 +50,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dataset", required=True, help="afw-faces-default=<extracted directory>")
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
     args = parser.parse_args(argv)
-    dataset_id, dataset_dir = args.dataset.split("=", 1)
-
-    faces = test_faces(Path(dataset_dir))
+    faces = test_faces(dataset_path(args.dataset))
     model = pyneat.Model(str(parse_mpks(args.mpk)), tensor_options())
     runner = None
-    errors = []
     started = time.monotonic()
-    for name, image, truth in faces:
-        patch, box = crop(image, whole_image_box(image))
+
+    def infer(patch):
+        nonlocal runner
         tensor = pyneat.Tensor.from_numpy(patch, copy=True, layout=pyneat.TensorLayout.HWC)
         if runner is None:
             runner = model.build([tensor])
-        landmarks, _ = decode(heatmaps_of(runner.run([tensor], timeout_ms=120000)[0]), box)
-        errors.append(nme(landmarks, truth))
+        outputs = runner.run([tensor], timeout_ms=120000)
+        if len(outputs) != 1:
+            raise ValueError(f"expected one heatmap output, got {len(outputs)}")
+        return heatmaps_of(outputs[0])
+
+    try:
+        metrics, details = evaluate(faces, infer)
+    finally:
+        if runner is not None:
+            runner.close()
     print(f"{len(faces)} faces in {time.monotonic() - started:.1f} s", file=sys.stderr, flush=True)
 
-    report = model_report.from_accuracy({
-        dataset_id: {
-            "metrics": {"nme": float(np.mean(errors))},
-            "split": TEST_SPLIT, "evaluated_samples": len(faces), "available_samples": len(faces),
-            "details": {"normalization": "inter-ocular (outer eye corners)", "median_nme": float(np.median(errors))},
-        },
-    })
+    report = model_report.from_accuracy(
+        {
+            DATASET_ID: {
+                "metrics": metrics,
+                "split": TEST_SPLIT,
+                "evaluated_samples": len(faces),
+                "available_samples": len(faces),
+                "details": {"normalization": "inter-ocular (outer eye corners)", **details},
+            },
+        }
+    )
     report.save(args.output)
-    measured = report.document["datasets"][dataset_id]["metrics"]
+    measured = report.document["datasets"][DATASET_ID]["metrics"]
     print(json.dumps({name: round(value, 5) for name, value in measured.items()}))
     return 0
 
