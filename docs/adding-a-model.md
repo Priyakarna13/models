@@ -27,6 +27,18 @@ Before creating files, identify:
 Do not add a product whose source, ownership, or license is ambiguous. Record
 ownership in `CODEOWNERS`; do not add owner or maturity boilerplate to YAML.
 
+### Compiler package and MPK SDK versions
+
+`deps/manifest.json` pins the Model Compiler **package** version used by CI and
+compile fingerprints. Its explicit `model-compiler.sdk_version` comes from the
+official bundle's `source.json` and is the value to check in an MPK's
+`model_sdk_version`. Resolve it with `resolve_model_sdk_version`; do not truncate
+the package version. These identities can differ: package
+[3.0.0.1](https://github.com/sima-neat/model-compiler/blob/8821a191220de67ba2d9653ac21c8755f4c24a57/scripts/source.json)
+ships SDK version `3.0.0`. An MPK SDK match alone does **not** prove it was built
+with the pinned package; preserve the separate compiler installation receipt
+and compile fingerprint checks.
+
 ## 2. Create the directory
 
 The directory name supplies the lowercase snake-case model ID; `model.yaml`
