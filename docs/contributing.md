@@ -186,6 +186,26 @@ components and can force every selected build to recompile. A dispatch that
 names build profiles or components compiles and publishes those builds but
 does not publish packages or update the catalog.
 
+### Production Main metadata and selection
+
+After the Models implementation and Vulcan migration/API/role changes have been
+reviewed and deployed, run **Publish Main model metadata** with branch `develop`
+selected. It publishes Main's own source revision with its matching producer;
+it does not compile models or approve artifact selections. Its production
+publication runs serially without cancelling an earlier metadata run. Release
+any intended model definitions and matching on-demand requirements to Main first;
+Develop-only models do not become Main releases through metadata publication.
+
+Run **Promote model** from `develop`, selecting production and
+`target_branch: main` to request Main selection of an exact production candidate
+already approved in Develop. A different eligible owner must approve the
+`production-promote-main` gate; its role is separate from the Develop approver.
+Verify the result snapshot, selected Main catalog and downloaded checksums/layout.
+Files remain in S3; Hugging Face publication remains separate. Both workflows
+are on the default branch for discovery but skip execution when Main is selected
+as the workflow branch. See the [Develop promotion guide](https://github.com/sima-neat/models/blob/develop/docs/model-promotion.md)
+for protected environment setup and the complete operator procedure.
+
 ## Review and merge expectations
 
 A model is ready to merge when the local qualification evidence is complete,
