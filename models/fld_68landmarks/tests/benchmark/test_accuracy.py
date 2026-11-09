@@ -115,3 +115,27 @@ def test_accuracy_closes_its_runner_on_success_and_failure(load_script, monkeypa
     else:
         assert script.main(args) == 0
     assert closed == [True]
+
+
+@pytest.mark.parametrize("shape", [(64, 64, 68), (1, 64, 64, 68)])
+def test_heatmap_adapter_accepts_only_one_logical_face(load_script, shape):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    script = load_script("accuracy")
+    source = np.ones(shape, np.float32)
+    tensor = SimpleNamespace(to_numpy=lambda *, copy: source.copy() if copy else source)
+    heatmaps = script.heatmaps_of(tensor)
+    assert heatmaps.shape == (68, 64, 64)
+    assert not np.shares_memory(source, heatmaps)
+
+
+def test_heatmap_adapter_rejects_multiple_faces_instead_of_silently_taking_first(load_script):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    tensor = SimpleNamespace(to_numpy=lambda **kwargs: np.zeros((2, 64, 64, 68), np.float32))
+    with pytest.raises(ValueError, match="one face"):
+        load_script("accuracy").heatmaps_of(tensor)

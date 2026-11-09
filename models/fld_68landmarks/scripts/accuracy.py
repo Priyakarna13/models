@@ -38,7 +38,10 @@ def parse_mpks(values: list[str]) -> Path:
 def heatmaps_of(tensor: pyneat.Tensor) -> np.ndarray:
     """The MPK's [64, 64, 68] (or batched) heatmaps as [68, 64, 64]."""
     array = tensor.to_numpy(copy=True)
-    array = array[0] if array.ndim == 4 else array
+    if array.ndim == 4:
+        if array.shape[0] != 1:
+            raise ValueError(f"expected one face heatmap batch, got {array.shape}")
+        array = array[0]
     if array.shape != (HEATMAP_SIZE, HEATMAP_SIZE, LANDMARKS) or not np.isfinite(array).all():
         raise ValueError(f"unexpected heatmaps: shape {array.shape}")
     return array.transpose(2, 0, 1)
