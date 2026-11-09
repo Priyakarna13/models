@@ -1,9 +1,9 @@
 """Measure the FP32 baseline: MiDaS v2.1 Small's ONNX on a host, scored exactly as accuracy.py scores the MPK.
 
 The baseline is the accuracy the package would reach without quantization, on the same 256x256 inputs and NYU
-Depth V2 test images. model.yaml publishes it as the reference_metrics entry with origin fp32_baseline. Convert the
-ONNX with convert.py, then run it on a host with numpy, opencv-python-headless and onnxruntime, and tools/model_report
-on PYTHONPATH:
+Depth V2 test images. model.yaml publishes it as the reference_metrics entry with origin fp32_baseline. It scores the
+ONNX convert.py writes; surgery.py's compile-time rewrite of it is exact. Run it on a host with numpy,
+opencv-python-headless and onnxruntime, and tools/model_report on PYTHONPATH:
 
     PYTHONPATH=tools python models/midas_v21_small/scripts/fp32_baseline_accuracy.py \\
         --onnx model.onnx --dataset nyu-depth-v2-val=<directory> --output fp32-baseline.json

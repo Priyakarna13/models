@@ -69,6 +69,10 @@ accuracy:
 
 performance: {}
 
+# No published score is comparable to this package: the MiDaS README reports NYU Depth V2 delta1 only as an error,
+# at the image's own aspect ratio, and this package takes a 256x256 image without keeping it. The builds compare with
+# the FP32 baseline instead, which scripts/fp32_baseline_accuracy.py measures on this package's own inputs, on the
+# ONNX convert.py writes (surgery.py's compile-time rewrite is exact).
 reference_metrics:
 - origin: fp32_baseline
   script: scripts/fp32_baseline_accuracy.py
@@ -76,6 +80,9 @@ reference_metrics:
   conditions: FP32 ONNX on ONNX Runtime CPU; each image resized bicubically to 256x256 without keeping its aspect ratio; the prediction resized bicubically to 640x480, aligned per image by scale and shift in inverse depth and capped at 10 m; all 654 test images
   metrics: {abs_rel: 0.1171, delta1: 0.8642}
 
-# The published figure, kept for reference and not shown: the MiDaS README's accuracy table prints NYUv2 delta1 as an
-# error, 13.43% for v2.1 Small with the aspect ratio kept, and no AbsRel.
-# https://github.com/isl-org/MiDaS/blob/454597711a62eabcbf7d1e89f3fb9f569051ac9b/README.md
+# The published table, kept for reference and not shown (it prints delta1 as an error, 13.43%, and no AbsRel):
+# reference_metrics:
+# - source: https://github.com/isl-org/MiDaS/blob/454597711a62eabcbf7d1e89f3fb9f569051ac9b/README.md
+#   dataset: {id: nyu-depth-v2, split: test}
+#   conditions: Zero-shot relative depth, affine-invariant inverse depth, the image's aspect ratio kept, FP32
+#   metrics: {delta1: 0.8657}

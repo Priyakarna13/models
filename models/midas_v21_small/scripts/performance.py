@@ -73,7 +73,7 @@ report = model_report.from_performance(
     {"model": model},
     workload=(
         f"{dataset_id} {image.name} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, "
-        "Neat preprocessing stretched to the 256x256 model input"
+        "Neat preprocessing stretched bilinearly to the 256x256 model input"
     ),
 )
 report.save(args.output)

@@ -16,9 +16,11 @@ when it needs them. The model runs as one component.
 **Input.** Scale the RGB values to 0–1, then resize the image to 256×256 with
 bicubic resampling, without keeping its aspect ratio. Subtract the ImageNet
 mean (0.485, 0.456, 0.406) and divide by the standard deviation (0.229, 0.224,
-0.225). The accuracy script passes this image as a 256×256×3 (height, width,
-channel) float tensor, with Neat's resize, color conversion, and normalization
-turned off.
+0.225). Neat's image preprocessing resizes bilinearly instead, which changes the
+depth slightly, so for the reference resampling resize the image bicubically to
+256×256 before passing it to Neat. The accuracy script passes this image as a
+256×256×3 (height, width, channel) float tensor, with Neat's resize, color
+conversion, and normalization turned off.
 
 **Outputs.** `predicted_depth` holds 256×256 values of relative inverse depth.
 
