@@ -73,6 +73,10 @@ architectures:
     display_name: LLaVA
     paradigm: transformer
     allowed_model_types: [vlm]
+  midas:
+    display_name: MiDaS
+    paradigm: cnn
+    allowed_model_types: [vision]
   mistral:
     display_name: Mistral
     paradigm: transformer
