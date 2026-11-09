@@ -204,17 +204,31 @@ def test_every_metric_names_its_stage_unit_direction_and_measurement():
     ]
 
 
-def test_the_package_needs_only_the_standard_library():
+def stdlib_import_probe(package_root):
     probe = (
         "import sys, model_report; "
         "third_party = {name.partition('.')[0] for name in sys.modules} - set(sys.stdlib_module_names); "
         "print(sorted(third_party - {'model_report', '__main__'}))"
     )
-    result = subprocess.run(
-        [sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(REPOSITORY / 'tools')!r}); {probe}"],
-        capture_output=True, text=True, check=True,
+    # Neither user/site packages nor system sitecustomize belong to this dependency probe.
+    return subprocess.run(
+        [sys.executable, "-I", "-S", "-c", f"import sys; sys.path.insert(0, {str(package_root)!r}); {probe}"],
+        capture_output=True,
+        text=True,
+        check=True,
     )
+
+
+def test_the_package_needs_only_the_standard_library():
+    result = stdlib_import_probe(REPOSITORY / "tools")
     assert result.stdout.strip() == "[]"
+
+
+def test_standard_library_probe_detects_a_nonstandard_dependency(tmp_path):
+    (tmp_path / "model_report.py").write_text("import nonstandard_dependency\n", encoding="utf-8")
+    (tmp_path / "nonstandard_dependency.py").write_text("# importable negative control\n", encoding="utf-8")
+    result = stdlib_import_probe(tmp_path)
+    assert result.stdout.strip() == "['nonstandard_dependency']"
 
 
 class BenchmarkOptions:
