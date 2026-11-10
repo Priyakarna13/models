@@ -61,6 +61,10 @@ architectures:
     display_name: Gemma4
     paradigm: transformer
     allowed_model_types: [llm, vlm]
+  inception:
+    display_name: Inception
+    paradigm: cnn
+    allowed_model_types: [vision]
   lfm:
     display_name: LFM
     paradigm: transformer
