@@ -414,7 +414,7 @@ async function checkTaskComparison(browser, base) {
         await page.locator('[data-compare-control="task"]').selectOption('image_classification');
         await add.waitFor();
         // Each classifier's variants by exact model name (Wide ResNet-50-2 contains "ResNet-50"), and nothing from another task.
-        const classifiers = {'ResNet-50': 3, 'ResNet-18': 2, 'ResNet-34': 2, 'ResNeXt-50 32x4d': 2, 'ResNeXt-101 32x8d': 2, 'ResNeXt-101 64x4d': 2, 'Wide ResNet-50-2': 2, 'ViT-B/16': 2};
+        const classifiers = {'ResNet-50': 3, 'ResNet-18': 2, 'ResNet-34': 2, 'ResNeXt-50 32x4d': 2, 'ResNeXt-101 32x8d': 2, 'ResNeXt-101 64x4d': 2, 'Wide ResNet-50-2': 2, 'DLA-34': 2, 'ViT-B/16': 2};
         const variants = Object.values(classifiers).reduce((total, count) => total + count, 0);
         const choices = (await add.locator('option').allTextContents()).slice(1);
         if (choices.length !== variants || !Object.entries(classifiers).every(([name, count]) => choices.filter(text => text.startsWith(`${name} · `)).length === count)) throw new Error('comparison mixed tasks or omitted a variant');
@@ -433,6 +433,21 @@ async function checkTaskComparison(browser, base) {
         console.log(`ok  Task comparison · ${viewport.width}px ${theme}`);
       } finally { await page.close(); }
     }
+  }
+}
+
+// A portal without its license list offers no download at all, so check a model on each side of the rule.
+async function checkLicensedDownloads(browser, base) {
+  for (const [model, offered] of [['resnet_50', true], ['superpoint', false]]) {
+    const page = await browser.newPage();
+    try {
+      await page.goto(new URL(`/?model=${model}&variant=w8a8`, base).href);
+      await page.locator('#license-section .license-summary').waitFor();
+      const downloads = await page.locator('[data-download="package"], [data-download-variant]').count();
+      if (Boolean(downloads) !== offered) throw new Error(`${model} ${offered ? 'offers no download' : 'offers a download its license forbids'}`);
+      if (await page.locator('.download-unavailable').count() !== (offered ? 0 : 1)) throw new Error(`${model} shows the wrong download notice`);
+      console.log(`ok  Licensed downloads · ${model}`);
+    } finally { await page.close(); }
   }
 }
 
@@ -469,6 +484,7 @@ try {
     await checkExecutionTooltips(browser, variantUrl);
     await checkCatalogLayouts(browser, new URL('/', variantUrl));
     await checkTaskComparison(browser, variantUrl);
+    await checkLicensedDownloads(browser, variantUrl);
     for (const [name, url, readySelector] of checks) {
       const problems = await checkPage(browser, url, readySelector);
       console.log(`${problems.length ? 'FAIL' : 'ok'}  ${name}  ${url.pathname}${url.search}`);
