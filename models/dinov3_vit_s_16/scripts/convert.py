@@ -1,25 +1,20 @@
-"""Convert the onnx-community export of DINOv3 ViT-S/16 into a static ONNX graph with its class and patch embeddings
-as outputs, and check it against that export.
+"""Convert the onnx-community export of DINOv3 ViT-S/16 into one ONNX file at its shipped input size, and check it
+against that export.
 
-onnx-community/dinov3-vits16-pretrain-lvd1689m-ONNX exports Meta's weights for any input size, at opset 20. Fixing the
-input at 224x224 lets constant folding turn the RoPE cos/sin computation into tables for the 14x14 patch grid. Each
-layer still splits the five prefix tokens (class and registers) from the 196 patch tokens with SplitToSequence and
-SequenceAt; those become one Split with the same constant sizes, after which the reshape targets fold too. Each exact
-Gelu becomes its erf form, so the graph needs only opset 17. The outputs are the pooled class embedding and the patch
-tokens; the four register tokens, which DINOv3 uses only inside the encoder, are dropped. Each folding pass runs in
-its own process, so the family's largest graph, ViT-L/16, fits in 9 GiB.
+onnx-community/dinov3-vits16-pretrain-lvd1689m-ONNX exports Meta's weights for any input size, at opset 20, with the
+weights in a separate file. The conversion fixes the input at 1x3x224x224 and saves the graph and its weights as one
+file; the graph and its pooler_output and last_hidden_state outputs stay as exported. The changes the compiler needs
+happen in surgery.py.
 """
 
 import argparse
 import json
-import multiprocessing
 from pathlib import Path
 
 import numpy as np
 import onnx
 from model_registry.fetch import Fetcher
 from model_registry.model import load_and_validate_model
-from onnx import helper, numpy_helper
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 
@@ -30,19 +25,13 @@ HIDDEN_SIZE = 384
 PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2
 REGISTERS = 4
 PREFIX = 1 + REGISTERS
-INTERFACE = {
-    "pixel_values": [1, 3, IMAGE_SIZE, IMAGE_SIZE],
-    "class_embedding": [1, HIDDEN_SIZE],
-    "patch_embeddings": [1, PATCHES, HIDDEN_SIZE],
-}
-INPUTS = ("pixel_values",)
-OUTPUTS = ("class_embedding", "patch_embeddings")
-SOURCE_OUTPUTS = ("pooler_output", "last_hidden_state")
+OPSET = 20
+INPUT = "pixel_values"
+INPUT_SHAPE = [1, 3, IMAGE_SIZE, IMAGE_SIZE]
+OUTPUT_SHAPES = {"last_hidden_state": [1, PREFIX + PATCHES, HIDDEN_SIZE], "pooler_output": [1, HIDDEN_SIZE]}
 SOURCE_FILES = ["onnx/model.onnx", "onnx/model.onnx_data", "config.json", "preprocessor_config.json"]
 SOURCE = ("file_set", "onnx/model.onnx", SOURCE_FILES)
 SEEDS = range(123, 127)
-# Operators the converted graph must not keep: dynamic shapes, control flow, sequences, and opset-20 Gelu.
-DYNAMIC_OPS = ("If", "Loop", "Shape", "Range", "SplitToSequence", "SequenceAt", "Gelu")
 # The preprocessing calibration.py and performance.py apply. The conversion stops if the checkpoint declares other.
 PREPROCESSING = {
     "do_resize": True,
@@ -85,135 +74,34 @@ def validate_preprocessor(directory):
 def validate_export(path):
     model = onnx.load(path, load_external_data=False)
     onnx.checker.check_model(model)
-    if [item.version for item in model.opset_import if not item.domain] != [17]:
-        raise ValueError("The DINOv3 export requires opset 17")
-    if [value.name for value in model.graph.input] != list(INPUTS) or [value.name for value in model.graph.output] != list(OUTPUTS):
-        raise ValueError(f"Expected inputs {INPUTS} and outputs {OUTPUTS} in that order")
+    if [item.version for item in model.opset_import if not item.domain] != [OPSET]:
+        raise ValueError(f"The DINOv3 export is at opset {OPSET}")
+    names = ([value.name for value in model.graph.input], [value.name for value in model.graph.output])
+    if names != ([INPUT], list(OUTPUT_SHAPES)):
+        raise ValueError(f"Expected input {INPUT} and outputs {tuple(OUTPUT_SHAPES)} in that order")
     for value in [*model.graph.input, *model.graph.output]:
-        tensor = value.type.tensor_type
-        if tensor.elem_type != onnx.TensorProto.FLOAT or [d.dim_value for d in tensor.shape.dim] != INTERFACE[value.name]:
-            raise ValueError(f"Unexpected dtype or shape for {value.name}")
-    left = sorted({node.op_type for node in model.graph.node if node.op_type in DYNAMIC_OPS})
-    if left:
-        raise ValueError(f"The export must have a static opset-17 graph; it still has {', '.join(left)}")
+        if value.type.tensor_type.elem_type != onnx.TensorProto.FLOAT:
+            raise ValueError(f"Unexpected dtype for {value.name}")
+    if [d.dim_value for d in model.graph.input[0].type.tensor_type.shape.dim] != INPUT_SHAPE:
+        raise ValueError(f"The input must be fixed at {INPUT_SHAPE}")
     if any(tensor.data_location == onnx.TensorProto.EXTERNAL for tensor in model.graph.initializer):
         raise ValueError("This conversion workflow requires one self-contained ONNX file")
 
 
-def fold_constants(source, output):
-    """Fix the input size and fold every constant expression, then save one self-contained file."""
-    from onnxsim import simplify
-
-    model, valid = simplify(
-        onnx.load(str(source)),
-        perform_optimization=False,
-        overwrite_input_shapes={name: INTERFACE[name] for name in INPUTS},
-        dynamic_input_shape=False,
-    )
-    if not valid:
-        raise RuntimeError("onnxsim could not validate the folded DINOv3 graph")
+def fix_input_shape(source, output):
+    """Fix the export's input at the shipped size and save the graph with its weights as one file."""
+    model = onnx.load(str(source))
+    dims = model.graph.input[0].type.tensor_type.shape.dim
+    if model.graph.input[0].name != INPUT or len(dims) != len(INPUT_SHAPE):
+        raise ValueError(f"Expected a rank-{len(INPUT_SHAPE)} {INPUT} input")
+    for dim, size in zip(dims, INPUT_SHAPE, strict=True):
+        dim.Clear()
+        dim.dim_value = size
     onnx.save(model, str(output))
 
 
-def _constant(graph, name):
-    for tensor in graph.initializer:
-        if tensor.name == name:
-            return numpy_helper.to_array(tensor)
-    raise ValueError(f"{name} is not a constant; fold the graph first")
-
-
-def _rename_uses(graph, old, new):
-    for node in graph.node:
-        node.input[:] = [new if name == old else name for name in node.input]
-
-
-def split_prefix_tokens(graph):
-    """Replace each SplitToSequence and the SequenceAt nodes that read it with one Split of the same sizes."""
-    parts, renamed = {}, {}
-    for node in graph.node:
-        if node.op_type == "SplitToSequence":
-            sizes = _constant(graph, node.input[1]).reshape(-1)
-            parts[node.output[0]] = [f"{node.output[0]}_part{index}" for index in range(len(sizes))]
-        elif node.op_type == "SequenceAt":
-            renamed[node.output[0]] = parts[node.input[0]][int(_constant(graph, node.input[1]))]
-        elif any(name in parts for name in node.input):
-            raise ValueError(f"{node.name} reads a token sequence; only SequenceAt is rewritten")
-    nodes = []
-    for node in graph.node:
-        if node.op_type == "SequenceAt":
-            continue
-        if node.op_type == "SplitToSequence":
-            axis = next((a.i for a in node.attribute if a.name == "axis"), 0)
-            node = helper.make_node("Split", node.input[:2], parts[node.output[0]], name=f"{node.name}_split", axis=axis)
-        node.input[:] = [renamed.get(name, name) for name in node.input]
-        nodes.append(node)
-    graph.ClearField("node")
-    graph.node.extend(nodes)
-
-
-def gelu_as_erf(graph):
-    """Rewrite each exact Gelu as 0.5 * x * (1 + erf(x / sqrt(2))), which opset 17 provides."""
-    graph.initializer.extend([
-        numpy_helper.from_array(np.array(np.sqrt(2.0), dtype=np.float32), "gelu_sqrt2"),
-        numpy_helper.from_array(np.array(1.0, dtype=np.float32), "gelu_one"),
-        numpy_helper.from_array(np.array(0.5, dtype=np.float32), "gelu_half"),
-    ])
-    nodes = []
-    for node in graph.node:
-        if node.op_type != "Gelu":
-            nodes.append(node)
-            continue
-        if any(a.name == "approximate" and a.s not in (b"", b"none") for a in node.attribute):
-            raise ValueError(f"{node.name} is a tanh-approximated Gelu; only the exact form is rewritten")
-        x, y, stem = node.input[0], node.output[0], node.name or node.output[0]
-        nodes += [
-            helper.make_node("Div", [x, "gelu_sqrt2"], [f"{stem}_scaled"], name=f"{stem}_div"),
-            helper.make_node("Erf", [f"{stem}_scaled"], [f"{stem}_erf"], name=f"{stem}_erf"),
-            helper.make_node("Add", [f"{stem}_erf", "gelu_one"], [f"{stem}_shifted"], name=f"{stem}_add"),
-            helper.make_node("Mul", [x, f"{stem}_shifted"], [f"{stem}_gated"], name=f"{stem}_mul"),
-            helper.make_node("Mul", [f"{stem}_gated", "gelu_half"], [y], name=f"{stem}_half"),
-        ]
-    graph.ClearField("node")
-    graph.node.extend(nodes)
-
-
-def select_outputs(graph):
-    """Expose the pooled class embedding and the patch tokens, without the class and register tokens."""
-    pooled, hidden = SOURCE_OUTPUTS
-    for node in graph.node:
-        node.output[:] = [OUTPUTS[0] if name == pooled else name for name in node.output]
-    _rename_uses(graph, pooled, OUTPUTS[0])
-    graph.initializer.extend([
-        numpy_helper.from_array(np.array([PREFIX], dtype=np.int64), "patch_start"),
-        numpy_helper.from_array(np.array([PREFIX + PATCHES], dtype=np.int64), "patch_end"),
-        numpy_helper.from_array(np.array([1], dtype=np.int64), "patch_axis"),
-    ])
-    graph.node.append(helper.make_node("Slice", [hidden, "patch_start", "patch_end", "patch_axis"], [OUTPUTS[1]],
-                                       name="patch_tokens"))
-    graph.ClearField("output")
-    graph.output.extend(helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, INTERFACE[name]) for name in OUTPUTS)
-
-
-def make_static(path):
-    model = onnx.load(str(path))
-    split_prefix_tokens(model.graph)
-    gelu_as_erf(model.graph)
-    select_outputs(model.graph)
-    model.ClearField("opset_import")
-    model.opset_import.extend([helper.make_opsetid("", 17)])
-    onnx.save(model, str(path))
-
-
-def _in_own_process(function, *args):
-    process = multiprocessing.get_context("spawn").Process(target=function, args=args)
-    process.start()
-    process.join()
-    if process.exitcode != 0:
-        raise RuntimeError(f"{function.__name__} failed with exit code {process.exitcode}")
-
-
 def _synthetic(seed):
-    return np.random.RandomState(seed).standard_normal(INTERFACE["pixel_values"]).astype(np.float32)
+    return np.random.RandomState(seed).standard_normal(INPUT_SHAPE).astype(np.float32)
 
 
 def convert(source, output_dir):
@@ -224,23 +112,19 @@ def convert(source, output_dir):
     root = source.parents[1]
     validate_config(root)
     validate_preprocessor(root)
-    # The expected outputs come from the unchanged export, so the check covers folding and every rewrite.
     original = ort.InferenceSession(str(source), providers=["CPUExecutionProvider"])
-    expected = []
-    for seed in SEEDS:
-        pooled, hidden = original.run(list(SOURCE_OUTPUTS), {"pixel_values": _synthetic(seed)})
-        expected.append((pooled, hidden[:, PREFIX:]))
+    expected = [original.run(list(OUTPUT_SHAPES), {INPUT: _synthetic(seed)}) for seed in SEEDS]
     del original
-    _in_own_process(fold_constants, source, output)
-    _in_own_process(make_static, output)
-    _in_own_process(fold_constants, output, output)
+    fix_input_shape(source, output)
     validate_export(output)
 
     session = ort.InferenceSession(str(output), providers=["CPUExecutionProvider"])
     for seed, want in zip(SEEDS, expected, strict=True):
-        got = session.run(list(OUTPUTS), {"pixel_values": _synthetic(seed)})
-        for name, a, b in zip(OUTPUTS, got, want, strict=True):
-            np.testing.assert_allclose(a, b, rtol=1e-3, atol=1e-3, err_msg=name)
+        got = session.run(list(OUTPUT_SHAPES), {INPUT: _synthetic(seed)})
+        for name, a, b in zip(OUTPUT_SHAPES, got, want, strict=True):
+            if a.shape != tuple(OUTPUT_SHAPES[name]):
+                raise ValueError(f"{name} has shape {a.shape}, expected {OUTPUT_SHAPES[name]}")
+            np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5, err_msg=name)
     print(f"Source/converted ONNX check passed on {len(SEEDS)} synthetic inputs: {output}")
     return output
 

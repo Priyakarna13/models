@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -17,6 +19,7 @@ from afe.apis.defines import (
     HistogramMSEMethod,
     InputName,
     RequantizationMode,
+    SkipCalibration,
     bfloat16_scheme,
     default_quantization,
     gen2_target,
@@ -29,14 +32,11 @@ from afe.load.importers.general_importer import onnx_source
 from calibration import load_images, select_names
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
+from surgery import INPUT, INPUT_SHAPE, OUTPUT_SHAPES, SOURCE_OUTPUTS, embeddings, prepare_model
 
-LOG = logging.getLogger("dinov3_vit_l_16.compile")
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "dinov3_vit_l_16"
 COMPONENT_ID = "model"
-INPUT_NAME = "pixel_values"
-INPUT_SHAPE = (1, 3, 224, 224)
-OUTPUTS = {"class_embedding": (1, 1024), "patch_embeddings": (1, 196, 1024)}
 PRECISIONS = ("w16a16", "w8a16", "w8a8")
 
 
@@ -65,12 +65,13 @@ def _quantization_config(parameters: dict[str, Any]) -> Any:
         activation = weights = bfloat16_scheme()
     else:
         raise ValueError("this recipe supports only the declared Modalix BF16 and INT8 variants")
+    # Only INT8 activations take their ranges from calibration images; BF16 builds skip calibration.
+    calibration = HistogramMSEMethod(int(parameters["calibration_bins"])) if precision == "w8a8" else SkipCalibration()
     return (
         default_quantization.with_activation_quantization(activation)
         .with_weight_quantization(weights)
         .with_requantization_mode(RequantizationMode.sima)
-        # AFE refuses to quantize ViT encoders without calibrated ranges, even at BF16.
-        .with_calibration(HistogramMSEMethod(int(parameters["calibration_bins"])))
+        .with_calibration(calibration)
         .with_channel_equalization(False)
         .with_smooth_quant(False)
         # with_activation_quantization turns per-token quantization on for BF16. W8A16 uses it to scale each token's
@@ -110,29 +111,33 @@ def audit_mpk(archive: Path) -> dict[str, Any]:
             f"shared_objects={shared_objects}"
         )
     public_inputs = {node.get("name"): node.get("size") for node in manifest.get("input_nodes", [])}
-    if public_inputs != {INPUT_NAME: _float32_bytes(INPUT_SHAPE)}:
+    if public_inputs != {INPUT: _float32_bytes(INPUT_SHAPE)}:
         raise RuntimeError(f"MPK input interface mismatch: {public_inputs}")
     return {"elf": elfs[0], "mla_plugins": len(mla_plugins)}
 
 
-def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: Path) -> Any:
-    """Quantize on the declared calibration images, compile and audit the MPK; returns the quantized model."""
+def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: Path | None) -> Any:
+    """Quantize (INT8 on the declared calibration images), compile and audit the MPK; returns the quantized model."""
     metadata = _metadata()
     variant = _variant(metadata, variant_id)
     parameters = variant["parameters"]
     if variant["target"] != "modalix" or parameters.get("precision") not in PRECISIONS:
         raise ValueError("this recipe supports only the declared Modalix BF16 and INT8 variants")
-    selection = metadata["numerical_fidelity"]["selection"]
-    samples = int(parameters["calibration_samples"])
-    if int(selection["offset"]) < samples:
-        raise ValueError("the fidelity images must follow the calibration images")
+    data = None
+    if parameters["precision"] == "w8a8":
+        if dataset is None:
+            raise ValueError("the INT8 build calibrates; pass --dataset")
+        selection = metadata["numerical_fidelity"]["selection"]
+        samples = int(parameters["calibration_samples"])
+        if int(selection["offset"]) < samples:
+            raise ValueError("the fidelity images must follow the calibration images")
+        print(f"Calibrating on {samples} imagenet-2012 cal images", flush=True)
+        calibration = load_images(dataset, select_names(dataset, int(selection["seed"]), 0, samples))
+        data = convert_data_generator_to_iterable(DataGenerator({InputName(INPUT): calibration}))
 
     component_dir.mkdir(parents=True, exist_ok=False)
-    LOG.info("Loading %d calibration images", samples)
-    calibration = load_images(dataset, select_names(dataset, int(selection["seed"]), 0, samples))
-    importer = onnx_source(str(source), shape_dict={INPUT_NAME: INPUT_SHAPE}, layout="NCHW", flexible_batch_size=True)
+    importer = onnx_source(str(source), shape_dict={INPUT: INPUT_SHAPE}, layout="NCHW", flexible_batch_size=True)
     loaded = load_model(importer, target=gen2_target)
-    data = convert_data_generator_to_iterable(DataGenerator({InputName(INPUT_NAME): calibration}))
     quantized = loaded.quantize(
         calibration_data=data,
         quantization_config=_quantization_config(parameters),
@@ -160,7 +165,7 @@ def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: P
     archives = sorted(component_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
         raise RuntimeError(f"expected exactly one MPK archive, found {len(archives)} in {component_dir}")
-    LOG.info("Compiled MPK: %s, %s", archives[0], audit_mpk(archives[0]))
+    print(f"Compiled MPK: {archives[0]}, {audit_mpk(archives[0])}", flush=True)
     return quantized
 
 
@@ -208,19 +213,18 @@ class _OutputError:
 
 
 def measure_fidelity(source: Path, candidate: Any, dataset: Path, config: dict[str, Any], variant_id: str) -> dict[str, Any]:
-    """Compare the quantized graph's outputs with the ONNX source on the declared calibration images."""
+    """Compare the quantized graph's outputs with the converted ONNX's on the declared calibration images."""
     selection = config["selection"]
     names = select_names(dataset, int(selection["seed"]), int(selection["offset"]), int(selection["samples"]))
     reference = ort.InferenceSession(str(source), providers=["CPUExecutionProvider"])
-    output_names = [output.name for output in reference.get_outputs()]
     errors = [_OutputError(name) for name in config["outputs"]]
     for image in load_images(dataset, names):
-        expected = dict(zip(output_names, reference.run(None, {INPUT_NAME: image.transpose(2, 0, 1)[None]}), strict=True))
+        expected = embeddings(*reference.run(list(SOURCE_OUTPUTS), {INPUT: image.transpose(2, 0, 1)[None]}))
         # The outputs' shapes differ, so each quantized output is matched to its name by its shape.
-        executed = candidate.execute(inputs={InputName(INPUT_NAME): image[None]}, use_jax=True)
+        executed = candidate.execute(inputs={InputName(INPUT): image[None]}, use_jax=True)
         outputs = {np.asarray(output).shape: np.asarray(output) for output in executed}
         for error in errors:
-            shape = OUTPUTS[error.name]
+            shape = OUTPUT_SHAPES[error.name]
             if shape not in outputs:
                 raise RuntimeError(f"the quantized model returned no {error.name} of shape {shape}: {list(outputs)}")
             error.add(expected[error.name], outputs[shape])
@@ -249,23 +253,26 @@ def main() -> int:
     args = parser.parse_args()
     if args.compile_invocation != args.build_profile:
         parser.error("a build profile compiles in one invocation named after it")
-    if args.dataset is None:
-        parser.error("every precision calibrates; pass --dataset")
     if args.fidelity_dataset is None:
         parser.error("model.yaml declares numerical_fidelity; pass --fidelity-dataset")
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     source = args.model.expanduser().resolve()
     if not source.is_file():
         parser.error(f"model does not exist: {source}")
     output_dir = args.output_dir.expanduser().resolve()
-    candidate = compile_model(source, output_dir / COMPONENT_ID, args.build_profile, args.dataset.expanduser().resolve())
+    dataset = args.dataset.expanduser().resolve() if args.dataset else None
     fidelity = _metadata()["numerical_fidelity"]
-    LOG.info("Measuring numerical fidelity on %d images", fidelity["selection"]["samples"])
-    report = measure_fidelity(source, candidate, args.fidelity_dataset.expanduser().resolve(), fidelity, args.build_profile)
+    with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
+        prepared = prepare_model(source, Path(temporary))
+        candidate = compile_model(prepared, output_dir / COMPONENT_ID, args.build_profile, dataset)
+        print(f"Measuring numerical fidelity on {fidelity['selection']['samples']} images", flush=True)
+        report = measure_fidelity(source, candidate, args.fidelity_dataset.expanduser().resolve(), fidelity,
+                                  args.build_profile)
     (output_dir / "fidelity.json").write_text(json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n",
                                               encoding="utf-8")
-    LOG.info("Fidelity: %s", report["metrics"])
+    for metric in report["metrics"]:
+        print(f"Fidelity {metric['name']}: cosine {metric['cosine_similarity']:.5f}, "
+              f"normalized RMSE {metric['normalized_rmse']:.5f}", flush=True)
     return 0
 
 
