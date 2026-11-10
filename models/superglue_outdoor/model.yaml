@@ -32,16 +32,56 @@ compilation:
   format: onnx
   source: conversion
 
+calibrations:
+- id: yfcc100m-keypoints-cal
+  dataset: {id: yfcc100m-keypoints, variant: cal, sha256: 086ab34feec1f7aa364d56d7e71fc4ba5c0269af5bc708ba3ed3d4eb6bf0592a, size_bytes: 120522685}
+
 build_profiles:
   w16a16:
     components:
       model:
         parameters: {precision: w16a16}
 
-  # No w8a8: INT8 activations in the attention layers fail the compile gate (91.4% of FP32's best matches) and
-  # lose 7.5-13.4% of each YFCC metric on 200 test pairs. W8A16 passes the gate (96.9%), but Model Compiler
-  # 3.0.0's simulator check rejects it ("Check FAILED", no MPK) with per-token quantization on, and every push
-  # would retry the failing compile. compile.py keeps its recipe; uncomment the profile once the check passes.
+  # Mixed-precision experiment, not for merge: W8A8 builds that run the named regions in BF16, measured against
+  # w16a16 and plain w8a8 to pick one. compile.py's surgery.BF16_REGIONS lists each region's operations. The profile
+  # IDs name the regions so the candidates stay apart; the kept one becomes w8a8_mixed.
+  w8a8:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32}
+
+  w8a8_mixed_attention:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, bf16_regions: [attention]}
+
+  w8a8_mixed_residual:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, bf16_regions: [residual]}
+
+  w8a8_mixed_attention_residual:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, bf16_regions: [attention, residual]}
+
+  w8a8_mixed_all:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters:
+          precision: w8a8
+          calibration_bins: 2048
+          calibration_samples: 32
+          bf16_regions: [attention, residual, encoder, outputs]
+
+  # W8A16 passes the compile gate (96.9% of FP32's best matches), but Model Compiler 3.0.0's simulator check rejects
+  # it ("Check FAILED", no MPK) with per-token quantization on, and every push would retry the failing compile.
+  # compile.py keeps its recipe; uncomment the profile once the check passes.
   # w8a16:
   #   components:
   #     model:

@@ -12,8 +12,55 @@ accuracy:
         pose_auc_20: 0.6806
         match_precision: 0.9724
         matching_score: 0.2762
+    # Experiment floors, not measurements: 80% of w16a16, so a candidate fails only when it collapses.
+    w8a8:
+      yfcc100m-keypoints-val:
+        pose_auc_5: 0.2280
+        pose_auc_10: 0.3940
+        pose_auc_20: 0.5445
+        match_precision: 0.7779
+        matching_score: 0.2210
+    w8a8_mixed_attention:
+      yfcc100m-keypoints-val:
+        pose_auc_5: 0.2280
+        pose_auc_10: 0.3940
+        pose_auc_20: 0.5445
+        match_precision: 0.7779
+        matching_score: 0.2210
+    w8a8_mixed_residual:
+      yfcc100m-keypoints-val:
+        pose_auc_5: 0.2280
+        pose_auc_10: 0.3940
+        pose_auc_20: 0.5445
+        match_precision: 0.7779
+        matching_score: 0.2210
+    w8a8_mixed_attention_residual:
+      yfcc100m-keypoints-val:
+        pose_auc_5: 0.2280
+        pose_auc_10: 0.3940
+        pose_auc_20: 0.5445
+        match_precision: 0.7779
+        matching_score: 0.2210
+    w8a8_mixed_all:
+      yfcc100m-keypoints-val:
+        pose_auc_5: 0.2280
+        pose_auc_10: 0.3940
+        pose_auc_20: 0.5445
+        match_precision: 0.7779
+        matching_score: 0.2210
 performance:
   run_tests: true
   expected:
     w16a16:
       throughput_fps: 112.5
+    # Experiment floors, not measurements.
+    w8a8:
+      throughput_fps: 60.0
+    w8a8_mixed_attention:
+      throughput_fps: 60.0
+    w8a8_mixed_residual:
+      throughput_fps: 60.0
+    w8a8_mixed_attention_residual:
+      throughput_fps: 60.0
+    w8a8_mixed_all:
+      throughput_fps: 60.0
