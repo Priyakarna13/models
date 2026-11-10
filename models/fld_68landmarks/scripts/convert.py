@@ -55,9 +55,15 @@ def build_network():
             self.conv2 = conv3x3(outputs // 2, outputs // 4)
             self.bn3 = nn.BatchNorm2d(outputs // 4)
             self.conv3 = conv3x3(outputs // 4, outputs // 4)
-            self.downsample = (nn.Sequential(nn.BatchNorm2d(inputs), nn.ReLU(True),
-                                             nn.Conv2d(inputs, outputs, kernel_size=1, stride=1, bias=False))
-                               if inputs != outputs else None)
+            self.downsample = (
+                nn.Sequential(
+                    nn.BatchNorm2d(inputs),
+                    nn.ReLU(True),
+                    nn.Conv2d(inputs, outputs, kernel_size=1, stride=1, bias=False),
+                )
+                if inputs != outputs
+                else None
+            )
 
         def forward(self, x):
             out1 = self.conv1(F.relu(self.bn1(x), True))
@@ -137,8 +143,11 @@ def validate_export(path: Path) -> None:
     initializers = {item.name for item in graph.initializer}
 
     def shapes(values: Any) -> dict[str, list[int]]:
-        return {item.name: [dim.dim_value for dim in item.type.tensor_type.shape.dim]
-                for item in values if item.name not in initializers}
+        return {
+            item.name: [dim.dim_value for dim in item.type.tensor_type.shape.dim]
+            for item in values
+            if item.name not in initializers
+        }
 
     expected = ({INPUT_NAME: list(INPUT_SHAPE)}, {OUTPUT_NAME: list(OUTPUT_SHAPE)})
     if (shapes(graph.input), shapes(graph.output)) != expected:
@@ -152,15 +161,22 @@ def convert(weights: Path, output_dir: Path) -> Path:
     network = load(weights)
     output_dir.mkdir(parents=True, exist_ok=False)
     output = output_dir / "model.onnx"
-    torch.onnx.export(network, torch.zeros(INPUT_SHAPE), str(output), input_names=[INPUT_NAME],
-                      output_names=[OUTPUT_NAME], opset_version=OPSET, dynamo=False)
+    torch.onnx.export(
+        network,
+        torch.zeros(INPUT_SHAPE),
+        str(output),
+        input_names=[INPUT_NAME],
+        output_names=[OUTPUT_NAME],
+        opset_version=OPSET,
+        dynamo=False,
+    )
     validate_export(output)
 
     inputs = torch.rand((4, *INPUT_SHAPE[1:]), generator=torch.Generator().manual_seed(0))
     with torch.inference_mode():
         expected = network(inputs).numpy()
     session = ort.InferenceSession(str(output), providers=["CPUExecutionProvider"])
-    exported = np.concatenate([session.run(None, {INPUT_NAME: inputs[i:i + 1].numpy()})[0] for i in range(4)])
+    exported = np.concatenate([session.run(None, {INPUT_NAME: inputs[i : i + 1].numpy()})[0] for i in range(4)])
     error = float(np.abs(exported - expected).max())
     print(f"max |ONNX - PyTorch| heatmap error over {len(inputs)} inputs: {error:.2e}")
     if error > MAX_HEATMAP_ERROR:
