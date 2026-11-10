@@ -44,7 +44,9 @@ const config: Config = {
           path: '../docs',
           routeBasePath: 'docs',
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/sima-neat/models/edit/develop/docs/',
+          editUrl: ({docPath}) => docPath.startsWith('evidence/')
+            ? `https://github.com/sima-neat/models/edit/develop/docs/${docPath}`
+            : `https://github.com/sima-neat/model-tools/edit/main/docs/contributor-guide/${docPath}`,
         },
         blog: false,
         theme: {
