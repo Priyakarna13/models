@@ -354,8 +354,10 @@ def performance_scripts(*, components: bool) -> list[Path]:
 
 def custom_pipeline(script: Path) -> bool:
     """Custom pipelines time external CPU work; their model-local tests verify those per-frame steps."""
-    return any(isinstance(node, ast.FunctionDef) and node.name == "benchmark_pipeline"
-               for node in ast.parse(script.read_text()).body)
+    return any(
+        isinstance(node, ast.FunctionDef) and node.name == "benchmark_pipeline"
+        for node in ast.parse(script.read_text()).body
+    )
 
 
 def takes_images(script: Path) -> bool:
@@ -455,8 +457,11 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
     assert report["components"]["model"]["mla_stage_stats"] == CORE_REPORT["mla_stage_stats"]
 
 
-@pytest.mark.parametrize("script", [path for group in (False, True) for path in performance_scripts(components=group)
-                                  if custom_pipeline(path)], ids=lambda path: path.parents[1].name)
+@pytest.mark.parametrize(
+    "script",
+    [path for group in (False, True) for path in performance_scripts(components=group) if custom_pipeline(path)],
+    ids=lambda path: path.parents[1].name,
+)
 def test_every_custom_pipeline_script_keeps_cores_mla_stats(script, monkeypatch):
     requests = []
 

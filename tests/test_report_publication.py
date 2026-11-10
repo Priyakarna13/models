@@ -330,9 +330,13 @@ def test_runner_environment_filters_installed_packages_without_failing_on_unmatc
 ):
     rows = [f"{status}\t{name}\t{version}" for name, version in matching_packages.items()]
     rows += [
-        "ii \tunrelated\t1.0", "rc \tsimaai-removed\t2.0", "iU \tsimaai-unpacked\t2.0",
-        "iiR\tsimaai-reinstall-required\t2.0", "i \tsimaai-malformed-status\t2.0",
-        "ii \tsimaai-blank\t   ", "malformed-row",
+        "ii \tunrelated\t1.0",
+        "rc \tsimaai-removed\t2.0",
+        "iU \tsimaai-unpacked\t2.0",
+        "iiR\tsimaai-reinstall-required\t2.0",
+        "i \tsimaai-malformed-status\t2.0",
+        "ii \tsimaai-blank\t   ",
+        "malformed-row",
     ]
     calls = []
 
@@ -356,16 +360,22 @@ def test_runner_environment_filters_installed_packages_without_failing_on_unmatc
     assert environment["cpu_governor"] is None
     assert environment["mla_frequency_hz"] is None
     assert environment["cpu_frequency_khz"] is None
-    assert calls == [(
-        ["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\n"],
-        {"capture_output": True, "text": True, "check": True},
-    )]
+    assert calls == [
+        (
+            ["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\n"],
+            {"capture_output": True, "text": True, "check": True},
+        )
+    ]
 
 
-@pytest.mark.parametrize("error", [
-    subprocess.CalledProcessError(1, "dpkg-query"), subprocess.CalledProcessError(2, "dpkg-query"),
-    FileNotFoundError("dpkg-query"),
-])
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.CalledProcessError(1, "dpkg-query"),
+        subprocess.CalledProcessError(2, "dpkg-query"),
+        FileNotFoundError("dpkg-query"),
+    ],
+)
 def test_runner_environment_preserves_actual_package_query_errors(monkeypatch, error):
     def query(*args, **kwargs):
         raise error
