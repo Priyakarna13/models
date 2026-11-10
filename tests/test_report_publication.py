@@ -314,20 +314,24 @@ def test_publish_report_measures_each_dataset_apart(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "matching_packages",
+    ("status", "matching_packages"),
     [
-        {},
-        {"simaai-core:arm64": "0.6.0"},
-        {"simaai-core:arm64": "0.6.0", "libneat": "0.7.0", "simaai-neat-runtime": "1.2.3"},
+        ("ii ", {}),
+        ("ii ", {"simaai-core:arm64": "0.6.0"}),
+        ("ii ", {"simaai-core:arm64": "0.6.0", "libneat": "0.7.0", "simaai-neat-runtime": "1.2.3"}),
+        ("hi ", {"simaai-core:arm64": "0.6.0"}),
+        ("ri ", {"simaai-core:arm64": "0.6.0"}),
+        ("pi ", {"simaai-core:arm64": "0.6.0"}),
     ],
-    ids=["no-match", "one-pattern-only", "both-patterns"],
+    ids=["no-match", "one-pattern-only", "both-patterns", "held-installed", "remove-selected", "purge-selected"],
 )
 def test_runner_environment_filters_installed_packages_without_failing_on_unmatched_patterns(
-    monkeypatch, tmp_path, matching_packages
+    monkeypatch, tmp_path, status, matching_packages
 ):
-    rows = [f"ii \t{name}\t{version}" for name, version in matching_packages.items()]
+    rows = [f"{status}\t{name}\t{version}" for name, version in matching_packages.items()]
     rows += [
-        "ii \tunrelated\t1.0", "rc \tsimaai-removed\t2.0", "hi \tsimaai-held\t2.0",
+        "ii \tunrelated\t1.0", "rc \tsimaai-removed\t2.0", "iU \tsimaai-unpacked\t2.0",
+        "iiR\tsimaai-reinstall-required\t2.0", "i \tsimaai-malformed-status\t2.0",
         "ii \tsimaai-blank\t   ", "malformed-row",
     ]
     calls = []
