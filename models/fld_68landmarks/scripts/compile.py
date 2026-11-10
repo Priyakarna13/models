@@ -9,11 +9,11 @@ import math
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from afe.apis.defines import (
     CalibrationMethod,
     HistogramPercentileMethod,
     QuantizationParams,
+    SkipCalibration,
     bfloat16_scheme,
     gen2_target,
     quantization_scheme,
@@ -49,6 +49,34 @@ def calibration_method(parameters: dict[str, Any]) -> Any:
     return CalibrationMethod.from_str(name)
 
 
+def _quantization(parameters: dict[str, Any]) -> QuantizationParams:
+    """Keep each precision's calibration and per-token policy explicit."""
+    precision = str(parameters["precision"])
+    if precision == "w16a16":
+        return QuantizationParams(
+            calibration_method=SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=bfloat16_scheme(),
+            per_token_quant=False,
+        )
+    if precision == "w8a8":
+        return QuantizationParams(
+            calibration_method=calibration_method(parameters),
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            per_token_quant=False,
+        )
+    if precision == "w8a16":
+        # Preserve the qualified FAN calibration and per-token INT8-weight route.
+        return QuantizationParams(
+            calibration_method=calibration_method(parameters),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            per_token_quant=True,
+        )
+    raise ValueError(f"unsupported precision: {precision}")
+
+
 def _metadata() -> dict[str, Any]:
     return load_metadata(MODEL_DIR)
 
@@ -80,32 +108,18 @@ def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: P
     component_dir.mkdir(parents=True, exist_ok=False)
     importer = onnx_source(str(source), {input_name: input_shape}, {input_name: ScalarType.float32})
     loaded = load_model(importer, target=gen2_target)
-    int8_weights = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
     if calibrated:
         sample_count = int(parameters["calibration_samples"])
         LOG.info("Loading %d AFW calibration faces", sample_count)
         samples = calibration_samples(dataset, sample_count)
-        if precision == "w8a8":
-            activation_scheme = quantization_scheme(asymmetric=True, per_channel=False, bits=8)
-        else:
-            activation_scheme = bfloat16_scheme()
-        weight_scheme = int8_weights
+        data = convert_data_generator_to_iterable(DataGenerator({input_name: samples}))
     else:
-        # BF16 does not derive quantization ranges from representative data.
-        # The API still requires an iterable, so provide one deterministic NHWC sample.
-        samples = np.zeros((1, INPUT_SIZE, INPUT_SIZE, 3), dtype=np.float32)
-        activation_scheme = weight_scheme = bfloat16_scheme()
-    data = convert_data_generator_to_iterable(DataGenerator({input_name: samples}))
+        # BF16 has no ranges to fit; do not run observers on a dummy image.
+        data = None
     model_name = f"{MODEL_ID}_{variant_id}"
     quantized = loaded.quantize(
-        data,
-        QuantizationParams(
-            calibration_method=calibration_method(parameters),
-            activation_quantization_scheme=activation_scheme,
-            weight_quantization_scheme=weight_scheme,
-            # W8A16 scales each token's activations on its own before an INT8-weight operation.
-            per_token_quant=precision == "w8a16",
-        ),
+        calibration_data=data,
+        quantization_config=_quantization(parameters),
         model_name=model_name,
     )
     quantized.save(model_name=model_name, output_directory=str(component_dir))

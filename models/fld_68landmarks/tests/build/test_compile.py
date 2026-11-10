@@ -430,3 +430,37 @@ def test_public_contract_rejects_wrong_model_interface(bad):
         manifest["plugins"][0]["processor"] = "MLA"
     with pytest.raises(AssertionError):
         assert_fan_public_contract(manifest)
+
+
+def test_bf16_skips_observers_and_does_not_construct_dummy_data(load_script, monkeypatch, tmp_path):
+    recipe = load_script("compile")
+    calls = []
+    skip = object()
+    monkeypatch.setattr(recipe, "SkipCalibration", lambda: skip)
+    monkeypatch.setattr(recipe, "QuantizationParams", lambda **kwargs: kwargs)
+    monkeypatch.setattr(recipe, "calibration_method", lambda _: pytest.fail("BF16 must not fit ranges"))
+    monkeypatch.setattr(recipe, "calibration_samples", lambda *args: pytest.fail("BF16 must not load images"))
+    monkeypatch.setattr(recipe, "DataGenerator", lambda *args: pytest.fail("BF16 must pass None"))
+
+    class Loaded:
+        def quantize(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("observed quantize boundary")
+
+    monkeypatch.setattr(recipe, "load_model", lambda *args, **kwargs: Loaded())
+    with pytest.raises(RuntimeError, match="observed quantize boundary"):
+        recipe.compile_model(tmp_path / "source.onnx", tmp_path / "model", "w16a16", None)
+    assert calls[0]["calibration_data"] is None
+    assert calls[0]["quantization_config"]["calibration_method"] is skip
+    assert calls[0]["quantization_config"]["per_token_quant"] is False
+
+
+@pytest.mark.parametrize("precision,per_token", [("w8a8", False), ("w8a16", True)])
+def test_integer_profiles_keep_declared_calibration_and_token_policy(load_script, monkeypatch, precision, per_token):
+    recipe = load_script("compile")
+    method = object()
+    monkeypatch.setattr(recipe, "QuantizationParams", lambda **kwargs: kwargs)
+    monkeypatch.setattr(recipe, "calibration_method", lambda parameters: method)
+    actual = recipe._quantization({"precision": precision})
+    assert actual["calibration_method"] is method
+    assert actual["per_token_quant"] is per_token

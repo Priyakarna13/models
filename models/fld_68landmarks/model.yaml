@@ -58,6 +58,7 @@ build_profiles:
           precision: w8a16
           input_name: image
           input_shape: [1, 3, 256, 256]
+          # The pinned archive contains exactly eight calibration faces; use all of them.
           calibration_samples: 8
 
   # Candidate only: uncomment after fresh compiled-artifact, accuracy and whole-landmark performance qualification.
@@ -84,6 +85,6 @@ reference_metrics:
 - origin: fp32_baseline
   script: scripts/fp32_baseline_accuracy.py
   dataset: {id: afw-faces, split: test}
-  conditions: FP32 ONNX on ONNX Runtime 1.21.1 CPU; all 44 annotated faces in AFW test_data/; 256x256 ibug crops; radius-6.4 heatmap centroid; NME over the outer-eye-corner distance (points 36 and 45)
-  note: The pinned AFW face-crop subset, not full 300-W or a paper benchmark; 8 of the 44 faces also occur in the quantization calibration split.
+  conditions: FP32 ONNX on ONNX Runtime 1.21.1 CPU; all 44 annotated faces in AFW test_data/; 256x256 ibug crops; radius-6.4 heatmap centroid; NME over the outer-eye-corner distance (points 36 and 45); 8 of the 44 faces also occur in the quantization calibration split.
+  note: The pinned AFW face-crop subset, not full 300-W, an independent held-out set or a paper benchmark.
   metrics: {nme: 0.03292382306898405}
