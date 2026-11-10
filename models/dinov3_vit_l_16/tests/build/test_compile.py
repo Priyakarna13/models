@@ -175,7 +175,8 @@ def test_folding_turns_shape_computations_and_constants_into_initializers(
         [numpy_helper.from_array(weight_t, "weight_t")],
     )
     source, folded = tmp_path / "source.onnx", tmp_path / "folded.onnx"
-    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]), source)
+    # IR 10 is the newest that the registry's test environment, ONNX Runtime 1.21, loads.
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10), source)
 
     surgery.fold_constants(source, folded)
 
