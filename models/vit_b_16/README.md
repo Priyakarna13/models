@@ -15,7 +15,7 @@ most likely classes. The model runs as one component.
 
 **Input.** Resize the image straight to 224×224 with bilinear resampling,
 without keeping its aspect ratio or cropping. Scale the RGB values to 0–1,
-subtract 0.5, and divide by 0.5, so each value lies between −1 and 1. The reference scripts pass
+subtract 0.5, and divide by 0.5, so each value lies between −1 and 1. The accuracy script passes
 this image as a 224×224×3 (height, width, channel) float tensor, with Neat's
 resize, color conversion, and normalization turned off.
 

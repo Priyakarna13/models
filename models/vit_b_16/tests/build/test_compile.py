@@ -60,29 +60,6 @@ def test_preprocessing_resizes_straight_to_the_model_input(
     np.testing.assert_allclose(result[124, 112], blue, atol=1e-5)
 
 
-def test_calibration_stacks_every_cal_image_from_the_archive(
-    tmp_path: Path,
-    load_script: Callable[[str], ModuleType],
-) -> None:
-    calibration = load_script("calibration")
-    archive = _write_archive(
-        tmp_path / "cal.tar.gz",
-        {
-            "imagenet/cal2012/n01440764_1.JPEG": _png(300, 260),
-            "imagenet/cal2012/n01443537_1.JPEG": _png(260, 300),
-            "imagenet/cal2012.txt": b"n01440764_1.JPEG\nn01443537_1.JPEG\n",
-            "imagenet/val2012/ILSVRC2012_val_00000001.JPEG": _png(256, 256),
-        },
-    )
-
-    samples = calibration.calibration_samples(archive, 2)
-
-    assert samples.shape == (2, 224, 224, 3)
-    assert samples.dtype == np.float32
-    with pytest.raises(ValueError, match="calibration requires 3 images"):
-        calibration.calibration_samples(archive, 3)
-
-
 def test_split_names_read_an_extracted_directory_and_require_the_split(
     tmp_path: Path,
     load_script: Callable[[str], ModuleType],
@@ -129,6 +106,29 @@ def test_read_images_reports_a_missing_image(tmp_path: Path, load_script: Callab
         calibration.read_images(archive, ["imagenet/cal2012/a.JPEG", "imagenet/cal2012/b.JPEG"])
 
 
+def test_fidelity_selection_reads_the_cal_images_from_an_archive(
+    tmp_path: Path,
+    load_script: Callable[[str], ModuleType],
+) -> None:
+    calibration = load_script("calibration")
+    archive = _write_archive(
+        tmp_path / "cal.tar.gz",
+        {
+            "imagenet/cal2012/n01440764_1.JPEG": _png(300, 260),
+            "imagenet/cal2012/n01443537_1.JPEG": _png(260, 300),
+            "imagenet/cal2012.txt": b"n01440764_1.JPEG\nn01443537_1.JPEG\n",
+            "imagenet/val2012/ILSVRC2012_val_00000001.JPEG": _png(256, 256),
+        },
+    )
+    expected = ["imagenet/cal2012/n01440764_1.JPEG", "imagenet/cal2012/n01443537_1.JPEG"]
+    random.Random(42).shuffle(expected)
+
+    names = calibration.fidelity_names(archive, 42, 0, 2)
+
+    assert names == expected
+    assert set(calibration.read_images(archive, names)) == set(names)
+
+
 def test_fidelity_selection_is_the_declared_seeded_sample(
     tmp_path: Path,
     load_script: Callable[[str], ModuleType],
@@ -149,34 +149,43 @@ def test_fidelity_selection_is_the_declared_seeded_sample(
 @pytest.mark.parametrize("profile_id", ["w16a16", "w8a16"])
 def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], ModuleType], profile_id: str) -> None:
     recipe = load_script("compile")
-    parameters = recipe._variant(recipe._metadata(), profile_id)["parameters"]
+    parameters = recipe._parameters(profile_id)
 
     assert parameters["precision"] == profile_id
 
 
 def test_compile_rejects_an_undeclared_build_profile(load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
-    metadata = recipe._metadata()
 
-    assert metadata["numerical_fidelity"]["outputs"] == ["logits"]
     with pytest.raises(ValueError, match="exactly one build profile named 'w32a32'"):
-        recipe._variant(metadata, "w32a32")
+        recipe._parameters("w32a32")
 
 
-@pytest.mark.parametrize(
-    ("precision", "calibrates", "per_token"), [("w8a8", True, False), ("w8a16", False, True), ("w16a16", False, False)]
-)
-def test_quantization_calibrates_only_int8_activations(
-    load_script: Callable[[str], ModuleType], precision: str, calibrates: bool, per_token: bool
+def test_numerical_fidelity_compares_the_logits(load_script: Callable[[str], ModuleType]) -> None:
+    recipe = load_script("compile")
+
+    assert recipe.load_metadata(recipe.MODEL_DIR)["numerical_fidelity"]["outputs"] == ["logits"]
+
+
+@pytest.mark.parametrize(("precision", "per_token"), [("w8a16", True), ("w16a16", False)])
+def test_quantization_keeps_bf16_activations_without_calibration(
+    load_script: Callable[[str], ModuleType], precision: str, per_token: bool
 ) -> None:
     recipe = load_script("compile")
 
     recipe._quantization(precision)
 
     arguments = recipe.QuantizationParams.call_args.kwargs
-    calibration = recipe.CalibrationMethod.from_str.return_value if calibrates else recipe.SkipCalibration.return_value
-    assert arguments["calibration_method"] is calibration
+    assert arguments["calibration_method"] is recipe.SkipCalibration.return_value
+    assert arguments["activation_quantization_scheme"] is recipe.bfloat16_scheme.return_value
     assert arguments.get("per_token_quant", False) is per_token
+
+
+def test_quantization_rejects_an_undeclared_precision(load_script: Callable[[str], ModuleType]) -> None:
+    recipe = load_script("compile")
+
+    with pytest.raises(ValueError, match="unsupported precision 'w8a8'"):
+        recipe._quantization("w8a8")
 
 
 def test_bf16_builds_quantize_without_calibration_data(
@@ -186,7 +195,7 @@ def test_bf16_builds_quantize_without_calibration_data(
     recipe = load_script("compile")
 
     with pytest.raises(RuntimeError, match="expected exactly one MPK archive"):
-        recipe.compile_model(tmp_path / "model.onnx", tmp_path / "model", "w16a16", None)
+        recipe.compile_model(tmp_path / "model.onnx", tmp_path / "model", "w16a16")
     assert recipe.load_model.return_value.quantize.call_args.args[0] is None
 
 
@@ -196,13 +205,10 @@ def test_compile_rejects_an_undeclared_precision_before_compiling(
     load_script: Callable[[str], ModuleType],
 ) -> None:
     recipe = load_script("compile")
-    metadata = recipe._metadata()
-    profile = metadata["build_profiles"][0]
-    profile["components"][0]["parameters"]["precision"] = "fp32"
-    monkeypatch.setattr(recipe, "_metadata", lambda: metadata)
+    monkeypatch.setattr(recipe, "_parameters", lambda profile_id: {"precision": "fp32"})
 
-    with pytest.raises(ValueError, match="only the declared Modalix BF16 and INT8 variants"):
-        recipe.compile_model(tmp_path / "model.onnx", tmp_path / "model", profile["id"], None)
+    with pytest.raises(ValueError, match="only the declared w16a16 and w8a16 build profiles"):
+        recipe.compile_model(tmp_path / "model.onnx", tmp_path / "model", "w16a16")
     assert not (tmp_path / "model").exists()
 
 

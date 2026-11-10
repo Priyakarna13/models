@@ -79,15 +79,6 @@ def read_images(dataset: Path, names: Iterable[str]) -> dict[str, bytes]:
     return found
 
 
-def calibration_samples(dataset: Path, count: int) -> np.ndarray:
-    """Every calibration image, preprocessed and stacked in NHWC order."""
-    names = split_names(dataset, CALIBRATION_SPLIT)
-    if len(names) != count:
-        raise ValueError(f"calibration requires {count} images, but {dataset} has {len(names)}")
-    images = read_images(dataset, names)
-    return np.stack([preprocess_image(images[name]) for name in names])
-
-
 def fidelity_names(dataset: Path, seed: int, offset: int, samples: int) -> list[str]:
     """Calibration images for the fidelity comparison, selected as declared in model.yaml."""
     names = split_names(dataset, CALIBRATION_SPLIT)
