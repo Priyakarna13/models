@@ -60,7 +60,7 @@ architectures:
   gemma4:
     display_name: Gemma4
     paradigm: transformer
-    allowed_model_types: [llm]
+    allowed_model_types: [llm, vlm]
   lfm:
     display_name: LFM
     paradigm: transformer
