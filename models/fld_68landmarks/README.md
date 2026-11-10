@@ -31,7 +31,10 @@ Heatmap index i is landmark i of the iBUG 68-point scheme: 0–16 jaw, 17–26 e
 
 `scripts/performance.py` times a known face box through CPU cropping, model
 inference and landmark decoding. Face detection is excluded. A real AFW face is
-letterboxed into a 720p frame; Neat receives the prepared 256×256 crop. `--heatmap-only`
+letterboxed into a 720p frame; Neat receives the prepared 256×256 uint8 RGB crop
+and normalizes it to the same BF16 values as the reference float-tensor route.
+This image route requires BF16 model inputs; the source and accuracy evaluator
+retain the float-tensor interface above. `--heatmap-only`
 runs the older, narrower diagnostic separately. `scripts/fp32_baseline_accuracy.py`
 scores the exported ONNX with the same accuracy evaluator.
 

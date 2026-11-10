@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pytest
 from model_registry.model_tests import measured_shortfalls
 
 
@@ -29,11 +31,13 @@ def test_mla_stats_collected(performance: dict[str, Any]) -> None:
 
 def test_report_names_the_full_landmark_boundary(performance):
     workload = performance["workload"]
-    assert "CPU crop/resize/normalize" in workload and "landmark decode" in workload
+    assert "CPU crop/resize" in workload and "native BF16 normalization" in workload
+    assert "landmark decode" in workload
     assert "face detection excluded" in workload and "HEATMAP-ONLY" not in workload
     (component,) = performance["components"].values()
     (prepared,) = component["execution_plan"]["edges"][0]["tensors"]
-    assert prepared["shape"][-3:] == [256, 256, 3]  # 720p is outside the tensor-mode Neat graph.
+    assert prepared["shape"][-3:] == [256, 256, 3]  # 720p is outside the prepared-image Neat graph.
+    assert prepared["dtype"] == "uint8"
 
 
 def test_benchmark_maps_the_face_box_not_the_padding(load_script):
@@ -53,6 +57,86 @@ def test_benchmark_maps_the_face_box_not_the_padding(load_script):
 def test_diagnostic_input_capacity_is_real_720p(load_script):
     options = load_script("performance").image_options()
     assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (1280, 720)
+
+
+def test_prepared_crop_options_only_normalize_at_the_bf16_boundary(load_script):
+    script = load_script("performance")
+    options = script.prepared_rgb_options()
+    assert options.preprocess.kind == script.pyneat.InputKind.Image
+    assert options.preprocess.enable == options.preprocess.normalize.enable == script.pyneat.AutoFlag.On
+    assert options.preprocess.resize.enable == options.preprocess.color_convert.enable == script.pyneat.AutoFlag.Off
+    assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (256, 256)
+    assert options.preprocess.normalize.has_explicit_stats is True
+    assert options.preprocess.normalize.mean == [0.0] * 3
+    assert options.preprocess.normalize.stddev == [float(script.U8_BF16_STDDEV)] * 3
+
+
+def test_all_256_pixels_match_reference_bf16_round_to_nearest_even(load_script):
+    script = load_script("performance")
+    pixels = np.arange(256, dtype=np.float32)
+    # Independent reference: cast the unchanged normalized source to BF16 RNE.
+    bits = (pixels / np.float32(255)).view(np.uint32)
+    expected = ((bits + np.uint32(0x7FFF) + ((bits >> 16) & 1)) >> 16).astype(np.uint16)
+    # Existing Core public normalize stats -> multiplier -> EV74 BF16 truncation.
+    scale = np.float32(1.0 / (float(script.U8_BF16_STDDEV) * 255.0))
+    assert scale == np.float32(129 / 32768)
+    actual = ((pixels * scale).view(np.uint32) >> 16).astype(np.uint16)
+    np.testing.assert_array_equal(actual, expected)
+    # Negative control: ordinary FP32 1/255 is not equivalent through a truncating converter.
+    naive = ((pixels * np.float32(1 / 255)).view(np.uint32) >> 16).astype(np.uint16)
+    assert np.count_nonzero(naive != expected) == 254
+
+
+def test_prepare_input_preserves_exact_crop_bytes_and_declares_rgb(load_script, monkeypatch):
+    script = load_script("performance")
+    landmarks = load_script("landmarks")
+    image = np.random.default_rng(31).integers(0, 256, (47, 63, 3), dtype=np.uint8)
+    face_box = np.array([-5, -3, 37, 45])
+    reference, reference_box = landmarks.crop(image, face_box)
+    calls = []
+
+    def from_numpy(array, **kwargs):
+        calls.append((array, kwargs))
+        return "prepared-image"
+
+    monkeypatch.setattr(script.pyneat.Tensor, "from_numpy", from_numpy)
+    inputs, box = script.prepare_input(image, face_box)
+    assert inputs == ["prepared-image"]
+    ((pixels, kwargs),) = calls
+    assert pixels.dtype == np.uint8 and pixels.shape == (256, 256, 3)
+    np.testing.assert_array_equal(pixels.astype(np.float32) / np.float32(255), reference)
+    np.testing.assert_array_equal(box, reference_box)
+    assert kwargs == {
+        "copy": True,
+        "layout": script.pyneat.TensorLayout.HWC,
+        "image_format": script.pyneat.PixelFormat.RGB,
+    }
+
+
+@pytest.mark.parametrize(
+    ("dtype", "quant_needed"),
+    [("INT8", True), ("EVXX_FLOAT32", False), ("INT16", False), ("", False), ("EVXX_BFLOAT16", True)],
+)
+def test_prepared_crop_rejects_other_model_contracts_before_input_or_runner(
+    load_script, monkeypatch, tmp_path, dtype, quant_needed
+):
+    from types import SimpleNamespace
+
+    script = load_script("performance")
+    monkeypatch.setattr(script, "read_rgb", lambda _: "image")
+    monkeypatch.setattr(script, "benchmark_frame", lambda _: ("frame", "box"))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("a rejected model must not prepare tensors or build a runner")
+
+    model = SimpleNamespace(
+        preprocess_requirements=lambda: SimpleNamespace(output_dtype=dtype, quant_needed=quant_needed),
+        build=unexpected,
+    )
+    monkeypatch.setattr(script, "prepare_input", unexpected)
+    monkeypatch.setattr(script.pyneat, "Model", lambda *args: model)
+    with pytest.raises(ValueError, match="requires BF16 model inputs without quantization"):
+        script.benchmark_pipeline(Path("model"), Path("image"), tmp_path)
 
 
 def test_sequential_frame_includes_prepare_and_same_decode(load_script, monkeypatch):
@@ -98,7 +182,7 @@ def _throughput_fixture(script, monkeypatch, *, decode_failure=False, push_failu
     monkeypatch.setattr(script, "MIN_DURATION_S", 0)
     events = []
     box = np.array([0, 0, 10, 10])
-    monkeypatch.setattr(script, "crop", lambda frame, face: ("prepared", box))
+    monkeypatch.setattr(script, "crop_rgb", lambda frame, face: ("prepared", box))
     monkeypatch.setattr(script, "prepare_input", lambda frame, face: (events.append("prepare") or ["input"], box))
 
     def consume(tensors, output_box):
@@ -204,7 +288,14 @@ def test_benchmark_closes_runner_when_latency_raises(load_script, monkeypatch, t
     monkeypatch.setattr(script, "read_rgb", lambda _: "image")
     monkeypatch.setattr(script, "benchmark_frame", lambda _: ("frame", "box"))
     monkeypatch.setattr(script, "prepare_input", lambda *args: (["input"], "box"))
-    monkeypatch.setattr(script.pyneat, "Model", lambda *args: SimpleNamespace(build=lambda *a, **k: runner))
+    monkeypatch.setattr(
+        script.pyneat,
+        "Model",
+        lambda *args: SimpleNamespace(
+            preprocess_requirements=lambda: SimpleNamespace(output_dtype="EVXX_BFLOAT16", quant_needed=False),
+            build=lambda *a, **k: runner,
+        ),
+    )
 
     def failed(*args):
         raise RuntimeError("latency fault")

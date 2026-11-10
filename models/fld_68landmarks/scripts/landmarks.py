@@ -49,8 +49,8 @@ def crop_box(face_box: np.ndarray) -> np.ndarray:
     return result.astype(int)
 
 
-def crop(image_rgb: np.ndarray, face_box: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The model input [256, 256, 3] float32 in [0, 1] for one face, and its crop box in the image."""
+def crop_rgb(image_rgb: np.ndarray, face_box: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The exact resized [256, 256, 3] uint8 RGB crop, before normalization, and its box in the image."""
     if image_rgb.ndim != 3 or image_rgb.shape[2] != 3 or min(image_rgb.shape[:2]) <= 0:
         raise ValueError("face crop requires a nonempty HWC RGB image")
     if image_rgb.dtype != np.uint8:
@@ -60,7 +60,12 @@ def crop(image_rgb: np.ndarray, face_box: np.ndarray) -> tuple[np.ndarray, np.nd
     pad = [max(0, -top), max(0, bottom - image_rgb.shape[0]), max(0, -left), max(0, right - image_rgb.shape[1])]
     padded = cv2.copyMakeBorder(image_rgb, *pad, cv2.BORDER_CONSTANT, value=(0, 0, 0)) if any(pad) else image_rgb
     patch = padded[top + pad[0] : bottom + pad[0], left + pad[2] : right + pad[2]]
-    resized = cv2.resize(patch, (INPUT_SIZE, INPUT_SIZE))
+    return cv2.resize(patch, (INPUT_SIZE, INPUT_SIZE)), box
+
+
+def crop(image_rgb: np.ndarray, face_box: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The model input [256, 256, 3] float32 in [0, 1] for one face, and its crop box in the image."""
+    resized, box = crop_rgb(image_rgb, face_box)
     return resized.astype(np.float32) / np.float32(255), box
 
 

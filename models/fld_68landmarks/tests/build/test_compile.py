@@ -290,9 +290,15 @@ def test_border_crop_matches_original_numpy_padding(landmarks, view, bounds):
     pad = [max(0, -top), max(0, bottom - image.shape[0]), max(0, -left), max(0, right - image.shape[1])]
     padded = np.pad(image, ((pad[0], pad[1]), (pad[2], pad[3]), (0, 0)))
     patch = padded[top + pad[0] : bottom + pad[0], left + pad[2] : right + pad[2]]
-    expected = cv2.resize(patch, (256, 256)).astype(np.float32) / np.float32(255)
+    expected_rgb = cv2.resize(patch, (256, 256))
+    expected = expected_rgb.astype(np.float32) / np.float32(255)
     before = image.copy()
+    image.flags.writeable = False
+    rgb, rgb_box = landmarks.crop_rgb(image, face_box)
     actual, actual_box = landmarks.crop(image, face_box)
+    assert rgb.dtype == np.uint8
+    np.testing.assert_array_equal(rgb, expected_rgb)
+    np.testing.assert_array_equal(rgb_box, box)
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(actual_box, box)
     np.testing.assert_array_equal(image, before)
@@ -308,6 +314,13 @@ def test_decoder_rejects_malformed_or_nonfinite_heatmaps(landmarks, bad):
 def test_crop_rejects_invalid_face_boxes_before_allocation(landmarks, box):
     with pytest.raises(ValueError, match="box"):
         landmarks.crop(np.zeros((12, 16, 3), np.uint8), np.array(box))
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.int8, np.uint16])
+@pytest.mark.parametrize("name", ["crop", "crop_rgb"])
+def test_both_crop_interfaces_reject_non_uint8_pixels(landmarks, name, dtype):
+    with pytest.raises(ValueError, match="uint8 RGB pixels"):
+        getattr(landmarks, name)(np.zeros((12, 16, 3), dtype), np.array([0, 0, 16, 12]))
 
 
 def test_nme_rejects_zero_eye_distance(landmarks):

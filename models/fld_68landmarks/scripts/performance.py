@@ -1,7 +1,7 @@
 """Benchmark a known face box through FAN to final landmarks, with truthful CPU preprocessing.
 
-A seeded AFW face is placed in a 1280x720 RGB frame once. Each timed frame crops/resizes/normalizes it with the
-same CPU reference as accuracy.py, runs the 256x256 prepared tensor through Neat, then decodes the heatmaps.
+A seeded AFW face is placed in a 1280x720 RGB frame once. Each timed frame uses the same exact CPU crop/resize
+as accuracy.py, normalizes the prepared uint8 RGB crop to BF16 in Neat, then runs FAN and decodes its heatmaps.
 Face detection and image loading are excluded. The model execution plan therefore starts at a 256x256 crop,
 not at the external 720p frame. Native ROI preprocessing is not enabled until its numeric parity is qualified.
 The former 720p-to-heatmap benchmark can be run separately with --heatmap-only; its FPS is not this pipeline's FPS.
@@ -20,13 +20,19 @@ import cv2
 import model_report
 import numpy as np
 import pyneat
-from accuracy import heatmaps_of, tensor_options
-from landmarks import DATASET_ID, crop, dataset_path, decode
+from accuracy import heatmaps_of
+from landmarks import DATASET_ID, INPUT_SIZE, crop_rgb, dataset_path, decode
 
 SPLIT = "test_data"
 FRAME_WIDTH, FRAME_HEIGHT, FILL = 1280, 720, 114
 WARMUP_FRAMES, MEASURED_FRAMES, MIN_DURATION_S = 100, 1000, 60
 TIMEOUT_MS, QUEUE_DEPTH = 10000, 4
+
+# For every integer pixel u in [0,255], trunc_BF16(u * 129/32768) equals
+# RNE_BF16(float32(u) / 255). Neat ImagePreproc truncates BF16 while the tensor
+# cast rounds to nearest-even. This derived stddev makes its multiplier exactly
+# 129/32768; it is NOT general FP32 normalization or an INT8 recipe.
+U8_BF16_STDDEV = np.float32(32768 / (129 * 255))
 
 
 def sample_face(dataset: Path) -> Path:
@@ -74,9 +80,26 @@ def image_options():
 
 
 def prepare_input(frame, face_box):
-    patch, box = crop(frame, face_box)
-    tensor = pyneat.Tensor.from_numpy(patch, copy=True, layout=pyneat.TensorLayout.HWC)
+    patch, box = crop_rgb(frame, face_box)
+    tensor = pyneat.Tensor.from_numpy(
+        patch, copy=True, layout=pyneat.TensorLayout.HWC, image_format=pyneat.PixelFormat.RGB
+    )
     return [tensor], box
+
+
+def prepared_rgb_options():
+    """Normalize an already resized UInt8 crop to the reference BF16 values, with no native resize."""
+    options = pyneat.ModelOptions()
+    options.preprocess.kind = pyneat.InputKind.Image
+    options.preprocess.enable = pyneat.AutoFlag.On
+    options.preprocess.input_max_width = options.preprocess.input_max_height = INPUT_SIZE
+    options.preprocess.resize.enable = pyneat.AutoFlag.Off
+    options.preprocess.color_convert.enable = pyneat.AutoFlag.Off
+    options.preprocess.normalize.enable = pyneat.AutoFlag.On
+    options.preprocess.normalize.mean = [0.0] * 3
+    options.preprocess.normalize.stddev = [float(U8_BF16_STDDEV)] * 3
+    options.preprocess.normalize.has_explicit_stats = True
+    return options
 
 
 def consume_outputs(tensors, box):
@@ -120,7 +143,7 @@ def measure_throughput(runner, frame, face_box):
     result = None
     monitor = pyneat.TelemetryMonitor()
     # Every frame uses this same box. Its derivation still runs in prepare_input for each frame.
-    _, output_box = crop(frame, face_box)
+    _, output_box = crop_rgb(frame, face_box)
 
     def produce():
         nonlocal pushed
@@ -214,7 +237,10 @@ def mla_stats(mpk):
 
 def benchmark_pipeline(mpk, face, output):
     frame, face_box = benchmark_frame(read_rgb(face))
-    model = pyneat.Model(str(mpk), tensor_options())
+    model = pyneat.Model(str(mpk), prepared_rgb_options())
+    requirements = model.preprocess_requirements()
+    if requirements.output_dtype != "EVXX_BFLOAT16" or requirements.quant_needed:
+        raise ValueError("the prepared UInt8 crop route requires BF16 model inputs without quantization")
     run_options = pyneat.RunOptions()
     run_options.queue_depth = QUEUE_DEPTH
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
@@ -241,7 +267,8 @@ def benchmark_pipeline(mpk, face, output):
         mla_stage_stats={"model": stages},
         workload=(
             f"{DATASET_ID} {SPLIT}/{face.name}, 1280x720 RGB frame plus known face box; "
-            "timed CPU crop/resize/normalize -> 256x256 HWC tensor -> Neat inference -> landmark decode; "
+            "timed CPU crop/resize -> 256x256 RGB image -> native BF16 normalization -> Neat inference "
+            "-> landmark decode; "
             f"face detection excluded; {QUEUE_DEPTH} frames deep"
         ),
     )
