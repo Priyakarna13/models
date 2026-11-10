@@ -13,10 +13,10 @@ accuracy:
         nme: 0.03304
 performance:
   run_tests: true
-  # Historical heatmap-only references retained unchanged until the new face-box-to-landmarks workload is
-  # measured and its baseline is explicitly reviewed. They are not evidence of complete-pipeline throughput.
+  # Reviewed three-run medians for the complete known-face-box-to-landmarks workload.
+  # Historical heatmap-only 267.81/388.92 FPS measured a different, incomplete boundary.
   expected:
     w16a16:
-      throughput_fps: 267.8
+      throughput_fps: 193.37686029432484
     w8a16:
-      throughput_fps: 389.0
+      throughput_fps: 188.49828681446994
