@@ -7,7 +7,7 @@ modalities:
   inputs: [image]
   outputs: [embeddings]
 
-architecture: dino
+architecture: dinov3
 
 license:
   spdx: LicenseRef-DINOv3
