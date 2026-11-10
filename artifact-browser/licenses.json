@@ -14,6 +14,11 @@
     "summary": "Permissive license. Redistribution must keep the copyright notice and disclaimer.",
     "downloadable": true
   },
+  "LicenseRef-DINOv3": {
+    "name": "DINOv3 License",
+    "summary": "Meta's license with use restrictions. Redistribution must include a copy of the license, and the model may not be used for military, nuclear or other end uses that trade controls prohibit.",
+    "downloadable": true
+  },
   "LicenseRef-MagicLeap-Noncommercial-Research": {
     "name": "Magic Leap noncommercial research license",
     "summary": "Noncommercial research use only. The license does not permit redistribution, so SiMa.ai does not offer this model for download.",
