@@ -31,7 +31,7 @@ performance:
     w8a8:
       throughput_fps: 100.0
 """
-PERFORMANCE_TESTS = '''
+PERFORMANCE_TESTS = """
 def test_needs_no_output() -> None:
     assert True
 
@@ -39,7 +39,7 @@ def test_needs_no_output() -> None:
 def test_throughput_meets_its_minimum(performance, build_profile) -> None:
     assert build_profile == "w8a8"
     assert performance["metrics"]["throughput_fps"] >= 100
-'''
+"""
 
 
 @pytest.fixture
@@ -272,8 +272,10 @@ def test_a_test_with_its_own_fixture_of_a_stage_output_name_still_runs(model_dir
         ({"imagenet": {"top1_accuracy": 0.7601, "top5_accuracy": 0.95}, "coco": {"coco_map": 0.4}}, []),
         (
             {"imagenet": {"top1_accuracy": 0.7599, "top5_accuracy": 0.95}, "coco": {"coco_map": 0.3}},
-            ["imagenet: top1_accuracy 0.7599 is below 0.8 by more than 5%",
-             "coco: coco_map 0.3 is below 0.4 by more than 5%"],
+            [
+                "imagenet: top1_accuracy 0.7599 is below 0.8 by more than 5%",
+                "coco: coco_map 0.3 is below 0.4 by more than 5%",
+            ],
         ),
         (
             {"imagenet": {"top1_accuracy": 0.80}, "coco": {"coco_map": 0.4}},
@@ -323,9 +325,12 @@ def test_measured_shortfalls_allow_performance_its_own_drop_and_rise(tmp_path: P
 
 ACCURACY_MODEL = {
     "build_profiles": [{"id": "w8a8"}],
-    "accuracy": {"datasets": {
-        "imagenet": {"required_metrics": ["top1_accuracy"]}, "coco": {"required_metrics": ["coco_map"]},
-    }},
+    "accuracy": {
+        "datasets": {
+            "imagenet": {"required_metrics": ["top1_accuracy"]},
+            "coco": {"required_metrics": ["coco_map"]},
+        }
+    },
 }
 COCO = {"coco": {"coco_map": 0.4}}
 
@@ -376,8 +381,11 @@ def test_accuracy_expectations_give_each_measured_build_profile_its_required_met
 
 
 def test_accuracy_expectations_reject_a_declared_profile_that_is_not_measured(model_dir: Path) -> None:
-    model = {**ACCURACY_MODEL, "build_profiles": [{"id": "w8a8"}, {"id": "w16a16"}],
-             "accuracy": {**ACCURACY_MODEL["accuracy"], "build_profiles": ["w8a8"]}}
+    model = {
+        **ACCURACY_MODEL,
+        "build_profiles": [{"id": "w8a8"}, {"id": "w16a16"}],
+        "accuracy": {**ACCURACY_MODEL["accuracy"], "build_profiles": ["w8a8"]},
+    }
     tests = model_dir / "tests"
     (tests / "build").mkdir()
     (tests / "build" / "test_compile.py").write_text("", encoding="utf-8")
@@ -401,3 +409,33 @@ def test_accuracy_expectations_may_be_skipped_explicitly(model_dir: Path) -> Non
     )
 
     validate_model_tests(model_dir, ACCURACY_MODEL, ROOT / "schemas" / "model-tests.schema.json")
+
+
+def test_component_expectations_gate_each_result_without_combining(model_dir):
+    tests = {
+        "performance": {
+            "run_tests": True,
+            "expected": {
+                "w8a16": {
+                    "components": {
+                        "image_encoder": {"throughput_fps": 200.0},
+                        "text_encoder": {"throughput_fps": 600.0},
+                    }
+                }
+            },
+        }
+    }
+    (model_dir / "tests/tests.yaml").write_text(yaml.safe_dump(tests))
+    report = {
+        "scope": "components",
+        "components": {
+            "image_encoder": {"metrics": {"throughput_fps": 195.0}},
+            "text_encoder": {"metrics": {"throughput_fps": 500.0}},
+        },
+    }
+    shortfalls = measured_shortfalls(model_dir, "performance", "w8a16", report)
+    assert len(shortfalls) == 1 and shortfalls[0].startswith("text_encoder: throughput_fps")
+    report["components"]["text_encoder"]["metrics"]["throughput_fps"] = 600.0
+    assert measured_shortfalls(model_dir, "performance", "w8a16", report) == []
+    del report["components"]["image_encoder"]
+    assert measured_shortfalls(model_dir, "performance", "w8a16", report) == ["image_encoder was not measured"]
