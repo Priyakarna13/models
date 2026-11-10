@@ -52,6 +52,37 @@ build_profiles:
       model:
         parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32}
 
+  # Mixed-precision experiment, not for merge: W8A8 builds that run the named regions in BF16, measured against
+  # w16a16 and plain w8a8 to pick one. surgery.BF16_REGIONS lists each region's operations. The profile IDs name the
+  # regions so the candidates stay apart; the kept one becomes w8a8_mixed.
+  w8a8_mixed_attention:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, bf16_regions: [attention]}
+
+  w8a8_mixed_residual:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, bf16_regions: [residual]}
+
+  w8a8_mixed_attention_residual:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, bf16_regions: [attention, residual]}
+
+  w8a8_mixed_all:
+    calibration_dataset: yfcc100m-keypoints-cal
+    components:
+      model:
+        parameters:
+          precision: w8a8
+          calibration_bins: 2048
+          calibration_samples: 32
+          bf16_regions: [attention, residual, assignment]
+
   # W8A16 keeps 95.7% of the ONNX's matches, but Model Compiler 3.0.0's simulator check rejects it ("Check FAILED",
   # no MPK) with per-token quantization on, and every push would retry the failing compile. compile.py keeps its
   # recipe; uncomment the profile once the check passes.
