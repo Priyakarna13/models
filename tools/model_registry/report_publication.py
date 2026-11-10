@@ -128,7 +128,7 @@ def runner_environment() -> JsonObject:
         fields = line.split("\t", 2)
         if (
             len(fields) == 3
-            and fields[0] == "ii "
+            and fields[0][1:] == "i "  # Installed without errors, including packages selected on hold.
             and fields[2].strip()
             and any(fnmatchcase(fields[1], pattern) for pattern in ("*neat*", "simaai-*"))
         ):
