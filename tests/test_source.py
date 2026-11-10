@@ -108,11 +108,21 @@ def test_vulcan_conversion_pth_is_bounded_and_content_pinned() -> None:
     assert source.filename == "source.pth"
 
 
-@pytest.mark.parametrize("suffix", [
-    "latest/source.pth", "123-0/source.pth", "0-1/source.pth", "123-2/weights.pth",
-    "123-2/nested/source.pth", "123-2/source.pt", "123-2/source.pth?download=1",
-    "123-2/%73ource.pth", "123-2/../source.pth", "123-2/source-provenance.json",
-])
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "latest/source.pth",
+        "123-0/source.pth",
+        "0-1/source.pth",
+        "123-2/weights.pth",
+        "123-2/nested/source.pth",
+        "123-2/source.pt",
+        "123-2/source.pth?download=1",
+        "123-2/%73ource.pth",
+        "123-2/../source.pth",
+        "123-2/source-provenance.json",
+    ],
+)
 def test_vulcan_conversion_pth_rejects_unbounded_paths(suffix: str) -> None:
     uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{DIGEST}/{suffix}"
     with pytest.raises(SourcePolicyError):

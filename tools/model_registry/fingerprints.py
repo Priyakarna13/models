@@ -253,20 +253,24 @@ def benchmark_fingerprint(
     required = [f"{model_dir}/{SCRIPTS[stage]}", *(PERFORMANCE_TOOLING if stage == "performance" else ACCURACY_TOOLING)]
     optional = [f"{model_dir}/{ACCURACY_REQUIREMENTS}"] if stage == "accuracy" else []
     baseline = build_profile_for(model, build_profile_id).get("benchmark_baseline") if stage == "performance" else None
-    return _fingerprint({
-        "stage": stage,
-        "model_id": model_id,
-        "build_profile_id": build_profile_id,
-        "builds": {
-            component_id: {
-                "compile_run_id": builds[component_id]["run_id"],
-                "artifact_sha256": builds[component_id]["artifact_sha256"],
-            }
-            for component_id in components
-        },
-        stage: {key: value for key, value in model[stage].items() if key != "build_profiles"},
-        **({"benchmark_baseline": baseline} if baseline else {}),
-        **({"input_dataset": _performance_input_dataset(model, build_profile_id)} if stage == "performance" else {}),
-        "files": _file_digests(root, required, optional),
-        "runtime": resolve_benchmark_runtime(root),
-    })
+    return _fingerprint(
+        {
+            "stage": stage,
+            "model_id": model_id,
+            "build_profile_id": build_profile_id,
+            "builds": {
+                component_id: {
+                    "compile_run_id": builds[component_id]["run_id"],
+                    "artifact_sha256": builds[component_id]["artifact_sha256"],
+                }
+                for component_id in components
+            },
+            stage: {key: value for key, value in model[stage].items() if key != "build_profiles"},
+            **({"benchmark_baseline": baseline} if baseline else {}),
+            **(
+                {"input_dataset": _performance_input_dataset(model, build_profile_id)} if stage == "performance" else {}
+            ),
+            "files": _file_digests(root, required, optional),
+            "runtime": resolve_benchmark_runtime(root),
+        }
+    )
