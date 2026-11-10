@@ -255,7 +255,9 @@ async function checkCatalogLayouts(browser, url) {
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
         await page.locator('#task-filter').selectOption('visual_question_answering');
         await page.getByRole('heading', {name: 'Visual Question Answering', exact: true}).waitFor();
-        if (await page.locator('.catalog-model-link').count() !== 1 || await page.locator('.catalog-model-link').innerText() !== 'Qwen3.5-0.8B') throw new Error('multi-task model did not follow the selected task');
+        const answering = (await page.locator('.catalog-model-link').allInnerTexts()).sort();
+        const expected = names.filter(name => tasksByModel[name].includes('Visual Question Answering')).sort();
+        if (JSON.stringify(answering) !== JSON.stringify(expected)) throw new Error('multi-task model did not follow the selected task');
         await page.locator('#task-filter').selectOption('');
         await page.locator('#search').fill('no such model xyz');
         await page.getByRole('heading', {name: 'No matching models', exact: true}).waitFor();
