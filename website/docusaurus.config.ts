@@ -124,8 +124,9 @@ const config: Config = {
           title: 'Source',
           items: [
             {label: 'Models repository', href: 'https://github.com/sima-neat/models'},
+            {label: 'Contributor guide source', href: 'https://github.com/sima-neat/model-tools/tree/main/docs/contributor-guide'},
             {label: 'Dataset Registry', href: 'https://github.com/sima-neat/dataset'},
-            {label: 'Report a documentation issue', href: 'https://github.com/sima-neat/models/issues/new'},
+            {label: 'Report a documentation issue', href: 'https://github.com/sima-neat/model-tools/issues/new'},
           ],
         },
       ],
