@@ -7,13 +7,18 @@ a new post-training-quantized build, not recovery of the historical QAT export.
 
 ## Source contract
 
-`model.yaml` pins the original checkpoint by complete SHA-256 and byte count,
-and pins the converted ONNX published by the standard conversion workflow in
-run [40979330247](https://github.com/sima-neat/models/actions/runs/40979330247).
-The exporter records its pinned tool versions, ordered twelve-head interface,
-98-convolution structure and 70 BatchNorm folds. The converted source has full
-5,000-image source-validation evidence; no original-paper weight identity is
-claimed.
+`model.yaml` pins the original checkpoint by complete SHA-256 and byte count.
+The standard conversion workflow exports the full TorchVision forward pass,
+including preprocessing, decoding and suppression, to ONNX with `boxes`,
+`scores` and `labels` outputs. `compilation.source: conversion` selects that
+receipt-bound output; it does not pin the historical raw-head ONNX export.
+
+Conversion records its pinned tool versions and preserves 98 convolutions and
+70 BatchNorm operators. `surgery.py` owns the normalized-input/raw-head cut and
+BatchNorm folding, producing the ordered twelve-head compiler interface.
+The current full ONNX and prepared raw heads have full 5,000-image source-parity
+evidence against the original checkpoint; no original-paper weight identity
+is claimed.
 
 The original input contract normalizes RGB to [-1, 1] before 320×320 half-pixel
 bilinear resizing with no antialiasing. Source conversion and calibration keep
@@ -45,7 +50,9 @@ Torch and Pillow are needed by the source conversion/calibration environment,
 not by the native board accuracy entry point. Board accuracy requirements are
 listed in `requirements-accuracy.txt`.
 
-The latest matched runtime passed the canonical Python accuracy stages on all
+The measurements below are historical local qualification results from before
+the current conversion/surgery split, not acceptance of the current artifacts.
+That matched runtime passed the canonical Python accuracy stages on all
 5,000 validation images for both V3 profiles: BF16 mAP was 0.2118402269 and INT8
 mAP was 0.2035257312. All twelve COCO metrics passed for each profile, including
 the unchanged source mAP reference of 0.2126872437 with the repository's 5%
@@ -72,7 +79,7 @@ The customer workload is a seeded real COCO image in a 1280×720 RGB frame,
 native preprocessing and source-multiclass SSD decode, threshold 0.2, IoU 0.6
 and top-100. It runs through the public `performance.py` entry point and the
 shared `scripts/run_model_performance.sh`, with real Sentinel telemetry,
-execution plans, stage statistics and MLA profiling. The latest optimized
+execution plans, stage statistics and MLA profiling. The historical optimized
 runtime completed the canonical performance workflow at 683.91 FPS (BF16) and
 1,835.97 FPS (INT8), including genuine sampled power. Both the shared regression
 gates and the additional 1,700 FPS INT8 floor passed without relaxed tolerances.
@@ -80,9 +87,9 @@ The matched V1 and V2 INT8 results were 1,808.50 and 1,711.10 FPS. V2 has only
 11.10 FPS of margin above the floor; this qualification is not a repeatability
 claim or a guarantee for every image.
 
-The full-data accuracy and performance stages used the same MPK per profile and
-the same Core/Runner/Scheduler/Kernels cohort. The canonical performance reports
-include whole-pipeline measurements, execution plans and separate MLA diagnostic
+Those historical full-data accuracy and performance stages used the same MPK
+per profile and the same Core/Runner/Scheduler/Kernels cohort. The canonical
+performance reports include whole-pipeline measurements, execution plans and separate MLA diagnostic
 profiling; the MLA diagnostics are not loaded PRE/MLA/POST attribution. Local
 validation does not replace publication of matching dependencies and models.
 Do not replace canonical evidence with direct calls to `benchmark()` or external
