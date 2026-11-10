@@ -29,14 +29,12 @@ Pass the crop as `image`, a 256×256×3 (height, width, channel) float tensor.
 
 Heatmap index i is landmark i of the iBUG 68-point scheme: 0–16 jaw, 17–26 eyebrows, 27–35 nose, 36–47 eyes, 48–67 mouth.
 
-`scripts/performance.py` times a known face box through CPU cropping, model
-inference and landmark decoding. Face detection is excluded. A real AFW face is
-letterboxed into a 720p frame; Neat receives the prepared 256×256 uint8 RGB crop
-and normalizes it to the same BF16 values as the reference float-tensor route.
-This image route requires BF16 model inputs; the source and accuracy evaluator
-retain the float-tensor interface above. `--heatmap-only`
-runs the older, narrower diagnostic separately. `scripts/fp32_baseline_accuracy.py`
-scores the exported ONNX with the same accuracy evaluator.
+`scripts/performance.py` measures CPU cropping, native normalization, inference and
+landmark decoding; face detection is excluded. A real AFW face is letterboxed to
+720p. Neat receives the prepared uint8 crop and reproduces the reference BF16
+inputs. This route requires BF16; calibration and accuracy keep the float-tensor
+interface. `--heatmap-only` runs the narrower diagnostic separately.
+`scripts/fp32_baseline_accuracy.py` scores the exported ONNX with the same evaluator.
 
 ## Building applications
 
