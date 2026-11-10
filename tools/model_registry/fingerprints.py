@@ -129,20 +129,10 @@ def _component_compile_projection(component: dict[str, Any]) -> dict[str, Any]:
     return {"id": component["id"], "source": source}
 
 
-def _binding_compile_projection(
-    model: dict[str, Any], binding: dict[str, Any]
-) -> dict[str, Any]:
+def _binding_compile_projection(model: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
     return {
-        **{
-            key: binding[key]
-            for key in ("id", "parameters")
-            if key in binding
-        },
-        **(
-            {"calibration": _calibration_projection(model, binding)}
-            if binding.get("calibration") is not None
-            else {}
-        ),
+        **{key: binding[key] for key in ("id", "parameters") if key in binding},
+        **({"calibration": _calibration_projection(model, binding)} if binding.get("calibration") is not None else {}),
     }
 
 
@@ -163,13 +153,9 @@ def compile_fingerprint(
     model = load_and_validate_model(root / "models" / model_id, root / "schemas" / "model.schema.json")
     try:
         profile = next(item for item in model["build_profiles"] if item["id"] == profile_id)
-        invocation = next(
-            item for item in compile_invocations_for(profile) if item["id"] == compile_invocation_id
-        )
+        invocation = next(item for item in compile_invocations_for(profile) if item["id"] == compile_invocation_id)
     except StopIteration as exc:
-        raise ValidationError(
-            f"unknown compile invocation: {model_id}/{profile_id}/{compile_invocation_id}"
-        ) from exc
+        raise ValidationError(f"unknown compile invocation: {model_id}/{profile_id}/{compile_invocation_id}") from exc
     from .conversion import apply_selection
 
     apply_selection(model, conversion_sources, root=root)
@@ -177,17 +163,19 @@ def compile_fingerprint(
     bindings = {item["id"]: item for item in profile["components"]}
     if any(components[item]["interface"]["format"] == "huggingface" for item in invocation["components"]):
         # LLiMa recipes orchestrate a pinned compiler; graph options belong in parameters.
-        return _fingerprint({
-            "compiler_version": compiler,
-            "target": profile["target"],
-            "components": [
-                {
-                    "source_sha256": source_identity(components[component_id]["source"]),
-                    "parameters": bindings[component_id]["parameters"],
-                }
-                for component_id in invocation["components"]
-            ],
-        })
+        return _fingerprint(
+            {
+                "compiler_version": compiler,
+                "target": profile["target"],
+                "components": [
+                    {
+                        "source_sha256": source_identity(components[component_id]["source"]),
+                        "parameters": bindings[component_id]["parameters"],
+                    }
+                    for component_id in invocation["components"]
+                ],
+            }
+        )
     identity = {
         "model_id": model_id,
         "compile_invocation": {

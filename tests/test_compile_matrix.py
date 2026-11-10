@@ -45,16 +45,15 @@ def _declare_grouped_invocation(model: dict) -> None:
     second["id"] = "second_model"
     model["components"].append(second)
     model["build_profiles"][0]["components"].append({"id": "second_model", "parameters": {}})
-    model["build_profiles"][0]["compile_invocations"] = [
-        {"id": "fixture", "components": ["model", "second_model"]}
-    ]
+    model["build_profiles"][0]["compile_invocations"] = [{"id": "fixture", "components": ["model", "second_model"]}]
 
 
 def _declare_components(model: dict) -> None:
     """Make the authored fixture compile two components."""
     model["compilation"]["components"] = ["backbone", "decoder"]
     model["build_profiles"]["fixture"]["components"] = {
-        "backbone": {"parameters": {}}, "decoder": {"parameters": {}},
+        "backbone": {"parameters": {}},
+        "decoder": {"parameters": {}},
     }
 
 
@@ -67,9 +66,7 @@ def model_repository(tmp_path: Path) -> Path:
     for schema in (SCHEMA, MODEL_TESTS_SCHEMA, ROOT / "schemas" / "dataset-requirements.schema.json"):
         (tmp_path / "schemas" / schema.name).write_text(schema.read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "taxonomies").mkdir()
-    (tmp_path / "taxonomies" / "model-taxonomy.yaml").write_text(
-        TAXONOMY.read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    (tmp_path / "taxonomies" / "model-taxonomy.yaml").write_text(TAXONOMY.read_text(encoding="utf-8"), encoding="utf-8")
     shutil.copytree(ROOT / "datasets", tmp_path / "datasets")
     (tmp_path / "deps").mkdir()
     (tmp_path / "deps" / "manifest.json").write_text(
@@ -99,13 +96,17 @@ def test_discovery_and_matrix_are_stable(model_repository: Path) -> None:
 
 
 def test_matrix_entries_carry_the_stages_each_profile_benchmarks() -> None:
-    models = {model_id: load_and_validate_model(ROOT / "models" / model_id, SCHEMA)
-              for model_id in ("resnet_50", "rf_detr_small", "qwen3_5_0_8b")}
+    models = {
+        model_id: load_and_validate_model(ROOT / "models" / model_id, SCHEMA)
+        for model_id in ("resnet_50", "rf_detr_small", "qwen3_5_0_8b")
+    }
 
     matrix = build_matrix(models, sorted(models))
 
-    assert [(entry["model_id"], entry["compile_invocation_id"], entry["component_ids"], entry["stages"])
-            for entry in matrix["include"]] == [
+    assert [
+        (entry["model_id"], entry["compile_invocation_id"], entry["component_ids"], entry["stages"])
+        for entry in matrix["include"]
+    ] == [
         ("qwen3_5_0_8b", "w4a16", ["model"], []),
         ("resnet_50", "w16a16", ["model"], ["performance", "accuracy"]),
         ("resnet_50", "w8a16", ["model"], ["performance", "accuracy"]),
@@ -160,9 +161,7 @@ def test_matrix_emits_one_row_per_declared_compile_invocation(model_repository: 
 
 
 @pytest.mark.parametrize("component_id", ["model", "second_model"])
-def test_component_filter_selects_the_full_compile_invocation(
-    model_repository: Path, component_id: str
-) -> None:
+def test_component_filter_selects_the_full_compile_invocation(model_repository: Path, component_id: str) -> None:
     models = load_models(model_repository)
     _declare_grouped_invocation(models["alpha"])
 
@@ -302,6 +301,24 @@ def test_compile_fingerprint_ignores_display_name_and_description(model_reposito
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
 
+RELICENSED = {
+    "spdx": "LicenseRef-MagicLeap-Noncommercial-Research",
+    "redistribution": "restricted",
+    "attribution": "Relicensed fixture.",
+}
+
+
+def test_compile_fingerprint_ignores_the_license(model_repository: Path) -> None:
+    manifest = model_repository / "models" / "alpha" / "model.yaml"
+    first = _fingerprint(model_repository, "alpha", "2.1.3")
+    model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    assert model["license"] != RELICENSED
+    model["license"] = RELICENSED
+    manifest.write_text(yaml.safe_dump(model), encoding="utf-8")
+
+    assert _fingerprint(model_repository, "alpha", "2.1.3") == first
+
+
 RF_DETR_BUILDS = {
     component_id: {"run_id": f"run-{component_id}", "artifact_sha256": "a" * 64}
     for component_id in ("backbone", "decoder")
@@ -314,6 +331,16 @@ def test_benchmark_fingerprints_ignore_display_name_and_description(stage: str) 
     renamed = {**model, "display_name": "Renamed", "description": "A rewritten one-line catalog description."}
 
     assert benchmark_fingerprint(ROOT, renamed, "w8a8_w16a16", RF_DETR_BUILDS, stage) == benchmark_fingerprint(
+        ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, stage
+    )
+
+
+@pytest.mark.parametrize("stage", ["performance", "accuracy"])
+def test_benchmark_fingerprints_ignore_the_license(stage: str) -> None:
+    model = load_and_validate_model(ROOT / "models" / "rf_detr_small", SCHEMA)
+    relicensed = {**model, "license": RELICENSED}
+
+    assert benchmark_fingerprint(ROOT, relicensed, "w8a8_w16a16", RF_DETR_BUILDS, stage) == benchmark_fingerprint(
         ROOT, model, "w8a8_w16a16", RF_DETR_BUILDS, stage
     )
 
@@ -401,8 +428,16 @@ def test_performance_fingerprint_ignores_unselected_data_and_accuracy_requiremen
 
 def _copy_repository(repository: Path, model_id: str) -> Path:
     """Copy what the model's fingerprints read into ``repository``; return the copied model directory."""
-    for relative in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools", ".github/workflows",
-                     f"models/{model_id}"):
+    for relative in (
+        "schemas",
+        "taxonomies",
+        "datasets",
+        "deps",
+        "scripts",
+        "tools",
+        ".github/workflows",
+        f"models/{model_id}",
+    ):
         shutil.copytree(ROOT / relative, repository / relative, ignore=shutil.ignore_patterns("__pycache__"))
     return repository / "models" / model_id
 
@@ -446,8 +481,10 @@ def test_accuracy_fingerprint_covers_the_model_datasets_and_their_requirements(t
         "another task's requirement": edit(
             coco, lambda d: d["required_metrics"]["pose_estimation"].append("coco_keypoint_ap50")
         ),
-        "another dataset file": edit(tmp_path / "datasets" / "imagenet-2012.yaml",
-                                     lambda d: d["required_metrics"]["image_classification"].append("top5_accuracy")),
+        "another dataset file": edit(
+            tmp_path / "datasets" / "imagenet-2012.yaml",
+            lambda d: d["required_metrics"]["image_classification"].append("top5_accuracy"),
+        ),
         "the build profiles": edit(manifest, lambda d: d["accuracy"].update(build_profiles=["w8a8_w16a16"])),
     }
 
@@ -462,12 +499,19 @@ def test_fingerprints_ignore_the_models_tests(tmp_path: Path) -> None:
 
     def fingerprints() -> list[str]:
         model = load_and_validate_model(model_dir, repository / "schemas" / "model.schema.json")
-        selected = {"rf_detr_small": {
-            "sha256": "a" * 64, "conversion_fingerprint": conversion_fingerprint(repository, model),
-        }}
+        selected = {
+            "rf_detr_small": {
+                "sha256": "a" * 64,
+                "conversion_fingerprint": conversion_fingerprint(repository, model),
+            }
+        }
         return [
             compile_fingerprint(
-                repository, "rf_detr_small", "w8a8_w16a16", "w8a8_w16a16", COMPILER_VERSION,
+                repository,
+                "rf_detr_small",
+                "w8a8_w16a16",
+                "w8a8_w16a16",
+                COMPILER_VERSION,
                 conversion_sources=selected,
             ),
             benchmark_fingerprint(repository, model, "w8a8_w16a16", RF_DETR_BUILDS, "performance"),
@@ -496,6 +540,7 @@ def test_matrix_records_fingerprints_without_catalog_carry_forward(model_reposit
     assert {entry["model_id"] for entry in matrix["include"]} == {"alpha", "bravo"}
     assert all(len(entry["compile_fingerprint"]) == 64 for entry in matrix["include"])
 
+
 @pytest.mark.parametrize("source", ["base", "target", "stale", "missing", "forbidden"])
 def test_publish_fresh_branch_reuses_only_compatible_catalog_runs(model_repository: Path, source: str) -> None:
     models = load_models(model_repository)
@@ -505,17 +550,26 @@ def test_publish_fresh_branch_reuses_only_compatible_catalog_runs(model_reposito
         repository=model_repository,
         compiler_version=COMPILER_VERSION,
     )
-    prior = {"models": [
-        {"id": model_id, "builds": [
+    prior = {
+        "models": [
             {
-                "build_profile_id": entry["build_profile_id"], "component_id": component_id,
-                "compile_fingerprint": entry["compile_fingerprint"], "artifact_sha256": "a" * 64,
-                "run_id": f"run-{model_id}-{component_id}",
+                "id": model_id,
+                "builds": [
+                    {
+                        "build_profile_id": entry["build_profile_id"],
+                        "component_id": component_id,
+                        "compile_fingerprint": entry["compile_fingerprint"],
+                        "artifact_sha256": "a" * 64,
+                        "run_id": f"run-{model_id}-{component_id}",
+                    }
+                    for entry in matrix["include"]
+                    if entry["model_id"] == model_id
+                    for component_id in entry["component_ids"]
+                ],
             }
-            for entry in matrix["include"] if entry["model_id"] == model_id
-            for component_id in entry["component_ids"]
-        ]} for model_id in models
-    ]}
+            for model_id in models
+        ]
+    }
     if source == "stale":
         prior["models"][0]["builds"][0]["compile_fingerprint"] = "0" * 64
     reads, writes = [], []
@@ -534,10 +588,15 @@ def test_publish_fresh_branch_reuses_only_compatible_catalog_runs(model_reposito
 
     def publish():
         return publish_catalog(
-            repository=model_repository, api_url="https://writer.example.invalid",
-            read_api_url="https://reader.example.invalid", aws_region="us-west-2",
-            branch="feat/names", base_branches=["develop"], git_sha="b" * 40,
-            request=write, read_request=read,
+            repository=model_repository,
+            api_url="https://writer.example.invalid",
+            read_api_url="https://reader.example.invalid",
+            aws_region="us-west-2",
+            branch="feat/names",
+            base_branches=["develop"],
+            git_sha="b" * 40,
+            request=write,
+            read_request=read,
         )
 
     if source == "forbidden":
@@ -558,11 +617,13 @@ def test_publish_fresh_branch_reuses_only_compatible_catalog_runs(model_reposito
                     assert build["run_id"] == old_build["run_id"]
                     assert build["artifact_sha256"] == old_build["artifact_sha256"]
                     assert build["compile_fingerprint"] == old_build["compile_fingerprint"]
-        assert writes == [{
-            "initialize": True,
-            "previous_snapshot": None,
-            "catalog": result["catalog"],
-        }]
+        assert writes == [
+            {
+                "initialize": True,
+                "previous_snapshot": None,
+                "catalog": result["catalog"],
+            }
+        ]
     assert reads[0].endswith("git_ref=refs%2Fheads%2Ffeat%2Fnames")
     if source == "forbidden":
         assert len(reads) == 1
@@ -593,12 +654,16 @@ def test_compile_fingerprint_ignores_board_stage_and_conversion_files(model_repo
     assert _fingerprint(model_repository, "alpha", "2.1.3") == first
 
 
-def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(model_repository: Path) -> None:
+@pytest.mark.parametrize("scope", [None, "components"])
+def test_compile_fingerprint_ignores_performance_and_accuracy_declarations(
+    model_repository: Path,
+    scope: str | None,
+) -> None:
     manifest = model_repository / "models" / "alpha" / "model.yaml"
     first = _fingerprint(model_repository, "alpha", "2.1.3")
 
     model = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    model["performance"] = {}
+    model["performance"] = {"scope": scope} if scope else {}
     model["accuracy"] = {"datasets": [dict(DATASET)]}
     manifest.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     (manifest.parent / "scripts" / "performance.py").write_text("report = model.benchmark()\n", encoding="utf-8")
@@ -651,9 +716,13 @@ def test_compile_tooling_is_scoped_to_backend(tmp_path, relative, onnx_changed):
     assert (before[1] != after[1]) == onnx_changed
 
 
-@pytest.mark.parametrize(("model_id", "profile_id"), [
-    ("qwen3_5_0_8b", "w4a16"), ("resnet_50", "w16a16"),
-])
+@pytest.mark.parametrize(
+    ("model_id", "profile_id"),
+    [
+        ("qwen3_5_0_8b", "w4a16"),
+        ("resnet_50", "w16a16"),
+    ],
+)
 def test_checkpoint_repository_name_does_not_change_compile_fingerprint(tmp_path, model_id, profile_id):
     for folder in ("schemas", "taxonomies", "datasets", "deps", "scripts", "tools", f"models/{model_id}"):
         shutil.copytree(ROOT / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
@@ -668,15 +737,18 @@ def test_checkpoint_repository_name_does_not_change_compile_fingerprint(tmp_path
     assert compile_fingerprint(tmp_path, model_id, profile_id, profile_id, "compiler") == before
 
 
-@pytest.mark.parametrize(("setting", "value"), [
-    ("source", "a" * 64),
-    ("compiler", "3.0.0+develop.111111111111"),
-    ("precision", "a16w8"),
-    ("max_num_tokens", 8192),
-    ("language_group_size", 64),
-    ("input_height", 512),
-    ("input_width", 640),
-])
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("source", "a" * 64),
+        ("compiler", "3.0.0+develop.111111111111"),
+        ("precision", "a16w8"),
+        ("max_num_tokens", 8192),
+        ("language_group_size", 64),
+        ("input_height", 512),
+        ("input_width", 640),
+    ],
+)
 def test_llima_compile_fingerprint_tracks_source_compiler_and_graph_settings(tmp_path, setting, value):
     model_id = "qwen3_5_0_8b"
     for folder in ("schemas", "taxonomies", "datasets", f"models/{model_id}"):
@@ -754,12 +826,25 @@ def test_benchmark_baseline_changes_only_its_profiles_performance_fingerprint():
     assert benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "performance") == before
 
 
+def test_performance_scope_changes_performance_fingerprint_without_changing_accuracy():
+    model = load_and_validate_model(ROOT / "models/rf_detr_small")
+    builds = {name: {"run_id": name, "artifact_sha256": "a" * 64} for name in ("backbone", "decoder")}
+    before = benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "performance")
+    accuracy = benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "accuracy")
+
+    model["performance"]["scope"] = "components"
+
+    assert benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "performance") != before
+    assert benchmark_fingerprint(ROOT, model, "w8a8_w16a16", builds, "accuracy") == accuracy
+
+
 def test_yolo26x_pose_requests_moderate_on_demand():
     model = load_and_validate_model(ROOT / "models/yolo26x_pose", SCHEMA)
     entries = build_matrix({"yolo26x_pose": model}, ["yolo26x_pose"])["include"]
-    assert {entry["build_profile_id"]: (
-        entry["requested_runner_class"], entry["requested_runner_market"]
-    ) for entry in entries} == {
+    assert {
+        entry["build_profile_id"]: (entry["requested_runner_class"], entry["requested_runner_market"])
+        for entry in entries
+    } == {
         "w8a16": ("moderate", "on-demand"),
         "w8a8": ("default", "spot"),
         "w16a16": ("default", "spot"),
