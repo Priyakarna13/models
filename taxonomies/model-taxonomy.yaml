@@ -1,5 +1,7 @@
 
 model_types:
+  audio:
+    display_name: Audio
   vision:
     display_name: Vision
   llm:
@@ -28,92 +30,134 @@ modalities:
     display_name: Embeddings
   landmarks:
     display_name: Landmarks
+  keypoints:
+    display_name: Keypoints
+  keypoint_matches:
+    display_name: Keypoint Matches
 
+# An architecture is the network design a family is built on. Keep it coarse.
 architecture_paradigms:
   cnn:
     display_name: CNN
-  encoder_transformer:
-    display_name: Encoder Transformer
-  decoder_transformer:
-    display_name: Decoder Transformer
-  multimodal_transformer:
-    display_name: Multimodal Transformer
+  transformer:
+    display_name: Transformer
 
+# A family is the upstream model line, named without size (YOLO26-det, not
+# YOLO26n-det). The model's id and display_name carry the size.
 architectures:
-  resnet_50:
-    display_name: ResNet-50
+  clip:
+    display_name: CLIP
+    paradigm: transformer
+    allowed_model_types: [vlm]
+  depthart:
+    display_name: DepthART
+    paradigm: transformer
+    allowed_model_types: [vision]
+  dla:
+    display_name: DLA
+    paradigm: cnn
+    allowed_model_types: [vision]
+  efficientsam3:
+    display_name: EfficientSAM3
+    paradigm: transformer
+    allowed_model_types: [vision]
+  gemma4:
+    display_name: Gemma4
+    paradigm: transformer
+    allowed_model_types: [llm, vlm]
+  lfm:
+    display_name: LFM
+    paradigm: transformer
+    allowed_model_types: [llm]
+  lightglue:
+    display_name: LightGlue
+    paradigm: transformer
+    allowed_model_types: [vision]
+  llama:
+    display_name: Llama
+    paradigm: transformer
+    allowed_model_types: [llm]
+  llava:
+    display_name: LLaVA
+    paradigm: transformer
+    allowed_model_types: [vlm]
+  mistral:
+    display_name: Mistral
+    paradigm: transformer
+    allowed_model_types: [llm]
+  phi:
+    display_name: Phi
+    paradigm: transformer
+    allowed_model_types: [llm]
+  qwen3_5:
+    display_name: Qwen3.5
+    paradigm: transformer
+    allowed_model_types: [llm, vlm]
+  resnet:
+    display_name: ResNet
+    paradigm: cnn
+    allowed_model_types: [vision]
+  resnext:
+    display_name: ResNeXt
     paradigm: cnn
     allowed_model_types: [vision]
   rf_detr:
     display_name: RF-DETR
-    paradigm: encoder_transformer
+    paradigm: transformer
     allowed_model_types: [vision]
-  ssd_mobilenet_v1:
-    display_name: SSD-MobileNet V1
+  superpoint:
+    display_name: SuperPoint
     paradigm: cnn
     allowed_model_types: [vision]
-  ssd_mobilenet_v2:
-    display_name: SSD-MobileNet V2
+  superglue:
+    display_name: SuperGlue
+    paradigm: transformer
+    allowed_model_types: [vision]
+  whisper:
+    display_name: Whisper
+    paradigm: transformer
+    allowed_model_types: [audio]
+  wide_resnet:
+    display_name: Wide ResNet
     paradigm: cnn
     allowed_model_types: [vision]
-  ssdlite_mobilenet_v3_large:
-    display_name: SSDLite-MobileNet V3 Large
+  yolo11_det:
+    display_name: YOLO11-det
     paradigm: cnn
     allowed_model_types: [vision]
-  yolo_26:
-    display_name: YOLO26
+  yolo11_obb:
+    display_name: YOLO11-obb
     paradigm: cnn
     allowed_model_types: [vision]
-  depthart:
-    display_name: DepthART
-    paradigm: encoder_transformer
+  yolo26_det:
+    display_name: YOLO26-det
+    paradigm: cnn
     allowed_model_types: [vision]
-  efficientsam3:
-    display_name: EfficientSAM3
-    paradigm: multimodal_transformer
+  yolo26_obb:
+    display_name: YOLO26-obb
+    paradigm: cnn
     allowed_model_types: [vision]
-  gemma_3:
-    display_name: Gemma 3
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  lfm2:
-    display_name: LFM2
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  llama_2:
-    display_name: Llama 2
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  llama_3_1:
-    display_name: Llama 3.1
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  llava_1_5:
-    display_name: LLaVA 1.5
-    paradigm: multimodal_transformer
-    allowed_model_types: [vlm]
-  mistral_1:
-    display_name: Mistral 1
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  phi_3_5_mini:
-    display_name: Phi 3.5 Mini
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  qwen_2_5:
-    display_name: Qwen 2.5
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  qwen_3:
-    display_name: Qwen 3
-    paradigm: decoder_transformer
-    allowed_model_types: [llm]
-  clip_vit_l_14:
-    display_name: CLIP ViT-L/14
-    paradigm: encoder_transformer
-    allowed_model_types: [vlm]
+  yolo26_pose:
+    display_name: YOLO26-pose
+    paradigm: cnn
+    allowed_model_types: [vision]
+  yolo26_seg:
+    display_name: YOLO26-seg
+    paradigm: cnn
+    allowed_model_types: [vision]
+  yolov8_det:
+    display_name: YOLOv8-det
+    paradigm: cnn
+    allowed_model_types: [vision]
+  yolov8_obb:
+    display_name: YOLOv8-obb
+    paradigm: cnn
+    allowed_model_types: [vision]
 
 tasks:
+  automatic_speech_recognition:
+    display_name: Automatic Speech Recognition
+    allowed_model_types: [audio]
   anomaly_detection:
     display_name: Anomaly Detection
     allowed_model_types: [vision]
@@ -128,6 +172,12 @@ tasks:
     allowed_model_types: [vision]
   face_landmark_detection:
     display_name: Face Landmark Detection
+    allowed_model_types: [vision]
+  feature_point_detection:
+    display_name: Feature Point Detection
+    allowed_model_types: [vision]
+  feature_matching:
+    display_name: Feature Matching
     allowed_model_types: [vision]
   grasping:
     display_name: Grasping
@@ -147,9 +197,15 @@ tasks:
   license_plate_recognition:
     display_name: License Plate Recognition
     allowed_model_types: [vision, vlm]
+  loop_closure:
+    display_name: Loop Closure
+    allowed_model_types: [vision]
   object_detection:
     display_name: Object Detection
     allowed_model_types: [vision, vlm]
+  oriented_object_detection:
+    display_name: Oriented Object Detection
+    allowed_model_types: [vision]
   pose_estimation:
     display_name: Pose Estimation
     allowed_model_types: [vision]

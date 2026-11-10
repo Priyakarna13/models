@@ -1,13 +1,16 @@
-"""Rebuild EfficientSAM3 RepViT-M from its checkpoint, export one ONNX and check it against PyTorch.
+"""Rebuild EfficientSAM3 RepViT-M from its checkpoints, export one ONNX and check it against PyTorch.
 
 The sam3 wheel builds SAM 3's text encoder, neck, encoder, decoder and heads; timm builds the RepViT-M1.1
-trunk. The student image encoder around the trunk is written here after SimonZeng7108/efficientsam3 at
+trunk. The Stage 1 checkpoint supplies SAM 3's weights; the fine-tuned student supplies the trunk and neck.
+The student image encoder around the trunk is written here after SimonZeng7108/efficientsam3 at
 bd0936c788fed8d51fa799437f05abd97b401b06, which publishes no package. That student resamples the trunk's
 features to a 72x72 grid of image tokens (embed_size=72 in sam3/sam3/model_builder.py); this export resamples
 them to 48x48 instead, so it returns 192x192 mask logits where the upstream model returns 288x288.
 
 The exported graph re-expresses the same computation with four-dimensional token tensors, finite masks and
-explicit constants, and must match the stock PyTorch model before it is accepted. The stock model is built at
+explicit constants. It runs the neck's leading 1x1 and 2x2 transposed convs on the trunk's 32x32 map before the
+resize, as 1x1 convs and PixelShuffle, folds the instance head's 1x1 conv into the mask queries, and computes group
+norms with 1x1 convs. It must match the stock PyTorch model before it is accepted. The stock model is built at
 the same 48x48 grid, so this check proves the export faithful at grid 48, not equal to the upstream grid-72
 model.
 """
@@ -31,9 +34,14 @@ from surgery import INTERFACE, QUERIES, image_differences
 MODEL_DIR = Path(__file__).resolve().parents[1]
 
 CHECKPOINT = "efficient_sam3_repvit_m.pt"
+# The fine-tuned student (efficientsam3_ft) recalls about three times as many COCO objects from a text prompt as the
+# Stage 1 trunk and neck. It carries a MobileCLIP-S0 text encoder instead of SAM 3's, so only its trunk and neck load.
+BACKBONE = "efficientsam3_repvit.pt"
+BACKBONE_MODULES = ("backbone.vision_backbone.trunk.", "backbone.vision_backbone.convs.")
+TRUNK_PREFIX = "backbone.vision_backbone.trunk.model.backbone.model."
 WHEEL = "sam3-0.1.4-py3-none-any.whl"
 PACKAGE = "sam3"
-SOURCE = ("file_set", CHECKPOINT, [CHECKPOINT, WHEEL, "vocab.json", "merges.txt"])
+SOURCE = ("file_set", CHECKPOINT, [CHECKPOINT, BACKBONE, WHEEL, "vocab.json", "merges.txt"])
 # The student encoder resamples the trunk's 32x downsampled features to this grid of image tokens. The
 # upstream student uses 72; 48 makes the mask logits 4 * 48 = 192 pixels square instead of 288.
 GRID = 48
@@ -65,7 +73,7 @@ def validate_source(source):
     declared = (source.get("type"), source.get("entrypoint"), [item.get("path") for item in source.get("files", [])])
     if declared != SOURCE:
         raise ValueError(
-            f"Expected the checkpoint, sam3 wheel and CLIP tokenizer {SOURCE}, model.yaml declares {declared}"
+            f"Expected the checkpoints, sam3 wheel and CLIP tokenizer {SOURCE}, model.yaml declares {declared}"
         )
 
 
@@ -192,7 +200,19 @@ def trunk_key(key):
     raise KeyError(f"Unmapped RepViT checkpoint key: {key}")
 
 
-def build_stock(checkpoint, bpe):
+def backbone_weights(checkpoint):
+    """Return the fine-tuned student's trunk and neck under the detector's key names."""
+    import torch
+
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True)["model"]
+    weights = {}
+    for key, value in state.items():
+        if key.startswith(BACKBONE_MODULES):
+            weights[TRUNK_PREFIX + trunk_key(key) if key.startswith(TRUNK_PREFIX) else key] = value
+    return weights
+
+
+def build_stock(checkpoint, fine_tuned, bpe):
     """Return the stock sam3 image model with the EfficientSAM3 student image encoder and its weights."""
     import timm
     import torch
@@ -259,12 +279,16 @@ def build_stock(checkpoint, bpe):
     state = state["model"]
     if any(not key.startswith(("detector.", "tracker.")) for key in state):
         raise ValueError("Checkpoint keys must belong to the detector or the tracker")
-    trunk_prefix = "backbone.vision_backbone.trunk.model.backbone.model."
     detector = {}
     for key, value in state.items():
         if key.startswith("detector."):
             key = key[len("detector.") :]
-            detector[trunk_prefix + trunk_key(key) if key.startswith(trunk_prefix) else key] = value
+            detector[TRUNK_PREFIX + trunk_key(key) if key.startswith(TRUNK_PREFIX) else key] = value
+    tuned = backbone_weights(fine_tuned)
+    stage1 = {key: value.shape for key, value in detector.items() if key.startswith(BACKBONE_MODULES)}
+    if {key: value.shape for key, value in tuned.items()} != stage1:
+        raise ValueError("The fine-tuned trunk and neck do not match the Stage 1 trunk and neck")
+    detector.update(tuned)
     missing, unexpected = model.load_state_dict(detector, strict=False)
     # The checkpoint also carries the SAM 2 neck used only by the video tracker.
     stray = [key for key in unexpected if not key.startswith("backbone.vision_backbone.sam2_convs.")]
@@ -421,15 +445,48 @@ def build_graph(stock):
             self.reduce, self.mix = fuse_conv_bn(student.head[0], student.head[1]), copy.deepcopy(student.head[3])
 
         def forward(self, x):
+            # The neck resamples to the token grid after its leading per-pixel layers.
             x = self.body.stages(self.body.stem(x))
-            x = self.mix(gelu(self.reduce(x)))
-            return F.interpolate(x, size=(GRID, GRID), mode="bilinear", align_corners=False)
+            return self.mix(gelu(self.reduce(x)))
+
+    def shuffle_conv(transposed, after=None):
+        """Return a 2x2 stride-2 transposed conv, and an optional 1x1 conv after it, as one 1x1 conv to four times
+        the channels, whose PixelShuffle(2) equals the original output."""
+        weight, bias = transposed.weight, transposed.bias
+        if after is not None:
+            mix = after.weight[:, :, 0, 0]
+            weight, bias = torch.einsum("oc,icab->ioab", mix, weight), mix @ bias + after.bias
+        conv = nn.Conv2d(weight.shape[0], 4 * weight.shape[1], 1)
+        conv.weight.data.copy_(weight.permute(1, 2, 3, 0).reshape(conv.weight.shape))
+        conv.bias.data.copy_(bias.repeat_interleave(4))
+        return conv
+
+    class NeckLevel(nn.Module):
+        """One neck level whose leading per-pixel affine layers run on the trunk's 32x32 map. Bilinear weights sum
+        to 1, so resampling commutes with a per-pixel affine map; resampling a transposed conv's 4C channels before
+        PixelShuffle equals resampling its input."""
+
+        def __init__(self, level):
+            super().__init__()
+            names = [name for name, _ in level.named_children()]
+            if names == ["dconv_2x2_0", "gelu", "dconv_2x2_1", "conv_1x1", "conv_3x3"]:
+                self.pre = shuffle_conv(level.dconv_2x2_0)
+                tail = [nn.PixelShuffle(2), Gelu(), shuffle_conv(level.dconv_2x2_1, level.conv_1x1), nn.PixelShuffle(2)]
+            elif names == ["dconv_2x2", "conv_1x1", "conv_3x3"]:
+                self.pre, tail = shuffle_conv(level.dconv_2x2, level.conv_1x1), [nn.PixelShuffle(2)]
+            elif names == ["conv_1x1", "conv_3x3"]:
+                self.pre, tail = copy.deepcopy(level.conv_1x1), []
+            else:
+                raise ValueError(f"Unexpected neck level {names}")
+            self.tail = nn.Sequential(*tail, copy.deepcopy(level.conv_3x3))
+
+        def forward(self, x):
+            return self.tail(F.interpolate(self.pre(x), size=(GRID, GRID), mode="bilinear", align_corners=False))
 
     class Neck(nn.Module):
         def __init__(self, neck):
             super().__init__()
-            self.scale4, self.scale2, self.scale1 = (copy.deepcopy(neck.convs[index]) for index in range(3))
-            self.scale4.gelu = Gelu()
+            self.scale4, self.scale2, self.scale1 = (NeckLevel(neck.convs[index]) for index in range(3))
 
         def forward(self, x):
             return self.scale4(x), self.scale2(x), self.scale1(x)
@@ -585,14 +642,24 @@ def build_graph(stock):
             logits = torch.einsum("bnqc,bnkc->bnqk", self.hs_proj(states), pooled)
             return logits.clamp(-self.limit, self.limit)
 
-    def group_norm(x, norm):
-        # Each group normalizes over all its non-batch axes, as a layer norm does.
-        parts = []
-        for part in torch.split(x, x.shape[1] // norm.num_groups, 1):
-            centered = part - part.mean((1, 2, 3), keepdim=True)
-            variance = (centered * centered).mean((1, 2, 3), keepdim=True)
-            parts.append(centered / torch.sqrt(variance + norm.eps))
-        return torch.cat(parts, 1) * norm.weight.reshape(1, -1, 1, 1) + norm.bias.reshape(1, -1, 1, 1)
+    class GroupNorm(nn.Module):
+        """GroupNorm from 1x1 convs and global pooling: one conv averages each group's channels, another copies a
+        group's value back to its channels, so no tensor is split or reshaped per group."""
+
+        def __init__(self, norm):
+            super().__init__()
+            groups, channels = norm.num_groups, norm.num_channels
+            size = channels // groups
+            members = (torch.arange(channels) // size == torch.arange(groups)[:, None]).float()
+            self.register_buffer("average", (members / size).reshape(groups, channels, 1, 1))
+            self.register_buffer("expand", members.t().reshape(channels, groups, 1, 1))
+            self.weight = constant(norm.weight.reshape(1, -1, 1, 1))
+            self.bias, self.eps = constant(norm.bias.reshape(1, -1, 1, 1)), norm.eps
+
+        def forward(self, x):
+            centered = x - F.conv2d(F.adaptive_avg_pool2d(F.conv2d(x, self.average), 1), self.expand)
+            variance = F.adaptive_avg_pool2d(F.conv2d(centered * centered, self.average), 1)
+            return centered * (F.conv2d(torch.rsqrt(variance + self.eps), self.expand) * self.weight) + self.bias
 
     class Segmentation(nn.Module):
         def __init__(self, head):
@@ -602,21 +669,25 @@ def build_graph(stock):
                 raise ValueError("Unexpected segmentation head")
             self.norm, self.attn = Norm(head.cross_attn_norm), Attention(head.cross_attend_prompt)
             self.conv = nn.ModuleList(copy.deepcopy(decoder.conv_layers[index]) for index in range(2))
-            self.group = nn.ModuleList(copy.deepcopy(decoder.norms[index]) for index in range(2))
-            self.instance = copy.deepcopy(head.instance_seg_head)
+            self.group = nn.ModuleList(GroupNorm(decoder.norms[index]) for index in range(2))
+            # (W p + b) . m = p . (W^T m) + b . m: the instance head's 1x1 conv moves from the 36,864 pixels to the
+            # 200 queries, whose last column carries b . m.
             self.mask_embed = Mlp(head.mask_predictor.mask_embed)
+            instance, last = head.instance_seg_head, self.mask_embed.layers[-1]
+            weight, bias = instance.weight[:, :, 0, 0], instance.bias
+            last.weight = constant(torch.cat([weight.t() @ last.weight, (bias @ last.weight)[None]]))
+            last.bias = constant(torch.cat([weight.t() @ last.bias, (bias @ last.bias)[None]]))
 
         def forward(self, memory, prompt, prompt_bias, features, states):
             x = memory + self.attn(self.norm(memory), prompt, prompt, prompt_bias)
             x = x.reshape(1, GRID, GRID, 256).permute(0, 3, 1, 2)
             for conv, norm, feature in zip(self.conv, self.group, features):
                 x = feature + F.interpolate(x, size=feature.shape[-2:], mode="nearest")
-                x = F.relu(group_norm(conv(x), norm))
-            embed = self.instance(x)
-            side = embed.shape[-1]
-            embed = embed.permute(0, 2, 3, 1).reshape(1, 1, side * side, 256)
-            masks = torch.einsum("bnpc,bnqc->bnpq", embed, self.mask_embed(states))
-            return masks.reshape(1, side, side, QUERIES).permute(0, 3, 1, 2)
+                x = F.relu(norm(conv(x)))
+            queries = self.mask_embed(states)
+            # Channels first on both sides, so the product writes the (queries, height, width) output directly.
+            masks = torch.einsum("ndhw,ndhq->nqhw", x, queries[..., :256].permute(0, 3, 1, 2))
+            return masks + queries[..., 256:].reshape(1, QUERIES, 1, 1)
 
     class Graph(nn.Module):
         def __init__(self, model):
@@ -766,7 +837,7 @@ def convert(source, output_dir):
     torch.set_grad_enabled(False)
     with tempfile.TemporaryDirectory() as work_dir:
         unpack_package(source.parent / WHEEL, Path(work_dir))
-        stock = build_stock(source, check_tokenizer(source.parent, Path(work_dir)))
+        stock = build_stock(source, source.parent / BACKBONE, check_tokenizer(source.parent, Path(work_dir)))
         export(build_graph(stock), output)
         check_against_stock(stock, output)
     print(f"Synthetic-input PyTorch/ONNX smoke check passed: {output}")

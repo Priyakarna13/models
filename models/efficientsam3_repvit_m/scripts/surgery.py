@@ -50,9 +50,10 @@ LOG = [
 NEWTON_STEPS = 3
 DOMAINS = {"Sin": (0.0, 2 * np.pi), "Cos": (0.0, 2 * np.pi), "Log": (1.0, 16.0)}
 
-# The replacements are bounded in float32 over their domains. The text encoder is a pure cut. The
-# replacements sit below float32 rounding, which the refinement layers amplify in rejected queries, so
-# boxes and masks are bounded relative to their scale over all queries and absolutely over confident ones.
+# The replacements' largest float32 error over their domains, which tests/build/test_compile.py checks on a dense
+# grid. The text encoder is a pure cut. The replacements sit below float32 rounding, which the refinement layers
+# amplify in rejected queries, so boxes and masks are bounded relative to their scale over all queries and
+# absolutely over confident ones.
 FUNCTION_BOUND = 2e-6
 TEXT_TOLERANCE = 1e-5
 IMAGE_TOLERANCE = {
@@ -194,27 +195,6 @@ def prepare_model(source: Path, output_dir: Path) -> tuple[Path, Path]:
     return text_path, image_path
 
 
-def function_errors() -> dict[str, float]:
-    """Return each replacement's largest error under ONNX Runtime on a dense grid of its domain."""
-    import onnxruntime as ort
-
-    errors = {}
-    for op, reference in (("Sin", np.sin), ("Cos", np.cos), ("Log", np.log)):
-        graph = helper.make_graph(
-            [helper.make_node(op, ["x"], ["y"])],
-            op,
-            [helper.make_tensor_value_info("x", onnx.TensorProto.FLOAT, [None])],
-            [helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, [None])],
-        )
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
-        model.ir_version = 8
-        replace_functions(model, {op: 1})
-        x = np.linspace(*DOMAINS[op], 1_000_001, dtype=np.float32)
-        y = ort.InferenceSession(model.SerializeToString(), providers=["CPUExecutionProvider"]).run(None, {"x": x})[0]
-        errors[op] = float(np.abs(y.astype(np.float64) - reference(x.astype(np.float64))).max())
-    return errors
-
-
 def image_differences(expected, actual) -> dict[str, float]:
     (detections, masks), (actual_detections, actual_masks) = expected, actual
     scores = detections[0, :, 4].astype(np.float64)
@@ -239,8 +219,7 @@ def validate_float_split(
     """
     import onnxruntime as ort
 
-    errors = function_errors()
-    failures = [f"{op} error {error:.2e}" for op, error in errors.items() if not error <= FUNCTION_BOUND]
+    failures = []
     options = {"providers": ["CPUExecutionProvider"]}
     reference = ort.InferenceSession(str(source), **options)
     replaced = function_inputs(onnx.load(source, load_external_data=False))
@@ -287,5 +266,5 @@ def validate_float_split(
             failures.append(f"{op} inputs [{low:.4g}, {high:.4g}] leave the domain {DOMAINS[op]}")
     if failures:
         raise RuntimeError(f"EfficientSAM3 split differs from the converted graph: {failures}")
-    report = {"function_errors": errors, "observed_inputs": ranges, **largest}
+    report = {"observed_inputs": ranges, **largest}
     return report, {name: np.stack(values) for name, values in outputs.items()}
