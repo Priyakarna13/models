@@ -58,8 +58,9 @@ OUTPUT_SHAPES = {"couplings": [1, KEYPOINTS + 1, 1, KEYPOINTS + 1]}
 # MPK manifests record each public tensor's size in bytes; the MPK keeps the ONNX float32 interface.
 INPUT_BYTES = {name: math.prod(shape) * 4 for name, shape in INPUT_SHAPES.items()}
 OUTPUT_BYTES = [math.prod(shape) * 4 for shape in OUTPUT_SHAPES.values()]
-# The terminal EV74 plugin only converts the MLA result to the float32 interface: BF16 builds end in a cast.
-OUTPUT_KERNELS = {"pass_through", "cast_transform"}
+# The terminal EV74 plugin only converts the MLA result to the float32 interface: BF16 couplings end in a cast and
+# INT8 couplings in a dequantization.
+OUTPUT_KERNELS = {"pass_through", "cast_transform", "dequantization_transform"}
 # Share of re-observed keypoints whose quantized best match must equal FP32's. INT8 activations are measured on the
 # DevKit whatever they keep here, so their builds only report it.
 MIN_MATCH_AGREEMENT = {"w16a16": 0.95, "w8a16": 0.95, "w8a8": 0.0}

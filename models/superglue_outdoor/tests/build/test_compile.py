@@ -45,7 +45,9 @@ def _write_mpk(path: Path, manifest: dict) -> None:
             stream.addfile(info, io.BytesIO(content))
 
 
-@pytest.mark.parametrize("case", ["valid", "bf16_cast", "inputs", "outputs", "decoder", "two_mla", "host"])
+@pytest.mark.parametrize(
+    "case", ["valid", "bf16_cast", "int8_dequantization", "inputs", "outputs", "decoder", "two_mla", "host"]
+)
 def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     tmp_path: Path,
     case: str,
@@ -56,6 +58,8 @@ def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     plugins = manifest["plugins"]
     if case == "bf16_cast":
         plugins[-1]["config_params"]["kernel"] = "cast_transform"
+    elif case == "int8_dequantization":
+        plugins[-1]["config_params"]["kernel"] = "dequantization_transform"
     elif case == "inputs":
         manifest["input_nodes"] = manifest["input_nodes"][:-1]
     elif case == "decoder":
@@ -69,7 +73,7 @@ def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     archive = tmp_path / "model_mpk.tar.gz"
     _write_mpk(archive, manifest)
 
-    if case in ("valid", "bf16_cast"):
+    if case in ("valid", "bf16_cast", "int8_dequantization"):
         compile_module.audit_mpk(archive)
     else:
         with pytest.raises(RuntimeError):
