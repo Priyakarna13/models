@@ -172,6 +172,12 @@ def test_accuracy_report_keeps_disparity_errors_in_their_units(tmp_path):
 SAMPLES = {"split": "val", "evaluated_samples": 1, "available_samples": 1}
 
 
+def test_depth_error_is_unbounded_but_threshold_accuracy_is_a_fraction(tmp_path):
+    result = {**SAMPLES, "metrics": {"abs_rel": 1.25, "delta1": 0.89}}
+    model_report.from_accuracy({"nyu-depth-v2-default": result}).save(tmp_path)
+    assert saved_report(tmp_path)["datasets"]["nyu-depth-v2-default"]["metrics"] == result["metrics"]
+
+
 @pytest.mark.parametrize(
     ("datasets", "message"),
     [
@@ -182,6 +188,10 @@ SAMPLES = {"split": "val", "evaluated_samples": 1, "available_samples": 1}
         ({"validation": {**SAMPLES, "metrics": {"d1_all": 101.0}}}, "d1_all must be a percentage from 0 to 100"),
         ({"validation": {**SAMPLES, "metrics": {"epe": -0.1}}}, "epe must be at least 0 px"),
         ({"validation": {**SAMPLES, "metrics": {"epe": float("inf")}}}, "epe must be at least 0 px"),
+        ({"validation": {**SAMPLES, "metrics": {"abs_rel": -0.1}}}, "abs_rel must be at least 0 ratio"),
+        ({"validation": {**SAMPLES, "metrics": {"abs_rel": float("inf")}}}, "abs_rel must be at least 0 ratio"),
+        ({"validation": {**SAMPLES, "metrics": {"abs_rel": float("nan")}}}, "abs_rel must be at least 0 ratio"),
+        ({"validation": {**SAMPLES, "metrics": {"delta1": 1.01}}}, "delta1 must be a ratio from 0 to 1"),
         ({"validation": {**SAMPLES, "evaluated_samples": 2, "metrics": {"coco_map": 0.5}}}, "evaluated_samples"),
         ({"validation": {"metrics": {"coco_map": 0.5}}}, "validation must give metrics, split"),
         ({"validation": {**SAMPLES, "metrics": {"coco_map": 0.5}, "notes": "x"}}, "validation must give"),
@@ -271,6 +281,8 @@ SCRIPT_PYNEAT["PreprocessColorFormat"] = types.SimpleNamespace(
 SOURCE_SIZE, IMAGE_COLUMNS, FILL = (480, 640), slice(160, 1120), 114
 # The ImageNet image a classifier benchmarks, by the variant of its accuracy dataset, as its workload names it.
 IMAGENET_SAMPLES = {"mini": "n01440764/ILSVRC2012_val_00000001.webp", "val": "val2012/ILSVRC2012_val_00000001.JPEG"}
+# Each NYU Depth V2 archive variant has one resize mode in use and its own folder for the test images.
+NYU_DEPTH = {"default": ("Letterbox", "val/rgb_0001.jpg"), "val": ("Stretch", "rgb_00000.jpg")}
 # A Scene Flow view is 960x540; a stereo script joins the pair side by side, left then right, unletterboxed.
 STEREO_VIEW, STEREO_LEFT, STEREO_RIGHT = (540, 960), 60, 90
 STEREO_PAIR = "FlyingThings3D/frames_finalpass/TEST/A/0000/{view}/0006.png"
@@ -299,6 +311,7 @@ def benchmark_dataset(root):
     write_image(root / "val/n01440764/ILSVRC2012_val_00000001.webp", 200)
     write_image(root / "val/images/P0003.jpg", 200)
     write_image(root / "val/v_scene/1.ppm", 200)
+    write_image(root / "val/rgb_0001.jpg", 200)
     write_image(root / "test/rgb_00000.jpg", 200)
     keypoints = {
         "images": [{"id": 1, "file_name": "000000000001.jpg"}, {"id": 2, "file_name": "000000000002.jpg"}],
@@ -331,12 +344,15 @@ def first_accuracy_dataset(script: Path) -> str | None:
     return datasets[0]["id"] if datasets else None
 
 
-def performance_scripts(*, components: bool) -> list[Path]:
+def performance_scripts(*, components: bool, accuracy: bool | None = None) -> list[Path]:
     """Benchmarked models' scripts: single-component ones run Model.benchmark, multi-component ones time their
-    pipeline and take each component's MLA stats from its own Model.benchmark."""
+    pipeline and take each component's MLA stats from its own Model.benchmark. accuracy selects the models that
+    do or do not declare accuracy datasets; only those benchmark a dataset image."""
     scripts = []
     for path in sorted(REPOSITORY.glob("models/*/model.yaml")):
         model = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if accuracy is not None and ("accuracy" in model) != accuracy:
+            continue
         if "performance" in model and ("components" in model["compilation"]) == components:
             scripts.append(path.parent / "scripts/performance.py")
     assert scripts
@@ -376,8 +392,10 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
     ))
     dataset = benchmark_dataset(tmp_path / "dataset")
     output = tmp_path / "output"
+    declaration = yaml.safe_load((script.parents[1] / "model.yaml").read_text())["accuracy"]["datasets"][0]
+    source_id = f"{declaration['id']}-{declaration['variant']}"
     monkeypatch.setattr(sys, "argv", [
-        str(script), "--mpk", "model.tar.gz", "--dataset", f"source={dataset}", "--output", str(output),
+        str(script), "--mpk", "model.tar.gz", "--dataset", f"{source_id}={dataset}", "--output", str(output),
     ])
 
     runpy.run_path(str(script), run_name="__main__")
@@ -401,6 +419,11 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         assert_side_by_side_frame(frame)
         assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Stretch", "ImageNet")
         assert STEREO_PAIR.format(view="left") in report["workload"]
+    elif first_accuracy_dataset(script) == "nyu-depth-v2":
+        assert_letterboxed_frame(frame)
+        resize_mode, sample = NYU_DEPTH[declaration["variant"]]
+        assert (options.preprocess.resize.mode, options.preprocess.preset) == (resize_mode, "ImageNet")
+        assert sample in report["workload"]
     elif getattr(options, "decode_type", "").startswith(("YoloV26", "YoloV8", "YoloX")):
         # Box decoders take a probability threshold, in [0, 1).
         assert_letterboxed_frame(frame)
@@ -447,10 +470,7 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         else:
             assert options.preprocess.preset == "ImageNet"
         metadata = yaml.safe_load((script.parents[1] / "model.yaml").read_text(encoding="utf-8"))
-        dataset = metadata["accuracy"]["datasets"][0]
-        # A depth model benchmarks an NYU Depth V2 test image; a classifier, its ImageNet split's sample.
-        expected = "rgb_00000.jpg" if dataset["id"] == "nyu-depth-v2" else IMAGENET_SAMPLES[dataset["variant"]]
-        assert expected in report["workload"]
+        assert IMAGENET_SAMPLES[metadata["accuracy"]["datasets"][0]["variant"]] in report["workload"]
     assert list(report["components"]) == ["model"]
     assert report["components"]["model"]["mla_layer_stats"] == CORE_REPORT["mla_layer_stats"]
     assert report["components"]["model"]["mla_stage_stats"] == CORE_REPORT["mla_stage_stats"]
@@ -483,6 +503,7 @@ def test_every_multi_component_script_keeps_cores_mla_stats(script, monkeypatch)
 
     pyneat = types.SimpleNamespace(Model=ScriptModel, BenchmarkOptions=BenchmarkOptions)
     monkeypatch.setitem(sys.modules, "pyneat", pyneat)
+    monkeypatch.setitem(sys.modules, "onnxruntime", types.SimpleNamespace())
 
     layer_stats, stage_stats = runpy.run_path(str(script))["mla_stats"](Path("backbone.tar.gz"))
 
@@ -491,7 +512,7 @@ def test_every_multi_component_script_keeps_cores_mla_stats(script, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "script", [path for path in performance_scripts(components=True)
+    "script", [path for path in performance_scripts(components=True, accuracy=True)
                if yaml.safe_load((path.parents[1] / "model.yaml").read_text())["performance"].get("scope")
                != "components"],
     ids=lambda path: path.parents[1].name,
