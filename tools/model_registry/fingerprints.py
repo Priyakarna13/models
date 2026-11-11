@@ -42,7 +42,9 @@ BOARD_STAGE_TOOLING = (
     "schemas/model-report.schema.json",
     "tools/model_registry/report_publication.py",
 )
-PERFORMANCE_TOOLING = (*BOARD_STAGE_TOOLING, "scripts/run_model_performance.sh")
+PERFORMANCE_TOOLING = (
+    *BOARD_STAGE_TOOLING, "tools/model_registry/runtime_files.py", "scripts/run_model_performance.sh",
+)
 ACCURACY_TOOLING = (
     *BOARD_STAGE_TOOLING,
     "tools/model_registry/runtime_files.py",
