@@ -1,13 +1,8 @@
-"""MobileSAM's interface, shared by conversion, compile and the application: component shapes, the image
-preprocessing, prompt inputs and mask postprocessing. Image/mask helpers use NumPy, Pillow and OpenCV; the
-compiled prompt helper also uses Linux libm and the small Gaussian table carried in decoder MPK metadata.
+"""MobileSAM application helpers for a whole encoder and reusable prompt decoder.
 
-The image encoder turns a 1024x1024 image into a [1, 256, 64, 64] embedding once per image, in two components
-compiled apart: image_encoder_0 (patch embedding and stages 0 and 1) gives [1, 160, 64, 64] features, and
-image_encoder_1 (stages 2 and 3 and the neck) turns them into the embedding. The prompt decoder then predicts masks
-for each prompt from that embedding. A prompt is up to MAX_POINTS points, each a foreground or
-background click or a box corner, given as normalized coordinates and a one-hot point type; the decoder embeds
-their learned types on MLA; the compiled decoder receives CPU float32 Fourier encodings.
+Prepare an image once and retain its [1,256,64,64] embedding. Each subsequent point/box prompt runs only
+prompt_decoder. Inputs have five user-point slots plus the single optional learned padding token;
+unused slots never participate as attention keys. Fourier encoding is CPU float32.
 """
 
 from __future__ import annotations
@@ -21,9 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-COMPONENTS = ("image_encoder_0", "image_encoder_1", "prompt_decoder")
+COMPONENTS = ("image_encoder", "prompt_decoder")
 IMAGE_SIZE = 1024
-FEATURE_SHAPE = (1, 160, 64, 64)
 EMBEDDING_SHAPE = (1, 256, 64, 64)
 # Five user points plus the one learned padding token upstream adds to prompts without a box.
 MAX_POINTS = 5
@@ -33,8 +27,7 @@ POINT_TYPES = ("padding", "background", "foreground", "box_top_left", "box_botto
 LOW_RES_MASK_SIZE = 256
 MASKS = 4
 INPUT_SHAPES = {
-    "image_encoder_0": {"image": (1, 3, IMAGE_SIZE, IMAGE_SIZE)},
-    "image_encoder_1": {"features": FEATURE_SHAPE},
+    "image_encoder": {"image": (1, 3, IMAGE_SIZE, IMAGE_SIZE)},
     "prompt_decoder": {
         "image_embeddings": EMBEDDING_SHAPE,
         "point_coords": (1, 2, 1, POINTS),
@@ -174,8 +167,7 @@ class PromptEncoding:
 
 
 OUTPUT_SHAPES = {
-    "image_encoder_0": {"features": FEATURE_SHAPE},
-    "image_encoder_1": {"image_embeddings": EMBEDDING_SHAPE},
+    "image_encoder": {"image_embeddings": EMBEDDING_SHAPE},
     "prompt_decoder": {
         "masks": (1, MASKS, LOW_RES_MASK_SIZE, LOW_RES_MASK_SIZE),
         "iou_predictions": (1, MASKS),

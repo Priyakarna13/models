@@ -101,8 +101,7 @@ class FloatRunners:
         return self.sessions[component].run(None, {tensor_name(component, key): value for key, value in values.items()})
 
     def encode(self, image: np.ndarray) -> np.ndarray:
-        (features,) = self.run("image_encoder_0", {"image": np.ascontiguousarray(image.transpose(2, 0, 1)[None])})
-        (embedding,) = self.run("image_encoder_1", {"features": features})
+        (embedding,) = self.run("image_encoder", {"image": np.ascontiguousarray(image.transpose(2, 0, 1)[None])})
         return embedding
 
     def decode(self, embedding: np.ndarray, prompt: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:

@@ -14,7 +14,7 @@ def test_performance_meets_its_expected_values(
 
 
 def test_performance_records_each_components_execution_plan(performance: dict[str, Any]) -> None:
-    assert list(performance["components"]) == ["image_encoder_0", "image_encoder_1", "prompt_decoder"]
+    assert list(performance["components"]) == ["image_encoder", "prompt_decoder"]
     for item in performance["components"].values():
         plan = item["execution_plan"]
         assert (plan["schema"], plan["schema_version"]) == ("sima.neat.execution_plan", 1)
@@ -59,7 +59,7 @@ def test_serial_path_prepares_each_frame_and_handoffs_only_between_components(lo
     runners = [SimpleNamespace(run=lambda inputs, **kw: ["output"]) for _ in script.COMPONENTS]
     for _ in range(2):
         assert script.infer_one(runners, np.zeros((720, 1280, 3), np.uint8), "encoding") == "final-mask"
-    assert events == ["image", "prompt", "handoff", "handoff", "mask"] * 2
+    assert events == ["image", "prompt", "handoff", "mask"] * 2
 
 
 def test_finish_reads_owned_outputs_without_payload_copy(load_script):
@@ -85,7 +85,7 @@ def test_finish_reads_owned_outputs_without_payload_copy(load_script):
     assert result.shape == (300, 600) and result.all() and result.flags.owndata
 
 
-@pytest.mark.parametrize("failure_index", [0, 1, 2])
+@pytest.mark.parametrize("failure_index", [0, 1])
 def test_partial_build_closes_previous_runners(load_script, monkeypatch, failure_index):
     from types import SimpleNamespace
 
@@ -221,11 +221,11 @@ def test_threaded_path_counts_final_masks_and_stops_monitor_on_failure(load_scri
         assert events["masks"] == runners[-1].accepted
         assert events["images"] == events["masks"]
         assert events["prompts"] == events["masks"]
-        assert events["handoffs"] == 2 * events["masks"]
+        assert events["handoffs"] == events["masks"]
     assert monitor.starts == monitor.stops == 1 and not monitor.running()
     assert all(runner.closed.is_set() for runner in runners)
     assert not any(
-        thread.name in {"push_images", "pull_masks", "forward_image_encoder_0", "forward_image_encoder_1"}
+        thread.name in {"push_images", "pull_masks", "forward_image_encoder"}
         for thread in threading.enumerate()
     )
 

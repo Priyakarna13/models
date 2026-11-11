@@ -192,7 +192,7 @@ def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
 
 
 class Runners:
-    """The three components on the board, each runner built from its first real input."""
+    """The encoder and reusable decoder, each runner built from its first real input."""
 
     def __init__(self, mpks: dict[str, Path], resources: Path | None = None) -> None:
         import pyneat
@@ -221,8 +221,7 @@ class Runners:
         return self.runners[component].run(inputs, timeout_ms=TIMEOUT_MS)
 
     def encode(self, image: np.ndarray) -> list[pyneat.Tensor]:
-        features = handoff(self.run("image_encoder_0", [hwc(image)]))
-        return handoff(self.run("image_encoder_1", features))
+        return handoff(self.run("image_encoder", [hwc(image)]))
 
     def decode(self, embedding: list[pyneat.Tensor], prompt: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         inputs = [*embedding, hwc(self.prompt_encoding(prompt["point_coords"])), hwc(prompt["point_types"])]

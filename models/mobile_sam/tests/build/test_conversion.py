@@ -32,7 +32,7 @@ def _interface(converter, case):
     if case == "dtype":
         inputs[0].type.tensor_type.elem_type = onnx.TensorProto.DOUBLE
     elif case == "shape":
-        inputs[2].type.tensor_type.shape.dim[3].dim_value = 6
+        inputs[2].type.tensor_type.shape.dim[3].dim_value = 7
     elif case == "missing":
         outputs.pop()
     nodes = []
@@ -250,13 +250,9 @@ def test_real_image_split_and_fourier_boundary_parity(
         pixels = np.asarray(Image.open(path).convert("RGB"))
         height, width = pixels.shape[:2]
         image = np.ascontiguousarray(pipeline.preprocess(pixels).transpose(2, 0, 1)[None])
-        feeds[name("image_encoder_0", "image")] = image
-        features = parts["image_encoder_0"].run(None, {name("image_encoder_0", "image"): image})[0]
-        expected = original.run([name("image_encoder_0", "features")], feeds)[0]
-        np.testing.assert_allclose(features, expected, rtol=1e-3, atol=1e-3, err_msg=path.name)
-        feeds[name("image_encoder_1", "features")] = features
-        embeddings = parts["image_encoder_1"].run(None, {name("image_encoder_1", "features"): features})[0]
-        expected = original.run([name("image_encoder_1", "image_embeddings")], feeds)[0]
+        feeds[name("image_encoder", "image")] = image
+        embeddings = parts["image_encoder"].run(None, {name("image_encoder", "image"): image})[0]
+        expected = original.run([name("image_encoder", "image_embeddings")], feeds)[0]
         np.testing.assert_allclose(embeddings, expected, rtol=1e-3, atol=1e-3, err_msg=path.name)
         with torch.inference_mode():
             predictor.set_image(pixels)

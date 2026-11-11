@@ -1,6 +1,6 @@
 """Benchmark MobileSAM from a real 720p RGB frame to one final binary mask.
 
-The timed path includes exact SAM CPU preprocessing, both encoder components, the centre-click prompt,
+The timed path includes exact SAM CPU preprocessing, the whole image encoder, the centre-click prompt,
 its decoder and selection/resizing/thresholding of the highest-IoU mask among masks 1-3. Core's current
 letterbox cannot express SAM's right/bottom padding after normalization; using it would change the model.
 Image-file decoding and creation of the fixed camera frame are outside timing, as in the other image benchmarks.
@@ -361,7 +361,8 @@ def write_report(
         models,
         workload=(
             f"{DATASET} val2017/{source.name} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame; "
-            "SAM CPU resize/normalize/right-bottom pad on every frame, both image encoders, centre foreground click, "
+            "SAM CPU resize/normalize/right-bottom pad on every frame, the whole image encoder, "
+            "centre foreground click, "
             "CPU FP32 prompt Fourier encoding, prompt decoder and best-IoU candidate mask 1-3 "
             "resized to the image and thresholded at zero; "
             f"pipelined {QUEUE_DEPTH} frames deep"

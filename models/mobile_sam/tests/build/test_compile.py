@@ -140,10 +140,10 @@ def test_compile_binds_every_component_in_each_profile(
     recipe = load_script("compile")
     parameters = recipe._component_parameters(profile_id)
 
-    assert list(parameters) == ["image_encoder_0", "image_encoder_1", "prompt_decoder"]
+    assert list(parameters) == ["image_encoder", "prompt_decoder"]
     assert {item["precision"] for item in parameters.values()} == {profile_id}
-    # The decoder explicitly fits ranges; ordinary BF16 encoder components skip fitting.
-    assert [("calibration_samples" in item) for item in parameters.values()] == [False, False, True]
+    # Both qualified BF16 components explicitly fit their ranges.
+    assert [("calibration_samples" in item) for item in parameters.values()] == [True, True]
     with pytest.raises(ValueError, match="no build profile 'w8a8'"):
         recipe._component_parameters("w8a8")
 
@@ -172,13 +172,13 @@ def test_audit_requires_one_mla_segment_and_no_host_code(
     recipe = load_script("compile")
     version = "3.0.0.1"
 
-    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"], version), "image_encoder_0")
+    recipe.audit_mpk(_mpk(tmp_path / "ok.tar.gz", ["EV74", "MLA", "EV74"], version), "image_encoder")
     for name, processors, compiler in [
         ("two", ["MLA", "MLA"], version),
         ("host", ["MLA", "A65"], version),
     ]:
         with pytest.raises(RuntimeError):
-            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors, compiler), "image_encoder_0")
+            recipe.audit_mpk(_mpk(tmp_path / f"{name}.tar.gz", processors, compiler), "image_encoder")
 
 
 def test_compile_main_rejects_an_unknown_invocation(
@@ -234,8 +234,7 @@ def test_fp32_input_preparation_accepts_out_of_image_prompts(load_script):
 
 # Independent public FP32 byte contracts, not a snapshot of a generated mpk.json.
 COMPONENT_CONTRACTS = {
-    "image_encoder_0": {"inputs": [("image_encoder_0_image", 12582912)], "outputs": [2621440]},
-    "image_encoder_1": {"inputs": [("image_encoder_1_features", 2621440)], "outputs": [4194304]},
+    "image_encoder": {"inputs": [("image_encoder_image", 12582912)], "outputs": [4194304]},
     "prompt_decoder": {
         "inputs": [
             ("prompt_decoder_image_embeddings", 4194304),
@@ -604,9 +603,9 @@ def test_build_retention_is_optional_and_survives_compile_failure(load_script, m
     monkeypatch.setattr(recipe, "_quantization", lambda parameters: None)
     monkeypatch.setattr(recipe, "calibration_data", lambda component, samples: None)
     monkeypatch.setattr(recipe, "audit_mpk", lambda archive, component: None)
-    args = (tmp_path / "source.onnx", tmp_path / "build", "test", "image_encoder_0", {"precision": "w16a16"}, [], [])
+    args = (tmp_path / "source.onnx", tmp_path / "build", "test", "image_encoder", {"precision": "w16a16"}, [], [])
     if fails:
-        with pytest.raises(RuntimeError, match="compiling image_encoder_0 failed"):
+        with pytest.raises(RuntimeError, match="compiling image_encoder failed"):
             recipe._build(*args, retain_build_dir=retained)
     else:
         archive, outputs = recipe._build(*args, retain_build_dir=retained)
@@ -762,7 +761,7 @@ def test_explicit_precision_calibration_policy(load_script, monkeypatch, precisi
     assert actual.values["node_names"] == {""}
 
 
-@pytest.mark.parametrize("component", ["image_encoder_0", "image_encoder_1", "prompt_decoder"])
+@pytest.mark.parametrize("component", ["image_encoder", "prompt_decoder"])
 def test_uncalibrated_bf16_passes_none_for_all_components(load_script, monkeypatch, tmp_path, component):
     recipe = load_script("compile")
     calls = []
@@ -783,7 +782,7 @@ def test_uncalibrated_bf16_passes_none_for_all_components(load_script, monkeypat
 
 def test_compiler_identity_is_checked_by_shared_artifact_verification_not_the_model_recipe(load_script, tmp_path):
     recipe = load_script("compile")
-    recipe.audit_mpk(_mpk(tmp_path / "model.tar.gz", ["MLA"], "different-recorded-version"), "image_encoder_0")
+    recipe.audit_mpk(_mpk(tmp_path / "model.tar.gz", ["MLA"], "different-recorded-version"), "image_encoder")
 
 
 @pytest.mark.parametrize("layout", ["flat", "components", "explicit"])
@@ -840,3 +839,70 @@ def test_prompt_supporting_file_rejected_before_native_work(load_script, tmp_pat
         path.write_text(json.dumps(value))
     with pytest.raises(ValueError):
         pipeline.PromptEncoding.from_package(decoder)
+
+
+def test_decoder_calibration_uses_the_whole_quantized_encoders_own_embeddings(load_script, monkeypatch, tmp_path):
+    """Do not silently substitute the FP32 encoder while fitting the second component."""
+    from types import SimpleNamespace
+
+    recipe = load_script("compile")
+    monkeypatch.setattr(recipe, "validate_source", lambda _: None)
+    parameters = {name: {"precision": "w16a16", "calibration_bins": 2048, "calibration_samples": 1}
+                  for name in recipe.COMPONENTS}
+    monkeypatch.setattr(recipe, "_component_parameters", lambda _: parameters)
+    monkeypatch.setattr(recipe, "load_metadata", lambda _: {})
+    monkeypatch.setattr(recipe, "calibration_images", lambda *args: [np.zeros((20, 40, 3), np.uint8)])
+    monkeypatch.setattr(recipe, "encoder_inputs", lambda images: np.zeros((1, 8, 8, 3), np.float32))
+
+    def split(source, directory):
+        directory.mkdir()
+        graphs = {name: directory / f"{name}.onnx" for name in recipe.COMPONENTS}
+        for path in graphs.values():
+            path.write_bytes(b"fixture")
+        return graphs
+
+    def cut(source, output, source_sha):
+        output.write_bytes(b"fixture decoder")
+        return {}
+
+    monkeypatch.setattr(recipe, "split_components", split)
+    monkeypatch.setattr(recipe, "compile_decoder", cut)
+    monkeypatch.setattr(recipe, "PromptEncoding", SimpleNamespace(from_metadata=lambda _: "encoding"))
+    monkeypatch.setattr(recipe, "float_embeddings", lambda *args: pytest.fail("FP32 must not supply calibration"))
+    own = np.full((1, 256, 64, 64), 0.375, np.float32)
+    feeds = []
+
+    def decode_feeds(embeddings, sizes, encoding):
+        np.testing.assert_array_equal(embeddings, own)
+        assert sizes == [(20, 40)] and encoding == "encoding"
+        return [{"image_embeddings": embeddings}]
+
+    monkeypatch.setattr(recipe, "decoder_feeds", decode_feeds)
+
+    def build(*args):
+        component, samples, executed = args[3], args[5], args[6]
+        feeds.append(component)
+        args[1].mkdir()
+        path = args[1] / "fixture_mpk.tar.gz"
+        path.write_bytes(b"fixture archive")
+        if component == "image_encoder":
+            assert len(samples) == len(executed) == 1
+            return path, [[own]]
+        assert len(samples) == 1 and not executed
+        np.testing.assert_array_equal(samples[0]["image_embeddings"], own)
+        return path, []
+
+    monkeypatch.setattr(recipe, "_in_process", build)
+    source = tmp_path / "source.onnx"
+    source.write_bytes(b"fixture source")
+    archives = recipe.compile_model(source, tmp_path / "output", "w16a16", tmp_path / "calibration", None)
+    assert list(archives) == feeds == ["image_encoder", "prompt_decoder"]
+
+
+def test_model_has_exactly_two_components_without_a_split_encoder_fallback(load_script):
+    recipe = load_script("compile")
+    model = recipe.load_metadata(recipe.MODEL_DIR)
+    assert recipe.COMPONENTS == ("image_encoder", "prompt_decoder")
+    assert [component["id"] for component in model["components"]] == list(recipe.COMPONENTS)
+    assert set(recipe.INPUT_SHAPES["image_encoder"]) == {"image"}
+    assert set(recipe.OUTPUT_SHAPES["image_encoder"]) == {"image_embeddings"}

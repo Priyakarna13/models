@@ -29,9 +29,8 @@ conversion:
 compilation:
   format: onnx
   source: conversion
-  # The encoder runs once per image, as two parts compiled apart, since the whole encoder needs more memory to
-  # compile than a CI runner has; the decoder runs once per prompt on its embedding.
-  components: [image_encoder_0, image_encoder_1, prompt_decoder]
+  # One whole encoder per image; reuse its embedding for every subsequent prompt.
+  components: [image_encoder, prompt_decoder]
 
 calibrations:
 - id: coco-2017-cal
@@ -39,36 +38,20 @@ calibrations:
 
 build_profiles:
   w16a16:
+    # Whole-encoder compilation exceeds the default 32 GiB runner. A larger CI class needs a deployed
+    # Vulcan grant before enabling it; do not restore the legacy split as a memory workaround.
     calibration_dataset: coco-2017-cal
-    # Fourier encoding runs in FP32 on CPU; the decoder explicitly fits its remaining ranges.
+    # Both parts use the qualified BF16 histogram policy; decoder samples use this encoder's own outputs.
     components:
-      image_encoder_0:
-        parameters: {precision: w16a16}
-      image_encoder_1:
-        parameters: {precision: w16a16}
-      prompt_decoder:
-        # Model Compiler 3.0 requires fitted decoder ranges even with BF16 matrix operators.
+      image_encoder:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
-
-  # w8a16 is left out until it compiles in CI: compiling image_encoder_1 at w8a16, the compiler and its simulation
-  # check need about 29 GiB together, more than the default runner has (the simulation was killed). It compiles
-  # on a larger machine with the historical five-slot export; this six-slot export is not qualified at w8a16.
-  # w8a16:
-  #   # INT8 weights with BF16 activations: the INT8-activation build lost too much accuracy (mask cosine 0.899 with
-  #   # float32). The decoder calibrates on the float32 encoder's embeddings of 50 images, five prompt patterns each.
-  #   calibration_dataset: coco-2017-cal
-  #   components:
-  #     image_encoder_0:
-  #       parameters: {precision: w8a16}
-  #     image_encoder_1:
-  #       parameters: {precision: w8a16}
-  #     prompt_decoder:
-  #       parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 50}
+      prompt_decoder:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+  # A genuine INC mixed-precision build remains disabled until full native quality and performance pass.
 
 pipeline:
 - {cpu: "Resize the longer side to 1024, normalize, pad to 1024x1024"}
-- {component: image_encoder_0}
-- {component: image_encoder_1}
+- {component: image_encoder}
 - {cpu: "CPU FP32 prompt Fourier encoding and one-hot point types"}
 - {component: prompt_decoder}
 - {cpu: "Upsample the chosen mask's logits to the image and threshold at 0"}

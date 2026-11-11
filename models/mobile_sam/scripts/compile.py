@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Split the verified MobileSAM ONNX into its components, quantize, and compile each to an MPK.
+"""Extract the whole encoder and prompt decoder from the verified MobileSAM ONNX, quantize, and compile each to an MPK.
 
-The converted ONNX holds the two image encoder parts and the prompt decoder side by side. Each is extracted,
+The converted ONNX holds the whole image encoder and the prompt decoder side by side. Each is extracted,
 quantized to its build precision and compiled in its own process, and its MPK is audited: one MLA segment, no host
-code. Components requiring calibration use the float32 outputs of the components before them. BF16 normally
-skips calibration; the prompt decoder explicitly requests fitted ranges. When model.yaml declares
+code. The decoder calibrates on the quantized whole encoder's own outputs. Both components explicitly fit ranges
+with BF16 matrix execution, matching the qualified encoder-reuse path. When model.yaml declares
 numerical_fidelity, the quantized components feed each other on the declared val2017 images and fixed prompts, and
 the decoder's outputs are compared with the float32 ONNX chain's. compile-outputs.json records every MPK.
 """
@@ -97,7 +97,7 @@ def _quantization(parameters: dict[str, Any]) -> Any:
             per_token_quant=False,
         )
     elif precision == "w8a16":
-        # Preserve the explicit decoder histogram policy; the encoder parts skip
+        # Preserve the explicit decoder histogram policy; uncalibrated encoders skip
         # calibration. All W8A16 components retain per-token INT8-weight execution.
         bins = parameters.get("calibration_bins")
         config = QuantizationParams(
@@ -146,13 +146,11 @@ def onnx_session(graph: Path) -> Any:
     return ort.InferenceSession(str(graph), sess_options=options, providers=["CPUExecutionProvider"])
 
 
-def float_embeddings(graphs: dict[str, Path], images: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The float32 encoder parts' NCHW features and embeddings of NHWC encoder inputs."""
-    first, second = onnx_session(graphs["image_encoder_0"]), onnx_session(graphs["image_encoder_1"])
-    name = tensor_name("image_encoder_0", "image")
-    features = np.concatenate([first.run(None, {name: image.transpose(2, 0, 1)[None]})[0] for image in images])
-    name = tensor_name("image_encoder_1", "features")
-    return features, np.concatenate([second.run(None, {name: feature[None]})[0] for feature in features])
+def float_embeddings(graphs: dict[str, Path], images: np.ndarray) -> np.ndarray:
+    """The float32 whole encoder's NCHW embeddings of NHWC encoder inputs, used only as fidelity references."""
+    encoder = onnx_session(graphs["image_encoder"])
+    name = tensor_name("image_encoder", "image")
+    return np.concatenate([encoder.run(None, {name: image.transpose(2, 0, 1)[None]})[0] for image in images])
 
 
 def decoder_feeds(
@@ -242,6 +240,7 @@ def _build(
         result = quantized.execute(
             {InputName(tensor_name(component, key)): channels_last(value) for key, value in feeds.items()},
             fast_mode=True,
+            use_jax=False,
         )
         outputs.append(
             [channels_first(value, shape) for value, shape in zip(result, OUTPUT_SHAPES[component].values())]
@@ -317,26 +316,21 @@ def compile_model(
         prompt_metadata = compile_decoder(graphs["prompt_decoder"], compiled_decoder, sha256_file(source)[0])
         encoding = PromptEncoding.from_metadata({key: json.dumps(value) for key, value in prompt_metadata.items()})
 
-        # Calibration: the first encoder part's images, the second's float32 features of them, and the decoder's
-        # prompts on the float32 encoder's embeddings.
+        # The decoder must calibrate on THIS quantized encoder's embeddings, never FP32 substitutes.
         calibrated = [component for component in COMPONENTS if _requires_calibration(parameters[component])]
         if calibrated and dataset is None:
             raise ValueError("a calibrated component requires --dataset from dataset-registry")
         samples: dict[str, list[dict[str, np.ndarray]]] = {component: [] for component in COMPONENTS}
+        calibration_count, calibration_sizes = 0, []
+        calibration_feeds = []
         if calibrated:
             count = max(int(parameters[component]["calibration_samples"]) for component in calibrated)
-            images = calibration_images(dataset, count)
-            inputs = encoder_inputs(images)
-            if "image_encoder_0" in calibrated:
-                samples["image_encoder_0"] = [{"image": image.transpose(2, 0, 1)[None]} for image in inputs]
-            if {"image_encoder_1", "prompt_decoder"} & set(calibrated):
-                features, embeddings = float_embeddings(graphs, inputs)
-                if "image_encoder_1" in calibrated:
-                    samples["image_encoder_1"] = [{"features": feature[None]} for feature in features]
-                if "prompt_decoder" in calibrated:
-                    samples["prompt_decoder"] = decoder_feeds(
-                        embeddings, [image.shape[:2] for image in images], encoding
-                    )
+            calibration_images_rgb = calibration_images(dataset, count)
+            calibration_inputs = encoder_inputs(calibration_images_rgb)
+            calibration_count = len(calibration_inputs)
+            calibration_sizes = [image.shape[:2] for image in calibration_images_rgb]
+            calibration_feeds = [{"image": image.transpose(2, 0, 1)[None]} for image in calibration_inputs]
+            samples["image_encoder"] = calibration_feeds if "image_encoder" in calibrated else []
         # Fidelity: the declared val2017 images, preprocessed, and their float32 ONNX chain.
         fidelity_inputs, sizes = np.zeros((0,)), []
         if fidelity is not None:
@@ -352,22 +346,21 @@ def compile_model(
 
         output_dir.mkdir(parents=True)
         archives = {}
-        # The fidelity chain: each quantized component takes the previous one's quantized outputs.
-        feeds = [{"image": image.transpose(2, 0, 1)[None]} for image in fidelity_inputs]
-        for component, output in (("image_encoder_0", "features"), ("image_encoder_1", "image_embeddings")):
-            name = f"{MODEL_ID}_{profile_id}_{component}"
-            archives[component], outputs = _in_process(
-                graphs[component],
-                build / name,
-                name,
-                component,
-                parameters[component],
-                samples[component],
-                feeds,
-                retain_build_dir / component if retain_build_dir is not None else None,
-            )
-            feeds = [{output: item[0]} for item in outputs]
-        quantized_embeddings = np.concatenate([item["image_embeddings"] for item in feeds]) if sizes else None
+        # Quantize the whole encoder once; materialize its own calibration and fidelity embeddings before
+        # fitting the decoder. Existing isolated component processes retain bounded compiler lifetimes.
+        fidelity_feeds = [{"image": image.transpose(2, 0, 1)[None]} for image in fidelity_inputs]
+        name = f"{MODEL_ID}_{profile_id}_image_encoder"
+        archives["image_encoder"], outputs = _in_process(
+            graphs["image_encoder"], build / name, name, "image_encoder", parameters["image_encoder"],
+            samples["image_encoder"], [*calibration_feeds, *fidelity_feeds],
+            retain_build_dir / "image_encoder" if retain_build_dir is not None else None,
+        )
+        if len(outputs) != calibration_count + len(fidelity_feeds):
+            raise RuntimeError("whole encoder returned incomplete calibration/fidelity embeddings")
+        if "prompt_decoder" in calibrated:
+            own_embeddings = np.concatenate([item[0] for item in outputs[:calibration_count]])
+            samples["prompt_decoder"] = decoder_feeds(own_embeddings, calibration_sizes, encoding)
+        quantized_embeddings = np.concatenate([item[0] for item in outputs[calibration_count:]]) if sizes else None
         name = f"{MODEL_ID}_{profile_id}_prompt_decoder"
         built, decoded_outputs = _in_process(
             compiled_decoder,
@@ -415,7 +408,7 @@ def compile_model(
 
         if fidelity is not None:
             reference = onnx_session(graphs["prompt_decoder"])
-            feeds = decoder_feeds(float_embeddings(graphs, fidelity_inputs)[1], sizes)
+            feeds = decoder_feeds(float_embeddings(graphs, fidelity_inputs), sizes)
             expected = [
                 reference.run(None, {tensor_name("prompt_decoder", key): value for key, value in feed.items()})
                 for feed in feeds
@@ -430,8 +423,8 @@ def compile_model(
                 "model_id": MODEL_ID,
                 "build_profile_id": profile_id,
                 "status": fidelity["status"],
-                "reference": "float32 ONNX encoder parts and decoder (ONNX Runtime)",
-                "candidate": "quantized encoder parts feeding the quantized decoder (AFE execute)",
+                "reference": "float32 ONNX whole encoder and decoder (ONNX Runtime)",
+                "candidate": "quantized whole encoder feeding the quantized decoder (AFE execute)",
                 "dataset": {key: fidelity["dataset"][key] for key in ("id", "variant", "sha256")},
                 "selection": fidelity["selection"],
                 "samples": len(sizes),

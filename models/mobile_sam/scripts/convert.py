@@ -1,16 +1,8 @@
-"""Export MobileSAM's two image encoder parts and its prompt decoder side by side in one ONNX and check it against
-PyTorch.
+"""Export MobileSAM's whole image encoder and reusable prompt decoder, and validate upstream parity.
 
-MobileSAM is segment_anything's prompt encoder and mask decoder with a TinyViT image encoder. The checkpoint is
-MobileSAM's mobile_sam.pt; the encoder is built from the vendored tiny_vit_sam.py and the rest from the
-segment_anything wheel.
-
-The exported encoder is tiny_vit_4d.ImageEncoder: upstream's TinyViT with its attention stages in the 4D layout
-the compiler handles, as two components (pipeline.py), since the whole encoder needs more memory to compile than a
-CI runner has. Chained, the two parts are checked against upstream's TinyViT before export.
-
-The prompt decoder takes each prompt point as normalized coordinates and a one-hot point type (pipeline.py) and
-embeds it itself, so an application needs no weights on the CPU. Its embedding equals segment_anything's.
+The image encoder runs once per image. The decoder accepts each prompt against the retained embedding;
+there is no separately compiled intermediate feature component. Fourier encoding stays in the reference
+export and is cut only by surgery for compilation.
 """
 
 import argparse
@@ -157,10 +149,9 @@ def modules(sam):
             self.image_encoder = ImageEncoder(sam.image_encoder)
             self.prompt_decoder = PromptDecoder()
 
-        def forward(self, image, features, image_embeddings, point_coords, point_types):
+        def forward(self, image, image_embeddings, point_coords, point_types):
             return (
-                self.image_encoder.start(image),
-                self.image_encoder.finish(features),
+                self.image_encoder(image),
                 *self.prompt_decoder(image_embeddings, point_coords, point_types),
             )
 
@@ -198,13 +189,13 @@ def reference_decoder(sam, image_embeddings, points, types):
 
 def seeded_image(seed):
     """Normalized pixels lie in about [-2.1, 2.7]; the image's bottom rows are padding, as for a 4:3 image."""
-    image = np.random.RandomState(seed).uniform(-2.1, 2.7, INPUT_SHAPES["image_encoder_0"]["image"]).astype(np.float32)
+    image = np.random.RandomState(seed).uniform(-2.1, 2.7, INPUT_SHAPES["image_encoder"]["image"]).astype(np.float32)
     image[:, :, 768:] = 0
     return image
 
 
 def check_encoder(sam, side_by_side):
-    """The 4D encoder's two parts, chained, give upstream TinyViT's embedding on seeded images."""
+    """The whole 4D encoder gives upstream TinyViT's embedding on seeded images."""
     import torch
 
     for seed in SEEDS[:2]:
@@ -212,7 +203,7 @@ def check_encoder(sam, side_by_side):
         with torch.inference_mode():
             expected = sam.image_encoder(image).numpy()
             encoder = side_by_side.image_encoder
-            actual = encoder.finish(encoder.start(image)).numpy()
+            actual = encoder(image).numpy()
         np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4, err_msg=f"4D encoder (seed {seed})")
 
 
@@ -309,8 +300,7 @@ def compare(expected, actual, name):
 
 
 def check_onnx(side_by_side, path):
-    """Each component's ONNX outputs match PyTorch's on seeded images and the check prompts. The second encoder
-    part takes the first's PyTorch features of the same image."""
+    """The whole encoder and decoder ONNX outputs match PyTorch on seeded images and the check prompts."""
     import onnxruntime as ort
     import torch
 
@@ -321,13 +311,10 @@ def check_onnx(side_by_side, path):
     for index, (points, types) in enumerate(PROMPTS):
         seed = SEEDS[index % len(SEEDS)]
         image = seeded_image(seed)
-        with torch.inference_mode():
-            features = side_by_side.image_encoder.start(torch.from_numpy(image)).numpy()
         embeddings = (np.random.RandomState(seed).standard_normal(EMBEDDING_SHAPE) * 0.3).astype(np.float32)
         prompt = prompt_inputs(points, types, ORIGINAL_SIZE)
         feeds = {
-            tensor_name("image_encoder_0", "image"): image,
-            tensor_name("image_encoder_1", "features"): features,
+            tensor_name("image_encoder", "image"): image,
             tensor_name("prompt_decoder", "image_embeddings"): embeddings,
             **{tensor_name("prompt_decoder", key): value for key, value in prompt.items()},
         }

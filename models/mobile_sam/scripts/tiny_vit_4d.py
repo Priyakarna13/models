@@ -117,9 +117,7 @@ def merge(downsample, x):
 
 
 class ImageEncoder(torch.nn.Module):
-    """An upstream TinyViT image encoder, [1, 3, 1024, 1024] -> [1, 256, 64, 64], in the 4D layout, in two parts:
-    start() runs the patch embedding and stages 0 and 1, [1, 3, 1024, 1024] -> [1, 160, 64, 64]; finish() runs
-    stages 2 and 3 and the neck, [1, 160, 64, 64] -> [1, 256, 64, 64]."""
+    """A whole upstream TinyViT encoder, [1,3,1024,1024] -> [1,256,64,64], in the 4D compiler layout."""
 
     def __init__(self, encoder):
         super().__init__()
@@ -131,16 +129,14 @@ class ImageEncoder(torch.nn.Module):
         )
         self.neck = encoder.neck
 
-    def start(self, image):
+    def forward(self, image):
         x = self.patch_embed(image)
         for block in self.convolutions:
             x = block(x)
         x = merge(self.downsamples[0], x)
         for block in self.stages[0]:
             x = block(x)
-        return merge(self.downsamples[1], x)
-
-    def finish(self, x):
+        x = merge(self.downsamples[1], x)
         for block in self.stages[1]:
             x = block(x)
         x = merge(self.downsamples[2], x)
@@ -148,5 +144,3 @@ class ImageEncoder(torch.nn.Module):
             x = block(x)
         return self.neck(x)
 
-    def forward(self, image):
-        return self.finish(self.start(image))

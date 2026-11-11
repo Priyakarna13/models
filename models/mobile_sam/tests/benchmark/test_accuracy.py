@@ -152,11 +152,11 @@ def test_fp32_runner_feeds_the_real_component_chain(load_script):
     script = load_script("fp32_baseline_accuracy")
     feeds = []
     runners = script.FloatRunners.__new__(script.FloatRunners)
-    feature, embedding = object(), object()
+    embedding = object()
 
     def run(component, values):
         feeds.append((component, values))
-        return {"image_encoder_0": [feature], "image_encoder_1": [embedding], "prompt_decoder": ["masks", "scores"]}[
+        return {"image_encoder": [embedding], "prompt_decoder": ["masks", "scores"]}[
             component
         ]
 
@@ -165,7 +165,7 @@ def test_fp32_runner_feeds_the_real_component_chain(load_script):
     actual = runners.encode(image)
     assert actual is embedding
     assert feeds[0][1]["image"].shape == (1, 3, 1024, 1024)
-    assert feeds[1][1]["features"] is feature
+    assert len(feeds) == 1  # One whole encoder invocation, no intermediate feature component.
     assert runners.decode(actual, {"point_coords": "coordinates", "point_types": "types"}) == ("masks", "scores")
     assert feeds[-1][1] == {"image_embeddings": embedding, "point_coords": "coordinates", "point_types": "types"}
 
@@ -332,3 +332,28 @@ def test_fp32_failed_serialization_does_not_publish_a_partial_file(load_script, 
     with pytest.raises(ValueError, match="JSON compliant"):
         script.write_json(output, {"score": float("nan")})
     assert list(tmp_path.iterdir()) == []
+
+
+def test_native_runner_reuses_one_whole_encoder_for_repeated_prompts(load_script, monkeypatch):
+    from types import SimpleNamespace
+
+    script = load_script("accuracy")
+    runners = script.Runners.__new__(script.Runners)
+    calls = []
+    embedding = object()
+    runners.prompt_encoding = lambda coords: "encoding"
+    monkeypatch.setattr(script, "hwc", lambda value: value)
+    monkeypatch.setattr(script, "handoff", lambda tensors: tensors)
+
+    def run(component, inputs):
+        calls.append(component)
+        if component == "image_encoder":
+            return [embedding]
+        assert inputs[0] is embedding
+        return [SimpleNamespace(to_numpy=lambda copy: np.zeros((1, 4), np.float32)) for _ in range(2)]
+
+    runners.run = run
+    encoded = runners.encode(np.zeros((10, 20, 3), np.float32))
+    for _ in range(3):
+        runners.decode(encoded, {"point_coords": "coords", "point_types": "types"})
+    assert calls == ["image_encoder", "prompt_decoder", "prompt_decoder", "prompt_decoder"]
