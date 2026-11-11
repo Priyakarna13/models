@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import torch
+from model_registry.conversion import conversion_outputs
 from model_registry.fetch import Fetcher
 from model_registry.model import load_model
 from onnx_export import frontend_metadata
@@ -398,8 +399,8 @@ def convert(checkpoint: Path, output: Path) -> Path:
     for key, filename in (("license", "LICENSE.txt"), ("attribution", "NOTICE.txt")):
         item = graph.metadata_props.add()
         item.key, item.value = key, (MODEL_DIR / "scripts" / filename).read_text()
-    path = output / "model.onnx"
-    onnx.save_model(graph, path, save_as_external_data=True, location="model.onnx.ext")
+    path = output / conversion_outputs(MODEL_DIR)[0]
+    onnx.save_model(graph, path, save_as_external_data=True, location=path.name + ".ext")
     onnx.checker.check_model(str(path))
     return path
 
