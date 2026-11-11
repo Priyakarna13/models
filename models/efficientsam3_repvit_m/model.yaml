@@ -62,10 +62,13 @@ calibrations:
 - id: coco-2017-cal
   dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
 
+# On-demand because Spot runners lost this ~4 h compile three times mid-run, at the default size because its
+# measured peak (21.4 GiB) fits the default runner.
 build_profiles:
   # The image model calibrates on the quantized text encoder's features, as the board runs them.
   w16a16:
     calibration_dataset: coco-2017-cal
+    runner_market: on-demand
     components:
       text_encoder:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 16}
