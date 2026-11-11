@@ -1,170 +1,126 @@
-#!/usr/bin/env python3
-"""Retain the BlazePose application ABI and replace channel-padding operators."""
+"""Keep BlazePose GHUM Heavy's three landmark outputs and replace its channel Pads with 1x1 convolutions.
+
+Model Compiler 3.0.0.1 cannot place a Pad that appends channels on the MLA ("Pad mode must be constant and pad
+width must be 0"): with the three Pads it splits the model into 7 MLA and APU segments, with the rewrite into 1.
+A 1x1 convolution by an identity matrix over zero rows computes the same tensor.
+"""
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import numpy as np
 import onnx
-from onnx import helper, numpy_helper, shape_inference
-from onnx.utils import Extractor
+from onnx import helper, numpy_helper
 
-MODEL_DIR = Path(__file__).resolve().parents[1]
-INPUT_NAME = "input_1"
-INPUT_SHAPE = (1, 256, 256, 3)
-SOURCE_OUTPUTS = (
-    ("Identity", (1, 195)),
-    ("Identity_1", (1, 1)),
-    ("Identity_2", (1, 256, 256, 1)),
-    ("Identity_3", (1, 64, 64, 39)),
-    ("Identity_4", (1, 117)),
-)
-OUTPUTS = (SOURCE_OUTPUTS[0], SOURCE_OUTPUTS[1], SOURCE_OUTPUTS[4])
-CHANNEL_PADDING_COUNT = 3
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+INPUT = "input_1"
+INPUT_SHAPE = [1, 256, 256, 3]
+SOURCE_OUTPUT_SHAPES = {
+    "Identity": [1, 195],
+    "Identity_1": [1, 1],
+    "Identity_2": [1, 256, 256, 1],
+    "Identity_3": [1, 64, 64, 39],
+    "Identity_4": [1, 117],
+}
+# Image landmarks, pose presence and world landmarks; the segmentation mask and heatmaps are dropped.
+OUTPUT_SHAPES = {name: SOURCE_OUTPUT_SHAPES[name] for name in ("Identity", "Identity_1", "Identity_4")}
+OUTPUTS = list(OUTPUT_SHAPES)
+# Three Pads append zero channels to a MaxPool output.
+CHANNEL_PADS = 3
+SEEDS = range(123, 129)
+# The rewrite only copies channels and appends zeros: ONNX Runtime measured 0.0 difference on every seed.
+TOLERANCE = 1e-5
 
 
-def pinned_source_sha256() -> str:
-    """The SHA-256 model.yaml pins for the converted ONNX that compile.py receives."""
-    from model_registry.model import load_model
-
-    return load_model(MODEL_DIR)["components"][0]["source"]["sha256"]
+def _require(condition, message):
+    if not condition:
+        raise ValueError(f"Unsupported BlazePose graph: {message}")
 
 
-def _tensor_contract(values: list[onnx.ValueInfoProto]) -> list[tuple[str, tuple[int, ...]]]:
-    return [(value.name, tuple(dim.dim_value for dim in value.type.tensor_type.shape.dim)) for value in values]
+def _shapes(values) -> dict[str, list[int]]:
+    return {value.name: [dimension.dim_value for dimension in value.type.tensor_type.shape.dim] for value in values}
 
 
-def validate_source_model(model: onnx.ModelProto) -> None:
-    onnx.checker.check_model(model, full_check=True)
-    inputs = _tensor_contract(list(model.graph.input))
-    outputs = _tensor_contract(list(model.graph.output))
-    if inputs != [(INPUT_NAME, INPUT_SHAPE)]:
-        raise ValueError(f"BlazePose source input mismatch: {inputs}")
-    if outputs != list(SOURCE_OUTPUTS):
-        raise ValueError(f"BlazePose source output mismatch: {outputs}")
-    opsets = {item.domain: item.version for item in model.opset_import}
-    if opsets.get("") != 16:
-        raise ValueError(f"BlazePose source ONNX opset mismatch: {opsets}")
+def _prune(model: onnx.ModelProto) -> None:
+    """Drop nodes and initializers that no longer reach a graph output."""
+    needed = {value.name for value in model.graph.output}
+    kept = []
+    for node in reversed(model.graph.node):
+        if any(name in needed for name in node.output):
+            kept.append(node)
+            needed.update(node.input)
+    del model.graph.node[:]
+    model.graph.node.extend(reversed(kept))
+    initializers = [value for value in model.graph.initializer if value.name in needed]
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(initializers)
 
 
-def _replace_channel_padding(model: onnx.ModelProto) -> list[str]:
-    inferred = shape_inference.infer_shapes(model, strict_mode=True, data_prop=True)
-    initializers = {item.name: numpy_helper.to_array(item) for item in inferred.graph.initializer}
-    shapes = {
-        item.name: tuple(dim.dim_value for dim in item.type.tensor_type.shape.dim)
-        for item in [*inferred.graph.input, *inferred.graph.value_info, *inferred.graph.output]
-    }
-    replaced: list[str] = []
-    for index, node in enumerate(inferred.graph.node):
-        if node.op_type != "Pad" or "/channel_padding" not in node.name:
+def _appended_channels(pads: np.ndarray) -> int:
+    """The zero channels a Pad appends to an NCHW tensor, or 0 when it pads anything else."""
+    pads = pads.tolist()
+    return pads[5] if len(pads) == 8 and pads[5] > 0 and not any(pads[:5] + pads[6:]) else 0
+
+
+def _replace_channel_pads(model: onnx.ModelProto) -> None:
+    """Replace each channel Pad with a 1x1 convolution whose weight is an identity matrix over zero rows."""
+    initializers = {value.name: numpy_helper.to_array(value) for value in model.graph.initializer}
+    inferred = onnx.shape_inference.infer_shapes(model, strict_mode=True)
+    shapes = _shapes([*inferred.graph.input, *inferred.graph.value_info])
+    replaced = 0
+    for node in model.graph.node:
+        if node.op_type != "Pad" or node.input[1] not in initializers:
             continue
-        if len(node.input) != 2 or node.attribute:
-            raise ValueError(f"unsupported BlazePose channel Pad form: {node.name}")
-        input_shape = shapes.get(node.input[0])
-        output_shape = shapes.get(node.output[0])
-        if input_shape is None or output_shape is None or len(input_shape) != 4 or len(output_shape) != 4:
-            raise ValueError(f"missing static BlazePose channel Pad shape: {node.name}")
-        input_channels = input_shape[1]
-        output_channels = output_shape[1]
-        pads = initializers[node.input[1]].tolist()
-        expected_pads = [0, 0, 0, 0, 0, output_channels - input_channels, 0, 0]
-        if input_shape[0] != output_shape[0] or input_shape[2:] != output_shape[2:] or pads != expected_pads:
-            raise ValueError(
-                f"unexpected BlazePose channel Pad contract: {node.name}, {input_shape} -> {output_shape}, {pads}"
-            )
-        weights = np.zeros((output_channels, input_channels, 1, 1), dtype=np.float32)
-        diagonal = np.arange(input_channels)
-        weights[diagonal, diagonal, 0, 0] = 1.0
-        weight_name = f"{node.name}/identity_conv_weight"
-        inferred.graph.initializer.append(numpy_helper.from_array(weights, weight_name))
-        inferred.graph.node[index].CopyFrom(
+        appended = _appended_channels(initializers[node.input[1]])
+        if not appended:
+            continue
+        _require(len(node.input) == 2 and not node.attribute, f"{node.name} does not pad with zeros")
+        channels = shapes[node.input[0]][1]
+        weight = np.zeros((channels + appended, channels, 1, 1), np.float32)
+        weight[np.arange(channels), np.arange(channels)] = 1
+        weight_name = f"{node.output[0]}/identity_weight"
+        model.graph.initializer.append(numpy_helper.from_array(weight, weight_name))
+        node.CopyFrom(
             helper.make_node(
-                "Conv",
-                [node.input[0], weight_name],
-                list(node.output),
-                name=f"{node.name}/identity_conv",
-                kernel_shape=[1, 1],
-                strides=[1, 1],
+                "Conv", [node.input[0], weight_name], list(node.output), name=node.name, kernel_shape=[1, 1]
             )
         )
-        replaced.append(node.name)
-    if len(replaced) != CHANNEL_PADDING_COUNT:
-        raise ValueError(f"expected {CHANNEL_PADDING_COUNT} BlazePose channel Pads, found {replaced}")
-
-    used_initializers = {name for node in inferred.graph.node for name in node.input}
-    for initializer in list(inferred.graph.initializer):
-        if initializer.name not in used_initializers:
-            inferred.graph.initializer.remove(initializer)
-    model.CopyFrom(inferred)
-    return replaced
+        replaced += 1
+    _require(replaced == CHANNEL_PADS, f"found {replaced} channel Pads, expected {CHANNEL_PADS}")
 
 
-def validate_prepared_model(model: onnx.ModelProto) -> None:
-    onnx.checker.check_model(model, full_check=True)
-    inputs = _tensor_contract(list(model.graph.input))
-    outputs = _tensor_contract(list(model.graph.output))
-    if inputs != [(INPUT_NAME, INPUT_SHAPE)]:
-        raise ValueError(f"prepared BlazePose input mismatch: {inputs}")
-    if outputs != list(OUTPUTS):
-        raise ValueError(f"prepared BlazePose output mismatch: {outputs}")
-    remaining = [node.name for node in model.graph.node if "/channel_padding" in node.name and node.op_type == "Pad"]
-    if remaining:
-        raise ValueError(f"prepared BlazePose graph retains channel Pads: {remaining}")
+def validate_rewrite(source: Path, prepared: Path) -> None:
+    """Require the prepared graph to reproduce the converted ONNX's kept outputs in ONNX Runtime."""
+    import onnxruntime as ort
+
+    reference = ort.InferenceSession(str(source), providers=["CPUExecutionProvider"])
+    candidate = ort.InferenceSession(str(prepared), providers=["CPUExecutionProvider"])
+    for seed in SEEDS:
+        sample = np.random.RandomState(seed).uniform(0, 1, INPUT_SHAPE).astype(np.float32)
+        expected = reference.run(OUTPUTS, {INPUT: sample})
+        actual = candidate.run(OUTPUTS, {INPUT: sample})
+        for name, expected_value, actual_value in zip(OUTPUTS, expected, actual, strict=True):
+            error = float(np.max(np.abs(actual_value - expected_value)))
+            if not np.isfinite(actual_value).all() or error > TOLERANCE:
+                raise RuntimeError(f"prepared output {name} differs from the converted graph by {error} (seed {seed})")
 
 
-def prepare_model(source: Path, destination: Path) -> Path:
-    source = source.expanduser().resolve()
-    destination = destination.expanduser().resolve()
-    source_sha256 = pinned_source_sha256()
-    if _sha256(source) != source_sha256:
-        raise ValueError(f"BlazePose source SHA-256 mismatch: {source}")
+def prepare_model(source: Path, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
     model = onnx.load(source)
-    validate_source_model(model)
-    extracted = Extractor(shape_inference.infer_shapes(model, strict_mode=True, data_prop=True)).extract_model(
-        [INPUT_NAME], [name for name, _ in OUTPUTS]
-    )
-    replaced = _replace_channel_padding(extracted)
-    extracted.graph.name = "blazepose_ghum_heavy_3d"
-    extracted.ir_version = 8
-    extracted.producer_name = "sima-neat-blazepose-surgery"
-    extracted.producer_version = "1"
-    del extracted.metadata_props[:]
-    helper.set_model_props(
-        extracted,
-        {
-            "sima.output_order": ",".join(name for name, _ in OUTPUTS),
-            "sima.preprocess": "RGB float32 NHWC [0,1], resize 256x256",
-            "sima.replaced_channel_padding": str(len(replaced)),
-            "source.sha256": source_sha256,
-        },
-    )
-    extracted = shape_inference.infer_shapes(extracted, strict_mode=True, data_prop=True)
-    validate_prepared_model(extracted)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    onnx.save(extracted, destination)
-    return destination
-
-
-def main() -> int:
-    import argparse
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source", type=Path)
-    parser.add_argument("destination", type=Path)
-    args = parser.parse_args()
-    prepare_model(args.source, args.destination)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    onnx.checker.check_model(model)
+    _require(_shapes(model.graph.input) == {INPUT: INPUT_SHAPE}, f"inputs {_shapes(model.graph.input)}")
+    _require(_shapes(model.graph.output) == SOURCE_OUTPUT_SHAPES, f"outputs {_shapes(model.graph.output)}")
+    outputs = {value.name: value for value in model.graph.output}
+    del model.graph.output[:]
+    model.graph.output.extend(outputs[name] for name in OUTPUTS)
+    _prune(model)
+    _replace_channel_pads(model)
+    _prune(model)
+    del model.graph.value_info[:]
+    model = onnx.shape_inference.infer_shapes(model, strict_mode=True)
+    onnx.checker.check_model(model, full_check=True)
+    path = output_dir / "blazepose_ghum_heavy_landmarks.onnx"
+    onnx.save(model, path)
+    validate_rewrite(source, path)
+    return path

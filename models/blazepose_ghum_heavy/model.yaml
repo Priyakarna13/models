@@ -30,14 +30,10 @@ conversion:
     size_bytes: 27709200
 
 compilation:
-  # scripts/convert.py checks this ONNX against the TFLite (max abs error 0.005, mean 0.0005).
-  # The surgery has structural checks only, and no compiled-output reference comparison or
-  # dataset-backed landmark accuracy test is declared; task accuracy is in Google's model card.
+  # No registry dataset scores the landmarks; compile.py compares the quantized graph with the converted
+  # ONNX instead, and task accuracy is in Google's model card.
   format: onnx
-  source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/blazepose_ghum_heavy/c71c7154ab833939523492c4b68627436006029e287fe47b7969a4188810299f/39834257849-1/model.onnx
-    sha256: c71c7154ab833939523492c4b68627436006029e287fe47b7969a4188810299f
-    size_bytes: 55181627
+  source: conversion
 
 build_profiles:
   w16a16:
