@@ -125,6 +125,10 @@ architectures:
     display_name: Qwen3-VL
     paradigm: transformer
     allowed_model_types: [vlm]
+  regnet_y:
+    display_name: RegNetY
+    paradigm: cnn
+    allowed_model_types: [vision]
   resnet:
     display_name: ResNet
     paradigm: cnn
