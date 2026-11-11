@@ -57,8 +57,8 @@ architectures:
     display_name: DLA
     paradigm: cnn
     allowed_model_types: [vision]
-  efficientnet:
-    display_name: EfficientNet
+  efficientnet_lite:
+    display_name: EfficientNet-Lite
     paradigm: cnn
     allowed_model_types: [vision]
   gemma4:

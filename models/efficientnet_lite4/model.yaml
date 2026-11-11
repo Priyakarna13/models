@@ -7,7 +7,7 @@ modalities:
   inputs: [image]
   outputs: [class_scores]
 
-architecture: efficientnet
+architecture: efficientnet_lite
 
 license:
   spdx: Apache-2.0
