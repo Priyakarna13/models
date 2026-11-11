@@ -303,6 +303,7 @@ def test_quantization_uses_explicit_precision_specific_observers(load_script, mo
     monkeypatch.setattr(module, "quantization_scheme", lambda **kwargs: kwargs)
     module._quantization(precision, 2048 if precision == "w8a8" else None)
     assert seen["per_token_quant"] is False
+    assert seen["node_names"] == {""}
     if precision == "w8a8":
         assert seen["calibration_method"] == ("histogram_mse", 2048)
         assert seen["activation_quantization_scheme"] == {"asymmetric": True, "per_channel": False, "bits": 8}

@@ -56,6 +56,7 @@ def _quantization(precision: str, calibration_bins: int | None) -> QuantizationP
     """Only INT8 activation ranges depend on representative calibration images."""
     if precision == "w8a8":
         config = QuantizationParams(
+            node_names={""},  # Preserve the shipped default's literal node exclusions.
             calibration_method=HistogramMSEMethod(calibration_bins),
             activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
             weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
@@ -63,6 +64,7 @@ def _quantization(precision: str, calibration_bins: int | None) -> QuantizationP
         )
     elif precision == "w16a16":
         config = QuantizationParams(
+            node_names={""},  # Preserve the shipped default's literal node exclusions.
             calibration_method=SkipCalibration(),
             activation_quantization_scheme=bfloat16_scheme(),
             weight_quantization_scheme=bfloat16_scheme(),

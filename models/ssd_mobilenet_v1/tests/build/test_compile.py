@@ -398,6 +398,7 @@ def test_quantization_uses_explicit_precision_specific_observers(load_script, mo
     monkeypatch.setattr(module, "quantization_scheme", lambda **kwargs: kwargs)
     module._quantization(precision, 2048 if precision == "w8a8" else None)
     assert seen["per_token_quant"] is False
+    assert seen["node_names"] == {""}
     if precision == "w8a8":
         assert seen["calibration_method"] == ("histogram_mse", 2048)
         assert seen["activation_quantization_scheme"] == {"asymmetric": True, "per_channel": False, "bits": 8}
@@ -439,6 +440,8 @@ def test_bf16_quantization_receives_no_dummy_calibration_data(load_script, monke
 def test_pinned_source_preprocessor_matches_calibration_on_real_coco(
     compiled, model_dir, coco_source_images, load_script
 ):
+    import os
+
     import onnx
     import onnxruntime as ort
     from model_registry.fetch import Fetcher
@@ -447,7 +450,9 @@ def test_pinned_source_preprocessor_matches_calibration_on_real_coco(
     # The compile stage already fetches this exact source. Reuse its verified
     # content-addressed cache rather than check in another 29 MB model copy.
     model = load_model(model_dir)
-    source, _hit, _digest, _size = Fetcher().fetch_source(model["components"][0]["source"])
+    source, _hit, _digest, _size = Fetcher(os.environ.get("MODEL_REGISTRY_CACHE_DIR") or None).fetch_source(
+        model["components"][0]["source"]
+    )
     surgery, calibration = load_script("surgery"), load_script("calibration")
     graph = onnx.shape_inference.infer_shapes(onnx.load(source), strict_mode=False, data_prop=True)
     # Keep all nodes/initializers: the legacy Loop body captures outer constants
