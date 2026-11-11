@@ -16,12 +16,14 @@ license:
 
 upstream:
   repository: https://github.com/google-ai-edge/mediapipe
-  revision: 59e42d71bcd44cbdbabc419f0ff76686595fd265419566bd4009ef703ea8e1fe
+  # MediaPipe v0.8.9, whose tree holds the TFLite that conversion.source copies.
+  revision: e6c19885c6d3c6f410c730952aeed2852790d306
   model_card: https://developers.google.com/ml-kit/images/vision/pose-detection/pose_model_card.pdf
-  derived_from: https://storage.googleapis.com/mediapipe-assets/pose_landmark_heavy.tflite
+  derived_from: https://github.com/google-ai-edge/mediapipe/blob/e6c19885c6d3c6f410c730952aeed2852790d306/mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite
 
 conversion:
-  # A Hugging Face copy of Google's official file; its SHA-256 matches the derived_from download.
+  # A Hugging Face copy of MediaPipe's file: the same git blob as derived_from, and the SHA-256 that
+  # MediaPipe's third_party/external_files.bzl pins for pose_landmark_heavy.tflite.
   source:
     uri: hf://models/Pictorial/mediapipe@c89ffb465643886fe8a86d9ce771ac3bd239606a/modules/pose_landmark/pose_landmark_heavy.tflite
     sha256: 59e42d71bcd44cbdbabc419f0ff76686595fd265419566bd4009ef703ea8e1fe
