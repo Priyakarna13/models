@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 from model_registry.fetch import Fetcher
 from model_registry.model import load_model
-from model_registry.onnx_export import frontend_metadata
+from onnx_export import frontend_metadata
 from torch import nn
 from torch.nn import functional as F
 
@@ -169,8 +169,8 @@ class Joiner(nn.Module):
 def compose(model, directory):
     import gc
 
-    from model_registry.onnx_export import append_graph, export_part
     from onnx import helper
+    from onnx_export import append_graph, export_part
 
     result = helper.make_model(
         helper.make_graph([], "parakeet_buffered", [], []), opset_imports=[helper.make_opsetid("", 17)], ir_version=8
@@ -284,6 +284,10 @@ def convert(checkpoint: Path, output: Path) -> Path:
         "predictor_outputs": [value.name for value in graph.graph.output if value.name.startswith("predictor/")],
         "joiner_outputs": [value.name for value in graph.graph.output if value.name.startswith("joiner/")],
         "frontend": frontend_metadata(processor),
+        "assets": {
+            name: json.loads((checkpoint / name).read_text())
+            for name in ("tokenizer.json", "processor_config.json")
+        },
     }
     if KIND == "nemotron":
         runtime.update(chunk_ms=560, lookahead=6, history_frames=56)

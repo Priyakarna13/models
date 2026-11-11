@@ -53,10 +53,10 @@ function measuredText(metric, key) {
   return { number: Number(display.value.toFixed(display.digits)), text: `${display.value.toFixed(display.digits)} ${display.unit.replace("/inference", "")}`, direction: definition.direction };
 }
 
-// Each build's performance measures the whole model, however many components it runs.
+// Independent components have no whole-model performance to plot or compare.
 function variantMeasurements(variant) {
   const result = readPerformance(variant.performance);
-  return result.kind === "supported" ? result.value.measurements : {};
+  return result.kind === "supported" ? result.value.measurements || {} : {};
 }
 
 function bestValue(columns, key) {
@@ -135,7 +135,9 @@ function comparisonPlot(columns) {
     return Number.isFinite(y) ? [{...point, y}] : [];
   });
   const accuracy = plotted[0]?.column.accuracy;
-  const yLabel = `${accuracy?.label || "Accuracy"}${accuracy?.unit ? ` (${accuracy.unit})` : ""}`;
+  // A lower-is-better metric, such as a disparity error, says so: the chart's best builds then sit low.
+  const scale = [accuracy?.unit, accuracy?.direction === "lower" ? "lower is better" : ""].filter(Boolean).join(", ");
+  const yLabel = `${accuracy?.label || "Accuracy"}${scale ? ` (${scale})` : ""}`;
   const maxX = Math.max(1, ...plotted.map(point => point.x)) * 1.12;
   const maxY = Math.max(1, ...plotted.map(point => point.y));
   const minY = Math.max(0, Math.min(maxY, ...plotted.map(point => point.y)) - (maxY * .08));
@@ -247,7 +249,7 @@ export async function renderComparison() {
   const taskOptions = all.filter(option => option.model.tasks?.includes(state.compareTask));
   const options = taskOptions;
   state.comparePicks = state.comparePicks.map(key => options.some(option => option.key === key) ? key : "");
-  const pending = options.some(option => option.model.model_type !== "vision");
+  const pending = options.length > 0 && options.every(option => option.model.model_type !== "vision");
   elements["compare-pane"].innerHTML = `${intro}<div class="compare-filters">${selectControl("Task", "task", tasks.map(id => [id, taxonomyLabel("tasks", id)]), state.compareTask)}</div>
     <div class="compare-results" aria-live="polite">${pending ? '<div class="compare-empty"><span class="compare-tbd">TBD</span><h3>Model comparisons</h3></div>' : options.length ? '<p class="muted-message compare-loading" role="status"><span class="spinner"></span> Loading measurements…</p>' : '<p class="compare-empty">No models available for this task.</p>'}</div>`;
   if (pending || !options.length) return;

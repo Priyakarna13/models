@@ -1,7 +1,7 @@
 import json
 import math
 
-from model_registry.artifact import verify_runtime_files
+from model_registry.runtime_files import read_runtime_files
 
 
 def test_complete_runtime_payload(compiled):
@@ -9,8 +9,13 @@ def test_complete_runtime_payload(compiled):
 
     component = compiled / "model"
     assert len(list(component.glob("*_mpk.tar.gz"))) == 1
-    names = {item["path"] for item in verify_runtime_files(component)}
-    assert {"predictor_cpu_int8.onnx", "joiner_cpu_int8.onnx", "transcribe.py", "frontend.npz"} <= names
+    names = {item["path"] for item in read_runtime_files(compiled)}
+    assert {
+        "model/predictor_cpu_int8.onnx",
+        "model/joiner_cpu_int8.onnx",
+        "model/transcribe.py",
+        "model/frontend.npz",
+    } <= names
     for name in ("predictor", "joiner"):
         model = onnx.load(component / (name + "_cpu_int8.onnx"))
         assert any(tensor.data_type == onnx.TensorProto.INT8 for tensor in model.graph.initializer)
@@ -78,3 +83,79 @@ def test_tdt_duration_carries_to_the_next_chunk(load_script):
     assert decoder.skip == 0 and joiner.calls == 1
     decoder.step(np.zeros((1, 2, 640), np.float32))
     assert decoder.tokens == [0, 0] and joiner.calls == 2
+
+
+def test_compile_manifest_uses_shared_runtime_files_contract(tmp_path, load_script):
+    import pytest
+    from model_registry.artifact import validate_compile_outputs
+    from model_registry.errors import ValidationError
+
+    recipe = load_script("compile")
+    component = tmp_path / "model"
+    component.mkdir()
+    archive = component / "encoder_mpk.tar.gz"
+    archive.write_bytes(b"encoder")
+    for filename in recipe.RUNTIME_FILES:
+        (component / filename).write_bytes(filename.encode())
+    recipe.write_compile_outputs(tmp_path, archive, "asr", "w8a16")
+
+    def validate():
+        return validate_compile_outputs(
+            tmp_path / "compile-outputs.json",
+            tmp_path,
+            model_id="asr",
+            build_profile_id="w8a16",
+            compile_invocation_id="w8a16",
+            component_ids=["model"],
+        )
+
+    assert len(validate()["runtime_files"]) == len(recipe.RUNTIME_FILES)
+    (component / "predictor_cpu_int8.onnx").write_bytes(b"changed")
+    with pytest.raises(ValidationError, match="SHA-256"):
+        validate()
+
+
+def test_prepare_restores_assets_from_conversion_without_sidecars(tmp_path, load_script, monkeypatch):
+    import onnx
+    from onnx import TensorProto, helper
+
+    recipe = load_script("compile")
+
+    def value(name):
+        return helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, 2])
+
+    graph = helper.make_model(
+        helper.make_graph(
+            [helper.make_node("Identity", ["audio"], ["encoded"])],
+            "encoder",
+            [value("audio")],
+            [value("encoded")],
+        ),
+        opset_imports=[helper.make_opsetid("", 17)],
+        ir_version=8,
+    )
+    assets = {"tokenizer.json": {"model": {}}, "processor_config.json": {"sample_rate": 16000}}
+    helper.set_model_props(
+        graph,
+        {
+            "sima.asr": json.dumps(
+                {
+                    "encoder_outputs": ["encoded"],
+                    "predictor_outputs": [],
+                    "joiner_outputs": [],
+                    "assets": assets,
+                }
+            )
+        },
+    )
+    source = tmp_path / "model.onnx"
+    onnx.save(graph, source)
+    component, work = tmp_path / "component", tmp_path / "work"
+    component.mkdir()
+    work.mkdir()
+    monkeypatch.setattr(recipe, "cpu_model", lambda *args: None)
+    recipe.prepare_model(source, work, component)
+    for filename, document in assets.items():
+        assert json.loads((component / filename).read_text()) == document
+    assert "assets" not in json.loads((work / "config.json").read_text())
+    onnx.checker.check_model(str(work / "encoder.onnx"))

@@ -24,6 +24,7 @@ from .registry import (
     publish_compilations,
     publish_packages,
 )
+from .runtime_files import read_runtime_files
 from .stage_plan import read_current_catalog
 
 DEPLOYMENTS = "/v1/repositories/sima-neat/models/deployments"
@@ -103,8 +104,8 @@ def publish_candidate(
     ``dist_dir`` is a compile output tree or a directory of downloaded invocation
     artifacts. Retries of a GitHub run reuse its candidate and publication keys.
     """
-    if environment != "staging":
-        raise ValidationError("candidate publication is currently enabled only in staging")
+    if environment not in {"staging", "production"}:
+        raise ValidationError("candidate publication environment must be staging or production")
     root, dist, output = (Path(path).resolve() for path in (repository, dist_dir, output_dir))
     if not dist.is_dir():
         raise ValidationError(f"compiler output directory not found: {dist}")
@@ -132,8 +133,7 @@ def publish_candidate(
         raise ValidationError("candidate requires exactly every component of one model/profile")
     roles = {}
     for item in prepared:
-        files = [*item["files"], *item["runtime_files"]]
-        artifacts = ["llima" if item["files"] else "mpk", *(file["artifact"] for file in files)]
+        artifacts = ["llima" if item["files"] else "mpk", *(file["artifact"] for file in item["files"])]
         roles[f"compile-{item['component_id']}"] = {
             "run_type": "model_compile", "artifacts": sorted(artifacts), "inputs": ["source-component"],
         }
@@ -196,6 +196,17 @@ def publish_candidate(
             shutil.rmtree(destination)
         shutil.copytree(item["result_path"].parent, destination, copy_function=_link_or_copy)
     for source in sources:
+        source_profile = source / model_id / build_profile_id
+        runtime_files = read_runtime_files(source_profile)
+        if runtime_files:
+            target_profile = compiled / model_id / build_profile_id
+            shutil.copyfile(source_profile / "compile-outputs.json", target_profile / "compile-outputs.json")
+            for item in runtime_files:
+                destination = target_profile / item["path"]
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not destination.exists():
+                    _link_or_copy(str(source_profile / item["path"]), str(destination))
+            read_runtime_files(target_profile)
         for name in PROFILE_RESULT_FILES:
             result_file = source / model_id / build_profile_id / name
             if result_file.is_file():

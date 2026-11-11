@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -17,16 +18,38 @@ HF_URI_RE = re.compile(
     r"(?P<path>.+)$"
 )
 HF_RESOLVE_RE = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/resolve/[a-f0-9]{40}/.+$")
-VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx(?:\.ext)?$")
-DEFAULT_HTTPS_HOSTS = {
-    "artifacts.stg.neat.sima.ai",
-    "huggingface.co",
+VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx$")
+GITHUB_RELEASE_RE = re.compile(
+    r"^/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/releases/download/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+)
+
+
+def _require_hugging_face_commit(path: str) -> None:
+    if not HF_RESOLVE_RE.fullmatch(path):
+        raise SourcePolicyError("Hugging Face HTTPS sources must use a full commit in a resolve URL")
+
+
+def _require_vulcan_onnx(path: str) -> None:
+    if not VULCAN_ONNX_RE.fullmatch(path):
+        raise SourcePolicyError("Vulcan sources must identify a versioned ONNX file")
+
+
+def _require_github_release_file(path: str) -> None:
+    if not GITHUB_RELEASE_RE.fullmatch(path):
+        raise SourcePolicyError("GitHub sources must be a release file addressed by its tag")
+
+
+# Every approved HTTPS host and the check its URL path must pass. Approving a host is one entry here.
+HTTPS_HOST_CHECKS: dict[str, Callable[[str], None]] = {
+    "artifacts.stg.neat.sima.ai": _require_vulcan_onnx,
+    "github.com": _require_github_release_file,
+    "huggingface.co": _require_hugging_face_commit,
 }
 
 
 def source_identity(source: dict[str, Any]) -> str:
     """Return the canonical content identity of a single file or file set."""
-    if source["type"] == "file":
+    if source["type"] in {"file", "conversion"}:
         return str(source["sha256"])
     members = [
         {
@@ -37,7 +60,10 @@ def source_identity(source: dict[str, Any]) -> str:
         }
         for member in sorted(source["files"], key=lambda item: item["path"])
     ]
-    document = {"entrypoint": source["entrypoint"], "files": members}
+    # A resource's file set has no entrypoint; a compile source's identity keeps the exact document it had.
+    document = {"files": members}
+    if "entrypoint" in source:
+        document["entrypoint"] = source["entrypoint"]
     return hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -105,12 +131,11 @@ class SourceSpec:
             raise SourcePolicyError("HTTPS source URI must use the default TLS port")
         if any(part in {".", ".."} for part in parts.path.split("/")):
             raise SourcePolicyError("HTTPS source path must not contain dot or parent segments")
-        hosts = allowed_https_hosts or DEFAULT_HTTPS_HOSTS
+        hosts = allowed_https_hosts or set(HTTPS_HOST_CHECKS)
         hostname = (parts.hostname or "").lower()
         if hostname not in hosts:
             raise SourcePolicyError(f"HTTPS source host is not approved: {hostname or '<missing>'}")
-        if hostname == "huggingface.co" and not HF_RESOLVE_RE.fullmatch(parts.path):
-            raise SourcePolicyError("Hugging Face HTTPS sources must use a full commit in a resolve URL")
-        if hostname == "artifacts.stg.neat.sima.ai" and not VULCAN_ONNX_RE.fullmatch(parts.path):
-            raise SourcePolicyError("Vulcan sources must identify a versioned ONNX file")
+        require_path = HTTPS_HOST_CHECKS.get(hostname)
+        if require_path:
+            require_path(parts.path)
         return self.uri

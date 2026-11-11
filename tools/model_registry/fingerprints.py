@@ -11,10 +11,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .benchmark_declarations import ACCURACY_REQUIREMENTS, SCRIPTS
+from .benchmark_declarations import ACCURACY_REQUIREMENTS, FP32_BASELINE_SCRIPT, PERFORMANCE_REQUIREMENTS, SCRIPTS
 from .dependencies import resolve_benchmark_runtime
 from .errors import ValidationError
-from .model import CONVERSION_FILES, SCRIPTS_DIR, compile_invocations_for, load_and_validate_model, load_model
+from .model import CONVERSION_FILES, SCRIPTS_DIR, build_profile_for, compile_invocations_for, load_and_validate_model
+from .package import package_resources
 from .source import source_identity
 
 # Shared code used by ONNX builds.
@@ -24,29 +25,27 @@ COMPILE_TOOLING = (
     "tools/model_registry/mla_stage_simulation.py",
 )
 
-RUNTIME_FILES_TOOLING = (
-    "tools/model_registry/artifact.py",
-    "tools/model_registry/onnx_export.py",
-)
-
 _IGNORED_BUILD_PARTS = {".git", "__pycache__"}
 _IGNORED_BUILD_SUFFIXES = {".pyc", ".pyo"}
-# Conversion produces the pinned source, and the benchmarks consume the MPK; none changes compilation.
-NON_COMPILE_SCRIPTS = {*SCRIPTS.values(), *CONVERSION_FILES}
+# Conversion produces the pinned source, the benchmarks consume the MPK, and the FP32 baseline script runs the
+# source on a host; none changes compilation.
+NON_COMPILE_SCRIPTS = {*SCRIPTS.values(), FP32_BASELINE_SCRIPT, *CONVERSION_FILES}
 
 # Each benchmark stage's registry run type.
 BENCHMARK_RUN_TYPES = {"performance": "model_performance", "accuracy": "model_accuracy"}
 # The workflow runs the benchmark, model_report writes its report, and report_publication checks and publishes it.
+# metrics.json is left out: it names and labels metrics, so adding or editing one must not rerun every benchmark.
 BOARD_STAGE_TOOLING = (
     ".github/workflows/vulcan-model-benchmarking.yml",
+    "tools/model_registry/neat_core.py",
     "tools/model_report/__init__.py",
-    "tools/model_report/metrics.json",
     "schemas/model-report.schema.json",
     "tools/model_registry/report_publication.py",
 )
 PERFORMANCE_TOOLING = (*BOARD_STAGE_TOOLING, "scripts/run_model_performance.sh")
 ACCURACY_TOOLING = (
     *BOARD_STAGE_TOOLING,
+    "tools/model_registry/runtime_files.py",
     "scripts/install_dataset_registry.sh",
     "scripts/cache_accuracy_dataset.sh",
     "scripts/run_model_accuracy.sh",
@@ -84,9 +83,7 @@ def _file_digests(root: Path, required: list[str], optional: list[str] = ()) -> 
 def _compile_input_files(root: Path, model_id: str) -> list[Path]:
     """Code the compile runs: the shared runner and the model's scripts."""
     candidates: list[Path] = []
-    model = load_model(root / "models" / model_id)
-    tooling = (*COMPILE_TOOLING, *(RUNTIME_FILES_TOOLING if model.get("runtime_files") else ()))
-    for relative in tooling:
+    for relative in COMPILE_TOOLING:
         path = root / relative
         if not path.is_file():
             raise ValidationError(f"model compile input not found: {path}")
@@ -96,7 +93,7 @@ def _compile_input_files(root: Path, model_id: str) -> list[Path]:
         item
         for item in (model_dir / SCRIPTS_DIR).rglob("*")
         if item.is_file()
-        and item.suffix in ({".py", ".sh", ".txt"} if model.get("runtime_files") else {".py", ".sh"})
+        and item.suffix in {".py", ".sh"}
         and item.relative_to(model_dir).as_posix() not in NON_COMPILE_SCRIPTS
     )
     symlinks = sorted(item for item in candidates if item.is_symlink())
@@ -125,7 +122,10 @@ def _calibration_projection(model: dict[str, Any], binding: dict[str, Any]) -> d
 
 
 def _component_compile_projection(component: dict[str, Any]) -> dict[str, Any]:
-    return {key: component[key] for key in ("id", "source")}
+    source = component["source"]
+    if source["type"] == "conversion":
+        source = {"type": "conversion", "sha256": source["sha256"]}
+    return {"id": component["id"], "source": source}
 
 
 def _binding_compile_projection(
@@ -151,6 +151,8 @@ def compile_fingerprint(
     profile_id: str,
     compile_invocation_id: str,
     compiler_version: str,
+    *,
+    conversion_sources: dict[str, Any] | None = None,
 ) -> str:
     """Identity of one compile invocation: what it compiles, how, and with which compiler."""
     root = Path(repository).expanduser().resolve()
@@ -167,6 +169,9 @@ def compile_fingerprint(
         raise ValidationError(
             f"unknown compile invocation: {model_id}/{profile_id}/{compile_invocation_id}"
         ) from exc
+    from .conversion import apply_selection
+
+    apply_selection(model, conversion_sources, root=root)
     components = {item["id"]: item for item in model["components"]}
     bindings = {item["id"]: item for item in profile["components"]}
     if any(components[item]["interface"]["format"] == "huggingface" for item in invocation["components"]):
@@ -200,10 +205,14 @@ def compile_fingerprint(
         },
         # scripts/compile.py measures numerical fidelity as it compiles.
         "fidelity": model.get("numerical_fidelity"),
+        # Packages are assembled only when their profile compiles, so a changed resource must recompile it.
+        # Models without resources keep their fingerprints.
+        **({"resources": [
+            {"id": item["id"], "source_sha256": source_identity(item["source"]), "install_path": item["install_path"]}
+            for item in package_resources(model)
+        ]} if model.get("resources") else {}),
         "compiler_version": compiler,
     }
-    if model.get("runtime_files") and model["components"][0]["id"] in invocation["components"]:
-        identity["runtime_files"] = model["runtime_files"]
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode())
     _hash_files(digest, root, _compile_input_files(root, model_id))
     return digest.hexdigest()
@@ -234,7 +243,8 @@ def benchmark_fingerprint(
         raise ValidationError(f"{stage} of {model_id}/{build_profile_id} needs compiled component {missing[0]!r}")
     model_dir = f"models/{model_id}"
     required = [f"{model_dir}/{SCRIPTS[stage]}", *(PERFORMANCE_TOOLING if stage == "performance" else ACCURACY_TOOLING)]
-    optional = [f"{model_dir}/{ACCURACY_REQUIREMENTS}"] if stage == "accuracy" else []
+    optional = [f"{model_dir}/{ACCURACY_REQUIREMENTS if stage == 'accuracy' else PERFORMANCE_REQUIREMENTS}"]
+    baseline = build_profile_for(model, build_profile_id).get("benchmark_baseline") if stage == "performance" else None
     return _fingerprint({
         "stage": stage,
         "model_id": model_id,
@@ -247,6 +257,7 @@ def benchmark_fingerprint(
             for component_id in components
         },
         stage: {key: value for key, value in model[stage].items() if key != "build_profiles"},
+        **({"benchmark_baseline": baseline} if baseline else {}),
         "files": _file_digests(root, required, optional),
         "runtime": resolve_benchmark_runtime(root),
     })

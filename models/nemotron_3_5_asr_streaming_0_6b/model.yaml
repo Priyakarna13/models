@@ -42,25 +42,7 @@ conversion:
         size_bytes: 881
 compilation:
   format: onnx
-  source:
-    main_file: model.onnx
-    files:
-      model.onnx:
-        uri: https://artifacts.stg.neat.sima.ai/models-onnx/nemotron_3_5_asr_streaming_0_6b/835788b1291f139d9200fae1b08ac8b0f5748e4c3e9bfb8a496d9cfe01711073/40240363558-1/model.onnx
-        sha256: 835788b1291f139d9200fae1b08ac8b0f5748e4c3e9bfb8a496d9cfe01711073
-        size_bytes: 666366
-      model.onnx.ext:
-        uri: https://artifacts.stg.neat.sima.ai/models-onnx/nemotron_3_5_asr_streaming_0_6b/2ecaa74c651ad28f37842794a65eca7c0eaf4a92f6af223ad08e56eefd363a35/40240363558-1/model.onnx.ext
-        sha256: 2ecaa74c651ad28f37842794a65eca7c0eaf4a92f6af223ad08e56eefd363a35
-        size_bytes: 2452336768
-      tokenizer.json:
-        uri: hf://models/nvidia/nemotron-3.5-asr-streaming-0.6b@ea30d66debe3740a08b573244286791d423d6b3e/tokenizer.json
-        sha256: 3f3d481deb073b64c2082e8c7860d487a3a62774bf4e9e4faac83007e181f246
-        size_bytes: 752051
-      processor_config.json:
-        uri: hf://models/nvidia/nemotron-3.5-asr-streaming-0.6b@ea30d66debe3740a08b573244286791d423d6b3e/processor_config.json
-        sha256: ec47870f1091ea4f25539208387b45b902c92d0e3f997a30061ef88f73437ab0
-        size_bytes: 2519
+  source: conversion
 build_profiles:
   w8a16:
     components:
@@ -73,14 +55,3 @@ pipeline:
 - cpu: 16 kHz audio to 128-bin log-mel features
 - component: model
 - cpu: INT8 ONNX predictor and joiner decode to text
-runtime_files:
-- predictor_cpu_int8.onnx
-- joiner_cpu_int8.onnx
-- tokenizer.json
-- processor_config.json
-- runtime_config.json
-- frontend.npz
-- transcribe.py
-- requirements.txt
-- LICENSE.txt
-- NOTICE.txt

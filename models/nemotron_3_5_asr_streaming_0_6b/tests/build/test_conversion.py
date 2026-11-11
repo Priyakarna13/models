@@ -26,7 +26,8 @@ def test_export_matches_original_checkpoint(converted, load_script):
     import onnx
     import onnxruntime as ort
     import torch
-    from model_registry.onnx_export import partition
+
+    partition = load_script("onnx_export").partition
     from transformers import AutoModelForRNNT, AutoModelForTDT
 
     converted = Path(converted)
@@ -93,3 +94,30 @@ def test_export_matches_original_checkpoint(converted, load_script):
         session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
         actual = session.run(["encoded"], inputs)[0]
     np.testing.assert_allclose(actual, reference, atol=tolerance, rtol=2e-4)
+
+
+def test_partition_retains_only_used_inputs_and_preserves_metadata(load_script):
+    import pytest
+
+    partition = load_script("onnx_export").partition
+    onnx = pytest.importorskip("onnx")
+    from onnx import TensorProto, helper
+
+    def value(name):
+        return helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, 2])
+
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["audio"], ["encoded"]), helper.make_node("Identity", ["token"], ["prediction"])],
+        "regions",
+        [value("audio"), value("token")],
+        [value("encoded"), value("prediction")],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=8)
+    helper.set_model_props(model, {"sima.asr": "metadata"})
+    encoder = partition(model, ["encoded"])
+    assert [value.name for value in encoder.graph.input] == ["audio"]
+    assert [value.name for value in encoder.graph.output] == ["encoded"]
+    assert encoder.metadata_props == model.metadata_props
+    onnx.checker.check_model(encoder)
+    with pytest.raises(ValueError, match="declared"):
+        partition(model, ["missing"])

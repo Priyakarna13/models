@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
+import shutil
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -9,77 +11,39 @@ from typing import Any
 
 from .errors import ValidationError
 from .fetch import sha256_file
-
-RUNTIME_FILES_MANIFEST = "runtime-files.json"
-
-
-def runtime_files_for(model: dict[str, Any], component_id: str) -> list[str]:
-    """The complete model's CPU payload is emitted beside its first component."""
-    return model.get("runtime_files", []) if component_id == model["components"][0]["id"] else []
+from .runtime_files import validate_runtime_files
+from .source import HF_URI_RE
 
 
-def record_runtime_files(directory: str | Path, paths: list[str]) -> list[dict[str, Any]]:
-    """Bind generated CPU models and runtime data to a compiled component."""
-    root = Path(directory).resolve()
-    files = [
-        {"path": path, "artifact": deployment_artifact_name(path), "sha256": "0" * 64, "size_bytes": 0}
-        for path in paths
-    ]
-    deployment_files({"files": files})
-    for item in files:
-        path = runtime_file_path(root, item["path"])
-        item["sha256"], item["size_bytes"] = sha256_file(path)
-    manifest = root / RUNTIME_FILES_MANIFEST
-    if manifest.is_symlink():
-        raise ValidationError(f"{root}: runtime manifest must not be a symlink")
-    manifest.write_text(json.dumps({"files": files}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return files
-
-
-def runtime_file_path(root: Path, name: str, *, must_exist: bool = True) -> Path:
-    relative = PurePosixPath(name)
-    path = root / name
-    reserved = {RUNTIME_FILES_MANIFEST, "compile-result.json", "registry-publication.json", "SHA256SUMS"}
-    if (
-        relative.parts[0] in reserved
-        or path.name.endswith("_mpk.tar.gz")
-        or any((root.joinpath(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1))
-        or (must_exist and not path.is_file())
-        or not path.resolve().is_relative_to(root)
-    ):
-        raise ValidationError(f"{root}: unsafe or missing runtime file: {relative}")
-    return path
-
-
-def verify_runtime_files(
-    directory: str | Path, *, expected: list[str] | None = None, recorded: list[dict[str, Any]] | None = None
-) -> list[dict[str, Any]]:
-    """Verify current bytes, safe paths and the model's complete declared runtime payload."""
-    root = Path(directory).resolve()
-    manifest = root / RUNTIME_FILES_MANIFEST
-    if not manifest.exists():
-        if expected or recorded:
-            raise ValidationError(f"{root}: required runtime-files.json is missing")
-        return []
-    if manifest.is_symlink():
-        raise ValidationError(f"{root}: runtime manifest must not be a symlink")
-    try:
-        document = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ValidationError(f"{root}: invalid runtime file manifest: {exc}") from exc
-    if not isinstance(document, dict) or set(document) != {"files"}:
-        raise ValidationError(f"{root}: runtime file manifest requires exactly files")
-    files = deployment_files(document)
-    if expected is not None and sorted(item["path"] for item in files) != sorted(expected):
-        raise ValidationError(f"{root}: runtime files do not match the model declaration")
-    for item in files:
-        path = runtime_file_path(root, item["path"])
-        digest, size = sha256_file(path)
-        if (digest, size) != (item["sha256"], item["size_bytes"]):
-            raise ValidationError(f"{root}: runtime file checksum or size differs: {item['path']}")
-    if recorded is not None and files != recorded:
-        raise ValidationError(f"{root}: runtime files do not match compile-result.json")
-    return files
+def save_llima_recipe(
+    scripts: Path, destination: Path, arguments: list[str], checkpoints: dict[str, str],
+) -> None:
+    """Write a direct reproduction command and copy its Python helpers."""
+    header = "#!/usr/bin/env bash\n\n"
+    for name, uri in checkpoints.items():
+        match = HF_URI_RE.fullmatch(uri)
+        if not match or match["repo_type"] != "models":
+            raise ValidationError("LLiMa reproduction recipes require pinned Hugging Face model sources")
+        repository = f'{match["owner"]}/{match["repo"]}'
+        header += f'# hf download {shlex.quote(repository)} --local-dir {shlex.quote(name)}\n'
+    if (scripts / "compile.py").is_file():
+        command = 'python3 "$(dirname "$0")/compile.py" ' + shlex.join(arguments[:2])
+        jobs = "--num_processes"
+    else:
+        command = f'llima-compile {shlex.quote(arguments[0])} \\\n    -o {shlex.quote(arguments[1])}'
+        if (scripts / "config.py").is_file():
+            command += ' \\\n    -c "$(dirname "$0")/config.py"'
+        jobs = "--jobs"
+    if arguments[2:]:
+        command += " \\\n    " + shlex.join(arguments[2:])
+    command += f' \\\n    {jobs} 4 "$@"\n'
+    destination.mkdir(parents=True, exist_ok=True)
+    saved = destination / "compile.sh"
+    saved.write_text(header + "\n" + command, encoding="utf-8")
+    saved.chmod(0o755)
+    for name in ("compile.py", "config.py"):
+        if (scripts / name).is_file():
+            shutil.copy2(scripts / name, destination / name)
 
 
 def validate_compile_outputs(
@@ -104,7 +68,8 @@ def validate_compile_outputs(
     fields = {"model_id", "build_profile_id", "compile_invocation_id", "outputs"}
     if grouped:
         fields.add("derived_graphs")
-    if not isinstance(manifest, dict) or set(manifest) != fields:
+    # runtime_files lists CPU assets, including tables derived during graph surgery.
+    if not isinstance(manifest, dict) or set(manifest) - {"runtime_files"} != fields:
         raise ValidationError(f"{manifest_file}: compile outputs must contain {sorted(fields)}")
     identity = {
         "model_id": model_id,
@@ -172,6 +137,8 @@ def validate_compile_outputs(
         raise ValidationError(f"{manifest_file}: output tree contains undeclared MPK archives")
 
     result = {**identity, "outputs": resolved}
+    if "runtime_files" in manifest:
+        result["runtime_files"] = validate_runtime_files(manifest["runtime_files"], root)
     if grouped:
         graphs = manifest["derived_graphs"]
         if not isinstance(graphs, list) or len(graphs) != len(component_ids):
@@ -268,9 +235,6 @@ def verify_mpk(
         "size_bytes": size,
         "status": "success",
     }
-    runtime_files = verify_runtime_files(directory)
-    if runtime_files:
-        result["runtime_files"] = runtime_files
     if write_manifest:
         (directory / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
         (directory / "compile-result.json").write_text(
@@ -344,9 +308,54 @@ def verify_llima(deployment: Path, *, allow_manifest: bool = False) -> list[dict
             digest, size = sha256_file(path)
             files.append({"path": relative, "artifact": deployment_artifact_name(relative),
                           "sha256": digest, "size_bytes": size})
-    if not any(item["path"].startswith("elf_files/") and item["path"].endswith(".elf") for item in files):
+    if not any("elf_files" in PurePosixPath(item["path"]).parts[:-1] and item["path"].endswith(".elf")
+               for item in files):
         raise ValidationError(f"{deployment}: LLiMa deployment contains no ELF files")
     return deployment_files({"files": files})
+
+
+def llima_compiled_parameters(deployment: Path) -> dict[str, Any]:
+    """Read target settings from a single deployment or a speculative pair."""
+    paths = [deployment / "devkit/vlm_config.json", *sorted(deployment.glob("*/devkit/vlm_config.json"))]
+    targets = []
+    drafts = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        config = json.loads(path.read_text(encoding="utf-8"))
+        if ((config.get("lm_cfg") or {}).get("speculative_decoding_cfg") or {}).get("is_draft"):
+            drafts.append(path)
+        else:
+            targets.append((path, config))
+    if not targets and not drafts:
+        return {}
+    if len(targets) != 1:
+        raise ValidationError(f"{deployment}: expected one target configuration")
+    path, config = targets[0]
+    speculative = (config.get("lm_cfg") or {}).get("speculative_decoding_cfg") or {}
+    if speculative.get("method") or drafts:
+        if len(drafts) != 1:
+            raise ValidationError(f"{deployment}: expected one draft configuration for speculative decoding")
+        for config_path in (path, *drafts):
+            model = config_path.parent.parent
+            if not any(item.is_file() for item in (model / "elf_files").rglob("*.elf")):
+                raise ValidationError(f"{model}: speculative deployment contains no ELF files")
+    pipeline = config["pipeline_cfg"]
+    parameters = {
+        name: pipeline[field]
+        for name, field in (("max_num_tokens", "max_num_tokens"),
+                            ("language_group_size", "input_token_group_size"))
+        if field in pipeline
+    }
+    image_size = (config.get("vm_cfg") or {}).get("image_size")
+    if type(image_size) is int and image_size > 0:
+        image_size = [image_size, image_size]
+    if (isinstance(image_size, list) and len(image_size) == 2
+            and all(type(value) is int and value > 0 for value in image_size)):
+        parameters.update(input_height=image_size[0], input_width=image_size[1])
+    if speculative.get("method"):
+        parameters["speculative_method"] = speculative["method"]
+    return parameters
 
 
 def verify_artifact(output_dir: str | Path, *, write_manifest: bool = False,
@@ -359,6 +368,7 @@ def verify_artifact(output_dir: str | Path, *, write_manifest: bool = False,
     if list(directory.glob("*_mpk.tar.gz")):
         raise ValidationError(f"{directory}: expected one compiled artifact")
     files = verify_llima(deployment)
+    llima_compiled_parameters(deployment)
     payload = json.dumps({"format": "llima", "files": files}, indent=2, sort_keys=True).encode() + b"\n"
     manifest = directory / "deployment-manifest.json"
     if write_manifest:

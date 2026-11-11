@@ -17,11 +17,23 @@ from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
-from model_registry.artifact import record_runtime_files
+from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
-from model_registry.onnx_export import partition
+from onnx_export import partition
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
+RUNTIME_FILES = (
+    "predictor_cpu_int8.onnx",
+    "joiner_cpu_int8.onnx",
+    "tokenizer.json",
+    "processor_config.json",
+    "runtime_config.json",
+    "frontend.npz",
+    "transcribe.py",
+    "requirements.txt",
+    "LICENSE.txt",
+    "NOTICE.txt",
+)
 
 
 def runtime_contract(archive: Path, logical_outputs: list[str]) -> dict:
@@ -101,6 +113,10 @@ def prepare_model(source: Path, temporary: Path, component: Path) -> None:
 
     graph = onnx.load(source, load_external_data=False)
     config = json.loads(next(item.value for item in graph.metadata_props if item.key == "sima.asr"))
+    for filename, document in config.pop("assets").items():
+        if filename not in {"tokenizer.json", "processor_config.json"}:
+            raise ValueError(f"Unexpected runtime asset: {filename}")
+        (component / filename).write_text(json.dumps(document) + "\n")
     for name in ("predictor", "joiner"):
         cpu_model(
             graph,
@@ -221,8 +237,6 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
         for key, value in frontend.items()
     }
     np.savez(component / "frontend.npz", **arrays)
-    for filename in ("tokenizer.json", "processor_config.json"):
-        shutil.copyfile(source.parent / filename, component / filename)
     for source_name, target_name in (
         ("transcribe.py", "transcribe.py"),
         ("requirements-runtime.txt", "requirements.txt"),
@@ -231,8 +245,29 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
     ):
         shutil.copyfile(MODEL_DIR / "scripts" / source_name, component / target_name)
     (component / "runtime_config.json").write_text(json.dumps(config, indent=2) + "\n")
-    record_runtime_files(component, metadata["runtime_files"])
+    write_compile_outputs(output, archive, metadata["id"], profile)
     return archive
+
+
+def write_compile_outputs(output: Path, archive: Path, model_id: str, profile: str) -> None:
+    """Record the encoder and CPU assets using the registry's supporting-file contract."""
+    component = archive.parent
+    manifest = {
+        "model_id": model_id,
+        "build_profile_id": profile,
+        "compile_invocation_id": profile,
+        "outputs": [
+            {
+                "component_id": "model",
+                "mpk_path": f"model/{archive.name}",
+                "mpk_sha256": sha256_file(archive)[0],
+            }
+        ],
+        "runtime_files": [
+            {"path": f"model/{filename}", "sha256": sha256_file(component / filename)[0]} for filename in RUNTIME_FILES
+        ],
+    }
+    (output / "compile-outputs.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
 def main():
