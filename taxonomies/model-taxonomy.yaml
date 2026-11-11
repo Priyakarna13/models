@@ -34,6 +34,10 @@ modalities:
     display_name: Keypoints
   keypoint_matches:
     display_name: Keypoint Matches
+  multispectral_image:
+    display_name: Multispectral Image
+  change_map:
+    display_name: Change Map
 
 # An architecture is the network design a family is built on. Keep it coarse.
 architecture_paradigms:
@@ -55,6 +59,10 @@ architectures:
     allowed_model_types: [vision]
   dla:
     display_name: DLA
+    paradigm: cnn
+    allowed_model_types: [vision]
+  fresunet:
+    display_name: FresUNet
     paradigm: cnn
     allowed_model_types: [vision]
   gemma4:

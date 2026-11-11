@@ -54,6 +54,9 @@ export const ACCURACY_METRIC_LABELS = {
   recall_at_10: "Recall@10",
   epe: "EPE",
   d1_all: "D1-all",
+  change_f1: "Change F1",
+  change_precision: "Change precision",
+  change_recall: "Change recall",
 };
 
 // The accuracy metrics that are not ratios from 0 to 1 with higher better; metrics.json gives the same units and

@@ -1,0 +1,3 @@
+# What every model evaluating its accuracy on OSCD (Onera Satellite Change Detection) must report, by the model's task.
+required_metrics:
+  change_detection: [change_f1]
