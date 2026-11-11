@@ -306,6 +306,13 @@ it at that path, beside the MPKs it was derived with. A resource is a compile
 input, so changing one recompiles the model; LLiMa packages ship their
 deployment folder and take neither.
 
+CLIP and SigLIP use this same `runtime_files` contract for
+`text_encoder/tokenizer.json` and `text_encoder/token_embeddings.npy`. Surgery
+extracts both from the verified conversion bundle; the shared packager ships
+them beside the encoder MPKs. Registry restoration restores the same checked
+files, and the accuracy runner passes their profile root as `--resources`.
+Class embeddings are generated during accuracy evaluation and are not packaged.
+
 A multi-component model can add `pipeline` so the model browser shows the
 order its components run in. List each component once, in run order, and
 name any CPU step between them:
