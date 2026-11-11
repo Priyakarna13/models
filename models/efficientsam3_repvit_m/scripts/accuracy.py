@@ -7,8 +7,8 @@ box-prompted mask mIoU:
 1. The 100 lowest-ID val2017 images (--limit changes the count for local checks), each prompted with all 80 COCO
    category names in category-ID order. The text encoder runs once per category; the image model runs once per image
    and category, 8000 runs.
-2. A prompt is the CLIP BPE start token, the name's tokens and the end token. COCO_TOKENS is calibration.py's table,
-   which convert.py checks against the pinned tokenizer; tests/benchmark/test_accuracy.py checks this copy against it.
+2. Prompts use the packaged CLIP vocabulary and merges supplied through --resources, with SAM 3's cleaning and
+   start/end tokens. The exported context holds at most 16 tokens.
 3. The image is decoded to RGB ignoring EXIF orientation, as the COCO annotations do, stretched to 1008x1008 with
    bilinear filtering and scaled with x / 127.5 - 1, as calibration.py prepares it. The script prepares every input,
    so Neat only quantizes and tessellates.
@@ -30,6 +30,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import cv2
 import model_report
@@ -68,96 +69,44 @@ METRICS = {
     "segm": {f"coco_mask_{name}": label for name, label in LABELS.items()},
 }
 MAX_DETECTIONS = [1, 10, 100]
-# The 80 COCO 2017 category names in category-ID order, with their BPE token IDs between the start and end tokens.
-COCO_TOKENS = {
-    "person": (2533,),
-    "bicycle": (11652,),
-    "car": (1615,),
-    "motorcycle": (10297,),
-    "airplane": (16451,),
-    "bus": (2840,),
-    "train": (3231,),
-    "truck": (4629,),
-    "boat": (4440,),
-    "traffic light": (3399, 1395),
-    "fire hydrant": (1769, 8031, 773),
-    "stop sign": (1691, 2292),
-    "parking meter": (5984, 10104),
-    "bench": (8771,),
-    "bird": (3329,),
-    "cat": (2368,),
-    "dog": (1929,),
-    "horse": (4558,),
-    "sheep": (9629,),
-    "cow": (9706,),
-    "elephant": (10299,),
-    "bear": (4298,),
-    "zebra": (22548,),
-    "giraffe": (22826,),
-    "backpack": (14894,),
-    "umbrella": (17143,),
-    "handbag": (22654,),
-    "tie": (3422,),
-    "suitcase": (27792,),
-    "frisbee": (45768,),
-    "skis": (32843,),
-    "snowboard": (33403,),
-    "sports ball": (2054, 1069),
-    "kite": (19867,),
-    "baseball bat": (3470, 6575),
-    "baseball glove": (3470, 16078),
-    "skateboard": (31777,),
-    "surfboard": (10176, 1972),
-    "tennis racket": (5298, 37691),
-    "bottle": (5392,),
-    "wine glass": (2604, 3313),
-    "cup": (1937,),
-    "fork": (13700,),
-    "knife": (8960,),
-    "spoon": (14024,),
-    "bowl": (3814,),
-    "banana": (8922,),
-    "apple": (3055,),
-    "sandwich": (8687,),
-    "orange": (4287,),
-    "broccoli": (19094,),
-    "carrot": (15435,),
-    "hot dog": (2069, 1929),
-    "pizza": (4474,),
-    "donut": (18471,),
-    "cake": (2972,),
-    "chair": (4269,),
-    "couch": (12724,),
-    "potted plant": (48581, 3912),
-    "bed": (2722,),
-    "dining table": (8658, 2175),
-    "toilet": (11071,),
-    "tv": (1583,),
-    "laptop": (10464,),
-    "mouse": (9301,),
-    "remote": (9687,),
-    "keyboard": (13017,),
-    "cell phone": (5533, 1951),
-    "microwave": (24240,),
-    "oven": (12579,),
-    "toaster": (39061,),
-    "sink": (14551,),
-    "refrigerator": (36662,),
-    "book": (1116,),
-    "clock": (6716,),
-    "vase": (20431,),
-    "scissors": (30867,),
-    "teddy bear": (11798, 4298),
-    "hair drier": (2225, 39877),
-    "toothbrush": (36841,),
-}
 
 # One image's kept queries: detection rows [k, 6], COCO category IDs [k] and mask logits [k, 192, 192].
 Kept = tuple[np.ndarray, np.ndarray, np.ndarray]
 
 
-def tokens(name: str) -> list[int]:
-    return [START, *COCO_TOKENS[name], END]
+def load_tokenizer(resources: Path) -> Any:
+    """Build SAM 3's CLIP BPE tokenizer from the package's verified vocabulary and merges."""
+    from tokenizers import Regex, Tokenizer, models, pre_tokenizers
+
+    assets = resources / "tokenizer"
+    vocabulary, merges = models.BPE.read_file(str(assets / "vocab.json"), str(assets / "merges.txt"))
+    if (vocabulary.get("<|startoftext|>"), vocabulary.get("<|endoftext|>")) != (START, END):
+        raise ValueError("the packaged tokenizer must use CLIP's start/end token IDs")
+    aliases = {"<|startoftext|>": "<start_of_text>", "<|endoftext|>": "<end_of_text>"}
+    vocabulary = {aliases.get(name, name): index for name, index in vocabulary.items()}
+    tokenizer = Tokenizer(models.BPE(vocabulary, merges, end_of_word_suffix="</w>", unk_token="<end_of_text>"))
+    tokenizer.add_special_tokens(["<start_of_text>", "<end_of_text>"])
+    pattern = r"<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+        [
+            pre_tokenizers.Split(Regex(pattern), behavior="removed", invert=True),
+            pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
+        ]
+    )
+    return tokenizer
+
+
+def tokens(prompt: str, tokenizer: Any) -> list[int]:
+    """Clean and tokenize a prompt without silently truncating the exported 16-token context."""
+    import html
+
+    from ftfy import fix_text
+
+    text = " ".join(html.unescape(html.unescape(fix_text(prompt))).split()).lower()
+    result = [START, *tokenizer.encode(text, add_special_tokens=False).ids, END]
+    if len(result) > CONTEXT:
+        raise ValueError(f"prompt exceeds the {CONTEXT}-token context including start and end tokens")
+    return result
 
 
 def one_hot(prompt_tokens: Sequence[int]) -> np.ndarray:
@@ -271,16 +220,17 @@ def tensor(array: np.ndarray) -> pyneat.Tensor:
     return pyneat.Tensor.from_numpy(np.ascontiguousarray(array), copy=True, layout=pyneat.TensorLayout.HWC)
 
 
-def encode_prompts(mpk: Path, names: list[str]) -> list[pyneat.Tensor]:
+def encode_prompts(mpk: Path, names: list[str], tokenizer: Any) -> list[pyneat.Tensor]:
     """Each prompt's text encoder features packed for the image model. The text encoder is released on return."""
     model = pyneat.Model(str(mpk), tensor_options())
     runner, texts = None, []
     for name in names:
-        prompt = tensor(one_hot(tokens(name)))
+        prompt_tokens = tokens(name, tokenizer)
+        prompt = tensor(one_hot(prompt_tokens))
         if runner is None:
             runner = model.build([prompt])
         (features,) = runner.run([prompt], timeout_ms=TIMEOUT_MS)
-        texts.append(tensor(packed(features.to_numpy(), tokens(name))))
+        texts.append(tensor(packed(features.to_numpy(), prompt_tokens)))
     runner.close()
     return texts
 
@@ -301,11 +251,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mpk", action="append", required=True, help="text_encoder=<path> and image_model=<path>")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
+    parser.add_argument("--resources", type=Path, required=True, help="package root containing tokenizer/")
     parser.add_argument("--limit", type=int, default=EVALUATED_IMAGES, help="measure the lowest N image IDs")
     args = parser.parse_args(argv)
     dataset_id, dataset_dir = args.dataset.split("=", 1)
     dataset = Path(dataset_dir)
     mpks = parse_mpks(args.mpk)
+    tokenizer = load_tokenizer(args.resources)
 
     with contextlib.redirect_stdout(io.StringIO()):
         ground_truth = COCO(str(dataset / ANNOTATIONS))
@@ -313,11 +265,11 @@ def main(argv: list[str] | None = None) -> int:
     image_ids = available[: args.limit]
     category_ids = sorted(ground_truth.getCatIds())
     names = [category["name"] for category in ground_truth.loadCats(category_ids)]
-    if names != list(COCO_TOKENS):
-        raise SystemExit("COCO categories do not match the prompt table")
+    if len(names) != 80:
+        raise SystemExit("expected the 80 COCO category names")
 
     # Encode every prompt first, so the text encoder is released before the image model loads.
-    texts = encode_prompts(mpks["text_encoder"], names)
+    texts = encode_prompts(mpks["text_encoder"], names, tokenizer)
     model = pyneat.Model(str(mpks["image_model"]), tensor_options())
     runner = None
     results: dict[str, list[dict]] = {"bbox": [], "segm": []}
@@ -341,20 +293,22 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.monotonic()
     stats = coco_stats(ground_truth, image_ids, results)
-    report = model_report.from_accuracy({
-        dataset_id: {
-            "metrics": stats,
-            "split": IMAGES,
-            "evaluated_samples": len(image_ids),
-            "available_samples": len(available),
-            "details": {
-                "detections": len(results["bbox"]),
-                "prompts_per_image": len(names),
-                "inference_seconds": round(inference_seconds, 1),
-                "scoring_seconds": round(time.monotonic() - started, 1),
+    report = model_report.from_accuracy(
+        {
+            dataset_id: {
+                "metrics": stats,
+                "split": IMAGES,
+                "evaluated_samples": len(image_ids),
+                "available_samples": len(available),
+                "details": {
+                    "detections": len(results["bbox"]),
+                    "prompts_per_image": len(names),
+                    "inference_seconds": round(inference_seconds, 1),
+                    "scoring_seconds": round(time.monotonic() - started, 1),
+                },
             },
-        },
-    })
+        }
+    )
     report.save(args.output)
     measured = report.document["datasets"][dataset_id]["metrics"]
     print(json.dumps({name: round(value, 4) for name, value in measured.items()}))

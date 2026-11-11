@@ -60,6 +60,35 @@ def test_prompts_pack_into_the_image_models_text_input(load_script: Callable[[st
     assert calibration.prompts(4) == ["person", "elephant", "wine glass", "dining table"]
 
 
+@pytest.mark.parametrize("script_name", ["accuracy", "performance"])
+def test_packaged_tokenizer_prepares_free_text_prompts(
+    load_script: Callable[[str], ModuleType], model_dir: Path, script_name: str
+) -> None:
+    pytest.importorskip("tokenizers")
+    pytest.importorskip("ftfy")
+    script = load_script(script_name)
+    tokenizer = script.load_tokenizer(model_dir / "tests" / "fixtures")
+    calibration = load_script("calibration")
+
+    for name in ("person", "traffic light", "dog"):
+        assert script.tokens(name, tokenizer) == calibration.tokens(name)
+    assert script.tokens("  DOG\t person\n", tokenizer) == [49406, 1929, 2533, 49407]
+    assert script.tokens("dog &amp;amp; person", tokenizer) == [49406, 1929, 261, 2533, 49407]
+    assert script.tokens("", tokenizer) == [49406, 49407]
+    assert len(script.tokens("dog " * 14, tokenizer)) == 16
+    with pytest.raises(ValueError, match="16-token context"):
+        script.tokens("dog " * 15, tokenizer)
+
+
+@pytest.mark.parametrize("script_name", ["accuracy", "performance"])
+def test_benchmarks_require_the_packaged_tokenizer(
+    load_script: Callable[[str], ModuleType], tmp_path: Path, script_name: str
+) -> None:
+    pytest.importorskip("tokenizers")
+    with pytest.raises(Exception, match="No such file|os error 2"):
+        load_script(script_name).load_tokenizer(tmp_path)
+
+
 def _folded_source(surgery: ModuleType) -> onnx.ModelProto:
     """A folded graph with the converted interface and the decoder's Sin, Cos and Log counts."""
     helper = onnx.helper
@@ -173,9 +202,12 @@ def test_mpk_audit_requires_one_mla_segment_and_the_float32_interface(
     ]
     manifest = {"input_nodes": [{"name": name, "size": size} for name, size in contract["inputs"].items()]}
 
-    assert compile_module.audit_mpk(_mpk(tmp_path / "valid.tar.gz", {**manifest, "plugins": plugins}), component_id)[
-        "output_sizes"
-    ] == contract["outputs"]
+    assert (
+        compile_module.audit_mpk(_mpk(tmp_path / "valid.tar.gz", {**manifest, "plugins": plugins}), component_id)[
+            "output_sizes"
+        ]
+        == contract["outputs"]
+    )
     host = [*plugins[:2], {"sequence": 1, "processor": "A65"}, plugins[2]]
     with pytest.raises(RuntimeError, match="host=1"):
         compile_module.audit_mpk(_mpk(tmp_path / "host.tar.gz", {**manifest, "plugins": host}), component_id)

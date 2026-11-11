@@ -19,19 +19,11 @@ def script(load_script: Callable[[str], ModuleType]) -> ModuleType:
     return load_script("accuracy")
 
 
-def test_prompts_are_the_tokenizer_checked_table(script: ModuleType, load_script: Callable[[str], ModuleType]) -> None:
-    calibration = load_script("calibration")
-
-    assert script.COCO_TOKENS == calibration.COCO_TOKENS
-    assert script.one_hot(script.tokens("traffic light")).tolist() == calibration.one_hot(
-        calibration.tokens("traffic light")
-    ).tolist()
-
-
-def test_the_image_model_text_holds_the_features_and_the_token_mask(script: ModuleType) -> None:
+def test_the_image_model_text_holds_the_features_and_the_token_mask(script: ModuleType, model_dir: Path) -> None:
     features = np.arange(16 * 256, dtype=np.float32).reshape(1, 16, 256)
 
-    text = script.packed(features, script.tokens("traffic light"))
+    tokenizer = script.load_tokenizer(model_dir / "tests" / "fixtures")
+    text = script.packed(features, script.tokens("traffic light", tokenizer))
 
     assert text.shape == (1, 17, 256)
     np.testing.assert_array_equal(text[0, :16], features[0])

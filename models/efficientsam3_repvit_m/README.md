@@ -14,8 +14,8 @@ run returns 200 scored boxes, each with a 192×192 mask.
 
 ## Inputs and outputs
 
-**Prompt.** Tokenize the lowercase prompt with the CLIP BPE vocabulary of
-openai/clip-vit-base-patch32 (`vocab.json`, `merges.txt`): the start token
+**Prompt.** Use the package's `tokenizer/vocab.json` and `tokenizer/merges.txt`
+with SAM 3's CLIP BPE cleaning and tokenization: the start token
 49406, the prompt's tokens, and the end token 49407, at most 16 tokens in all.
 Pass `token_one_hot`, a 16×49408 float tensor whose row i is one-hot for token
 i, with the remaining rows zero.

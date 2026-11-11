@@ -18,9 +18,10 @@ import argparse
 import random
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import model_report
@@ -29,8 +30,8 @@ import pyneat
 
 IMAGE_SIZE = 1008
 CONTEXT, VOCABULARY, FEATURES = 16, 49408, 256
-# "person" as CLIP BPE tokens between the start and end tokens; the components' time does not depend on the prompt.
-PROMPT, PROMPT_TOKENS = "person", (49406, 2533, 49407)
+START, END = 49406, 49407
+PROMPT = "person"
 WARMUP_FRAMES = 100
 MEASURED_FRAMES = 1000
 MIN_DURATION_S = 60
@@ -40,6 +41,41 @@ QUEUE_DEPTH = 4
 IMAGES = "val2017"
 # The benchmark input is a 720p camera frame, letterboxed with grey padding.
 FRAME_WIDTH, FRAME_HEIGHT, FILL = 1280, 720, 114
+
+
+def load_tokenizer(resources: Path) -> Any:
+    """Build SAM 3's CLIP BPE tokenizer from the package's verified vocabulary and merges."""
+    from tokenizers import Regex, Tokenizer, models, pre_tokenizers
+
+    assets = resources / "tokenizer"
+    vocabulary, merges = models.BPE.read_file(str(assets / "vocab.json"), str(assets / "merges.txt"))
+    if (vocabulary.get("<|startoftext|>"), vocabulary.get("<|endoftext|>")) != (START, END):
+        raise ValueError("the packaged tokenizer must use CLIP's start/end token IDs")
+    aliases = {"<|startoftext|>": "<start_of_text>", "<|endoftext|>": "<end_of_text>"}
+    vocabulary = {aliases.get(name, name): index for name, index in vocabulary.items()}
+    tokenizer = Tokenizer(models.BPE(vocabulary, merges, end_of_word_suffix="</w>", unk_token="<end_of_text>"))
+    tokenizer.add_special_tokens(["<start_of_text>", "<end_of_text>"])
+    pattern = r"<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+        [
+            pre_tokenizers.Split(Regex(pattern), behavior="removed", invert=True),
+            pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
+        ]
+    )
+    return tokenizer
+
+
+def tokens(prompt: str, tokenizer: Any) -> list[int]:
+    """Clean and tokenize a prompt without silently truncating the exported 16-token context."""
+    import html
+
+    from ftfy import fix_text
+
+    text = " ".join(html.unescape(html.unescape(fix_text(prompt))).split()).lower()
+    result = [START, *tokenizer.encode(text, add_special_tokens=False).ids, END]
+    if len(result) > CONTEXT:
+        raise ValueError(f"prompt exceeds the {CONTEXT}-token context including start and end tokens")
+    return result
 
 
 def tensor_options() -> pyneat.ModelOptions:
@@ -57,19 +93,19 @@ def ev74_tensor(array: np.ndarray) -> pyneat.Tensor:
     return pyneat.Tensor.from_numpy(array, copy=True, memory=pyneat.TensorMemory.EV74, layout=pyneat.TensorLayout.HWC)
 
 
-def prompt_tensor() -> pyneat.Tensor:
+def prompt_tensor(prompt_tokens: Sequence[int]) -> pyneat.Tensor:
     """The text encoder input [1, 16, 49408]: row i is one-hot for token i; padding rows are zero."""
     one_hot = np.zeros((1, CONTEXT, VOCABULARY), np.float32)
-    one_hot[0, np.arange(len(PROMPT_TOKENS)), PROMPT_TOKENS] = 1
+    one_hot[0, np.arange(len(prompt_tokens)), prompt_tokens] = 1
     return ev74_tensor(one_hot)
 
 
-def pack_text(features: pyneat.Tensor) -> pyneat.Tensor:
+def pack_text(features: pyneat.Tensor, prompt_tokens: Sequence[int]) -> pyneat.Tensor:
     """The CPU step: the image model's text input [1, 17, 256], rows 0-15 the text encoder's features and row 16
     1 for each prompt token, start and end included."""
     text = np.zeros((1, CONTEXT + 1, FEATURES), np.float32)
     text[0, :CONTEXT] = features.to_numpy(copy=False).reshape(CONTEXT, FEATURES)
-    text[0, CONTEXT, : len(PROMPT_TOKENS)] = 1
+    text[0, CONTEXT, : len(prompt_tokens)] = 1
     return ev74_tensor(text)
 
 
@@ -134,7 +170,7 @@ def pixels(frame: pyneat.Tensor) -> pyneat.Tensor:
 
 
 def build_runners(
-    models: dict[str, pyneat.Model], prompt: pyneat.Tensor, frame: pyneat.Tensor
+    models: dict[str, pyneat.Model], prompt: pyneat.Tensor, frame: pyneat.Tensor, prompt_tokens: Sequence[int]
 ) -> tuple[pyneat.ModelRunner, pyneat.ModelRunner]:
     """A runner for each model. The image model's is built from one real text encoder output."""
     run_options = pyneat.RunOptions()
@@ -142,28 +178,38 @@ def build_runners(
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
     text_encoder = models["text_encoder"].build([prompt], run_options=run_options)
     (features,) = text_encoder.run([prompt], timeout_ms=TIMEOUT_MS)
-    image_model = models["image_model"].build([pixels(frame), pack_text(features)], run_options=run_options)
+    image_model = models["image_model"].build(
+        [pixels(frame), pack_text(features, prompt_tokens)], run_options=run_options
+    )
     return text_encoder, image_model
 
 
 def infer_one(
-    text_encoder: pyneat.ModelRunner, image_model: pyneat.ModelRunner, prompt: pyneat.Tensor, frame: pyneat.Tensor
+    text_encoder: pyneat.ModelRunner,
+    image_model: pyneat.ModelRunner,
+    prompt: pyneat.Tensor,
+    frame: pyneat.Tensor,
+    prompt_tokens: Sequence[int],
 ) -> None:
     (features,) = text_encoder.run([prompt], timeout_ms=TIMEOUT_MS)
-    image_model.run([pixels(frame), pack_text(features)], timeout_ms=TIMEOUT_MS)
+    image_model.run([pixels(frame), pack_text(features, prompt_tokens)], timeout_ms=TIMEOUT_MS)
 
 
 def measure_latency(
-    text_encoder: pyneat.ModelRunner, image_model: pyneat.ModelRunner, prompt: pyneat.Tensor, frame: pyneat.Tensor
+    text_encoder: pyneat.ModelRunner,
+    image_model: pyneat.ModelRunner,
+    prompt: pyneat.Tensor,
+    frame: pyneat.Tensor,
+    prompt_tokens: Sequence[int],
 ) -> list[float]:
     """Seconds per frame through all three stages with nothing else in flight, after the warm-up."""
     for _ in range(WARMUP_FRAMES):
-        infer_one(text_encoder, image_model, prompt, frame)
+        infer_one(text_encoder, image_model, prompt, frame, prompt_tokens)
     seconds: list[float] = []
     ends = time.perf_counter() + MIN_DURATION_S
     while len(seconds) < MEASURED_FRAMES or time.perf_counter() < ends:
         started = time.perf_counter()
-        infer_one(text_encoder, image_model, prompt, frame)
+        infer_one(text_encoder, image_model, prompt, frame, prompt_tokens)
         seconds.append(time.perf_counter() - started)
     return seconds
 
@@ -225,7 +271,11 @@ def run_together(*stages: Callable[[], None], runners: tuple[pyneat.ModelRunner,
 
 
 def measure_throughput(
-    text_encoder: pyneat.ModelRunner, image_model: pyneat.ModelRunner, prompt: pyneat.Tensor, frame: pyneat.Tensor
+    text_encoder: pyneat.ModelRunner,
+    image_model: pyneat.ModelRunner,
+    prompt: pyneat.Tensor,
+    frame: pyneat.Tensor,
+    prompt_tokens: Sequence[int],
 ) -> Throughput:
     """Frames per second and board telemetry with every stage busy, each on a different frame. The measured span
     starts after WARMUP_FRAMES outputs and lasts at least MEASURED_FRAMES frames and MIN_DURATION_S seconds."""
@@ -246,7 +296,7 @@ def measure_throughput(
     def forward_text() -> None:
         try:
             for (features,) in drain(text_encoder, "text encoder", pushed):
-                push(image_model, [pixels(frame), pack_text(features)], "image model")
+                push(image_model, [pixels(frame), pack_text(features, prompt_tokens)], "image model")
                 pushed["image model"] += 1
                 # The packed text is a copy, so the text encoder gets its output buffer back.
                 del features
@@ -318,7 +368,8 @@ def write_report(
     )
 
 
-def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, output: Path) -> None:
+def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, output: Path, resources: Path) -> None:
+    prompt_tokens = tokens(PROMPT, load_tokenizer(resources))
     mla_layer_stats, mla_stage_stats = {}, {}
     for name, mpk in mpks.items():
         mla_layer_stats[name], mla_stage_stats[name] = mla_stats(mpk)
@@ -327,12 +378,13 @@ def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, ou
         "image_model": pyneat.Model(str(mpks["image_model"]), tensor_options()),
     }
     path = sample_image(dataset)
-    prompt, frame = prompt_tensor(), frame_tensor(path)
-    text_encoder, image_model = build_runners(models, prompt, frame)
-    latencies = measure_latency(text_encoder, image_model, prompt, frame)
-    throughput = measure_throughput(text_encoder, image_model, prompt, frame)
-    write_report(output, f"{dataset_id} {IMAGES}/{path.name}", latencies, throughput, models, mla_layer_stats,
-                 mla_stage_stats)
+    prompt, frame = prompt_tensor(prompt_tokens), frame_tensor(path)
+    text_encoder, image_model = build_runners(models, prompt, frame, prompt_tokens)
+    latencies = measure_latency(text_encoder, image_model, prompt, frame, prompt_tokens)
+    throughput = measure_throughput(text_encoder, image_model, prompt, frame, prompt_tokens)
+    write_report(
+        output, f"{dataset_id} {IMAGES}/{path.name}", latencies, throughput, models, mla_layer_stats, mla_stage_stats
+    )
 
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:
@@ -348,9 +400,10 @@ def main() -> None:
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
+    parser.add_argument("--resources", type=Path, required=True, help="package root containing tokenizer/")
     args = parser.parse_args()
     dataset_id, dataset_dir = args.dataset.split("=", 1)
-    benchmark_pipeline(parse_mpks(args.mpk), dataset_id, Path(dataset_dir), Path(args.output))
+    benchmark_pipeline(parse_mpks(args.mpk), dataset_id, Path(dataset_dir), Path(args.output), args.resources)
 
 
 if __name__ == "__main__":

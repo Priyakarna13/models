@@ -53,6 +53,30 @@ conversion:
         sha256: f526393189112391ce6f9795d4695f704121ce452c3aad1f5335cc41337eba85
         size_bytes: 524657
 
+resources:
+  tokenizer:
+    source:
+      repository: openai/clip-vit-base-patch32
+      revision: 3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268
+      files:
+        vocab.json: {sha256: 5047b556ce86ccaf6aa22b3ffccfc52d391ea4accdab9c2f2407da5b742d4363, size_bytes: 862328}
+        merges.txt: {sha256: f526393189112391ce6f9795d4695f704121ce452c3aad1f5335cc41337eba85, size_bytes: 524657}
+    install_path: tokenizer
+  sam_license:
+    source:
+      repository: facebook/sam3
+      revision: 3c879f39826c281e95690f02c7821c4de09afae7
+      files:
+        LICENSE: {sha256: bec48f70bd37bf8280a9d1ebf01642d26086f6122ba735baa08fe03c5a6e7448, size_bytes: 7352}
+    install_path: licenses/sam3
+  clip_license:
+    source:
+      repository: cubert-gmbh/clip
+      revision: a223b3db0b7bd1b55cf8f6421629b30b46c995de
+      files:
+        LICENSE: {sha256: 987e63b32f6c89ff5160e429458a872ff048e6860b590a3912e938f9da8f14db, size_bytes: 1064}
+    install_path: licenses/clip
+
 compilation:
   format: onnx
   source: conversion
