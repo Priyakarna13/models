@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Compile Nano/default precision profiles using the registry's existing flow.
+"""Compile one D-FINE Nano build profile with the registry's existing flow.
 
-Every decoder calibrates on its own profile's quantized backbone. The original
-W16A16 profile retains the pinned compiler defaults. Mixed profiles consume a
-frozen Neural Compressor precision map, never run a search during compilation.
-The reference-logit approximation lives in surgery.py and is checked against the
-original floating model before quantization. Full-model fidelity is diagnostic
-because quantization can reorder selected queries; COCO evaluation is the task gate.
+model.yaml owns each component's precision and calibration. A component with BF16
+activations and no calibration parameters skips calibration; the decoder calibrates on
+its own profile's quantized backbone outputs. The mixed profile freezes a compact
+precision map onto the prepared backbone and checks the compiler applied it. Full-model
+fidelity is diagnostic because quantization can reorder selected queries; COCO
+evaluation is the task gate.
 """
 
 from __future__ import annotations
@@ -31,8 +31,9 @@ from afe.apis.defines import (
     BiasCorrectionType,
     HistogramMSEMethod,
     InputName,
+    QuantizationParams,
+    SkipCalibration,
     bfloat16_scheme,
-    default_quantization,
     quantization_scheme,
 )
 from afe.apis.loaded_net import load_model
@@ -40,89 +41,107 @@ from afe.core.configs import QuantizationPrecision
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import decoder_inputs, load_images, select_images, to_afe_layout
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
-from surgery import OUTPUTS, annotate_backbone, prepare_model, region_precision_map, validate_bf16_regions
+from surgery import (
+    BACKBONE_OUTPUTS,
+    DECODER_INPUTS,
+    INPUT_SHAPE,
+    OUTPUTS,
+    annotate_backbone,
+    prepare_model,
+    region_precision_map,
+    validate_bf16_regions,
+)
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "dfine_n"
-PROFILES = {
-    "w16a16_w16a16": "w16a16",
-    "w8a16_w16a16": "w8a16",
-    "w8a8_w16a16": "w8a8",
-    "w8a8_mixed_w16a16": "w8a8",
-}
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 COMPONENTS = ("backbone", "decoder")
-BACKBONE_OUTPUTS = ("attention_memory", "query_content", "proposal_scores", "reference_logits")
-DECODER_INPUTS = ("attention_memory", "query_content", "reference_logits")
-SHAPES = {
-    "backbone": {"input": (1, 3, 640, 640)},
-    "decoder": dict(zip(DECODER_INPUTS, ((1, 2000, 128), (1, 300, 128), (1, 300, 4)), strict=True)),
-}
-OUTPUT_SHAPES = {
-    "backbone": ((1, 2000, 128), (1, 2000, 128), (1, 2000), (1, 2000, 4)),
-    "decoder": tuple(OUTPUTS.values()),
-}
+PRECISIONS = ("w16a16", "w8a16", "w8a8")
+SHAPES = {"backbone": {"input": INPUT_SHAPE}, "decoder": DECODER_INPUTS}
+OUTPUT_SHAPES = {"backbone": tuple(BACKBONE_OUTPUTS.values()), "decoder": tuple(OUTPUTS.values())}
+
+
+def calibrates(parameters):
+    return "calibration_samples" in parameters
 
 
 def component_parameters(metadata, profile_id):
-    if metadata["id"] != MODEL_ID:
-        raise ValueError("Expected D-FINE Nano metadata")
-    profiles = [p for p in metadata["build_profiles"] if p["id"] == profile_id]
-    if profile_id not in PROFILES or len(profiles) != 1:
-        raise ValueError(f"Unknown or undeclared precision profile: {profile_id}")
-    bindings = profiles[0]["components"]
-    if [b["id"] for b in bindings] != list(COMPONENTS):
+    """Each component's build parameters, as model.yaml declares them."""
+    profiles = [profile for profile in metadata["build_profiles"] if profile["id"] == profile_id]
+    if len(profiles) != 1:
+        raise ValueError(f"model.yaml declares no build profile {profile_id!r}")
+    parameters = {binding["id"]: binding["parameters"] for binding in profiles[0]["components"]}
+    if list(parameters) != list(COMPONENTS):
         raise ValueError("Expected ordered backbone and decoder components")
-    parameters = {b["id"]: b["parameters"] for b in bindings}
     for name, value in parameters.items():
-        mixed = name == "backbone" and profile_id == "w8a8_mixed_w16a16"
-        expected = {"precision", "calibration_bins", "calibration_samples"}
-        if mixed:
-            expected.add("bf16_regions")
-        if (
-            set(value) != expected
-            or value["precision"] != (PROFILES[profile_id] if name == "backbone" else "w16a16")
-            or any(type(value[k]) is not int or value[k] < 1 for k in ("calibration_bins", "calibration_samples"))
+        if value.get("precision") not in PRECISIONS:
+            raise ValueError(f"Unsupported {name} precision: {value.get('precision')!r}")
+        if ("calibration_bins" in value) != calibrates(value):
+            raise ValueError(f"The {name} declares calibration_bins and calibration_samples together or not at all")
+        if calibrates(value) and any(
+            type(value[key]) is not int or value[key] < 1 for key in ("calibration_bins", "calibration_samples")
         ):
-            raise ValueError(f"Invalid {name} precision or calibration parameters for {profile_id}")
-        if mixed:
-            validate_bf16_regions(value["bf16_regions"])
-    if parameters["backbone"]["calibration_samples"] != parameters["decoder"]["calibration_samples"]:
-        raise ValueError("Both components must calibrate on the same images")
+            raise ValueError(f"Invalid {name} calibration parameters for {profile_id}")
+    if parameters["decoder"]["precision"] != "w16a16" or "bf16_regions" in parameters["decoder"]:
+        raise ValueError("Every profile keeps a W16A16 decoder without BF16 regions")
+    regions = parameters["backbone"].get("bf16_regions")
+    if regions is not None:
+        validate_bf16_regions(regions)
+        if parameters["backbone"]["precision"] != "w8a8":
+            raise ValueError("BF16 regions apply to a W8A8 backbone")
+    if (regions is not None) != ("mixed" in profile_id.split("_")):
+        raise ValueError(f"Build profile {profile_id!r} must have the mixed token exactly when it has bf16_regions")
     return parameters
 
 
-def quantization_config(parameters):
+def quantization_config(parameters) -> QuantizationParams:
+    """The compiler's activation and weight formats for a component's precision."""
     precision = parameters["precision"]
-    if precision not in ("w16a16", "w8a16", "w8a8"):
-        raise ValueError(f"Unsupported precision: {precision}")
-    int8_weights = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
-    config = (
-        default_quantization.with_activation_quantization(
-            quantization_scheme(asymmetric=True, per_channel=False, bits=8)
-            if precision == "w8a8"
-            else bfloat16_scheme()
-        )
-        .with_weight_quantization(bfloat16_scheme() if precision == "w16a16" else int8_weights)
-        .with_calibration(HistogramMSEMethod(parameters["calibration_bins"]))
+    calibration = (
+        HistogramMSEMethod(int(parameters["calibration_bins"])) if calibrates(parameters) else SkipCalibration()
     )
+    if parameters.get("per_token") and precision != "w8a16":
+        raise ValueError("only a W8A16 component can declare per_token")
+    int8_weights = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
     if precision == "w8a8":
-        # The already measured Nano INT8 policy; A16 profiles retain their original defaults.
-        config = config.with_bias_correction(BiasCorrectionType.REGULAR).with_per_token_quant(False)
-    return config
+        if not calibrates(parameters):
+            raise ValueError("a W8A8 component must declare calibration_bins and calibration_samples")
+        return QuantizationParams(
+            calibration_method=calibration,
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=int8_weights,
+            # The measured Nano INT8 policy.
+            biascorr_type=BiasCorrectionType.REGULAR,
+        )
+    if precision == "w8a16":
+        return QuantizationParams(
+            calibration_method=calibration,
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=int8_weights,
+            # Each token's activations get their own INT8 scale before an INT8-weight operation.
+            per_token_quant=bool(parameters.get("per_token", False)),
+        )
+    if precision == "w16a16":
+        return QuantizationParams(
+            calibration_method=calibration,
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=bfloat16_scheme(),
+        )
+    raise ValueError(f"Unsupported precision: {precision!r}")
 
 
 def quantize_component(graph, name, parameters, arrays):
-    if any(v.dtype != np.float32 or not np.isfinite(v).all() for v in arrays.values()):
-        raise ValueError("Expected finite float32 calibration tensors")
+    """Quantize one component; arrays holds its calibration inputs, or None when it skips calibration."""
     loaded = load_model(onnx_source(str(graph), layout="NCHW"))
-    data = convert_data_generator_to_iterable(
-        DataGenerator({InputName(key): to_afe_layout(value) for key, value in arrays.items()})
-    )
+    data = None
+    if arrays is not None:
+        if any(v.dtype != np.float32 or not np.isfinite(v).all() for v in arrays.values()):
+            raise ValueError("Expected finite float32 calibration tensors")
+        data = convert_data_generator_to_iterable(
+            DataGenerator({InputName(key): to_afe_layout(value) for key, value in arrays.items()})
+        )
     quantized = loaded.quantize(
         calibration_data=data,
         quantization_config=quantization_config(parameters),
@@ -173,8 +192,6 @@ def audit_mpk(archive, component):
         or any(n.get("processor") not in ("MLA", "EV74") for n in plugins)
     ):
         raise ValueError("Expected one MLA partition and EV74 adapters, without host model fallback")
-    if str(manifest.get("model_sdk_version")) != COMPILER_VERSION:
-        raise ValueError("MPK Model Compiler version differs from the repository pin")
     inputs = {n["name"]: n["size"] for n in manifest["input_nodes"]}
     expected = {name: math.prod(shape) * 4 for name, shape in SHAPES[component].items()}
     terminal = plugins[-1]
@@ -248,16 +265,22 @@ def prepare_phase(source, dataset, evaluation_names, work, parameters):
 
 
 def backbone_phase(profile, parameters, dataset, calibration_names, evaluation_names, work):
-    images = load_images(dataset, calibration_names)
+    """Quantize and compile the backbone, saving what the decoder phase calibrates and evaluates on."""
+    images = load_images(dataset, calibration_names) if calibration_names else None
     model = quantize_component(
-        work / "graphs/backbone.onnx", f"{MODEL_ID}_{profile}_backbone", parameters, {"input": images}
+        work / "graphs/backbone.onnx",
+        f"{MODEL_ID}_{profile}_backbone",
+        parameters,
+        {"input": images} if calibrates(parameters) else None,
     )
-    calibration = {name: [] for name in DECODER_INPUTS}
-    for image in images:
-        for key, value in decoder_feed(execute_backbone(model, image)).items():
-            # AFE may recycle output storage between executions.
-            calibration[key].append(value[0].copy())
-    np.savez(work / "decoder-calibration.npz", **{k: np.stack(v) for k, v in calibration.items()})
+    if images is not None:
+        # The decoder calibrates on the proposals this quantized backbone selects for the same images.
+        calibration = {name: [] for name in DECODER_INPUTS}
+        for image in images:
+            for key, value in decoder_feed(execute_backbone(model, image)).items():
+                # AFE may recycle output storage between executions.
+                calibration[key].append(value[0].copy())
+        np.savez(work / "decoder-calibration.npz", **{k: np.stack(v) for k, v in calibration.items()})
     evaluation = {name: [] for name in BACKBONE_OUTPUTS}
     for image in load_images(dataset, evaluation_names):
         for key, value in zip(BACKBONE_OUTPUTS, execute_backbone(model, image), strict=True):
@@ -310,8 +333,10 @@ class _OutputError:
 
 
 def decoder_phase(profile, parameters, metadata, work):
-    with np.load(work / "decoder-calibration.npz", allow_pickle=False) as saved:
-        arrays = {key: saved[key] for key in saved.files}
+    arrays = None
+    if calibrates(parameters):
+        with np.load(work / "decoder-calibration.npz", allow_pickle=False) as saved:
+            arrays = {key: saved[key] for key in saved.files}
     model = quantize_component(work / "graphs/decoder.onnx", f"{MODEL_ID}_{profile}_decoder", parameters, arrays)
     compile_component(model, work, "decoder")
     errors = [_OutputError(name) for name in OUTPUTS]
@@ -319,7 +344,7 @@ def decoder_phase(profile, parameters, metadata, work):
         np.load(work / "backbone-evaluation.npz", allow_pickle=False) as upstream,
         np.load(work / "reference.npz", allow_pickle=False) as reference,
     ):
-        count = len(upstream[BACKBONE_OUTPUTS[0]])
+        count = len(upstream[next(iter(BACKBONE_OUTPUTS))])
         for i in range(count):
             outputs = [upstream[name][i][None] for name in BACKBONE_OUTPUTS]
             actual = model.execute(inputs={InputName(k): v for k, v in decoder_feed(outputs).items()}, use_jax=True)
@@ -360,15 +385,27 @@ def run_phase(target, **arguments):
         raise RuntimeError(f"{target.__name__} failed with exit code {process.exitcode}; see its compiler log")
 
 
+def calibration_images(parameters, dataset, fidelity_dataset, selection):
+    """The calibration images of the components that calibrate; both components use the same ones."""
+    counts = {value["calibration_samples"] for value in parameters.values() if calibrates(value)}
+    if not counts:
+        return ()
+    if len(counts) > 1:
+        raise ValueError("Both components must calibrate on the same images")
+    (count,) = counts
+    if dataset is None:
+        raise ValueError("calibrated components require --dataset")
+    if dataset != fidelity_dataset or selection["offset"] < count:
+        raise ValueError("Use the same verified dataset with disjoint calibration/fidelity images")
+    return select_images(dataset, selection["seed"], 0, count)
+
+
 def compile_model(source, profile, dataset, fidelity_dataset, output_dir):
     metadata = load_metadata(MODEL_DIR)
     parameters = component_parameters(metadata, profile)
     selection = metadata["numerical_fidelity"]["selection"]
-    count = parameters["backbone"]["calibration_samples"]
-    if dataset != fidelity_dataset or selection["offset"] < count:
-        raise ValueError("Use the same verified dataset with disjoint calibration/fidelity images")
-    calibration_names = select_images(dataset, selection["seed"], 0, count)
-    evaluation_names = select_images(dataset, selection["seed"], selection["offset"], selection["samples"])
+    calibration_names = calibration_images(parameters, dataset, fidelity_dataset, selection)
+    evaluation_names = select_images(fidelity_dataset, selection["seed"], selection["offset"], selection["samples"])
     if output_dir.exists():
         raise FileExistsError(f"output directory already exists: {output_dir}")
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
@@ -376,7 +413,7 @@ def compile_model(source, profile, dataset, fidelity_dataset, output_dir):
         run_phase(
             prepare_phase,
             source=source,
-            dataset=dataset,
+            dataset=fidelity_dataset,
             evaluation_names=evaluation_names,
             work=work,
             parameters=parameters["backbone"],
@@ -385,7 +422,7 @@ def compile_model(source, profile, dataset, fidelity_dataset, output_dir):
             backbone_phase,
             profile=profile,
             parameters=parameters["backbone"],
-            dataset=dataset,
+            dataset=fidelity_dataset,
             calibration_names=calibration_names,
             evaluation_names=evaluation_names,
             work=work,
@@ -426,20 +463,20 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--build-profile", required=True)
     parser.add_argument("--compile-invocation", required=True)
-    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--dataset", type=Path, help="calibration images; required when a component calibrates")
     parser.add_argument("--fidelity-dataset", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.compile_invocation != args.build_profile:
         parser.error("a build profile compiles in one invocation named after it")
     for path in (args.model, args.dataset, args.fidelity_dataset):
-        if not path.exists():
+        if path is not None and not path.exists():
             parser.error(f"input does not exist: {path}")
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     compile_model(
         args.model.resolve(),
         args.build_profile,
-        args.dataset.resolve(),
+        args.dataset.resolve() if args.dataset else None,
         args.fidelity_dataset.resolve(),
         args.output_dir.resolve(),
     )

@@ -14,6 +14,9 @@ from PIL import Image
 IMAGE_SIZE = 640
 QUERY_COUNT = 300
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".webp")
+# D-FINE takes RGB scaled to [0, 1] with no ImageNet mean or std.
+MEAN = np.zeros(3, np.float32)
+STD = np.ones(3, np.float32)
 
 
 def _is_image(name: str) -> bool:
@@ -65,7 +68,7 @@ def preprocess_image(content: bytes) -> np.ndarray:
     with Image.open(io.BytesIO(content)) as image:
         resized = image.convert("RGB").resize((IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.BILINEAR)
         array = np.asarray(resized, dtype=np.float32).transpose(2, 0, 1) / 255.0
-    return array
+    return (array - MEAN[:, None, None]) / STD[:, None, None]
 
 
 def load_images(dataset: Path, names: Sequence[str]) -> np.ndarray:

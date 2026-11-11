@@ -35,10 +35,7 @@ conversion:
         size_bytes: 444
 compilation:
   format: onnx
-  source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/dfine_n/5937a2d76d0e88529f2768dbffa52745ca307258021f35f890f8c684df75c8cf/41346195932-1/model.onnx
-    sha256: 5937a2d76d0e88529f2768dbffa52745ca307258021f35f890f8c684df75c8cf
-    size_bytes: 15793939
+  source: conversion
   components:
   - backbone
   - decoder
@@ -49,34 +46,29 @@ calibrations:
     variant: cal
     sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1
     size_bytes: 187510866
+# BF16 activations need no calibrated ranges, so only W8A8 backbones calibrate. The W16A16 decoder
+# keeps no INT8 lookup table once surgery.py bounds the reference logits (checked with the pinned
+# compiler: every decoder operation quantizes BF16 without calibration data).
 build_profiles:
-  w16a16_w16a16:
-    calibration_dataset: coco-2017-cal
+  w16a16:
     components:
       backbone:
         parameters:
           precision: w16a16
-          calibration_bins: 2048
-          calibration_samples: 50
       decoder:
         parameters:
           precision: w16a16
-          calibration_bins: 2048
-          calibration_samples: 50
   # Weight precision choice, not a throughput optimization.
   w8a16_w16a16:
-    calibration_dataset: coco-2017-cal
     components:
+      # Each token's activations get their own INT8 scale before an INT8-weight operation, as measured.
       backbone:
         parameters:
           precision: w8a16
-          calibration_bins: 2048
-          calibration_samples: 50
+          per_token: true
       decoder:
         parameters:
           precision: w16a16
-          calibration_bins: 2048
-          calibration_samples: 50
   w8a8_w16a16:
     calibration_dataset: coco-2017-cal
     components:
@@ -88,8 +80,6 @@ build_profiles:
       decoder:
         parameters:
           precision: w16a16
-          calibration_bins: 2048
-          calibration_samples: 50
   w8a8_mixed_w16a16:
     calibration_dataset: coco-2017-cal
     components:
@@ -104,8 +94,6 @@ build_profiles:
       decoder:
         parameters:
           precision: w16a16
-          calibration_bins: 2048
-          calibration_samples: 50
 pipeline:
 - component: backbone
 - cpu: Top 300 content/reference queries
@@ -128,11 +116,12 @@ accuracy:
     sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da
     size_bytes: 898368520
 performance: {}
+# The paper's tables list no Nano row; the official README's model zoo does.
 reference_metrics:
-- source: https://proceedings.iclr.cc/paper_files/paper/2025/file/6cf58a87e3097e7d1f9be3e8693a93de-Paper-Conference.pdf
+- source: https://github.com/Peterande/D-FINE/blob/956d1709314c2c6a4df6f34de232054578a7449f/README.md
   dataset:
     id: coco-2017
     split: val
-  conditions: 640x640, D-FINE-N, Table 7
+  conditions: 640x640, D-FINE-N, Model Zoo COCO table
   metrics:
     coco_map: 0.428

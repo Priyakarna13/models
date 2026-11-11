@@ -226,12 +226,13 @@ class BenchmarkOptions:
 
 
 class ModelOptions:
-    """PyNeat's ModelOptions, with the preprocessing fields the scripts set."""
+    """PyNeat's ModelOptions, with the preprocessing and execution fields the scripts set."""
 
     def __init__(self):
         self.preprocess = types.SimpleNamespace(
             resize=types.SimpleNamespace(), normalize=types.SimpleNamespace(), color_convert=types.SimpleNamespace()
         )
+        self.advanced_execution = types.SimpleNamespace()
         self.superpoint = types.SimpleNamespace()
 
 

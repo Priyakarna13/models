@@ -1,5 +1,6 @@
 """Host assembly tests; native execution remains a board qualification gate."""
 
+import threading
 import types
 from pathlib import Path
 from typing import Any
@@ -10,107 +11,47 @@ from model_registry.model_tests import measured_shortfalls
 
 
 @pytest.fixture
-def p(load_script):
+def performance_script(load_script):
     return load_script("performance")
 
 
-def test_complete_model_ingress_then_explicit_raw_head_decode(p, monkeypatch):
-    calls = []
-
-    class Route:
-        include_input = False
-        include_output = True
-
-    class Graph:
-        def add(self, node):
-            calls.append(node)
-
-    class Model:
-        def graph(self, route):
-            assert route.include_input is True and route.include_output is False
-            return Graph()
-
-    model = Model()
-
-    def boxdecode(bound, **options):
-        assert bound == "DetrFocal"
-        assert options == {
-            "original_width": 1280,
-            "original_height": 720,
-            "model_width": 640,
-            "model_height": 640,
-            "detection_threshold": 0.0,
-            "nms_iou_threshold": 0.0,
-            "top_k": 300,
-            "decode_type_option": "InterleavedByHeadLogit",
-            "source_storage": "DenseHwc",
-            "detess": False,
-            "dequant": False,
-            "resize_mode": "Stretch",
-        }
-        return "native_boxdecode"
-
-    monkeypatch.setattr(p.pyneat, "ModelRouteOptions", Route, raising=False)
-    monkeypatch.setattr(
-        p.pyneat,
-        "BoxDecodeType",
-        types.SimpleNamespace(DetrFocal="DetrFocal"),
-        raising=False,
+def test_native_normalization_declares_rgb_over_255_and_the_benchmark_frame(performance_script, monkeypatch):
+    options = types.SimpleNamespace(
+        advanced_execution=types.SimpleNamespace(),
+        preprocess=types.SimpleNamespace(normalize=types.SimpleNamespace(), resize=types.SimpleNamespace()),
     )
-    monkeypatch.setattr(p.pyneat, "ResizeMode", types.SimpleNamespace(Stretch="Stretch"), raising=False)
+    monkeypatch.setattr(performance_script.pyneat, "ModelOptions", lambda: options, raising=False)
+    monkeypatch.setattr(performance_script.pyneat, "InputKind", types.SimpleNamespace(Image="Image"), raising=False)
+    monkeypatch.setattr(performance_script.pyneat, "AutoFlag", types.SimpleNamespace(On="On"), raising=False)
     monkeypatch.setattr(
-        p.pyneat,
-        "BoxDecodeTypeOption",
-        types.SimpleNamespace(InterleavedByHeadLogit="InterleavedByHeadLogit"),
-        raising=False,
+        performance_script.pyneat, "ResizeMode", types.SimpleNamespace(Stretch="Stretch"), raising=False
     )
-    monkeypatch.setattr(p.pyneat, "BoxDecodeSourceStorage", types.SimpleNamespace(DenseHwc="DenseHwc"), raising=False)
-    monkeypatch.setattr(
-        p.pyneat,
-        "nodes",
-        types.SimpleNamespace(sima_box_decode=boxdecode, output=lambda: "output"),
-        raising=False,
+    actual = performance_script.image_options()
+    assert actual is options
+    assert actual.advanced_execution.postprocess_target == "EV74"
+    assert actual.preprocess.kind == "Image"
+    assert actual.preprocess.resize.mode == "Stretch"
+    assert (actual.preprocess.input_max_width, actual.preprocess.input_max_height) == (1280, 720)
+    norm = actual.preprocess.normalize
+    assert norm.enable == "On" and norm.has_explicit_stats is True
+    assert norm.mean == [0.0, 0.0, 0.0] and norm.stddev == [1.0, 1.0, 1.0]
+
+
+def test_decoder_takes_tensors_without_image_preprocessing(performance_script, monkeypatch):
+    options = types.SimpleNamespace(
+        preprocess=types.SimpleNamespace(
+            resize=types.SimpleNamespace(), color_convert=types.SimpleNamespace(), normalize=types.SimpleNamespace()
+        )
     )
-    p.decoder_graph(model)
-    assert calls == ["native_boxdecode", "output"]
+    monkeypatch.setattr(performance_script.pyneat, "ModelOptions", lambda: options, raising=False)
+    monkeypatch.setattr(performance_script.pyneat, "InputKind", types.SimpleNamespace(Tensor="Tensor"), raising=False)
+    monkeypatch.setattr(performance_script.pyneat, "AutoFlag", types.SimpleNamespace(Off="Off"), raising=False)
+    actual = performance_script.tensor_options()
+    assert actual.preprocess.kind == "Tensor"
+    assert (actual.preprocess.resize.enable, actual.preprocess.normalize.enable) == ("Off", "Off")
 
 
-def tensor(format):
-    return types.SimpleNamespace(semantic=types.SimpleNamespace(detection=types.SimpleNamespace(format=format)))
-
-
-def test_completion_requires_native_bbox_and_parses_inside_boundary(p, monkeypatch):
-    outputs = [tensor("BBOX")]
-    called = []
-
-    def decode(values, **options):
-        assert values is outputs and options == {"strict": True}
-        called.append(True)
-        return [types.SimpleNamespace(to_numpy=lambda: np.zeros((300, 6), np.float32))]
-
-    monkeypatch.setattr(p.pyneat, "decode_bbox", decode, raising=False)
-    p.require_native_boxes(outputs)
-    assert called == [True]
-
-
-@pytest.mark.parametrize("outputs", [[], [tensor("RAW")], [tensor("BBOX"), tensor("BBOX")]])
-def test_raw_or_missing_results_cannot_count_as_native(p, outputs):
-    with pytest.raises(RuntimeError):
-        p.require_native_boxes(outputs)
-
-
-def test_dropped_pairs_rejected(p, monkeypatch):
-    monkeypatch.setattr(
-        p.pyneat,
-        "decode_bbox",
-        lambda *a, **k: [types.SimpleNamespace(to_numpy=lambda: np.zeros((299, 6)))],
-        raising=False,
-    )
-    with pytest.raises(RuntimeError, match="299 of 300"):
-        p.require_native_boxes([tensor("BBOX")])
-
-
-def test_drain_checks_eos_counts_and_accepts_optional_sample(p):
+def test_drain_checks_eos_counts_and_accepts_optional_sample(performance_script):
     class Run:
         def __init__(self):
             self.outputs = iter([types.SimpleNamespace(tensors=[1]), None])
@@ -118,13 +59,15 @@ def test_drain_checks_eos_counts_and_accepts_optional_sample(p):
         def pull(self, timeout):
             return next(self.outputs)
 
-    assert list(p.drain(Run(), "decoder", {"decoder": 1})) == [[1]]
+    assert list(performance_script.drain(Run(), "decoder", {"decoder": 1})) == [[1]]
     with pytest.raises(RuntimeError, match="1 of 2"):
-        list(p.drain(Run(), "decoder", {"decoder": 2}))
+        list(performance_script.drain(Run(), "decoder", {"decoder": 2}))
 
 
-def test_query_bridge_owns_gathers_not_attention_memory(p, monkeypatch):
-    monkeypatch.setattr(p.pyneat, "TensorLayout", types.SimpleNamespace(Unknown="Unknown"), raising=False)
+def test_query_bridge_owns_gathers_not_attention_memory(performance_script, monkeypatch):
+    monkeypatch.setattr(
+        performance_script.pyneat, "TensorLayout", types.SimpleNamespace(Unknown="Unknown"), raising=False
+    )
 
     def tensor_of(array):
         return types.SimpleNamespace(
@@ -142,50 +85,44 @@ def test_query_bridge_owns_gathers_not_attention_memory(p, monkeypatch):
         copies.append(array.copy())
         return types.SimpleNamespace(array=copies[-1], semantic=types.SimpleNamespace())
 
-    monkeypatch.setattr(p.pyneat, "Tensor", types.SimpleNamespace(from_numpy=from_numpy), raising=False)
-    monkeypatch.setattr(p.pyneat, "TensorMemory", types.SimpleNamespace(EV74="EV74"), raising=False)
-    selected = p.select_queries(*map(tensor_of, (content, scores, refs)))
+    monkeypatch.setattr(
+        performance_script.pyneat, "Tensor", types.SimpleNamespace(from_numpy=from_numpy), raising=False
+    )
+    monkeypatch.setattr(performance_script.pyneat, "TensorMemory", types.SimpleNamespace(EV74="EV74"), raising=False)
+    selected = performance_script.select_queries(*map(tensor_of, (content, scores, refs)))
     np.testing.assert_array_equal(selected[0].array, content[:, 1999:1699:-1])
     np.testing.assert_array_equal(selected[1].array, refs[:, 1999:1699:-1])
     assert all(not np.shares_memory(x.array, y) for x, y in zip(selected, (content, refs), strict=True))
-
     assert all(x.semantic.preprocess == "same-frame-meta" for x in selected)
 
 
-def test_native_normalization_declares_rgb_over_255(p, monkeypatch):
-    options = types.SimpleNamespace(
-        advanced_execution=types.SimpleNamespace(),
-        preprocess=types.SimpleNamespace(normalize=types.SimpleNamespace(), resize=types.SimpleNamespace()),
-    )
-    monkeypatch.setattr(p.pyneat, "ModelOptions", lambda: options, raising=False)
-    monkeypatch.setattr(p.pyneat, "InputKind", types.SimpleNamespace(Image="Image"), raising=False)
-    monkeypatch.setattr(p.pyneat, "AutoFlag", types.SimpleNamespace(On="On"), raising=False)
-    monkeypatch.setattr(p.pyneat, "ResizeMode", types.SimpleNamespace(Stretch="Stretch"), raising=False)
-    actual = p.image_options()
-    assert actual is options
-    assert actual.advanced_execution.postprocess_target == "EV74"
-    assert actual.preprocess.kind == "Image"
-    assert actual.preprocess.resize.mode == "Stretch"
-    norm = actual.preprocess.normalize
-    assert norm.enable == "On" and norm.has_explicit_stats is True
-    assert norm.mean == [0.0, 0.0, 0.0] and norm.stddev == [1.0, 1.0, 1.0]
+@pytest.mark.parametrize("count", [0, 1, 2, 3])
+def test_a_frame_counts_only_with_both_decoder_heads(performance_script, count):
+    outputs = [object()] * count
+    if count == 2:
+        performance_script.require_heads(outputs)
+    else:
+        with pytest.raises(RuntimeError, match="pred_boxes and pred_logits"):
+            performance_script.require_heads(outputs)
 
 
-def test_sequential_inference_forwards_attention_without_conversion(p, monkeypatch):
+def test_sequential_inference_forwards_attention_memory_to_the_decoder(performance_script, monkeypatch):
     memory, content, scores, references, selected = (object() for _ in range(5))
     backbone = types.SimpleNamespace(run=lambda inputs, timeout_ms: [memory, content, scores, references])
-    decoder = object()
+    ran = []
+
+    def run(inputs, timeout_ms):
+        assert inputs[0] is memory and inputs[1] is selected
+        ran.append(timeout_ms)
+        return ["boxes", "logits"]
 
     def select(c, s, r):
         assert (c, s, r) == (content, scores, references)
         return [selected]
 
-    def invoke(run, inputs):
-        assert run is decoder and inputs[0] is memory and inputs[1] is selected
-
-    monkeypatch.setattr(p, "select_queries", select)
-    monkeypatch.setattr(p, "invoke_decoder", invoke)
-    p.infer_one(backbone, decoder, object())
+    monkeypatch.setattr(performance_script, "select_queries", select)
+    performance_script.infer_one(backbone, types.SimpleNamespace(run=run), object())
+    assert ran == [performance_script.TIMEOUT_MS]
 
 
 def test_performance_meets_its_expected_values(
@@ -210,18 +147,17 @@ def test_mla_stats_collected(performance: dict[str, Any]) -> None:
         assert stage_stats["stages"], component_id
 
 
-def test_failed_output_setup_never_builds_runners(load_script, monkeypatch):
-    p = load_script("performance")
+def test_failed_output_setup_never_builds_runners(performance_script, monkeypatch):
     called = []
-    monkeypatch.setattr(p, "mla_stats", lambda *args: called.append("hardware"))
-    monkeypatch.setattr(p, "build_runners", lambda *args: called.append("build"))
+    monkeypatch.setattr(performance_script, "mla_stats", lambda *args: called.append("hardware"))
+    monkeypatch.setattr(performance_script, "build_runners", lambda *args: called.append("build"))
     with pytest.raises(OSError):
-        p.benchmark_pipeline({}, "coco-2017-val", Path("/unused"), Path("/dev/null/not-a-directory"))
+        performance_script.benchmark_pipeline({}, "coco-2017-val", Path("/unused"), Path("/dev/null/not-a-directory"))
     assert called == []
 
 
 @pytest.mark.parametrize("failure", ["seed", "decoder_build"])
-def test_partial_runner_setup_closes_the_created_backbone(p, monkeypatch, failure):
+def test_partial_runner_setup_closes_the_created_backbone(performance_script, monkeypatch, failure):
     closed, error = [], ValueError(failure)
 
     def seed(*args, **kwargs):
@@ -233,30 +169,36 @@ def test_partial_runner_setup_closes_the_created_backbone(p, monkeypatch, failur
         raise error
 
     backbone = types.SimpleNamespace(run=seed, close=lambda: closed.append("backbone"))
-    models = {"backbone": types.SimpleNamespace(build=lambda *args, **kwargs: backbone), "decoder": object()}
-    monkeypatch.setattr(p.pyneat, "RunOptions", types.SimpleNamespace, raising=False)
-    monkeypatch.setattr(p.pyneat, "OutputMemory", types.SimpleNamespace(ZeroCopy="zero_copy"), raising=False)
-    monkeypatch.setattr(p.pyneat, "OverflowPolicy", types.SimpleNamespace(Block="block"), raising=False)
-    monkeypatch.setattr(p, "select_queries", lambda *args: [object(), object()])
-    monkeypatch.setattr(p, "decoder_graph", lambda model: types.SimpleNamespace(build=build_decoder))
+    models = {
+        "backbone": types.SimpleNamespace(build=lambda *args, **kwargs: backbone),
+        "decoder": types.SimpleNamespace(build=build_decoder),
+    }
+    monkeypatch.setattr(performance_script.pyneat, "RunOptions", types.SimpleNamespace, raising=False)
+    monkeypatch.setattr(
+        performance_script.pyneat, "OutputMemory", types.SimpleNamespace(ZeroCopy="zero_copy"), raising=False
+    )
+    monkeypatch.setattr(
+        performance_script.pyneat, "OverflowPolicy", types.SimpleNamespace(Block="block"), raising=False
+    )
+    monkeypatch.setattr(performance_script, "select_queries", lambda *args: [object(), object()])
     with pytest.raises(ValueError) as caught:
-        p.build_runners(models, object())
+        performance_script.build_runners(models, object())
     assert caught.value is error
     assert closed == ["backbone"]
 
 
 @pytest.mark.parametrize("failure", [None, "latency", "throughput"])
-def test_benchmark_owns_runner_cleanup_once_on_success_and_failure(p, monkeypatch, tmp_path, failure):
+def test_benchmark_owns_runner_cleanup_once_on_success_and_failure(performance_script, monkeypatch, tmp_path, failure):
     closed, reported, error = [], [], ValueError(failure)
     backbone = types.SimpleNamespace(close=lambda: closed.append("backbone"))
     decoder = types.SimpleNamespace(close=lambda: closed.append("decoder"))
-    monkeypatch.setattr(p, "mla_stats", lambda path: ({}, {}))
-    monkeypatch.setattr(p.pyneat, "Model", lambda *args: object(), raising=False)
-    monkeypatch.setattr(p, "image_options", lambda: None)
-    monkeypatch.setattr(p, "tensor_options", lambda: None)
-    monkeypatch.setattr(p, "sample_image", lambda path: Path("frame.jpg"))
-    monkeypatch.setattr(p, "frame_tensor", lambda path: object())
-    monkeypatch.setattr(p, "build_runners", lambda *args: (backbone, decoder))
+    monkeypatch.setattr(performance_script, "mla_stats", lambda path: ({}, {}))
+    monkeypatch.setattr(performance_script.pyneat, "Model", lambda *args: object(), raising=False)
+    monkeypatch.setattr(performance_script, "image_options", lambda: None)
+    monkeypatch.setattr(performance_script, "tensor_options", lambda: None)
+    monkeypatch.setattr(performance_script, "sample_image", lambda path: Path("frame.jpg"))
+    monkeypatch.setattr(performance_script, "frame_tensor", lambda path: object())
+    monkeypatch.setattr(performance_script, "build_runners", lambda *args: (backbone, decoder))
 
     def measure(stage, result):
         def run(*args):
@@ -266,39 +208,37 @@ def test_benchmark_owns_runner_cleanup_once_on_success_and_failure(p, monkeypatc
 
         return run
 
-    monkeypatch.setattr(p, "measure_latency", measure("latency", [0.1]))
-    monkeypatch.setattr(p, "measure_throughput", measure("throughput", object()))
-    monkeypatch.setattr(p, "write_report", lambda *args: reported.append(True))
+    monkeypatch.setattr(performance_script, "measure_latency", measure("latency", [0.1]))
+    monkeypatch.setattr(performance_script, "measure_throughput", measure("throughput", object()))
+    monkeypatch.setattr(performance_script, "write_report", lambda *args: reported.append(True))
     args = ({"backbone": Path("backbone"), "decoder": Path("decoder")}, "coco-2017-val", tmp_path, tmp_path)
     if failure:
         with pytest.raises(ValueError) as caught:
-            p.benchmark_pipeline(*args)
+            performance_script.benchmark_pipeline(*args)
         assert caught.value is error
     else:
-        p.benchmark_pipeline(*args)
+        performance_script.benchmark_pipeline(*args)
     assert closed == ["decoder", "backbone"]
     assert reported == ([] if failure else [True])
 
 
-def test_throughput_failure_owns_monitor_cleanup_but_not_runner_lifetime(p, monkeypatch):
+def test_throughput_failure_owns_monitor_cleanup_but_not_runner_lifetime(performance_script, monkeypatch):
     cleaned, error = [], ValueError("forwarding")
     monitor = types.SimpleNamespace(running=lambda: True, stop=lambda: cleaned.append("monitor"))
-    monkeypatch.setattr(p.pyneat, "TelemetryMonitor", lambda: monitor, raising=False)
+    monkeypatch.setattr(performance_script.pyneat, "TelemetryMonitor", lambda: monitor, raising=False)
 
     def fail(*stages, **kwargs):
         raise error
 
-    monkeypatch.setattr(p, "run_together", fail)
+    monkeypatch.setattr(performance_script, "run_together", fail)
     runner = types.SimpleNamespace(close=lambda: cleaned.append("runner"))
     with pytest.raises(ValueError) as caught:
-        p.measure_throughput(runner, runner, object())
+        performance_script.measure_throughput(runner, runner, object())
     assert caught.value is error
     assert cleaned == ["monitor"]
 
 
-def test_forwarding_failure_closes_both_inputs_and_joins_every_stage(p):
-    import threading
-
+def test_forwarding_failure_closes_both_inputs_and_joins_every_stage(performance_script):
     ready = threading.Barrier(3, timeout=2)
     backbone_closed, decoder_closed = threading.Event(), threading.Event()
     finished, closed, error = [], [], ValueError("forwarding")
@@ -317,7 +257,7 @@ def test_forwarding_failure_closes_both_inputs_and_joins_every_stage(p):
         assert backbone_closed.wait(2)
         finished.append("push")
 
-    def forward_proposals():
+    def forward_queries():
         ready.wait()
         raise error
 
@@ -327,11 +267,11 @@ def test_forwarding_failure_closes_both_inputs_and_joins_every_stage(p):
         finished.append("pull")
 
     with pytest.raises(ValueError) as caught:
-        p.run_together(push_inputs, forward_proposals, pull_outputs, runners=runners)
+        performance_script.run_together(push_inputs, forward_queries, pull_outputs, runners=runners)
     assert caught.value is error
     assert sorted(finished) == ["pull", "push"]
     assert closed == ["backbone", "decoder"]
     assert not any(
-        thread.is_alive() and thread.name in {"push_inputs", "forward_proposals", "pull_outputs"}
+        thread.is_alive() and thread.name in {"push_inputs", "forward_queries", "pull_outputs"}
         for thread in threading.enumerate()
     )

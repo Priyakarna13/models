@@ -6,7 +6,7 @@ compile:
 accuracy:
   run_tests: true
   expected:
-    w16a16_w16a16:
+    w16a16:
       coco-2017-val:
         coco_map: 0.4150250830734953
         coco_ap50: 0.5969580415170108
@@ -65,7 +65,7 @@ accuracy:
 performance:
   run_tests: true
   expected:
-    w16a16_w16a16:
+    w16a16:
       throughput_fps: 169.34414378881831
     w8a16_w16a16:
       throughput_fps: 161.2222848480603

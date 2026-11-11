@@ -1,8 +1,8 @@
-"""Benchmark D-FINE Nano through native preprocessing, both MPKs and BoxDecode.
+"""Benchmark D-FINE Nano with Neat Core and save its report.
 
 Given --mpk backbone=<path> --mpk decoder=<path> and --dataset coco-2017-val=<extracted directory>, the
 script measures the whole model as it runs on one COCO image in a 720p frame: Neat's preprocessing and the
-backbone, CPU Top300 query selection, decoder and native DetrFocal BoxDecode, each working on a different frame at the
+backbone, the top 300 queries on the CPU, and the decoder, each stage working on a different frame at the
 same time. It also records each MPK's MLA layer and stage stats and its execution plan.
 """
 
@@ -38,28 +38,29 @@ def image_options() -> pyneat.ModelOptions:
     """The backbone's: Neat stretches, normalizes, quantizes and tessellates the frame inside the pipeline."""
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Image
+    # Size Neat's input buffers for the benchmark frame, not the 1920x1080 default.
+    options.preprocess.input_max_width = FRAME_WIDTH
+    options.preprocess.input_max_height = FRAME_HEIGHT
     options.preprocess.enable = pyneat.AutoFlag.On
     options.preprocess.resize.enable = pyneat.AutoFlag.On
     options.preprocess.resize.mode = pyneat.ResizeMode.Stretch
     options.preprocess.normalize.enable = pyneat.AutoFlag.On
+    # D-FINE expects RGB scaled to [0, 1], with no ImageNet mean or std.
     options.preprocess.normalize.mean = [0.0, 0.0, 0.0]
     options.preprocess.normalize.stddev = [1.0, 1.0, 1.0]
     options.preprocess.normalize.has_explicit_stats = True
-    # Keep the forwarded attention output hardware-accessible.
+    # Keep the attention memory the decoder reads where its EV74 input stage can reach it.
     options.advanced_execution.postprocess_target = "EV74"
-    # D-FINE expects RGB/255, with no ImageNet mean/std preset.
     return options
 
 
 def tensor_options() -> pyneat.ModelOptions:
-    """The decoder's: its inputs are the backbone's features and the selected proposals."""
+    """The decoder's: its inputs are the backbone's features and the selected queries, not an image."""
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Tensor
     options.preprocess.resize.enable = pyneat.AutoFlag.Off
     options.preprocess.color_convert.enable = pyneat.AutoFlag.Off
     options.preprocess.normalize.enable = pyneat.AutoFlag.Off
-    # Keep the complete exported output adapters. Native decoding below consumes
-    # their public FP32 heads, not a raw MLA buffer with different padding.
     return options
 
 
@@ -86,52 +87,10 @@ def select_queries(content: pyneat.Tensor, scores: pyneat.Tensor, references: py
     return gathered
 
 
-def require_native_boxes(outputs: list[pyneat.Tensor]) -> None:
-    """Never count raw MLA output as completed end-to-end inference."""
-    if len(outputs) != 1:
-        raise RuntimeError("Expected one native BBOX publication")
-    detection = outputs[0].semantic.detection
-    if detection is None or detection.format != "BBOX":
-        raise RuntimeError("Native DetrFocal BoxDecode did not publish BBOX")
-    # Parse the actual native result; parsing is inside the measured span too.
-    boxes = pyneat.decode_bbox(outputs, strict=True)[0].to_numpy()
-    if len(boxes) != QUERY_COUNT:
-        raise RuntimeError(f"Native BoxDecode emitted {len(boxes)} of {QUERY_COUNT} query/class pairs")
-
-
-def decoder_graph(model: pyneat.Model) -> pyneat.Graph:
-    """Retain complete multi-input MPK; decode its public dense FP32 outputs."""
-    route = pyneat.ModelRouteOptions()
-    route.include_input = True
-    route.include_output = False
-    graph = model.graph(route)
-    graph.add(
-        pyneat.nodes.sima_box_decode(
-            pyneat.BoxDecodeType.DetrFocal,
-            original_width=FRAME_WIDTH,
-            original_height=FRAME_HEIGHT,
-            model_width=IMAGE_SIZE,
-            model_height=IMAGE_SIZE,
-            detection_threshold=0.0,
-            nms_iou_threshold=0.0,
-            top_k=QUERY_COUNT,
-            decode_type_option=pyneat.BoxDecodeTypeOption.InterleavedByHeadLogit,
-            source_storage=pyneat.BoxDecodeSourceStorage.DenseHwc,
-            detess=False,
-            dequant=False,
-            resize_mode=pyneat.ResizeMode.Stretch,
-        )
-    )
-    graph.add(pyneat.nodes.output())
-    return graph
-
-
-def invoke_decoder(decoder: pyneat.Run, inputs: list[pyneat.Tensor]) -> None:
-    push(decoder, inputs, "decoder")
-    result = decoder.pull(TIMEOUT_MS)
-    if result is None:
-        raise RuntimeError("Decoder/BoxDecode produced no result before timeout")
-    require_native_boxes(result.tensors)
+def require_heads(outputs: list[pyneat.Tensor]) -> None:
+    """Count a frame only once the decoder published both of its public heads."""
+    if len(outputs) != 2:
+        raise RuntimeError(f"Expected the decoder's pred_boxes and pred_logits, got {len(outputs)} tensors")
 
 
 def percentile_ms(seconds: list[float], percentile: float) -> float:
@@ -147,18 +106,11 @@ def mla_stats(mpk: Path) -> tuple[dict[str, object], dict[str, object]]:
     report = pyneat.Model(str(mpk)).benchmark(options)
     layer_stats, stage_stats = report.mla_layer_stats, report.mla_stage_stats
     layers = [
-        {
-            "stage_index": layer.stage_index,
-            "name": layer.name,
-            "latency_us": layer.latency_us,
-        }
+        {"stage_index": layer.stage_index, "name": layer.name, "latency_us": layer.latency_us}
         for layer in layer_stats.layers
     ]
     stages = [{"stage_index": stage.stage_index, "latency_us": stage.latency_us} for stage in stage_stats.stages]
-    return {"status": layer_stats.status, "layers": layers}, {
-        "status": stage_stats.status,
-        "stages": stages,
-    }
+    return {"status": layer_stats.status, "layers": layers}, {"status": stage_stats.status, "stages": stages}
 
 
 def sample_image(dataset: Path) -> Path:
@@ -190,15 +142,12 @@ def frame_tensor(path: Path) -> pyneat.Tensor:
     """The image's 720p frame, placed once in the memory the backbone reads, reused for every frame."""
     frame = letterbox_to_720p(read_rgb(path))
     return pyneat.Tensor.from_numpy(
-        frame,
-        copy=True,
-        image_format=pyneat.PixelFormat.RGB,
-        memory=pyneat.TensorMemory.EV74,
+        frame, copy=True, image_format=pyneat.PixelFormat.RGB, memory=pyneat.TensorMemory.EV74
     )
 
 
-def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor):
-    """Seed the three-input decoder+native-BoxDecode route from the real backbone."""
+def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor) -> tuple[pyneat.ModelRunner, ...]:
+    """A runner for each model. The decoder's is built from one real backbone output."""
     options = pyneat.RunOptions()
     options.queue_depth = QUEUE_DEPTH
     options.output_memory = pyneat.OutputMemory.ZeroCopy
@@ -206,17 +155,16 @@ def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor):
     backbone = models["backbone"].build([image], run_options=options)
     try:
         memory, content, scores, references = backbone.run([image], timeout_ms=TIMEOUT_MS)
-        graph = decoder_graph(models["decoder"])
-        decoder = graph.build([memory, *select_queries(content, scores, references)], options=options)
+        decoder = models["decoder"].build([memory, *select_queries(content, scores, references)], run_options=options)
         return backbone, decoder
     except BaseException:
         backbone.close()
         raise
 
 
-def infer_one(backbone, decoder, image: pyneat.Tensor) -> None:
+def infer_one(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor) -> None:
     memory, content, scores, references = backbone.run([image], timeout_ms=TIMEOUT_MS)
-    invoke_decoder(decoder, [memory, *select_queries(content, scores, references)])
+    require_heads(decoder.run([memory, *select_queries(content, scores, references)], timeout_ms=TIMEOUT_MS))
 
 
 def measure_latency(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor) -> list[float]:
@@ -309,7 +257,7 @@ def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner
             # End of stream follows the last frame through the backbone, then the decoder.
             backbone.close_input()
 
-    def forward_proposals() -> None:
+    def forward_queries() -> None:
         try:
             for memory, content, scores, references in drain(backbone, "backbone", pushed):
                 selected = select_queries(content, scores, references)
@@ -324,8 +272,8 @@ def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner
         nonlocal throughput
         started = 0.0
         for outputs, tensors in enumerate(drain(decoder, "decoder", pushed), start=1):
-            require_native_boxes(tensors)
-            # Count only after native postdecode and public BBOX parsing finish.
+            require_heads(tensors)
+            # Return the decoder's output buffers before the next pull.
             del tensors
             if outputs == WARMUP_FRAMES:
                 monitor.start()
@@ -339,7 +287,7 @@ def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner
             raise RuntimeError("the pipeline stopped before the measured span ended")
 
     try:
-        run_together(push_inputs, forward_proposals, pull_outputs, runners=(backbone, decoder))
+        run_together(push_inputs, forward_queries, pull_outputs, runners=(backbone, decoder))
     finally:
         # A failure inside the measured span leaves the monitor running.
         if monitor.running():
@@ -369,8 +317,7 @@ def write_report(
         models,
         workload=(
             f"{image} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, Neat preprocessing stretched to "
-            f"{IMAGE_SIZE}x{IMAGE_SIZE}, backbone, top {QUERY_COUNT} queries on the CPU, decoder and "
-            f"native DetrFocal BoxDecode, pipelined "
+            f"{IMAGE_SIZE}x{IMAGE_SIZE}, backbone, top {QUERY_COUNT} queries on the CPU, and decoder, pipelined "
             f"{QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
@@ -402,15 +349,7 @@ def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, ou
     finally:
         decoder.close()
         backbone.close()
-    write_report(
-        output,
-        f"{dataset_id} {path.name}",
-        latencies,
-        throughput,
-        models,
-        mla_layer_stats,
-        mla_stage_stats,
-    )
+    write_report(output, f"{dataset_id} {path.name}", latencies, throughput, models, mla_layer_stats, mla_stage_stats)
 
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:
@@ -422,12 +361,7 @@ def parse_mpks(values: list[str]) -> dict[str, Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--mpk",
-        action="append",
-        required=True,
-        help="component=path, for each component",
-    )
+    parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
     args = parser.parse_args()
