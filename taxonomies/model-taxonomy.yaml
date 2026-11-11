@@ -153,6 +153,10 @@ architectures:
     display_name: VGG
     paradigm: cnn
     allowed_model_types: [vision]
+  vit:
+    display_name: ViT
+    paradigm: transformer
+    allowed_model_types: [vision]
   whisper:
     display_name: Whisper
     paradigm: transformer

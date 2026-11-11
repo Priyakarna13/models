@@ -152,9 +152,9 @@ not the MPK alone:
    YOLO26 resizes with `ResizeMode.Letterbox` and keeps Neat's default
    scaling of pixels to [0, 1]. ResNet-50 and RF-DETR's backbone resize with
    `ResizeMode.Stretch` and set `preprocess.preset =
-   NormalizePreset.ImageNet`. CLIP ViT-B/16 and SigLIP 2 ViT-B/16 also stretch,
-   and set their own mean and standard deviation in
-   `preprocess.normalize.mean` and `stddev` with
+   NormalizePreset.ImageNet`. ViT-B/16, CLIP ViT-B/16 and SigLIP 2 ViT-B/16
+   also stretch, and set their own mean and standard deviation (0.5 for
+   ViT-B/16) in `preprocess.normalize.mean` and `stddev` with
    `normalize.has_explicit_stats = True`. Without a preset or explicit
    statistics, Neat applies no mean or standard deviation.
 
