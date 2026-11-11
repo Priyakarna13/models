@@ -137,6 +137,10 @@ architectures:
     display_name: RF-DETR
     paradigm: transformer
     allowed_model_types: [vision]
+  rf_detr_seg:
+    display_name: RF-DETR-Seg
+    paradigm: transformer
+    allowed_model_types: [vision]
   superpoint:
     display_name: SuperPoint
     paradigm: cnn
