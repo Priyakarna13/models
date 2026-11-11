@@ -525,7 +525,8 @@ def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script,
 
 
 @pytest.mark.parametrize(
-    "script", performance_scripts(components=True, accuracy=False), ids=lambda path: path.parents[1].name
+    "script", [path for path in performance_scripts(components=True, accuracy=False) if takes_images(path)],
+    ids=lambda path: path.parents[1].name,
 )
 def test_every_multi_component_script_without_a_dataset_feeds_a_fixed_frame(script, monkeypatch):
     monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
