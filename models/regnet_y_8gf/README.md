@@ -4,7 +4,7 @@
 
 ## Overview
 
-RegNetY-8GF is a residual network for image classification, trained on the 1,000 classes of ImageNet-1k. It is sized for about 8 billion multiply-adds per image, and its stages of grouped-convolution blocks with squeeze-and-excitation take their widths and depths from a simple linear rule. The package uses
+RegNetY-8GF is a residual network for image classification, trained on the 1,000 classes of ImageNet-1k. It is sized for about 8.5 billion multiply-adds per image, and its stages of grouped-convolution blocks with squeeze-and-excitation take their widths and depths from a simple linear rule. The package uses
 torchvision's ImageNet weights (IMAGENET1K_V2). It takes a 224×224 RGB image and
 returns one score for each class. Your application turns the scores into
 probabilities with a softmax and reports the most likely classes. The model runs
