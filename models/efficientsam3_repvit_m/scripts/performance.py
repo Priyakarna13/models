@@ -2,10 +2,14 @@
 
 Given --mpk text_encoder=<path> --mpk image_model=<path> and --dataset coco-2017-val=<extracted directory>, the
 script measures the whole model on one image and prompt per frame: the text encoder on the fixed prompt "person",
-the packing of its features and token mask into the image model's text input on the CPU, and Neat's preprocessing
-and the image model on one COCO image in a 720p frame, each stage working on a different frame at the same time.
-Running the text encoder for every frame measures an application that changes its prompt with each image; one with
-a fixed prompt runs it once. The script also records each MPK's MLA layer and stage stats and its execution plan.
+the packing of its features and token mask into the image model's text input on the CPU, the stretch and
+normalization of one COCO image in a 720p frame on the CPU, and the image model, each stage working on a different
+frame at the same time. Running the text encoder for every frame measures an application that changes its prompt
+with each image; one with a fixed prompt runs it once. The script also records each MPK's MLA layer and stage stats
+and its execution plan.
+
+The image model runs on the tensor route, as in accuracy.py: Neat builds its image route only in front of an MPK
+with one input, and the image model also takes the packed text.
 """
 
 from __future__ import annotations
@@ -27,9 +31,6 @@ IMAGE_SIZE = 1008
 CONTEXT, VOCABULARY, FEATURES = 16, 49408, 256
 # "person" as CLIP BPE tokens between the start and end tokens; the components' time does not depend on the prompt.
 PROMPT, PROMPT_TOKENS = "person", (49406, 2533, 49407)
-# SAM 3 scales pixels to [-1, 1]: (x / 255 - 0.5) / 0.5.
-MEAN = [0.5, 0.5, 0.5]
-STD = [0.5, 0.5, 0.5]
 WARMUP_FRAMES = 100
 MEASURED_FRAMES = 1000
 MIN_DURATION_S = 60
@@ -41,26 +42,8 @@ IMAGES = "val2017"
 FRAME_WIDTH, FRAME_HEIGHT, FILL = 1280, 720, 114
 
 
-def image_options() -> pyneat.ModelOptions:
-    """The image model's: Neat stretches, normalizes, quantizes and tessellates the frame inside the pipeline."""
-    options = pyneat.ModelOptions()
-    options.preprocess.kind = pyneat.InputKind.Image
-    # Size Neat's input buffers for the benchmark frame, not the 1920x1080 default.
-    options.preprocess.input_max_width = FRAME_WIDTH
-    options.preprocess.input_max_height = FRAME_HEIGHT
-    options.preprocess.enable = pyneat.AutoFlag.On
-    options.preprocess.resize.enable = pyneat.AutoFlag.On
-    options.preprocess.resize.mode = pyneat.ResizeMode.Stretch
-    options.preprocess.normalize.enable = pyneat.AutoFlag.On
-    # Without explicit statistics Neat only scales pixels to [0, 1].
-    options.preprocess.normalize.mean = MEAN
-    options.preprocess.normalize.stddev = STD
-    options.preprocess.normalize.has_explicit_stats = True
-    return options
-
-
 def tensor_options() -> pyneat.ModelOptions:
-    """The text encoder's: its input is the prompt's one-hot tokens."""
+    """Both models': the script prepares every input, and Neat only quantizes and tessellates."""
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Tensor
     options.preprocess.resize.enable = pyneat.AutoFlag.Off
@@ -136,11 +119,18 @@ def letterbox_to_720p(image: np.ndarray) -> np.ndarray:
 
 
 def frame_tensor(path: Path) -> pyneat.Tensor:
-    """The image's 720p frame, placed once in the memory the image model reads, reused for every frame."""
+    """The image's 720p frame, placed once in device memory as a camera frame arrives, reused for every frame."""
     frame = letterbox_to_720p(read_rgb(path))
     return pyneat.Tensor.from_numpy(
         frame, copy=True, image_format=pyneat.PixelFormat.RGB, memory=pyneat.TensorMemory.EV74
     )
+
+
+def pixels(frame: pyneat.Tensor) -> pyneat.Tensor:
+    """The CPU step: the image model's pixel input [1008, 1008, 3], the frame stretched and scaled to [-1, 1] as
+    accuracy.py prepares each image."""
+    image = cv2.resize(frame.to_numpy(copy=False), (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_LINEAR)
+    return ev74_tensor(image.astype(np.float32) / np.float32(127.5) - np.float32(1))
 
 
 def build_runners(
@@ -152,7 +142,7 @@ def build_runners(
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
     text_encoder = models["text_encoder"].build([prompt], run_options=run_options)
     (features,) = text_encoder.run([prompt], timeout_ms=TIMEOUT_MS)
-    image_model = models["image_model"].build([frame, pack_text(features)], run_options=run_options)
+    image_model = models["image_model"].build([pixels(frame), pack_text(features)], run_options=run_options)
     return text_encoder, image_model
 
 
@@ -160,7 +150,7 @@ def infer_one(
     text_encoder: pyneat.ModelRunner, image_model: pyneat.ModelRunner, prompt: pyneat.Tensor, frame: pyneat.Tensor
 ) -> None:
     (features,) = text_encoder.run([prompt], timeout_ms=TIMEOUT_MS)
-    image_model.run([frame, pack_text(features)], timeout_ms=TIMEOUT_MS)
+    image_model.run([pixels(frame), pack_text(features)], timeout_ms=TIMEOUT_MS)
 
 
 def measure_latency(
@@ -256,7 +246,7 @@ def measure_throughput(
     def forward_text() -> None:
         try:
             for (features,) in drain(text_encoder, "text encoder", pushed):
-                push(image_model, [frame, pack_text(features)], "image model")
+                push(image_model, [pixels(frame), pack_text(features)], "image model")
                 pushed["image model"] += 1
                 # The packed text is a copy, so the text encoder gets its output buffer back.
                 del features
@@ -314,8 +304,8 @@ def write_report(
         models,
         workload=(
             f'text encoder on the prompt "{PROMPT}", text packing on the CPU, and {image} in a {FRAME_WIDTH}x'
-            f"{FRAME_HEIGHT} RGB frame, Neat preprocessing stretched to {IMAGE_SIZE}x{IMAGE_SIZE}, and the image "
-            f"model, pipelined {QUEUE_DEPTH} frames deep"
+            f"{FRAME_HEIGHT} RGB frame, stretched to {IMAGE_SIZE}x{IMAGE_SIZE} and normalized on the CPU, and the "
+            f"image model, pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
         mla_layer_stats=mla_layer_stats,
@@ -334,7 +324,7 @@ def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, ou
         mla_layer_stats[name], mla_stage_stats[name] = mla_stats(mpk)
     models = {
         "text_encoder": pyneat.Model(str(mpks["text_encoder"]), tensor_options()),
-        "image_model": pyneat.Model(str(mpks["image_model"]), image_options()),
+        "image_model": pyneat.Model(str(mpks["image_model"]), tensor_options()),
     }
     path = sample_image(dataset)
     prompt, frame = prompt_tensor(), frame_tensor(path)

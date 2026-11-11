@@ -24,9 +24,26 @@ def test_performance_records_each_components_execution_plan(performance: dict[st
         assert plan["nodes"] and plan["edges"]
 
 
-def test_image_model_execution_plan_takes_the_benchmark_frame(performance: dict[str, Any]) -> None:
+def test_image_model_execution_plan_takes_the_prepared_pixels(performance: dict[str, Any]) -> None:
+    # The image model runs on the tensor route, so its plan starts at the CPU-prepared 1008x1008 pixels.
     edges = performance["components"]["image_model"]["execution_plan"]["edges"]
-    assert [1, 720, 1280, 3] in [tensor["shape"] for edge in edges for tensor in edge["tensors"]]
+    assert [1008, 1008, 3] in [tensor["shape"][-3:] for edge in edges for tensor in edge["tensors"]]
+
+
+def test_the_cpu_step_prepares_the_frame_as_accuracy_does(
+    load_script: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script, accuracy = load_script("performance"), load_script("accuracy")
+    monkeypatch.setattr(script.pyneat.Tensor, "from_numpy", lambda array, **options: array)
+    frame = np.random.default_rng(0).integers(0, 256, (720, 1280, 3), dtype=np.uint8)
+    path = tmp_path / "frame.png"
+    # accuracy.py reads BGR files; the frame is RGB.
+    assert script.cv2.imwrite(str(path), script.cv2.cvtColor(frame, script.cv2.COLOR_RGB2BGR))
+
+    prepared = script.pixels(SimpleNamespace(to_numpy=lambda copy: frame))
+
+    assert (prepared.shape, prepared.dtype) == ((1008, 1008, 3), np.float32)
+    np.testing.assert_array_equal(prepared, accuracy.preprocess_image(path))
 
 
 def test_mla_stats_collected(performance: dict[str, Any]) -> None:
