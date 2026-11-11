@@ -4,15 +4,15 @@ accuracy:
   run_tests: true
   expected:
     w16a16:
-      imagenet-2012-mini:
+      imagenet-2012-val:
         top1_accuracy: 0.8186
         top5_accuracy: 0.9546
     w8a8:
-      imagenet-2012-mini:
+      imagenet-2012-val:
         top1_accuracy: 0.7710
         top5_accuracy: 0.9380
     w8a16:
-      imagenet-2012-mini:
+      imagenet-2012-val:
         top1_accuracy: 0.8178
         top5_accuracy: 0.9546
 performance:

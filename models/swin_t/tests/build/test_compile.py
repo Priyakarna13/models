@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import random
 import sys
 import tarfile
@@ -80,39 +81,74 @@ def test_preprocessing_resizes_the_shortest_edge_then_crops_the_centre(
     np.testing.assert_allclose(result[124, 112], blue, atol=1e-5)
 
 
-def test_calibration_stacks_every_cal_image_from_the_archive(
+def test_calibration_samples_the_requested_cal_images_from_the_archive(
     tmp_path: Path,
     load_script: Callable[[str], ModuleType],
 ) -> None:
     calibration = load_script("calibration")
     archive = _write_archive(
-        tmp_path / "mini.tar.gz",
+        tmp_path / "cal.tar.gz",
         {
-            "cal/b.webp": _png(300, 260),
-            "cal/a.webp.bak": _png(260, 300),
-            "cal/notes.txt": b"not an image",
-            "val/n01440764/c.webp": _png(256, 256),
+            "imagenet/cal2012/n01440764_1.JPEG": _png(300, 260),
+            "imagenet/cal2012/n01443537_1.JPEG": _png(260, 300),
+            "imagenet/cal2012.txt": b"n01440764_1.JPEG\nn01443537_1.JPEG\n",
+            "imagenet/val2012/ILSVRC2012_val_00000001.JPEG": _png(256, 256),
         },
     )
 
-    samples = calibration.calibration_samples(archive, 2)
+    samples = calibration.calibration_samples(archive, 1)
 
-    assert samples.shape == (2, 224, 224, 3)
+    assert samples.shape == (1, 224, 224, 3)
     assert samples.dtype == np.float32
+    np.testing.assert_array_equal(samples, calibration.calibration_samples(archive, 1))
     with pytest.raises(ValueError, match="calibration requires 3 images"):
         calibration.calibration_samples(archive, 3)
 
 
-def test_validation_labels_follow_the_sorted_synsets(load_script: Callable[[str], ModuleType]) -> None:
+def test_split_names_read_an_extracted_directory_and_require_the_split(
+    tmp_path: Path,
+    load_script: Callable[[str], ModuleType],
+) -> None:
     calibration = load_script("calibration")
-    names = [f"val/n{index:08d}/image.webp" for index in reversed(range(calibration.CLASSES))]
+    (tmp_path / "val2012").mkdir()
+    (tmp_path / "val2012" / "x.JPEG").write_bytes(_png(256, 256))
 
-    labels = calibration.validation_labels(names)
+    assert calibration.split_names(tmp_path, "val2012") == ["val2012/x.JPEG"]
+    with pytest.raises(ValueError, match="no images under cal2012/"):
+        calibration.split_names(tmp_path, "cal2012")
 
-    assert labels["val/n00000000/image.webp"] == 0
-    assert labels[f"val/n{calibration.CLASSES - 1:08d}/image.webp"] == calibration.CLASSES - 1
+
+def test_validation_labels_come_from_the_labels_file(tmp_path: Path, load_script: Callable[[str], ModuleType]) -> None:
+    calibration = load_script("calibration")
+    categories = [{"id": index, "wnid": f"n{index:08d}", "name": f"class {index}"} for index in range(1000)]
+    labels = {
+        "categories": categories,
+        "images": [
+            {"id": 7, "file_name": "ILSVRC2012_val_00000007.JPEG", "width": 500, "height": 375},
+            {"id": 2, "file_name": "ILSVRC2012_val_00000002.JPEG", "width": 500, "height": 375},
+        ],
+        "annotations": [{"id": 7, "image_id": 7, "category_id": 999}, {"id": 2, "image_id": 2, "category_id": 0}],
+    }
+    path = tmp_path / "annotations" / "labels_val2012.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(labels), encoding="utf-8")
+
+    assert calibration.validation_labels(tmp_path) == {
+        "val2012/ILSVRC2012_val_00000002.JPEG": 0,
+        "val2012/ILSVRC2012_val_00000007.JPEG": 999,
+    }
+    path.write_text(json.dumps({**labels, "categories": categories[1:]}), encoding="utf-8")
     with pytest.raises(ValueError, match="expected 1000 validation classes, found 999"):
-        calibration.validation_labels(names[1:])
+        calibration.validation_labels(tmp_path)
+
+
+def test_read_images_reports_a_missing_image(tmp_path: Path, load_script: Callable[[str], ModuleType]) -> None:
+    calibration = load_script("calibration")
+    archive = _write_archive(tmp_path / "cal.tar.gz", {"imagenet/cal2012/a.JPEG": b"a"})
+
+    assert calibration.read_images(archive, ["imagenet/cal2012/a.JPEG"]) == {"imagenet/cal2012/a.JPEG": b"a"}
+    with pytest.raises(ValueError, match="missing 1 requested images"):
+        calibration.read_images(archive, ["imagenet/cal2012/a.JPEG", "imagenet/cal2012/b.JPEG"])
 
 
 def test_fidelity_selection_is_the_declared_seeded_sample(
@@ -120,7 +156,7 @@ def test_fidelity_selection_is_the_declared_seeded_sample(
     load_script: Callable[[str], ModuleType],
 ) -> None:
     calibration = load_script("calibration")
-    names = [f"val/n01/{index:02d}.webp" for index in range(10)]
+    names = [f"cal2012/n01440764_{index:02d}.JPEG" for index in range(10)]
     for name in names:
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_bytes(b"")
