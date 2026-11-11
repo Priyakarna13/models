@@ -49,6 +49,10 @@ architectures:
     display_name: BlazePose
     paradigm: cnn
     allowed_model_types: [vision]
+  yolo_world:
+    display_name: YOLO-World
+    paradigm: cnn
+    allowed_model_types: [vlm]
   clip:
     display_name: CLIP
     paradigm: transformer
@@ -59,6 +63,10 @@ architectures:
     allowed_model_types: [vision]
   depthart:
     display_name: DepthART
+    paradigm: transformer
+    allowed_model_types: [vision]
+  depth_anything_3:
+    display_name: Depth Anything 3
     paradigm: transformer
     allowed_model_types: [vision]
   dla:
@@ -133,6 +141,10 @@ architectures:
     display_name: Qwen3-VL
     paradigm: transformer
     allowed_model_types: [vlm]
+  raft_stereo:
+    display_name: RAFT-Stereo
+    paradigm: cnn
+    allowed_model_types: [vision]
   resnet:
     display_name: ResNet
     paradigm: cnn
