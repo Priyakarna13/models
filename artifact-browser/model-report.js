@@ -1,6 +1,6 @@
 // Reads the whole-model reports a build profile's benchmark runs publish
 // (schemas/model-report.schema.json, written by tools/model_report).
-import { analyzeLayers } from "./layer-stats.js";
+import { analyzeLayers } from "./mla-layer-stats.js";
 
 // Each benchmark stage's registry run type, as tools/model_registry/fingerprints.py BENCHMARK_RUN_TYPES records it.
 export const BENCHMARK_RUN_TYPES = {
@@ -25,8 +25,8 @@ const TELEMETRY_METRICS = {
   peak_cpu_core_usage_pct: ["cpu_cores_usage_pct", "maximum"],
   mla_memory_avg_mib: ["mla_memory_mib", "mean"],
   mla_memory_peak_mib: ["mla_memory_mib", "maximum"],
-  avg_cma_memory_mib: ["cma_memory_mib", "mean"],
-  peak_cma_memory_mib: ["cma_memory_mib", "maximum"],
+  ev74_memory_avg_mib: ["ev74_memory_mib", "mean"],
+  ev74_memory_peak_mib: ["ev74_memory_mib", "maximum"],
   avg_linux_memory_mib: ["linux_memory_used_mib", "mean"],
   peak_linux_memory_mib: ["linux_memory_used_mib", "maximum"],
 };
@@ -41,7 +41,8 @@ function pyneatVersion(report) {
 
 // A performance report holds its metrics; an accuracy report holds them per dataset.
 function supported(report, stage) {
-  const results = stage === "accuracy" ? report?.datasets : report?.metrics;
+  const results = stage === "accuracy" ? report?.datasets
+    : report?.scope === "components" ? report.components : report?.metrics;
   return report?.schema === "sima.model-report" && report.schema_version === 1 && report.stage === stage
     && Boolean(results) && typeof results === "object";
 }
@@ -91,29 +92,50 @@ function cpuCores(telemetry) {
     .map((core) => ({ mean: core.mean, maximum: finite(core.maximum) }));
 }
 
+// Reports from before EV74 memory carry the whole CMA pool in use, which is not the model's memory.
+const RETIRED_METRICS = new Set(["avg_cma_memory_mib", "peak_cma_memory_mib"]);
+
+function performanceReadings(report) {
+  const telemetry = report.telemetry || {};
+  return {
+    measurements: Object.fromEntries(Object.entries(report.metrics || {})
+      .filter(([key, value]) => Number.isFinite(value) && !RETIRED_METRICS.has(key))
+      .map(([key, value]) => [key, measurement(key, value, telemetry)])),
+    workload: typeof report.workload === "string" ? report.workload : "",
+    telemetry: telemetrySource(report.telemetry),
+    cpuCores: cpuCores(report.telemetry),
+  };
+}
+
 // A performance report measures the whole model, however many components it runs, and records each
-// component's layer timings and execution plan in the order the model runs them.
-export function readPerformance(benchmarkRun) {
+// component's layer timings and execution plan. The registry stores the report as PostgreSQL jsonb, which
+// reorders its keys, so `order` gives the component IDs in the order the model runs them.
+export function readPerformance(benchmarkRun, order = []) {
   return read(benchmarkRun, "performance", ({ run, report }) => {
-    const telemetry = report.telemetry || {};
     return {
-      measurements: Object.fromEntries(Object.entries(report.metrics)
-        .filter(([, value]) => Number.isFinite(value))
-        .map(([key, value]) => [key, measurement(key, value, telemetry)])),
-      workload: typeof report.workload === "string" ? report.workload : "",
+      ...performanceReadings(report),
+      scope: report.scope || "model",
       tool: pyneatVersion(report),
       timestamp: run?.finished_at || run?.created_at || null,
       modelId: run?.metadata?.model_id,
       buildProfileId: run?.metadata?.build_profile_id,
-      telemetry: telemetrySource(report.telemetry),
-      cpuCores: cpuCores(report.telemetry),
-      components: Object.entries(report.components || {}).map(([id, component]) => ({
+      components: inRunOrder(Object.entries(report.components || {}), order).map(([id, component]) => ({
         id,
-        layerAnalysis: analyzeLayers(component?.layer_stats),
+        ...(report.scope === "components" ? performanceReadings(component) : {}),
+        layerAnalysis: analyzeLayers(component?.mla_layer_stats?.layers),
+        mlaStageStats: component?.mla_stage_stats || null,
+        // Inferences in each MLA run, which Core's execution plan records for every model.
+        batch: component?.execution_plan?.model?.batch,
         executionGraph: executionGraph(component?.execution_plan),
       })),
     };
   });
+}
+
+// Report entries with the IDs `order` names first, in its order, and any others after them as stored.
+function inRunOrder(entries, order) {
+  const rank = ([id]) => (order.includes(id) ? order.indexOf(id) : order.length);
+  return [...entries].sort((left, right) => rank(left) - rank(right));
 }
 
 // An accuracy report scores the whole model on each dataset model.yaml names, as ratios over the evaluated part

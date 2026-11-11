@@ -255,7 +255,9 @@ async function checkCatalogLayouts(browser, url) {
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
         await page.locator('#task-filter').selectOption('visual_question_answering');
         await page.getByRole('heading', {name: 'Visual Question Answering', exact: true}).waitFor();
-        if (await page.locator('.catalog-model-link').count() !== 1 || await page.locator('.catalog-model-link').innerText() !== 'Qwen3.5-0.8B') throw new Error('multi-task model did not follow the selected task');
+        const answering = (await page.locator('.catalog-model-link').allInnerTexts()).sort();
+        const expected = names.filter(name => tasksByModel[name].includes('Visual Question Answering')).sort();
+        if (JSON.stringify(answering) !== JSON.stringify(expected)) throw new Error('multi-task model did not follow the selected task');
         await page.locator('#task-filter').selectOption('');
         await page.locator('#search').fill('no such model xyz');
         await page.getByRole('heading', {name: 'No matching models', exact: true}).waitFor();
@@ -300,6 +302,9 @@ async function checkExecutionTooltips(browser, url) {
     const page = await browser.newPage({viewport: {width, height: 1000}, hasTouch: width === 390});
     try {
       await page.goto(url.href);
+      // The inline README shifts the graph when it arrives; hover only after the page has settled.
+      await page.locator('[data-model-card-body] .model-documentation-body').waitFor();
+      await page.evaluate(() => document.fonts.ready);
       await page.locator('[data-disclosure^="graphs:"] > summary').first().click();
       const stage = page.locator('.execution-step[data-runs-on="MLA"]').first();
       await stage.scrollIntoViewIfNeeded();
@@ -333,7 +338,7 @@ async function checkExecutionTooltips(browser, url) {
       await stage.blur();
       await stage.focus();
       await tooltip.waitFor();
-      await page.locator('.execution-details').first().focus();
+      await page.locator('.execution-graph .execution-details').first().focus();
       if (await tooltip.isVisible()) throw new Error('stage tooltip survived focus moving away');
       console.log(`ok  Execution stage tooltip · ${width}px ${theme}`);
     } finally { await page.close(); }
@@ -413,15 +418,16 @@ async function checkTaskComparison(browser, base) {
         if (!(await page.locator('.compare-chart-dataset').innerText()).includes('coco-2017')) throw new Error('chart does not identify its accuracy dataset');
         await page.locator('[data-compare-control="task"]').selectOption('image_classification');
         await add.waitFor();
-        const choices = await add.locator('option').allTextContents();
-        if (choices.length !== 3 || !choices.slice(1).every(text => text.includes('ResNet-50'))) throw new Error('comparison mixed tasks or omitted a variant');
+        // Each classifier's variants by exact model name (Wide ResNet-50-2 contains "ResNet-50"), and nothing from another task.
+        const classifiers = {'ResNet-50': 3, 'ResNet-18': 2, 'ResNet-34': 2, 'ResNeXt-50 32x4d': 2, 'ResNeXt-101 32x8d': 2, 'ResNeXt-101 64x4d': 2, 'Wide ResNet-50-2': 2, 'DLA-34': 2, 'Inception v3': 2, 'VGG-11': 2, 'VGG-11-BN': 2, 'VGG-13': 2, 'VGG-13-BN': 2, 'VGG-16': 2, 'VGG-16-BN': 2, 'VGG-19': 2, 'VGG-19-BN': 2, 'HRNet-W32': 2, 'ViT-B/16': 2, 'DenseNet-121': 2, 'DenseNet-161': 2, 'DenseNet-169': 2};
+        const variants = Object.values(classifiers).reduce((total, count) => total + count, 0);
+        const choices = (await add.locator('option').allTextContents()).slice(1);
+        if (choices.length !== variants || !Object.entries(classifiers).every(([name, count]) => choices.filter(text => text.startsWith(`${name} · `)).length === count)) throw new Error('comparison mixed tasks or omitted a variant');
         const dataset = await page.locator('.compare-chart-dataset').innerText();
-        if (!dataset.includes('imagenet-2012') || !dataset.includes('mini')) throw new Error('chart dataset did not follow the selected task');
-        // The FP16 classification variant has no accuracy result; it stays available in Add model.
-        if (await page.locator('.compare-point').count() !== 1) throw new Error('chart included a variant without measured accuracy');
+        if (!dataset.includes('imagenet-2012') || !dataset.includes('/ val /')) throw new Error('chart dataset did not follow the selected task');
+        if (await page.locator('.compare-point').count() !== variants) throw new Error('chart omitted a measured classification variant');
         await add.selectOption('resnet_50.w16a16');
-        if (!(await page.locator('.compare-table').innerText()).includes('W16A16')) throw new Error('variant without accuracy is no longer selectable');
-        if (await page.locator('.compare-legend button').count()) throw new Error('selection without measured accuracy appears in the legend');
+        if (!(await page.locator('.compare-table').innerText()).includes('W16A16')) throw new Error('selected variant is missing from the table');
         await page.locator('.compare-table .compare-remove').click();
         if (await page.locator('.compare-table, .compare-selected').count()) throw new Error('removing the final variant left an empty table');
         if (new URL(page.url()).searchParams.getAll('build').length) throw new Error('removing the final variant left a selection in the URL');
@@ -432,6 +438,21 @@ async function checkTaskComparison(browser, base) {
         console.log(`ok  Task comparison · ${viewport.width}px ${theme}`);
       } finally { await page.close(); }
     }
+  }
+}
+
+// A portal without its license list offers no download at all, so check a model on each side of the rule.
+async function checkLicensedDownloads(browser, base) {
+  for (const [model, offered] of [['resnet_50', true], ['superpoint', false]]) {
+    const page = await browser.newPage();
+    try {
+      await page.goto(new URL(`/?model=${model}&variant=w8a8`, base).href);
+      await page.locator('#license-section .license-summary').waitFor();
+      const downloads = await page.locator('[data-download="package"], [data-download-variant]').count();
+      if (Boolean(downloads) !== offered) throw new Error(`${model} ${offered ? 'offers no download' : 'offers a download its license forbids'}`);
+      if (await page.locator('.download-unavailable').count() !== (offered ? 0 : 1)) throw new Error(`${model} shows the wrong download notice`);
+      console.log(`ok  Licensed downloads · ${model}`);
+    } finally { await page.close(); }
   }
 }
 
@@ -447,10 +468,28 @@ try {
       ['variant page', variantUrl, '#components-section .component-performance'],
       ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a8_w16a16', variantUrl), '#components-section .component-pipeline'],
     ];
+    for (const viewport of [{width: 1440, height: 1000}, {width: 390, height: 844}]) {
+      const page = await browser.newPage({viewport});
+      await page.goto(new URL('/?branches=0&branch=develop', variantUrl).href);
+      // The developer fixture has no Main catalog: selection must stay Main even then.
+      await page.waitForFunction(() => document.querySelector('#branch-filter').value === 'main');
+      if (await page.locator('#branch-filter').isVisible()) throw new Error('branches=0 exposes branch filter');
+      if (await page.locator('#branch-filter').inputValue() !== 'main') throw new Error('branches=0 did not select main');
+      await page.locator('#nav-compare').click();
+      await page.locator('#nav-models').click();
+      if (new URL(page.url()).searchParams.get('branches') !== '0') throw new Error('Navigation lost branches=0');
+      if (!await page.locator('#clear-filters').isVisible()) await page.locator('#filter-toggle').click();
+      await page.locator('#clear-filters').click();
+      if (await page.locator('#branch-filter').inputValue() !== 'main') throw new Error('Clear filters left main');
+      await page.screenshot({path: `/tmp/model-browser-branches-${viewport.width}.png`});
+      await page.close();
+      console.log(`ok  Main-only branches=0 · ${viewport.width}px`);
+    }
     await checkLayerAnalysis(browser, variantUrl);
     await checkExecutionTooltips(browser, variantUrl);
     await checkCatalogLayouts(browser, new URL('/', variantUrl));
     await checkTaskComparison(browser, variantUrl);
+    await checkLicensedDownloads(browser, variantUrl);
     for (const [name, url, readySelector] of checks) {
       const problems = await checkPage(browser, url, readySelector);
       console.log(`${problems.length ? 'FAIL' : 'ok'}  ${name}  ${url.pathname}${url.search}`);

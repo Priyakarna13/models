@@ -42,6 +42,18 @@ test('leaves out a metric the report did not measure as a number', () => {
   assert.equal(measurements.throughput_fps.value, report.metrics.throughput_fps);
 });
 
+test('reads EV74 memory and drops the CMA pool of earlier reports', () => {
+  const report = fixture('performance');
+  const {measurements} = performance(report).value;
+  assert.equal(measurements.ev74_memory_peak_mib.value, report.telemetry.ev74_memory_mib.maximum);
+  assert.equal(measurements.ev74_memory_peak_mib.sampleCount, 15);
+
+  Object.assign(report.metrics, {avg_cma_memory_mib: 863.8, peak_cma_memory_mib: 867.2});
+  const earlier = performance(report).value.measurements;
+  assert.equal(earlier.avg_cma_memory_mib, undefined);
+  assert.equal(earlier.peak_cma_memory_mib, undefined);
+});
+
 test('names the model, build, runtime, and time of the run that measured it', () => {
   const benchmark = performance().value;
   assert.equal(benchmark.modelId, 'resnet_50');
@@ -50,6 +62,7 @@ test('names the model, build, runtime, and time of the run that measured it', ()
   assert.match(benchmark.tool, /^PyNeat \S/);
   assert.equal(benchmark.workload, 'Model.benchmark with default options');
   assert.ok(benchmark.cpuCores.length > 1);
+  assert.equal(benchmark.components[0].batch, 1);
 });
 
 test('reads model report version 1 of the right stage and no other format', () => {
@@ -83,4 +96,32 @@ test('reads accuracy per dataset, in the order the run parameters declare them',
   assert.deepEqual(imagenet.details, result.details);
   assert.equal(readAccuracy({run, parameters: {}, report: {...report, stage: 'performance'}}).kind, 'unsupported');
   assert.equal(readAccuracy({run, parameters: {}, report: {...report, datasets: null}}).kind, 'unsupported');
+});
+
+test('independent components retain separate metrics, telemetry and workloads without an aggregate', () => {
+  const saved = fixture('performance');
+  const stats = saved.components.model;
+  const report = {
+    schema: saved.schema, schema_version: saved.schema_version, stage: saved.stage, runtime: saved.runtime,
+    scope: 'components',
+    components: {
+      text_encoder: {...stats, workload: '77 token embeddings', telemetry: {}, metrics: {throughput_fps: 640}},
+      image_encoder: {...stats, workload: '720p image preprocessing', telemetry: saved.telemetry,
+        metrics: {throughput_fps: 230, avg_power_watts: 12}},
+    },
+  };
+  const result = readPerformance({run, report}, ['image_encoder', 'text_encoder']);
+  assert.equal(result.kind, 'supported');
+  assert.equal(result.value.scope, 'components');
+  assert.deepEqual(result.value.measurements, {});
+  assert.equal(result.value.telemetry, null);
+  const [image, text] = result.value.components;
+  assert.equal(image.id, 'image_encoder');
+  assert.equal(image.measurements.throughput_fps.value, 230);
+  assert.equal(text.measurements.throughput_fps.value, 640);
+  assert.equal(image.workload, '720p image preprocessing');
+  assert.equal(text.workload, '77 token embeddings');
+  assert.equal(image.telemetry.status, 'ok');
+  assert.equal(text.telemetry.samples, 0);
+  assert.ok(image.executionGraph);
 });

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
@@ -14,6 +15,7 @@ from .dependencies import resolve_benchmark_runtime, resolve_model_compiler
 from .documentation import load_model_documentation
 from .errors import ModelRegistryError
 from .fetch import Fetcher, resolve_dataset
+from .mla_stage_simulation import write_mla_stage_simulation
 from .model import component_for, component_pipelines, load_and_validate_model, load_models, profile_component_for
 from .model_tests import TEST_OUTCOMES
 from .runner_approval import authorize_runner_matrix
@@ -24,11 +26,13 @@ AUTHOR_COMMANDS = frozenset(
         "fetch",
         "fetch-calibration",
         "fetch-fidelity-dataset",
+        "fetch-resources",
         "matrix",
         "record-compile-outputs",
         "authorize-runner-matrix",
         "assemble-package",
         "resolve-compiler",
+        "simulate-mla-stages",
         "validate",
         "validate-models",
         "validate-compile-outputs",
@@ -61,12 +65,35 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     validate_models.add_argument("--repository", type=Path, default=Path.cwd())
     validate_models.add_argument("--json", action="store_true", dest="json_output")
 
+    conversion = subcommands.add_parser("publish-conversion", help="publish a validated conversion output")
+    conversion.add_argument("model_id")
+    conversion.add_argument("output_dir", type=Path)
+    conversion.add_argument("--repository", type=Path, default=Path.cwd())
+    conversion.add_argument("--api-url", required=True)
+    conversion.add_argument("--bucket", required=True)
+    conversion.add_argument("--kms-key-id")
+    conversion.add_argument("--aws-region", default="us-west-2")
+    conversion.add_argument("--environment", required=True)
+    conversion.add_argument("--validation", required=True, choices=["passed"])
+
+    entrypoint = subcommands.add_parser(
+        "conversion-entrypoint", help="print the conversion output compile.py receives as --model"
+    )
+    entrypoint.add_argument("model_dir", type=Path)
+
     fetch = subcommands.add_parser("fetch", help="download and verify a model's immutable source")
     fetch.add_argument("model_dir", type=Path)
     fetch.add_argument("--schema", type=Path)
     fetch.add_argument("--cache-dir", type=Path)
     fetch.add_argument("--component", help="component ID; optional when the model contains one component")
     fetch.add_argument("--json", action="store_true", dest="json_output")
+
+    resources = subcommands.add_parser(
+        "fetch-resources", help="download a model's pinned resources, laid out as its package installs them"
+    )
+    resources.add_argument("model_dir", type=Path)
+    resources.add_argument("--output-dir", type=Path, required=True)
+    resources.add_argument("--cache-dir", type=Path)
 
     calibration = subcommands.add_parser(
         "fetch-calibration", help="download and verify a model's immutable calibration snapshot"
@@ -102,7 +129,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     pipelines.add_argument("--output", type=Path, required=True)
 
     reference = subcommands.add_parser(
-        "reference-metrics", help="write the scores each source model's authors published, for the model browser"
+        "reference-metrics", help="write each model's published and FP32 baseline scores, for the model browser"
     )
     reference.add_argument("--repository", type=Path, default=Path.cwd())
     reference.add_argument("--output", type=Path, required=True)
@@ -115,6 +142,8 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     stages.add_argument("--branch", required=True)
     stages.add_argument("--base-branches", help="comma-separated branches whose catalogs builds may come from")
     stages.add_argument("--read-api-url", help="public artifact-registry API; omit with --offline")
+    stages.add_argument("--api-url", default=os.environ.get("VULCAN_ARTIFACT_REGISTRY_API_URL"))
+    stages.add_argument("--aws-region", default="us-west-2")
     stages.add_argument("--offline", action="store_true", help="read no registry state; select every invocation")
     stages.add_argument("--models", help="comma-separated model IDs; every model when omitted")
     stages.add_argument("--profiles", help="comma-separated build profile IDs within the selected models")
@@ -144,6 +173,11 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     )
     benchmark_runtime.add_argument("--repository", type=Path, default=Path.cwd())
 
+    core = subcommands.add_parser("ensure-neat-core", help="verify or install the selected benchmark Core artifact")
+    core.add_argument("--repository", type=Path, default=Path.cwd())
+    core.add_argument("--environment", default="production")
+    core.add_argument("--artifacts-base-url", help="Core artifact index for the selected environment")
+
     devkit_accuracy = subcommands.add_parser(
         "resolve-devkit-accuracy", help="resolve each DevKit accuracy dataset of a build profile into the cache"
     )
@@ -159,6 +193,13 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     inputs.add_argument("--repository", type=Path, default=Path.cwd())
     inputs.add_argument("--model", required=True)
     inputs.add_argument("--build-profile", required=True)
+
+    resources = subcommands.add_parser(
+        "model-runtime-directory", help="print the verified supporting-file root, or nothing when no files are declared"
+    )
+    resources.add_argument("compiled_dir", type=Path)
+    resources.add_argument("--model", required=True)
+    resources.add_argument("--build-profile", required=True)
 
     check = subcommands.add_parser(
         "check-report", help="check a model report against model.yaml and record the DevKit it ran on"
@@ -217,6 +258,11 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     record_outputs.add_argument("--compile-invocation-id", required=True)
     record_outputs.add_argument("--components", required=True, help="comma-separated component IDs")
 
+    simulate = subcommands.add_parser(
+        "simulate-mla-stages", help="write mla-stage-simulation.json: mla-msim's estimate of each compiled MLA stage"
+    )
+    simulate.add_argument("output_dir", type=Path, help="the build profile's compile output, with compile-outputs.json")
+
     package = subcommands.add_parser(
         "assemble-package", help="assemble deterministic package bundles from verified component MPKs"
     )
@@ -227,6 +273,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     package.add_argument("--build-profile")
     package.add_argument("--package")
     package.add_argument("--all", action="store_true", dest="all_packages")
+    package.add_argument("--resource-cache-dir", type=Path, help="where pinned package resources are cached")
     package.add_argument("--json", action="store_true", dest="json_output")
 
     publish = subcommands.add_parser("publish", help="publish completed model compilations to the Vulcan registry")
@@ -256,7 +303,7 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
     candidate.add_argument("--aws-region", default="us-west-2")
     candidate.add_argument("--bucket", required=True)
     candidate.add_argument("--kms-key-id")
-    candidate.add_argument("--environment", choices=("staging",), required=True)
+    candidate.add_argument("--environment", choices=("staging", "production"), required=True)
     candidate.add_argument("--branch", required=True)
     candidate.add_argument("--git-sha", required=True)
     candidate.add_argument("--github-run-id", required=True)
@@ -327,6 +374,10 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
         type=Path,
         help="omit prior packages for build profiles selected for replacement",
     )
+    publish_catalog_parser.add_argument(
+        "--force-rebuild-all", action="store_true",
+        help="reject forced replacement of packages already published in the current revision",
+    )
     publish_catalog_parser.add_argument("--api-url", required=True)
     publish_catalog_parser.add_argument("--read-api-url", required=True)
     publish_catalog_parser.add_argument("--aws-region", default="us-west-2")
@@ -370,16 +421,22 @@ def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
 
 
 def _validate(args: argparse.Namespace) -> int:
+    from .package import validate_package_resources
+
     model = load_and_validate_model(args.model_dir, args.schema)
+    validate_package_resources(model)
     result = {"model_id": model["id"], "model_dir": str(args.model_dir.resolve()), "valid": True}
     print(json.dumps(result, sort_keys=True) if args.json_output else f"Valid model: {model['id']}")
     return 0
 
 
 def _validate_models(args: argparse.Namespace) -> int:
+    from .package import validate_package_resources
+
     repository = args.repository.expanduser().resolve()
     models = load_models(repository)
     for model_id, model in sorted(models.items()):
+        validate_package_resources(model)
         load_model_documentation(
             repository / "models" / model_id,
             model["display_name"],
@@ -418,10 +475,26 @@ def _selected_component(model: dict[str, object], component_id: str | None) -> d
     return component_for(model, component_id)
 
 
+def _fetch_resources(args: argparse.Namespace) -> int:
+    from .package import fetch_package_resources
+
+    model = load_and_validate_model(args.model_dir)
+    output = fetch_package_resources(model, args.output_dir.expanduser().resolve(), args.cache_dir)
+    if output is not None:
+        print(output)
+    return 0
+
+
 def _fetch(args: argparse.Namespace) -> int:
     model = load_and_validate_model(args.model_dir, args.schema)
     component = _selected_component(model, args.component)
-    path, cache_hit, source_sha256, size_bytes = Fetcher(args.cache_dir).fetch_source(component["source"])
+    from .conversion import apply_selection, fetch_conversion
+
+    apply_selection(model, root=args.model_dir.resolve().parents[1])
+    if component["source"]["type"] == "conversion":
+        path, cache_hit, source_sha256, size_bytes = fetch_conversion(component["source"], args.cache_dir)
+    else:
+        path, cache_hit, source_sha256, size_bytes = Fetcher(args.cache_dir).fetch_source(component["source"])
     source_root = path.parent
     if component["source"]["type"] == "file_set":
         source_root = path
@@ -550,7 +623,7 @@ def _reference_metrics(args: argparse.Namespace) -> int:
 
 
 def _plan_stages(args: argparse.Namespace) -> int:
-    from .registry import _public_registry_json
+    from .registry import SigV4RegistryClient, _public_registry_json
 
     if args.offline == bool(args.read_api_url):
         raise ModelRegistryError("pass exactly one of --read-api-url or --offline")
@@ -566,6 +639,7 @@ def _plan_stages(args: argparse.Namespace) -> int:
         component_ids=_id_list(args.components, "--components"),
         force_rebuild_all=args.force_rebuild_all,
         include_on_demand=args.include_on_demand,
+        conversion_client=SigV4RegistryClient(args.api_url, args.aws_region) if args.api_url else None,
     )
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
@@ -655,6 +729,7 @@ def _assemble_package(args: argparse.Namespace) -> int:
             repository=args.repository,
             compiled_dir=args.compiled_dir,
             output_dir=args.output_dir,
+            resource_cache_dir=args.resource_cache_dir,
         )
     else:
         if any(value is None for value in explicit):
@@ -667,6 +742,7 @@ def _assemble_package(args: argparse.Namespace) -> int:
                 model_id=args.model,
                 build_profile_id=args.build_profile,
                 package_id=args.package,
+                resource_cache_dir=args.resource_cache_dir,
             )
         ]
     payload = {"count": len(results), "packages": results}
@@ -784,6 +860,9 @@ def _check_report(args: argparse.Namespace) -> int:
     if args.stage == "accuracy":
         for name, result in report["datasets"].items():
             print(f"Checked the accuracy report on {name}: {', '.join(sorted(result['metrics']))}")
+    elif report.get("scope") == "components":
+        for name, result in report["components"].items():
+            print(f"Checked the performance report for {name}: {', '.join(sorted(result['metrics']))}")
     else:
         print(f"Checked the {args.stage} report: {', '.join(sorted(report['metrics']))}")
     return 0
@@ -827,6 +906,7 @@ def _publish_catalog(args: argparse.Namespace) -> int:
         compiled_dir=args.compiled_dir,
         package_dir=args.package_dir,
         selected_matrix=args.selected_matrix,
+        force_rebuild_all=args.force_rebuild_all,
         api_url=args.api_url,
         read_api_url=args.read_api_url,
         aws_region=args.aws_region,
@@ -887,8 +967,31 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
                 component_ids=_id_list(args.components, "--components"),
             ))
             return 0
+        if args.command == "conversion-entrypoint":
+            from .conversion import conversion_outputs
+
+            print(conversion_outputs(args.model_dir)[0])
+            return 0
+        if args.command == "publish-conversion":
+            from .conversion import publish_conversion
+            from .registry import S3ArtifactStore, SigV4RegistryClient
+
+            result = publish_conversion(
+                args.repository.resolve(), args.model_id, args.output_dir.resolve(),
+                client=SigV4RegistryClient(args.api_url, args.aws_region),
+                store=S3ArtifactStore(args.bucket, kms_key_id=args.kms_key_id), bucket=args.bucket,
+                environment=args.environment, branch=os.environ["GITHUB_REF_NAME"],
+                git_sha=os.environ["GITHUB_SHA"], workflow=os.environ["GITHUB_RUN_ID"], validation=args.validation,
+            )
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        if args.command == "simulate-mla-stages":
+            print(write_mla_stage_simulation(args.output_dir))
+            return 0
         if args.command == "fetch":
             return _fetch(args)
+        if args.command == "fetch-resources":
+            return _fetch_resources(args)
         if args.command == "fetch-calibration":
             return _fetch_calibration(args)
         if args.command == "fetch-fidelity-dataset":
@@ -909,12 +1012,26 @@ def _main(argv: Sequence[str] | None, *, author_safe: bool) -> int:
             return _resolve_compiler(args)
         if args.command == "resolve-benchmark-runtime":
             return _resolve_benchmark_runtime(args)
+        if args.command == "ensure-neat-core":
+            from .neat_core import ensure_neat_core
+
+            ensure_neat_core(
+                args.repository, environment=args.environment, artifacts_base_url=args.artifacts_base_url,
+            )
+            return 0
         if args.command == "resolve-devkit-accuracy":
             return _resolve_devkit_accuracy(args)
         if args.command == "model-component-mpks":
             from .report_publication import model_component_mpks
 
             print("\n".join(model_component_mpks(args.compiled_dir, args.repository, args.model, args.build_profile)))
+            return 0
+        if args.command == "model-runtime-directory":
+            from .runtime_files import read_runtime_files
+
+            profile_dir = args.compiled_dir.resolve() / args.model / args.build_profile
+            if read_runtime_files(profile_dir):
+                print(profile_dir)
             return 0
         if args.command == "check-report":
             return _check_report(args)
