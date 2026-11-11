@@ -433,6 +433,20 @@ def _performance_report(model: dict, profile_id: str) -> dict[str, Any]:
             "mla_layer_stats": {"status": "ok", "layers": layers},
             "mla_stage_stats": {"status": "ok", "stages": stages},
         }
+    if model.get("performance", {}).get("scope") == "components":
+        for index, (name, component) in enumerate(report["components"].items(), 1):
+            measured = copy.deepcopy(metrics)
+            measured["throughput_fps"] *= index
+            for key in ("latency_avg_ms", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms"):
+                measured[key] /= index
+            measured["energy_per_inference_joules"] = measured["avg_power_watts"] / measured["throughput_fps"]
+            component.update(metrics=measured, telemetry=copy.deepcopy(report["telemetry"]),
+                             workload=f"Independent {name.replace('_', ' ')} benchmark; illustrative preview data")
+        for key in ("metrics", "telemetry", "workload"):
+            del report[key]
+        report["scope"] = "components"
+    # The registry stores the report as PostgreSQL jsonb, which orders keys shorter first, then bytewise.
+    report["components"] = dict(sorted(report["components"].items(), key=lambda item: (len(item[0]), item[0])))
     # The rest of the board telemetry keeps the template's DevKit readings.
     return report
 
@@ -452,12 +466,11 @@ def _accuracy_report(model: dict, profile_id: str) -> dict[str, Any]:
     expected = tests.get("accuracy", {}).get("expected", {}).get(profile_id, {})
     datasets = {}
     for name, dataset in model["accuracy"]["datasets"].items():
-        reference = {
-            metric: value
-            for entry in model.get("reference_metrics", [])
-            if entry["dataset"]["id"] == dataset["id"]
-            for metric, value in entry["metrics"].items()
-        }
+        # The FP32 baseline, measured on the package's own inputs, is the closer reference: it wins over a
+        # published score of the same metric.
+        entries = [entry for entry in model.get("reference_metrics", []) if entry["dataset"]["id"] == dataset["id"]]
+        entries.sort(key=lambda entry: entry.get("origin") == "fp32_baseline")
+        reference = {metric: value for entry in entries for metric, value in entry["metrics"].items()}
         available = 500 + int(_fraction("samples", *key, name) * 4500)
         datasets[name] = {
             **copy.deepcopy(sample),
