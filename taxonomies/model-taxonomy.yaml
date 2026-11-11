@@ -49,6 +49,10 @@ architectures:
     display_name: CLIP
     paradigm: transformer
     allowed_model_types: [vlm]
+  densenet:
+    display_name: DenseNet
+    paradigm: cnn
+    allowed_model_types: [vision]
   depthart:
     display_name: DepthART
     paradigm: transformer
@@ -141,6 +145,10 @@ architectures:
     display_name: SAM
     paradigm: transformer
     allowed_model_types: [vision]
+  siglip:
+    display_name: SigLIP
+    paradigm: transformer
+    allowed_model_types: [vlm]
   superpoint:
     display_name: SuperPoint
     paradigm: cnn
@@ -149,9 +157,17 @@ architectures:
     display_name: SuperGlue
     paradigm: transformer
     allowed_model_types: [vision]
+  supertonic:
+    display_name: Supertonic
+    paradigm: transformer
+    allowed_model_types: [audio]
   vgg:
     display_name: VGG
     paradigm: cnn
+    allowed_model_types: [vision]
+  vit:
+    display_name: ViT
+    paradigm: transformer
     allowed_model_types: [vision]
   whisper:
     display_name: Whisper
@@ -201,6 +217,9 @@ architectures:
 tasks:
   automatic_speech_recognition:
     display_name: Automatic Speech Recognition
+    allowed_model_types: [audio]
+  text_to_speech:
+    display_name: Text to Speech
     allowed_model_types: [audio]
   anomaly_detection:
     display_name: Anomaly Detection
