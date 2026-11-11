@@ -649,7 +649,6 @@ def test_publish_records_one_run_per_compiled_variant(tmp_path: Path, monkeypatc
     assert create["metadata"] == {
         "model_id": "resnet_50",
         "build_profile_id": "w16a16",
-        "variant_id": "w16a16",
         "component_id": "model",
         "artifact_kind": "mpk",
         "github_run_id": "1234",
