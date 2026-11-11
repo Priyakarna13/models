@@ -3,7 +3,8 @@
 
 The converted ONNX holds the two image encoder parts and the prompt decoder side by side. Each is extracted,
 quantized to its build precision and compiled in its own process, and its MPK is audited: one MLA segment, no host
-code. Each component calibrates on the float32 outputs of the components before it. When model.yaml declares
+code. Components requiring calibration use the float32 outputs of the components before them. BF16 normally
+skips calibration; the prompt decoder explicitly requests fitted ranges. When model.yaml declares
 numerical_fidelity, the quantized components feed each other on the declared val2017 images and fixed prompts, and
 the decoder's outputs are compared with the float32 ONNX chain's. compile-outputs.json records every MPK.
 """
@@ -27,10 +28,10 @@ from afe.apis.defines import (
     BiasCorrectionType,
     HistogramMSEMethod,
     InputName,
+    QuantizationParams,
     RequantizationMode,
     SkipCalibration,
     bfloat16_scheme,
-    default_quantization,
     gen2_target,
     quantization_scheme,
 )
@@ -40,12 +41,20 @@ from afe.load.importers.general_importer import onnx_source
 from calibration import calibration_images, decode, encoder_inputs, fidelity_names, image_prompts, read_images
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
-from pipeline import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, tensor_name
+from pipeline import (
+    COMPILED_INPUT_SHAPES,
+    COMPONENTS,
+    INPUT_SHAPES,
+    OUTPUT_SHAPES,
+    PROMPT_ENCODING_FILE,
+    PromptEncoding,
+    tensor_name,
+)
 from sima_utils.data.data_generator import DataGenerator
+from surgery import compile_decoder, split_components
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "mobile_sam"
-SAMPLE_SEED = 0
 
 
 def _component_parameters(profile_id: str) -> dict[str, dict[str, Any]]:
@@ -58,40 +67,50 @@ def _component_parameters(profile_id: str) -> dict[str, dict[str, Any]]:
     return parameters
 
 
+def _requires_calibration(parameters: dict[str, Any]) -> bool:
+    """Fit ranges only for INT8 activations or an explicitly calibrated component."""
+    return parameters["precision"] == "w8a8" or (
+        parameters["precision"] in {"w8a16", "w16a16"} and bool(parameters.get("calibration_bins"))
+    )
+
+
 def _quantization(parameters: dict[str, Any]) -> Any:
     precision = str(parameters["precision"])
+    # Preserve the prior public default's literal exclusion set, without inheriting its calibration policy.
     if precision == "w8a8":
-        config = (
-            default_quantization.with_activation_quantization(
-                quantization_scheme(asymmetric=True, per_channel=False, bits=8)
-            )
-            .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
-            .with_calibration(HistogramMSEMethod(int(parameters["calibration_bins"])))
-            .with_bias_correction(BiasCorrectionType.REGULAR)
+        config = QuantizationParams(
+            node_names={""},
+            calibration_method=HistogramMSEMethod(int(parameters["calibration_bins"])),
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            biascorr_type=BiasCorrectionType.REGULAR,
+            per_token_quant=False,
         )
     elif precision == "w16a16":
-        config = default_quantization.with_activation_quantization(bfloat16_scheme()).with_weight_quantization(
-            bfloat16_scheme()
-        )
-        # Sin and Cos run as INT8 lookup tables even at BF16; the decoder declares bins to calibrate their ranges.
-        if parameters.get("calibration_bins"):
-            config = config.with_calibration(HistogramMSEMethod(int(parameters["calibration_bins"])))
-    elif precision == "w8a16":
-        # INT8 per-channel weights with BF16 activations, quantized per token. The encoder parts calibrate nothing;
-        # the decoder will not quantize without calibration, so it declares its bins and samples.
         bins = parameters.get("calibration_bins")
-        return (
-            default_quantization.with_activation_quantization(bfloat16_scheme())
-            .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
-            .with_calibration(HistogramMSEMethod(int(bins)) if bins else SkipCalibration())
-            .with_bias_correction(BiasCorrectionType.NONE)
-            .with_requantization_mode(RequantizationMode.sima)
-            .with_per_token_quant(True)
+        config = QuantizationParams(
+            node_names={""},
+            calibration_method=HistogramMSEMethod(int(bins)) if bins else SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=bfloat16_scheme(),
+            biascorr_type=BiasCorrectionType.NONE,
+            per_token_quant=False,
+        )
+    elif precision == "w8a16":
+        # Preserve the explicit decoder histogram policy; the encoder parts skip
+        # calibration. All W8A16 components retain per-token INT8-weight execution.
+        bins = parameters.get("calibration_bins")
+        config = QuantizationParams(
+            node_names={""},
+            calibration_method=HistogramMSEMethod(int(bins)) if bins else SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            biascorr_type=BiasCorrectionType.NONE,
+            per_token_quant=True,
         )
     else:
         raise ValueError(f"unsupported precision: {precision}")
-    # with_activation_quantization turns per-token quantization on for BF16; neither precision uses it.
-    return config.with_requantization_mode(RequantizationMode.sima).with_per_token_quant(False)
+    return config.with_requantization_mode(RequantizationMode.sima)
 
 
 def validate_source(source: Path) -> None:
@@ -103,21 +122,6 @@ def validate_source(source: Path) -> None:
     expected_outputs = {tensor_name(c, n): s for c in COMPONENTS for n, s in OUTPUT_SHAPES[c].items()}
     if inputs != expected_inputs or outputs != expected_outputs:
         raise ValueError(f"Unsupported MobileSAM graph: inputs {inputs}, outputs {outputs}")
-
-
-def split(source: Path, directory: Path) -> dict[str, Path]:
-    """Extract each component's graph from the side-by-side ONNX."""
-    directory.mkdir(parents=True)
-    graphs = {}
-    for component in COMPONENTS:
-        graphs[component] = directory / f"{component}.onnx"
-        onnx.utils.extract_model(
-            str(source),
-            str(graphs[component]),
-            [tensor_name(component, name) for name in INPUT_SHAPES[component]],
-            [tensor_name(component, name) for name in OUTPUT_SHAPES[component]],
-        )
-    return graphs
 
 
 def channels_last(value: np.ndarray) -> np.ndarray:
@@ -151,10 +155,19 @@ def float_embeddings(graphs: dict[str, Path], images: np.ndarray) -> tuple[np.nd
     return features, np.concatenate([second.run(None, {name: feature[None]})[0] for feature in features])
 
 
-def decoder_feeds(embeddings: np.ndarray, sizes: list[tuple[int, int]]) -> list[dict[str, np.ndarray]]:
+def decoder_feeds(
+    embeddings: np.ndarray, sizes: list[tuple[int, int]], encoding: PromptEncoding | None = None
+) -> list[dict[str, np.ndarray]]:
     """The decoder's NCHW inputs: each image's embedding with each of its fixed prompts."""
     return [
-        {"image_embeddings": embedding[None], **prompt}
+        {
+            "image_embeddings": embedding[None],
+            **(
+                prompt
+                if encoding is None
+                else {"point_encoding": encoding(prompt["point_coords"]), "point_types": prompt["point_types"]}
+            ),
+        }
         for embedding, size in zip(embeddings, sizes)
         for prompt in image_prompts(size)
     ]
@@ -162,7 +175,7 @@ def decoder_feeds(embeddings: np.ndarray, sizes: list[tuple[int, int]]) -> list[
 
 def calibration_data(component: str, samples: list[dict[str, np.ndarray]]) -> Any:
     """The quantizer's channels-last calibration batches, one input set at a time."""
-    names = list(INPUT_SHAPES[component])
+    names = list(COMPILED_INPUT_SHAPES[component])
     stacked = {
         InputName(tensor_name(component, name)): np.concatenate([channels_last(sample[name]) for sample in samples])
         for name in names
@@ -187,7 +200,7 @@ def _read_mpk_manifest(archive: Path) -> dict[str, Any]:
 
 
 def audit_mpk(archive: Path, component: str) -> None:
-    """Require the component on one MLA segment, with no host code."""
+    """Require the component on one MLA segment, with no host code, from the pinned compiler."""
     manifest = _read_mpk_manifest(archive)
     processors = [str(plugin.get("processor", "")).upper() for plugin in manifest.get("plugins", [])]
     if processors.count("MLA") != 1 or {"A65", "APU"} & set(processors):
@@ -202,21 +215,22 @@ def _build(
     parameters: dict[str, Any],
     samples: list[dict[str, np.ndarray]],
     fidelity_feeds: list[dict[str, np.ndarray]],
+    retain_build_dir: Path | None = None,
 ) -> tuple[Path, list[list[np.ndarray]]]:
     """Quantize and compile one component: its MPK, and its quantized outputs for the fidelity feeds."""
     # The Model Compiler configures the root logger on import; force this format and level over it.
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s", force=True)
-    names = list(INPUT_SHAPES[component])
+    names = list(COMPILED_INPUT_SHAPES[component])
     importer = onnx_source(
         str(graph),
-        shape_dict={tensor_name(component, key): INPUT_SHAPES[component][key] for key in names},
+        shape_dict={tensor_name(component, key): COMPILED_INPUT_SHAPES[component][key] for key in names},
         layout="NCHW",
     )
     loaded = load_model(importer, target=gen2_target)
     logging.info("Quantizing %s as %s with %d sample(s)", component, parameters["precision"], len(samples))
     try:
         quantized = loaded.quantize(
-            calibration_data=calibration_data(component, samples),
+            calibration_data=calibration_data(component, samples) if _requires_calibration(parameters) else None,
             quantization_config=_quantization(parameters),
             model_name=name,
             log_level=logging.INFO,
@@ -233,8 +247,14 @@ def _build(
             [channels_first(value, shape) for value, shape in zip(result, OUTPUT_SHAPES[component].values())]
         )
     build_dir.mkdir(parents=True)
+    compile_options = {}
+    if retain_build_dir is not None:
+        retain_build_dir.mkdir(parents=True, exist_ok=False)
+        compile_options["retained_temporary_directory_name"] = str(retain_build_dir)
     try:
-        quantized.compile(output_path=str(build_dir), batch_size=1, compress=True, log_level=logging.INFO)
+        quantized.compile(
+            output_path=str(build_dir), batch_size=1, compress=True, log_level=logging.INFO, **compile_options
+        )
     except SystemExit as error:
         raise RuntimeError(f"compiling {component} failed; the AFE log above names the cause") from error
     archives = sorted(build_dir.glob("*_mpk.tar.gz"))
@@ -257,10 +277,12 @@ def _metrics(name: str, expected: list[np.ndarray], actual: list[np.ndarray]) ->
         raise RuntimeError(f"{name} contain non-finite values")
     error = actual_all - expected_all
     norm = np.linalg.norm(expected_all) * np.linalg.norm(actual_all)
+    # Identical zero outputs agree; a zero vector cannot agree with a nonzero vector.
+    cosine = expected_all @ actual_all / norm if norm else float(not np.any(expected_all) and not np.any(actual_all))
     expected_rms = max(np.sqrt(np.mean(expected_all**2)), np.finfo(np.float64).eps)
     return {
         "name": name,
-        "cosine_similarity": float(np.clip(expected_all @ actual_all / norm if norm else 1.0, -1.0, 1.0)),
+        "cosine_similarity": float(np.clip(cosine, -1.0, 1.0)),
         "normalized_rmse": float(np.sqrt(np.mean(error**2)) / expected_rms),
         "mean_absolute_error": float(np.mean(np.abs(error))),
         "max_absolute_error": float(np.max(np.abs(error))),
@@ -268,24 +290,39 @@ def _metrics(name: str, expected: list[np.ndarray], actual: list[np.ndarray]) ->
 
 
 def compile_model(
-    source: Path, output_dir: Path, profile_id: str, dataset: Path | None, fidelity_dataset: Path | None
+    source: Path,
+    output_dir: Path,
+    profile_id: str,
+    dataset: Path | None,
+    fidelity_dataset: Path | None,
+    retain_build_dir: Path | None = None,
 ) -> dict[str, Path]:
     parameters = _component_parameters(profile_id)
     validate_source(source)
     if output_dir.exists():
         raise FileExistsError(f"output directory already exists: {output_dir}")
+    if retain_build_dir is not None:
+        if retain_build_dir.exists() or retain_build_dir.is_symlink():
+            raise FileExistsError(f"retained build directory already exists: {retain_build_dir}")
+        retain_build_dir = retain_build_dir.expanduser().resolve()
+        output_root = output_dir.resolve()
+        if retain_build_dir.is_relative_to(output_root) or output_root.is_relative_to(retain_build_dir):
+            raise ValueError("retained build and output directories must be separate, non-overlapping paths")
+        retain_build_dir.mkdir(parents=True, exist_ok=False)
     fidelity = load_metadata(MODEL_DIR).get("numerical_fidelity")
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         build = Path(temporary)
-        graphs = split(source, build / "graphs")
+        graphs = split_components(source, build / "graphs")
+        compiled_decoder = build / "compiled_prompt_decoder.onnx"
+        prompt_metadata = compile_decoder(graphs["prompt_decoder"], compiled_decoder, sha256_file(source)[0])
+        encoding = PromptEncoding.from_metadata({key: json.dumps(value) for key, value in prompt_metadata.items()})
 
         # Calibration: the first encoder part's images, the second's float32 features of them, and the decoder's
         # prompts on the float32 encoder's embeddings.
-        calibrated = [component for component in COMPONENTS if "calibration_samples" in parameters[component]]
+        calibrated = [component for component in COMPONENTS if _requires_calibration(parameters[component])]
         if calibrated and dataset is None:
             raise ValueError("a calibrated component requires --dataset from dataset-registry")
-        rng = np.random.RandomState(SAMPLE_SEED)
-        samples: dict[str, list[dict[str, np.ndarray]]] = {}
+        samples: dict[str, list[dict[str, np.ndarray]]] = {component: [] for component in COMPONENTS}
         if calibrated:
             count = max(int(parameters[component]["calibration_samples"]) for component in calibrated)
             images = calibration_images(dataset, count)
@@ -297,19 +334,9 @@ def compile_model(
                 if "image_encoder_1" in calibrated:
                     samples["image_encoder_1"] = [{"features": feature[None]} for feature in features]
                 if "prompt_decoder" in calibrated:
-                    samples["prompt_decoder"] = decoder_feeds(embeddings, [image.shape[:2] for image in images])
-        # An uncalibrated component derives nothing from representative data, but quantize() still needs one sample.
-        for component in ("image_encoder_0", "image_encoder_1"):
-            (name, shape), = INPUT_SHAPES[component].items()
-            samples.setdefault(component, [{name: rng.uniform(-2, 2, shape).astype(np.float32)}])
-        samples.setdefault(
-            "prompt_decoder",
-            decoder_feeds(
-                rng.standard_normal(INPUT_SHAPES["prompt_decoder"]["image_embeddings"]).astype(np.float32) * 0.3,
-                [(768, 1024)],
-            )[:1],
-        )
-
+                    samples["prompt_decoder"] = decoder_feeds(
+                        embeddings, [image.shape[:2] for image in images], encoding
+                    )
         # Fidelity: the declared val2017 images, preprocessed, and their float32 ONNX chain.
         fidelity_inputs, sizes = np.zeros((0,)), []
         if fidelity is not None:
@@ -330,19 +357,27 @@ def compile_model(
         for component, output in (("image_encoder_0", "features"), ("image_encoder_1", "image_embeddings")):
             name = f"{MODEL_ID}_{profile_id}_{component}"
             archives[component], outputs = _in_process(
-                graphs[component], build / name, name, component, parameters[component], samples[component], feeds
+                graphs[component],
+                build / name,
+                name,
+                component,
+                parameters[component],
+                samples[component],
+                feeds,
+                retain_build_dir / component if retain_build_dir is not None else None,
             )
             feeds = [{output: item[0]} for item in outputs]
         quantized_embeddings = np.concatenate([item["image_embeddings"] for item in feeds]) if sizes else None
         name = f"{MODEL_ID}_{profile_id}_prompt_decoder"
         built, decoded_outputs = _in_process(
-            graphs["prompt_decoder"],
+            compiled_decoder,
             build / name,
             name,
             "prompt_decoder",
             parameters["prompt_decoder"],
             samples["prompt_decoder"],
-            decoder_feeds(quantized_embeddings, sizes) if sizes else [],
+            decoder_feeds(quantized_embeddings, sizes, encoding) if sizes else [],
+            retain_build_dir / "prompt_decoder" if retain_build_dir is not None else None,
         )
         archives["prompt_decoder"] = built
 
@@ -351,6 +386,8 @@ def compile_model(
             archives[component] = output_dir / component / archive.name
             shutil.copyfile(archive, archives[component])
             logging.info("Compiled %s: %s", component, archives[component])
+        prompt_file = output_dir / PROMPT_ENCODING_FILE
+        prompt_file.write_text(json.dumps(prompt_metadata, allow_nan=False, sort_keys=True) + "\n", encoding="utf-8")
         manifest = {
             "model_id": MODEL_ID,
             "build_profile_id": profile_id,
@@ -363,8 +400,13 @@ def compile_model(
                 }
                 for component in COMPONENTS
             ],
+            "runtime_files": [{"path": PROMPT_ENCODING_FILE, "sha256": sha256_file(prompt_file)[0]}],
             "derived_graphs": [
-                {"component_id": component, "sha256": sha256_file(graphs[component])[0]} for component in COMPONENTS
+                {
+                    "component_id": component,
+                    "sha256": sha256_file(compiled_decoder if component == "prompt_decoder" else graphs[component])[0],
+                }
+                for component in COMPONENTS
             ],
         }
         (output_dir / "compile-outputs.json").write_text(
@@ -413,6 +455,11 @@ def main() -> int:
     parser.add_argument("--compile-invocation", required=True)
     parser.add_argument("--dataset", type=Path, help="dataset-registry calibration archive")
     parser.add_argument("--fidelity-dataset", type=Path, help="dataset-registry fidelity archive")
+    parser.add_argument(
+        "--retain-build-dir",
+        type=Path,
+        help="retain compiler debugging files per component in a new directory outside --output-dir",
+    )
     args = parser.parse_args()
     if args.compile_invocation != args.build_profile:
         parser.error("a build profile compiles in one invocation named after it")
@@ -425,7 +472,14 @@ def main() -> int:
     fidelity_dataset = args.fidelity_dataset.expanduser().resolve() if args.fidelity_dataset else None
     # The Model Compiler configures the root logger on import; force this format and level over it.
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s", force=True)
-    compile_model(source, args.output_dir.expanduser().resolve(), args.build_profile, dataset, fidelity_dataset)
+    compile_model(
+        source,
+        args.output_dir.expanduser().resolve(),
+        args.build_profile,
+        dataset,
+        fidelity_dataset,
+        args.retain_build_dir,
+    )
     return 0
 
 

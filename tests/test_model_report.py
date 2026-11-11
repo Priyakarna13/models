@@ -330,10 +330,6 @@ def first_accuracy_dataset(script: Path) -> str | None:
     return datasets[0]["id"] if datasets else None
 
 
-# The legacy MobileSAM benchmark is updated in the next commit.
-FIXED_FRAME_MODELS = {"mobile_sam"}
-
-
 def performance_scripts(*, components: bool, accuracy: bool | None = None) -> list[Path]:
     """Benchmarked models' scripts: single-component ones run Model.benchmark, multi-component ones time their
     pipeline and take each component's MLA stats from its own Model.benchmark. accuracy selects the models that
@@ -498,8 +494,7 @@ def test_every_multi_component_script_keeps_cores_mla_stats(script, monkeypatch)
 
 @pytest.mark.parametrize(
     "script", [path for path in performance_scripts(components=True, accuracy=True)
-               if path.parents[1].name not in FIXED_FRAME_MODELS
-               and yaml.safe_load((path.parents[1] / "model.yaml").read_text())["performance"].get("scope")
+               if yaml.safe_load((path.parents[1] / "model.yaml").read_text())["performance"].get("scope")
                != "components"],
     ids=lambda path: path.parents[1].name,
 )
@@ -507,9 +502,16 @@ def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script,
     monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
         ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
     ))
+    monkeypatch.syspath_prepend(str(script.parent))
     functions = runpy.run_path(str(script))
 
     image = functions["sample_image"](benchmark_dataset(tmp_path))
+    if "frame_tensor" not in functions:
+        # SAM requires CPU normalization followed by right/bottom padding, which Core's image preset cannot
+        # express. The model tests ensure this work, prompt encoding and final masks run inside timing.
+        frame = Tensor(functions["read_frame"](image), image_format="RGB")
+        assert_letterboxed_frame(frame)
+        return
     frame = functions["frame_tensor"](image)
 
     metadata = yaml.safe_load((script.parents[1] / "model.yaml").read_text(encoding="utf-8"))
@@ -530,24 +532,6 @@ def test_every_multi_component_script_feeds_its_backbone_a_dataset_frame(script,
     height, width = frame.array.shape[:2]
     assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (width, height)
 
-
-@pytest.mark.parametrize("model_name", sorted(FIXED_FRAME_MODELS))
-def test_every_fixed_frame_pipeline_script_builds_the_same_720p_frame(model_name, monkeypatch):
-    script = REPOSITORY / "models" / model_name / "scripts/performance.py"
-    monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
-        ModelOptions=ModelOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
-    ))
-    monkeypatch.syspath_prepend(str(script.parent))
-    functions = runpy.run_path(str(script))
-
-    first, second = functions["synthetic_frame"](), functions["synthetic_frame"]()
-
-    assert (first.shape, str(first.dtype)) == ((720, 1280, 3), "uint8")
-    assert (first == second).all()
-    assert first.std() > 10
-    options = functions["tensor_options"]()
-    assert options.preprocess.kind == "Tensor"
-    assert (options.preprocess.resize.enable, options.preprocess.normalize.enable) == ("Off", "Off")
 
 
 def test_model_code_uses_cores_mla_stats_names():

@@ -27,8 +27,9 @@ from pipeline import (
     EMBEDDING_SHAPE,
     IMAGE_SIZE,
     INPUT_SHAPES,
+    MAX_POINTS,
     OUTPUT_SHAPES,
-    POINTS,
+    preprocess,
     prompt_inputs,
     resized_size,
     tensor_name,
@@ -41,14 +42,26 @@ OPSET = 17
 SEEDS = range(123, 128)
 # Prompts the checks feed the decoder, in pixels of a 1024x768 image: (points, types).
 PROMPTS = [
-    ([(512, 384)], ["foreground"]),
-    ([(300, 200), (700, 500)], ["foreground", "background"]),
-    ([(100, 80), (900, 700)], ["box_top_left", "box_bottom_right"]),
     (
-        [(100, 80), (900, 700), (500, 400), (120, 650), (850, 90)],
-        ["box_top_left", "box_bottom_right", "foreground", "background", "background"],
-    ),
+        [(200 + 100 * index, 150 + 80 * index) for index in range(count)],
+        ["foreground" if index % 2 == 0 else "background" for index in range(count)],
+    )
+    for count in range(1, MAX_POINTS + 1)
+] + [
+    ([(512, 384)], ["background"]),
+    *[
+        (
+            [(100, 80), (900, 700), *[(300 + 100 * index, 200 + 100 * index) for index in range(count)]],
+            [
+                "box_top_left",
+                "box_bottom_right",
+                *["foreground" if index % 2 == 0 else "background" for index in range(count)],
+            ],
+        )
+        for count in range(MAX_POINTS - 1)
+    ],
 ]
+
 ORIGINAL_SIZE = (768, 1024)
 
 
@@ -106,6 +119,7 @@ def build(checkpoint):
 def modules(sam):
     """The side-by-side export module and the prompt decoder."""
     import torch
+    from sam_decoder import predict_masks
 
     class PromptDecoder(torch.nn.Module):
         """segment_anything's point embedding and mask prediction, without a mask prompt."""
@@ -127,9 +141,13 @@ def modules(sam):
             types = point_types[0, :, 0, :].transpose(0, 1)
             projected = 2 * math.pi * (coords @ self.gaussian)
             # A padding point gets no positional encoding, only its own embedding.
-            encoding = torch.cat([torch.sin(projected), torch.cos(projected)], dim=-1) * (1 - types[:, :1])
+            encoding = torch.cat([torch.sin(projected), torch.cos(projected)], dim=-1) * types[:, 1:].sum(
+                dim=-1, keepdim=True
+            )
             sparse = (encoding + types @ self.table)[None]
-            return self.decoder.predict_masks(image_embeddings, self.image_pe, sparse, self.dense)
+            return predict_masks(
+                self.decoder, image_embeddings, self.image_pe, sparse, self.dense, types.sum(dim=-1)[None]
+            )
 
     from tiny_vit_4d import ImageEncoder
 
@@ -150,28 +168,32 @@ def modules(sam):
 
 
 def reference_decoder(sam, image_embeddings, points, types):
-    """segment_anything's own point embedding and mask prediction for the same prompt."""
+    """Independent upstream public prompt encoder and decoder; never manually pad or mask its tokens."""
     import torch
 
-    # segment_anything's ResizeLongestSide.apply_coords: pixels scaled to the resized image.
     height, width = ORIGINAL_SIZE
     resized_height, resized_width = resized_size(height, width)
-    pixels = np.zeros((POINTS, 2))
-    pixels[: len(points)] = np.asarray(points, np.float64) * (resized_width / width, resized_height / height)
-    pixels = torch.tensor(pixels[None], dtype=torch.float32)
-    slots = [*types, *["padding"] * (POINTS - len(types))]
-    prompt = sam.prompt_encoder
-    # Clicks and padding go through _embed_points (labels 0, 1 and -1); a box's corners through _embed_boxes.
-    labels = torch.tensor([[{"padding": -1, "background": 0, "foreground": 1}.get(kind, -1) for kind in slots]])
-    tokens = list(prompt._embed_points(pixels, labels, pad=False)[0])
-    if "box_top_left" in slots:
-        corners = [slots.index("box_top_left"), slots.index("box_bottom_right")]
-        box = prompt._embed_boxes(pixels[:, corners].reshape(1, 4))[0]
-        for slot, token in zip(corners, box):
-            tokens[slot] = token
-    sparse = torch.stack(tokens)[None]
-    dense = prompt.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(1, -1, *EMBEDDING_SHAPE[2:])
-    return sam.mask_decoder.predict_masks(image_embeddings, prompt.get_dense_pe(), sparse, dense)
+    scaled = np.asarray(points, np.float64) * (resized_width / width, resized_height / height)
+    clicks = [index for index, kind in enumerate(types) if kind in ("foreground", "background")]
+    point_input = None
+    if clicks:
+        coordinates = torch.as_tensor(scaled[clicks][None], dtype=torch.float32)
+        labels = torch.tensor([[int(types[index] == "foreground") for index in clicks]])
+        point_input = (coordinates, labels)
+    boxes = None
+    if "box_top_left" in types:
+        corners = [types.index("box_top_left"), types.index("box_bottom_right")]
+        boxes = torch.as_tensor(scaled[corners].reshape(1, 4), dtype=torch.float32)
+    sparse, dense = sam.prompt_encoder(points=point_input, boxes=boxes, masks=None)
+    inputs = dict(
+        image_embeddings=image_embeddings,
+        image_pe=sam.prompt_encoder.get_dense_pe(),
+        sparse_prompt_embeddings=sparse,
+        dense_prompt_embeddings=dense,
+    )
+    single = sam.mask_decoder(**inputs, multimask_output=False)
+    multiple = sam.mask_decoder(**inputs, multimask_output=True)
+    return tuple(torch.cat([one, three], dim=1) for one, three in zip(single, multiple))
 
 
 def seeded_image(seed):
@@ -206,6 +228,46 @@ def check_embedding(sam, side_by_side):
             expected = reference_decoder(sam, embeddings, points, types)
         for got, want in zip(actual, expected):
             np.testing.assert_allclose(got.numpy(), want.numpy(), rtol=1e-4, atol=1e-4, err_msg=str(types))
+
+
+def check_predictor(sam, side_by_side):
+    """Check full image-to-low-resolution-mask behavior against the unmodified public SamPredictor API."""
+    import torch
+    from segment_anything import SamPredictor
+
+    predictor = SamPredictor(sam)
+    for size in ((300, 600), (433, 301)):
+        image = np.random.RandomState(SEEDS.start).randint(0, 256, (*size, 3), dtype=np.uint8)
+        with torch.inference_mode():
+            predictor.set_image(image)
+            pixels = torch.from_numpy(preprocess(image).transpose(2, 0, 1)[None])
+            embedding = side_by_side.image_encoder(pixels)
+            np.testing.assert_allclose(embedding.numpy(), predictor.features.numpy(), rtol=1e-4, atol=1e-4)
+            for points, types in PROMPTS:
+                points = np.asarray(points) * (size[1] / ORIGINAL_SIZE[1], size[0] / ORIGINAL_SIZE[0])
+                click_indices = [index for index, kind in enumerate(types) if kind in ("foreground", "background")]
+                clicks = points[click_indices] if click_indices else None
+                labels = (
+                    np.asarray([int(types[index] == "foreground") for index in click_indices])
+                    if click_indices
+                    else None
+                )
+                box = None
+                if "box_top_left" in types:
+                    box = points[[types.index("box_top_left"), types.index("box_bottom_right")]].reshape(4)
+                _, score0, mask0 = predictor.predict(
+                    clicks, labels, box=box, multimask_output=False, return_logits=True
+                )
+                _, scores, masks = predictor.predict(clicks, labels, box=box, multimask_output=True, return_logits=True)
+                prompt = {name: torch.from_numpy(value) for name, value in prompt_inputs(points, types, size).items()}
+                actual = side_by_side.prompt_decoder(embedding, prompt["point_coords"], prompt["point_types"])
+                compare(
+                    np.concatenate([mask0, masks])[None], actual[0].numpy(), f"public predictor masks {size} {types}"
+                )
+                compare(
+                    np.concatenate([score0, scores])[None], actual[1].numpy(), f"public predictor scores {size} {types}"
+                )
+    print(f"Public SamPredictor parity passed: {len(PROMPTS)} prompt modes on two image geometries")
 
 
 def validate_export(path):
@@ -256,7 +318,8 @@ def check_onnx(side_by_side, path):
     options.intra_op_num_threads = 4
     session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
     outputs = [tensor_name(c, n) for c in COMPONENTS for n in OUTPUT_SHAPES[c]]
-    for seed, (points, types) in zip(SEEDS, [*PROMPTS, PROMPTS[0]]):
+    for index, (points, types) in enumerate(PROMPTS):
+        seed = SEEDS[index % len(SEEDS)]
         image = seeded_image(seed)
         with torch.inference_mode():
             features = side_by_side.image_encoder.start(torch.from_numpy(image)).numpy()
@@ -284,8 +347,9 @@ def convert(source, output_dir):
     side_by_side = modules(sam)
     check_encoder(sam, side_by_side)
     check_embedding(sam, side_by_side)
+    check_predictor(sam, side_by_side)
     inputs = [tensor_name(c, n) for c in COMPONENTS for n in INPUT_SHAPES[c]]
-    with tempfile.TemporaryDirectory(prefix="mobile-sam-") as temporary:
+    with tempfile.TemporaryDirectory(prefix=".mobile-sam-", dir=output_dir) as temporary:
         exported = Path(temporary) / "model.onnx"
         torch.onnx.export(
             side_by_side,
@@ -299,8 +363,8 @@ def convert(source, output_dir):
         )
         fold_constants(exported)
         validate_export(exported)
+        check_onnx(side_by_side, exported)
         exported.replace(output)
-    check_onnx(side_by_side, output)
     seeds = f"{SEEDS.start}-{SEEDS.stop - 1}"
     print(f"4D encoder, prompt embedding and PyTorch/ONNX checks passed with seeds {seeds}: {output}")
     return output

@@ -23,4 +23,6 @@ performance:
   run_tests: true
   expected:
     w16a16:
+      # Historical synthetic/tensor-only workload; retain until the revised complete-image benchmark is measured
+      # and a new baseline is reviewed. A new workload is not an apples-to-apples regression comparison.
       throughput_fps: 13.9

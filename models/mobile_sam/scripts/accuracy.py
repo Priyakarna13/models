@@ -21,15 +21,17 @@ from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import model_report
 import numpy as np
-import pyneat
 from faster_coco_eval import COCO, COCOeval_faster
 from faster_coco_eval.core import mask as mask_util
-from pipeline import COMPONENTS, IMAGE_SIZE, LOW_RES_MASK_SIZE, MASKS, preprocess, prompt_inputs, resized_size
+from pipeline import COMPONENTS, PromptEncoding, image_mask, mask_layout, preprocess, prompt_inputs
+
+if TYPE_CHECKING:
+    import pyneat
 
 ANNOTATIONS = "annotations/instances_val2017.json"
 IMAGES = "val2017"
@@ -62,31 +64,6 @@ def box_prompt(bbox: Sequence[float], original_size: tuple[int, int]) -> dict[st
     """The decoder's point inputs for a COCO x, y, width, height box: its top-left and bottom-right corners."""
     x, y, width, height = bbox
     return prompt_inputs([(x, y), (x + width, y + height)], ["box_top_left", "box_bottom_right"], original_size)
-
-
-def mask_layout(masks: np.ndarray, iou_predictions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The decoder's outputs as [MASKS, 256, 256] logits and MASKS scores, from NCHW or NHWC."""
-    masks = np.asarray(masks, np.float32)
-    if masks.size != MASKS * LOW_RES_MASK_SIZE**2:
-        raise ValueError(f"unexpected mask output shape {masks.shape}")
-    if masks.shape[-1] == MASKS and masks.shape[-2] == LOW_RES_MASK_SIZE:
-        masks = masks.reshape(LOW_RES_MASK_SIZE, LOW_RES_MASK_SIZE, MASKS).transpose(2, 0, 1)
-    masks = masks.reshape(MASKS, LOW_RES_MASK_SIZE, LOW_RES_MASK_SIZE)
-    scores = np.asarray(iou_predictions, np.float32).ravel()
-    if scores.size != MASKS:
-        raise ValueError(f"expected {MASKS} IoU predictions, got {scores.size}")
-    return masks, scores
-
-
-def image_mask(logits: np.ndarray, original_size: tuple[int, int]) -> np.ndarray:
-    """One low-resolution mask's logits as a binary mask on the image, as segment_anything's postprocess_masks
-    does: bilinear upsampling (align_corners=False) to IMAGE_SIZE, the padding dropped, then a bilinear resize to
-    the image, thresholded at 0."""
-    height, width = original_size
-    resized_height, resized_width = resized_size(height, width)
-    upsampled = cv2.resize(logits, (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_LINEAR)
-    cropped = np.ascontiguousarray(upsampled[:resized_height, :resized_width])
-    return cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LINEAR) > 0
 
 
 def result(annotation: dict[str, Any], masks: np.ndarray, scores: np.ndarray, original_size: tuple[int, int]) -> dict:
@@ -145,8 +122,10 @@ def evaluate(
             while len(pending) > 4 * WORKERS:
                 results.append(pending.popleft().result())
             if count == 1 or count % 250 == 0 or count == len(records):
-                log(f"{count}/{len(records)} images, {prompts} prompts, "
-                    f"{(time.monotonic() - started) / count * 1000:.0f} ms/image")
+                log(
+                    f"{count}/{len(records)} images, {prompts} prompts, "
+                    f"{(time.monotonic() - started) / count * 1000:.0f} ms/image"
+                )
         results.extend(future.result() for future in pending)
     return results, prompts
 
@@ -176,6 +155,8 @@ def score(ground_truth: COCO, results: list[dict], image_ids: list[int]) -> dict
 
 def tensor_options() -> pyneat.ModelOptions:
     """Every component's: the script prepares the inputs; Neat still quantizes and tessellates them."""
+    import pyneat
+
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Tensor
     options.preprocess.resize.enable = pyneat.AutoFlag.Off
@@ -186,14 +167,21 @@ def tensor_options() -> pyneat.ModelOptions:
 
 def hwc(value: np.ndarray) -> pyneat.Tensor:
     """An HWC array, or an NCHW batch of one, as the HWC tensor Neat takes."""
+    import pyneat
+
     if value.ndim == 4:
         value = value[0].transpose(1, 2, 0)
     return pyneat.Tensor.from_numpy(np.ascontiguousarray(value), copy=True, layout=pyneat.TensorLayout.HWC)
 
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
-    """One component's outputs as fresh HWC inputs of the next, as performance.handoff explains. Neat 0.6 gives
-    them a leading batch axis. Neat's own views of its outputs are read-only, which from_numpy rejects."""
+    """Owned, explicitly HWC inputs of the next component, as performance.handoff explains.
+
+    The admitted outputs have a singleton batch axis. Their read-only NumPy views cannot be re-exported through
+    DLPack, so retain this copy route until a checked direct transfer is qualified on the current Core.
+    """
+    import pyneat
+
     arrays = [tensor.to_numpy(copy=True) for tensor in tensors]
     return [
         pyneat.Tensor.from_numpy(
@@ -206,9 +194,26 @@ def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
 class Runners:
     """The three components on the board, each runner built from its first real input."""
 
-    def __init__(self, mpks: dict[str, Path]) -> None:
+    def __init__(self, mpks: dict[str, Path], resources: Path | None = None) -> None:
+        import pyneat
+
+        self.prompt_encoding = PromptEncoding.from_package(mpks["prompt_decoder"], resources)
         self.models = {name: pyneat.Model(str(mpks[name]), tensor_options()) for name in COMPONENTS}
         self.runners: dict[str, pyneat.ModelRunner] = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, traceback):
+        close_error = None
+        for runner in reversed(list(self.runners.values())):
+            try:
+                runner.close()
+            except BaseException as failure:
+                close_error = close_error or failure
+                log(f"runner cleanup failed: {failure}")
+        if error is None and close_error is not None:
+            raise close_error
 
     def run(self, component: str, inputs: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
         if component not in self.runners:
@@ -220,7 +225,7 @@ class Runners:
         return handoff(self.run("image_encoder_1", features))
 
     def decode(self, embedding: list[pyneat.Tensor], prompt: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-        inputs = [*embedding, hwc(prompt["point_coords"]), hwc(prompt["point_types"])]
+        inputs = [*embedding, hwc(self.prompt_encoding(prompt["point_coords"])), hwc(prompt["point_types"])]
         masks, scores = self.run("prompt_decoder", inputs)
         # Copies, because the runner reuses its output buffers while a worker may still read them.
         return masks.to_numpy(copy=True), scores.to_numpy(copy=True)
@@ -242,12 +247,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
+    parser.add_argument("--resources", type=Path, help="package root holding prompt-encoding.json")
     parser.add_argument("--limit", type=int, help="measure a seeded sample of images (local runs only)")
     args = parser.parse_args(argv)
     dataset_id, dataset_dir = args.dataset.split("=", 1)
     dataset = Path(dataset_dir)
 
-    runners = Runners(parse_mpks(args.mpk))
     with contextlib.redirect_stdout(io.StringIO()):
         ground_truth = COCO(str(dataset / ANNOTATIONS))
     available = sorted(ground_truth.getImgIds())
@@ -256,7 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     image_ids = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
 
     started = time.monotonic()
-    results, prompts = evaluate(ground_truth, image_ids, dataset / IMAGES, runners.encode, runners.decode)
+    with Runners(parse_mpks(args.mpk), args.resources) as runners:
+        results, prompts = evaluate(ground_truth, image_ids, dataset / IMAGES, runners.encode, runners.decode)
     inference_seconds = time.monotonic() - started
     if not results:
         raise SystemExit("the images have no objects to prompt")
@@ -264,18 +270,22 @@ def main(argv: list[str] | None = None) -> int:
     stats = score(ground_truth, results, image_ids)
     scoring_seconds = time.monotonic() - started
 
-    report = model_report.from_accuracy({
-        dataset_id: {
-            "metrics": stats,
-            "split": IMAGES, "evaluated_samples": len(image_ids), "available_samples": len(available),
-            "details": {
-                "prompts": prompts,
-                "prompt": "ground-truth box of each non-crowd object",
-                "inference_seconds": round(inference_seconds, 1),
-                "scoring_seconds": round(scoring_seconds, 1),
+    report = model_report.from_accuracy(
+        {
+            dataset_id: {
+                "metrics": stats,
+                "split": IMAGES,
+                "evaluated_samples": len(image_ids),
+                "available_samples": len(available),
+                "details": {
+                    "prompts": prompts,
+                    "prompt": "ground-truth box of each non-crowd object",
+                    "inference_seconds": round(inference_seconds, 1),
+                    "scoring_seconds": round(scoring_seconds, 1),
+                },
             },
-        },
-    })
+        }
+    )
     report.save(args.output)
     measured = report.document["datasets"][dataset_id]["metrics"]
     print(json.dumps({name: round(value, 4) for name, value in measured.items()}))

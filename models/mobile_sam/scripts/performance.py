@@ -1,50 +1,62 @@
-"""Benchmark MobileSAM with Neat Core and save its report.
+"""Benchmark MobileSAM from a real 720p RGB frame to one final binary mask.
 
-Given one --mpk <component>=<path> per component (image_encoder_0, image_encoder_1, prompt_decoder), the script
-measures the whole model on a fixed, seeded 720p frame: the two image encoder parts, then the prompt decoder with
-one foreground click at the frame's centre, each component working on a different frame at the same time. The
-frame is resized, normalized and padded on the CPU once, as segment_anything does, and Neat quantizes and
-tessellates it inside the measured pipeline. The script also records each MPK's MLA layer and stage stats and its
-execution plan.
+The timed path includes exact SAM CPU preprocessing, both encoder components, the centre-click prompt,
+its decoder and selection/resizing/thresholding of the highest-IoU mask among masks 1-3. Core's current
+letterbox cannot express SAM's right/bottom padding after normalization; using it would change the model.
+Image-file decoding and creation of the fixed camera frame are outside timing, as in the other image benchmarks.
 """
 
 from __future__ import annotations
 
 import argparse
+import random
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import model_report
 import numpy as np
 import pyneat
-from pipeline import COMPONENTS, preprocess, prompt_inputs
+from pipeline import COMPONENTS, PromptEncoding, preprocess, prompt_inputs, selected_mask
 
-WARMUP_FRAMES = 20
-MEASURED_FRAMES = 300
+WARMUP_FRAMES = 100
+MEASURED_FRAMES = 1000
 MIN_DURATION_S = 60
 TIMEOUT_MS = 10000
 # Frames each runner may queue; deeper queues add latency without adding throughput.
 QUEUE_DEPTH = 4
-# The benchmark input is a fixed, seeded 720p camera-like frame, smooth colour gradients with sensor-like noise,
-# rather than an accuracy dataset image: the frame is prepared once on the CPU, so its content does not change the
-# measured work.
-FRAME_WIDTH, FRAME_HEIGHT, SEED = 1280, 720, 0
+# The image source is deterministic; every frame still performs the full SAM image-to-mask work.
+FRAME_WIDTH, FRAME_HEIGHT, FILL = 1280, 720, 114
+DATASET = "coco-2017-val"
 
 
-def synthetic_frame() -> np.ndarray:
-    rows = np.linspace(0, 1, FRAME_HEIGHT, dtype=np.float32)[:, None]
-    columns = np.linspace(0, 1, FRAME_WIDTH, dtype=np.float32)[None, :]
-    channels = [rows * 200 + 30, columns * 180 + 40, (1 - rows) * columns * 220 + 20]
-    base = np.stack([np.broadcast_to(channel, (FRAME_HEIGHT, FRAME_WIDTH)) for channel in channels], axis=-1)
-    noise = np.random.default_rng(SEED).normal(0, 8, base.shape)
-    return np.clip(base + noise, 0, 255).astype(np.uint8)
+def sample_image(dataset: Path) -> Path:
+    images = sorted(path for path in (dataset / "val2017").glob("*.jpg") if not path.name.startswith("."))
+    if not images:
+        raise SystemExit(f"{dataset} has no val2017 JPEG images")
+    return random.Random(0).choice(images)
+
+
+def read_frame(path: Path) -> np.ndarray:
+    """A decoded image as a fixed 720p RGB camera frame; source preparation is outside timing."""
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+    if image is None:
+        raise SystemExit(f"could not read {path}")
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    scale = min(FRAME_WIDTH / image.shape[1], FRAME_HEIGHT / image.shape[0])
+    width, height = round(image.shape[1] * scale), round(image.shape[0] * scale)
+    left, top = (FRAME_WIDTH - width) // 2, (FRAME_HEIGHT - height) // 2
+    frame = np.full((FRAME_HEIGHT, FRAME_WIDTH, 3), FILL, np.uint8)
+    frame[top : top + height, left : left + width] = cv2.resize(image, (width, height), interpolation=cv2.INTER_LINEAR)
+    return frame
 
 
 def tensor_options() -> pyneat.ModelOptions:
-    """Both components': the script prepares their inputs; Neat still quantizes and tessellates them."""
+    """The exact SAM image preparation runs on CPU per frame; Core quantizes/tessellates its tensors."""
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Tensor
     options.preprocess.resize.enable = pyneat.AutoFlag.Off
@@ -54,17 +66,52 @@ def tensor_options() -> pyneat.ModelOptions:
 
 
 def hwc(value: np.ndarray) -> pyneat.Tensor:
-    """An NCHW batch of one as the HWC tensor Neat takes."""
-    return pyneat.Tensor.from_numpy(
-        np.ascontiguousarray(value[0].transpose(1, 2, 0)), copy=True, layout=pyneat.TensorLayout.HWC
+    """A prepared HWC array, or an NCHW batch of one, as an owned tensor for Core."""
+    if value.ndim == 4:
+        value = value[0].transpose(1, 2, 0)
+    return pyneat.Tensor.from_numpy(np.ascontiguousarray(value), copy=True, layout=pyneat.TensorLayout.HWC)
+
+
+def prepare_image(frame: np.ndarray) -> pyneat.Tensor:
+    return hwc(preprocess(frame))
+
+
+def prepare_prompt(frame: np.ndarray, encoding: PromptEncoding) -> list[pyneat.Tensor]:
+    height, width = frame.shape[:2]
+    arrays = prompt_inputs([(width / 2, height / 2)], ["foreground"], (height, width))
+    return [hwc(encoding(arrays["point_coords"])), hwc(arrays["point_types"])]
+
+
+def finish(tensors: list[pyneat.Tensor], frame: np.ndarray) -> np.ndarray:
+    """Consume read-only outputs while their tensors are retained; return an independently owned mask."""
+    if len(tensors) != 2:
+        raise ValueError(f"expected masks and IoU predictions, got {len(tensors)} outputs")
+    return selected_mask(
+        tensors[0].to_numpy(copy=False), tensors[1].to_numpy(copy=False), frame.shape[:2], multimask=True
     )
 
 
+def close_runners(runners: list[pyneat.ModelRunner]) -> None:
+    """Attempt every close without hiding an active build/inference exception."""
+    active_error = sys.exc_info()[1]
+    close_error = None
+    for runner in reversed(runners):
+        try:
+            runner.close()
+        except BaseException as error:
+            close_error = close_error or error
+            print(f"runner cleanup failed: {error}", file=sys.stderr)
+    if active_error is None and close_error is not None:
+        raise close_error
+
+
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
-    """One component's outputs as the next component's inputs: fresh CPU [H, W, C] tensors holding a copy, the form
-    hwc() gives the first input. Neat Core builds a runner's input stage from the tensors it receives; an output
-    passed on as is, or with Neat 0.6's leading batch axis, has media caps the next model's input stage rejects
-    ([misconfig.media_caps]). The layout is stated: Neat reads an unlabelled 3D array as CHW."""
+    """Snapshot each output into an explicitly HWC input, removing only the singleton batch axis.
+
+    Retain the admitted owned-copy route until direct transfers are qualified on the current Core. Output
+    NumPy views are read-only and cannot be re-exported through DLPack. Default tensor placement may also stage
+    to EV74, so changing copy=True alone does not establish a zero-copy inter-component handoff.
+    """
     arrays = [tensor.to_numpy(copy=True) for tensor in tensors]
     return [
         pyneat.Tensor.from_numpy(
@@ -107,34 +154,42 @@ def build_runners(
     run_options.queue_depth = QUEUE_DEPTH
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
     runners, tensors = [], [image]
-    for component in COMPONENTS:
-        inputs = stage_inputs(component, tensors, prompt)
-        try:
-            runners.append(models[component].build(inputs, run_options=run_options))
-        except pyneat.NeatError as error:
-            shapes = [tuple(tensor.shape) for tensor in inputs]
-            raise RuntimeError(f"building the {component} runner on input shapes {shapes} failed") from error
-        tensors = handoff(runners[-1].run(inputs, timeout_ms=TIMEOUT_MS))
-    return runners
+    try:
+        for index, component in enumerate(COMPONENTS):
+            inputs = stage_inputs(component, tensors, prompt)
+            try:
+                runners.append(models[component].build(inputs, run_options=run_options))
+            except pyneat.NeatError as error:
+                shapes = [tuple(tensor.shape) for tensor in inputs]
+                raise RuntimeError(f"building the {component} runner on input shapes {shapes} failed") from error
+            outputs = runners[-1].run(inputs, timeout_ms=TIMEOUT_MS)
+            if index + 1 < len(COMPONENTS):
+                tensors = handoff(outputs)
+        return runners
+    except BaseException:
+        close_runners(runners)
+        raise
 
 
-def infer_one(runners: list[pyneat.ModelRunner], image: pyneat.Tensor, prompt: list[pyneat.Tensor]) -> None:
-    tensors = [image]
-    for component, runner in zip(COMPONENTS, runners):
-        tensors = handoff(runner.run(stage_inputs(component, tensors, prompt), timeout_ms=TIMEOUT_MS))
+def infer_one(runners: list[pyneat.ModelRunner], frame: np.ndarray, encoding: PromptEncoding) -> np.ndarray:
+    tensors = [prepare_image(frame)]
+    prompt = prepare_prompt(frame, encoding)
+    for index, (component, runner) in enumerate(zip(COMPONENTS, runners)):
+        outputs = runner.run(stage_inputs(component, tensors, prompt), timeout_ms=TIMEOUT_MS)
+        if index + 1 < len(COMPONENTS):
+            tensors = handoff(outputs)
+    return finish(outputs, frame)
 
 
-def measure_latency(
-    runners: list[pyneat.ModelRunner], image: pyneat.Tensor, prompt: list[pyneat.Tensor]
-) -> list[float]:
-    """Seconds per frame through every component with nothing else in flight, after the warm-up."""
+def measure_latency(runners: list[pyneat.ModelRunner], frame: np.ndarray, encoding: PromptEncoding) -> list[float]:
+    """Seconds from RGB input through final mask, with one frame in flight, after warmup."""
     for _ in range(WARMUP_FRAMES):
-        infer_one(runners, image, prompt)
+        infer_one(runners, frame, encoding)
     seconds: list[float] = []
     ends = time.perf_counter() + MIN_DURATION_S
     while len(seconds) < MEASURED_FRAMES or time.perf_counter() < ends:
         started = time.perf_counter()
-        infer_one(runners, image, prompt)
+        infer_one(runners, frame, encoding)
         seconds.append(time.perf_counter() - started)
     return seconds
 
@@ -173,31 +228,55 @@ def drain(runner: pyneat.ModelRunner, name: str, pushed: dict[str, int]) -> Iter
         raise RuntimeError(f"the {name} stalled: {pulled} of {pushed[name]} frames came out within {TIMEOUT_MS} ms")
 
 
-def run_together(*stages: Callable[[], None], runners: tuple[pyneat.ModelRunner, ...]) -> None:
-    """Run each stage on its own thread. The first failure ends every runner's input, which unblocks a stage
-    waiting to push, and is raised once all stages stop. Each stage waits in Core with the GIL released."""
+def run_together(
+    *stages: Callable[[], None], runners: tuple[pyneat.ModelRunner, ...], cancel: Callable[[], None]
+) -> None:
+    """Run stages with bounded queues; cancel and join every started thread before propagating a failure."""
     errors: list[BaseException] = []
+
+    def close_inputs() -> None:
+        cancel()
+        for runner in runners:
+            try:
+                runner.close_input()
+            except BaseException as cleanup_error:
+                print(f"closing runner input failed: {cleanup_error}", file=sys.stderr)
 
     def run(stage: Callable[[], None]) -> None:
         try:
             stage()
         except BaseException as error:
             errors.append(error)
-            for runner in runners:
-                runner.close_input()
+            close_inputs()
 
     threads = [threading.Thread(target=run, args=(stage,), name=stage.__name__) for stage in stages]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    if errors:
-        raise errors[0]
+    started = []
+    try:
+        for thread in threads:
+            thread.start()
+            started.append(thread)
+        for thread in started:
+            thread.join()
+        if errors:
+            raise errors[0]
+    finally:
+        primary_error = sys.exc_info()[1]
+        if primary_error is not None:
+            close_inputs()
+        join_error = None
+        # A start or join can fail before the usual drain; attempt every started join before releasing the runners.
+        for thread in started:
+            try:
+                thread.join()
+            except BaseException as error:
+                close_inputs()
+                join_error = join_error or error
+                print(f"joining pipeline thread failed: {error}", file=sys.stderr)
+        if primary_error is None and join_error is not None:
+            raise join_error
 
 
-def measure_throughput(
-    runners: list[pyneat.ModelRunner], image: pyneat.Tensor, prompt: list[pyneat.Tensor]
-) -> Throughput:
+def measure_throughput(runners: list[pyneat.ModelRunner], frame: np.ndarray, encoding: PromptEncoding) -> Throughput:
     """Frames per second and board telemetry with every component busy, each on a different frame. The measured
     span starts after WARMUP_FRAMES outputs and lasts at least MEASURED_FRAMES frames and MIN_DURATION_S seconds."""
     monitor = pyneat.TelemetryMonitor()
@@ -208,7 +287,7 @@ def measure_throughput(
     def push_images() -> None:
         try:
             while not measured.is_set():
-                push(runners[0], [image], COMPONENTS[0])
+                push(runners[0], [prepare_image(frame)], COMPONENTS[0])
                 pushed[COMPONENTS[0]] += 1
         finally:
             # End of stream follows the last frame through every component.
@@ -220,6 +299,7 @@ def measure_throughput(
         def forward_outputs() -> None:
             try:
                 for tensors in drain(runners[index], source, pushed):
+                    prompt = prepare_prompt(frame, encoding) if target == "prompt_decoder" else []
                     push(runners[index + 1], stage_inputs(target, handoff(tensors), prompt), target)
                     pushed[target] += 1
                     # The next runner holds its inputs now, so this one gets its output buffers back.
@@ -234,7 +314,8 @@ def measure_throughput(
         nonlocal throughput
         outputs, started = 0, 0.0
         for tensors in drain(runners[-1], COMPONENTS[-1], pushed):
-            # Return the decoder's output buffers before the next pull.
+            finish(tensors, frame)
+            # The independently owned mask is complete before counting its frame and releasing the outputs.
             del tensors
             outputs += 1
             if outputs == WARMUP_FRAMES:
@@ -250,13 +331,11 @@ def measure_throughput(
 
     stages = [push_images, *(forward(index) for index in range(len(runners) - 1)), pull_masks]
     try:
-        run_together(*stages, runners=tuple(runners))
+        run_together(*stages, runners=tuple(runners), cancel=measured.set)
     finally:
         # A failure inside the measured span leaves the monitor running.
         if monitor.running():
             monitor.stop()
-        for runner in runners:
-            runner.close()
     return throughput
 
 
@@ -267,6 +346,7 @@ def write_report(
     models: dict[str, pyneat.Model],
     mla_layer_stats: dict[str, dict[str, object]],
     mla_stage_stats: dict[str, dict[str, object]],
+    source: Path,
 ) -> None:
     benchmark = pyneat.BenchmarkReport()
     benchmark.latency_ms = float(np.mean(latencies) * 1000)
@@ -280,8 +360,10 @@ def write_report(
         benchmark,
         models,
         workload=(
-            f"Seeded synthetic {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, resized, normalized and padded to 1024x1024 "
-            "once on the CPU; the two image encoder parts, then the prompt decoder with one foreground click, "
+            f"{DATASET} val2017/{source.name} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame; "
+            "SAM CPU resize/normalize/right-bottom pad on every frame, both image encoders, centre foreground click, "
+            "CPU FP32 prompt Fourier encoding, prompt decoder and best-IoU candidate mask 1-3 "
+            "resized to the image and thresholded at zero; "
             f"pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
@@ -295,19 +377,25 @@ def write_report(
     )
 
 
-def benchmark_pipeline(mpks: dict[str, Path], output: Path) -> None:
+def benchmark_pipeline(
+    mpks: dict[str, Path], dataset: Path, output: Path, resources: Path | None = None
+) -> None:
+    # Load package-bound CPU weights before constructing any model, profiling or building a native runner.
+    encoding = PromptEncoding.from_package(mpks["prompt_decoder"], resources)
+    models = {name: pyneat.Model(str(mpks[name]), tensor_options()) for name in COMPONENTS}
     mla_layer_stats, mla_stage_stats = {}, {}
+    # Separate idle diagnostic runs; their layer times are not a loaded-pipeline stage decomposition.
     for name, mpk in mpks.items():
         mla_layer_stats[name], mla_stage_stats[name] = mla_stats(mpk)
-    models = {name: pyneat.Model(str(mpks[name]), tensor_options()) for name in COMPONENTS}
-    frame = synthetic_frame()
-    image = hwc(preprocess(frame).transpose(2, 0, 1)[None])
-    prompt_arrays = prompt_inputs([(FRAME_WIDTH / 2, FRAME_HEIGHT / 2)], ["foreground"], frame.shape[:2])
-    prompt = [hwc(prompt_arrays["point_coords"]), hwc(prompt_arrays["point_types"])]
-    runners = build_runners(models, image, prompt)
-    latencies = measure_latency(runners, image, prompt)
-    throughput = measure_throughput(runners, image, prompt)
-    write_report(output, latencies, throughput, models, mla_layer_stats, mla_stage_stats)
+    source = sample_image(dataset)
+    frame = read_frame(source)
+    runners = build_runners(models, prepare_image(frame), prepare_prompt(frame, encoding))
+    try:
+        latencies = measure_latency(runners, frame, encoding)
+        throughput = measure_throughput(runners, frame, encoding)
+        write_report(output, latencies, throughput, models, mla_layer_stats, mla_stage_stats, source)
+    finally:
+        close_runners(runners)
 
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:
@@ -320,10 +408,14 @@ def parse_mpks(values: list[str]) -> dict[str, Path]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
-    parser.add_argument("--dataset", help="the accuracy dataset; unused, as the input is a fixed frame")
+    parser.add_argument("--dataset", required=True, help=f"{DATASET}=<extracted directory>")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
+    parser.add_argument("--resources", type=Path, help="package root holding prompt-encoding.json")
     args = parser.parse_args()
-    benchmark_pipeline(parse_mpks(args.mpk), Path(args.output))
+    dataset_id, separator, directory = args.dataset.partition("=")
+    if dataset_id != DATASET or not separator or not directory.strip():
+        parser.error(f"--dataset must name {DATASET}=<extracted directory>")
+    benchmark_pipeline(parse_mpks(args.mpk), Path(directory), Path(args.output), args.resources)
 
 
 if __name__ == "__main__":

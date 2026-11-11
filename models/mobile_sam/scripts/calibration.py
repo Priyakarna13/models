@@ -25,16 +25,21 @@ def decode(content: bytes) -> np.ndarray:
 
 
 def image_prompts(original_size: tuple[int, int]) -> list[dict[str, np.ndarray]]:
-    """Two fixed prompts per image, so no annotations are needed: a foreground click at the centre, and a box
-    over the central half with a background click near its top-left corner."""
+    """Five patterns cover token counts and the image-coordinate extrema used by Fourier lookup tables.
+
+    Clicks include pixel-centre corners. Boxes also admit the outer image edges (width, height), one beyond the
+    last pixel index; the mixed prompt covers both off-diagonal edge combinations, not just the box diagonal.
+    """
     height, width = original_size
     centre = (width / 2, height / 2)
-    box = [(width / 4, height / 4), (width * 3 / 4, height * 3 / 4)]
+    clicks = [centre, (0, 0), (width - 1, 0), (width - 1, height - 1), (0, height - 1)]
+    kinds = ["foreground", "background", "foreground", "background", "foreground"]
+    box = [(0, 0), (width, height)]
+    box_kinds = ["box_top_left", "box_bottom_right"]
     return [
-        prompt_inputs([centre], ["foreground"], original_size),
-        prompt_inputs(
-            [*box, (width * 0.3, height * 0.3)], ["box_top_left", "box_bottom_right", "background"], original_size
-        ),
+        *(prompt_inputs(clicks[:count], kinds[:count], original_size) for count in (1, 2, 5)),
+        prompt_inputs(box, box_kinds, original_size),
+        prompt_inputs([*box, (width, 0), (0, height), centre], [*box_kinds, *kinds[:3]], original_size),
     ]
 
 
