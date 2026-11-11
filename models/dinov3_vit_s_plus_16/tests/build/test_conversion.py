@@ -77,7 +77,7 @@ def test_cosine_compares_directions_not_scale(converter: ModuleType) -> None:
 
     assert converter.cosine(vector, 4 * vector) == pytest.approx(1.0)
     assert converter.cosine(vector, -vector) == pytest.approx(-1.0)
-    assert converter.ONNX_MIN_COSINE >= converter.SOURCE_MIN_COSINE >= 0.9999
+    assert converter.MIN_COSINE >= 0.99999
 
 
 def test_converted_model_returns_finite_class_and_patch_embeddings(converted: Path, converter: ModuleType) -> None:
@@ -92,3 +92,11 @@ def test_converted_model_returns_finite_class_and_patch_embeddings(converted: Pa
     assert np.isfinite(class_embedding).all() and np.isfinite(patch_embeddings).all()
     # Different patches of a varied image get different embeddings.
     assert np.std(patch_embeddings[0], axis=0).mean() > 0
+
+
+def test_converted_model_holds_every_weight_surgery_rebuilds_from(
+    converted: Path, load_script: Callable[[str], ModuleType]
+) -> None:
+    surgery = load_script("surgery")
+    weights = surgery.load_weights(converted)
+    assert weights["blocks.0.attn.qkv.weight"].shape == (3 * surgery.HIDDEN_SIZE, surgery.HIDDEN_SIZE)

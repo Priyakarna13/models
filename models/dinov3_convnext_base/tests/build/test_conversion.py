@@ -10,6 +10,8 @@ import pytest
 from model_registry.model import load_model as load_metadata
 
 MODEL_DIR = Path(__file__).resolve().parents[2]
+# timm's ConvNeXt-B stages, one GELU per block.
+DEPTHS = (3, 3, 27, 3)
 
 
 @pytest.fixture
@@ -41,8 +43,6 @@ def interface_fixture(converter: ModuleType, case: str) -> onnx.ModelProto:
         )
         for value, shape in zip(values[1:], list(shapes.values())[1:])
     ]
-    if case == "erf":
-        nodes.append(helper.make_node("Erf", ["pixel_values"], ["unused"]))
     graph = helper.make_graph(nodes, "fixture", values[:1], values[1:])
     return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18 if case == "opset" else 17)])
 
@@ -55,7 +55,7 @@ def test_interface_is_the_class_and_patch_embeddings(converter: ModuleType) -> N
     }
 
 
-@pytest.mark.parametrize("case", ["valid", "opset", "names", "dtype", "shape", "erf"])
+@pytest.mark.parametrize("case", ["valid", "opset", "names", "dtype", "shape"])
 def test_fixed_onnx_interface(tmp_path: Path, case: str, converter: ModuleType) -> None:
     path = tmp_path / "model.onnx"
     onnx.save(interface_fixture(converter, case), path)
@@ -78,7 +78,7 @@ def test_cosine_compares_directions_not_scale(converter: ModuleType) -> None:
 
     assert converter.cosine(vector, 4 * vector) == pytest.approx(1.0)
     assert converter.cosine(vector, -vector) == pytest.approx(-1.0)
-    assert converter.ONNX_MIN_COSINE >= converter.SOURCE_MIN_COSINE >= 0.9999
+    assert converter.MIN_COSINE >= 0.99999
 
 
 def test_converted_model_returns_finite_class_and_patch_embeddings(converted: Path, converter: ModuleType) -> None:
@@ -93,3 +93,5 @@ def test_converted_model_returns_finite_class_and_patch_embeddings(converted: Pa
     assert np.isfinite(class_embedding).all() and np.isfinite(patch_embeddings).all()
     # Different patches of a varied image get different embeddings.
     assert np.std(patch_embeddings[0], axis=0).mean() > 0
+    # The conversion is timm's network as it is: each GELU keeps its exact erf form for surgery.py to rewrite.
+    assert sum(node.op_type == "Erf" for node in onnx.load(converted).graph.node) == sum(DEPTHS)

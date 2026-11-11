@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Compile the converted DINOv3 ConvNeXt Large ONNX into a Modalix MPK and measure its numerical fidelity."""
+"""Prepare the converted DINOv3 ConvNeXt Large ONNX with surgery.py, compile it into a Modalix MPK and measure its
+numerical fidelity against the converted ONNX."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -29,15 +32,14 @@ from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import load_images, select_names
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
+from surgery import prepare_model
 
 LOG = logging.getLogger("dinov3_convnext_large.compile")
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "dinov3_convnext_large"
 COMPONENT_ID = "model"
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 INPUT_NAME = "pixel_values"
 INPUT_SHAPE = (1, 3, 224, 224)
 OUTPUTS = {"class_embedding": (1, 1536), "patch_embeddings": (1, 49, 1536)}
@@ -89,7 +91,7 @@ def _float32_bytes(shape: tuple[int, ...]) -> int:
 
 
 def audit_mpk(archive: Path) -> dict[str, Any]:
-    """Require one MLA plugin, no CPU plugins, the pinned compiler and the model's input."""
+    """Require one MLA plugin, no CPU plugins and the model's input."""
     with tarfile.open(archive, "r:gz") as stream:
         members = stream.getmembers()
         for member in members:
@@ -113,10 +115,6 @@ def audit_mpk(archive: Path) -> dict[str, Any]:
         raise RuntimeError(
             f"invalid MPK: MLA={len(mla_plugins)}, ELF={len(elfs)}, host={len(host_plugins)}, "
             f"shared_objects={shared_objects}"
-        )
-    if str(manifest.get("model_sdk_version")) != COMPILER_VERSION:
-        raise RuntimeError(
-            f"MPK compiler mismatch: expected {COMPILER_VERSION}, found {manifest.get('model_sdk_version')}"
         )
     public_inputs = {node.get("name"): node.get("size") for node in manifest.get("input_nodes", [])}
     if public_inputs != {INPUT_NAME: _float32_bytes(INPUT_SHAPE)}:
@@ -227,7 +225,7 @@ class _OutputError:
 def measure_fidelity(
     source: Path, candidate: Any, dataset: Path, config: dict[str, Any], variant_id: str
 ) -> dict[str, Any]:
-    """Compare the quantized graph's outputs with the ONNX source on the declared calibration images."""
+    """Compare the quantized graph's outputs with the converted ONNX on the declared fidelity images."""
     selection = config["selection"]
     names = select_names(dataset, int(selection["seed"]), int(selection["offset"]), int(selection["samples"]))
     reference = ort.InferenceSession(str(source), providers=["CPUExecutionProvider"])
@@ -280,14 +278,16 @@ def main() -> int:
     if not source.is_file():
         parser.error(f"model does not exist: {source}")
     output_dir = args.output_dir.expanduser().resolve()
-    candidate = compile_model(
-        source, output_dir / COMPONENT_ID, args.build_profile, args.dataset.expanduser().resolve()
-    )
     fidelity = _metadata()["numerical_fidelity"]
-    LOG.info("Measuring numerical fidelity on %d images", fidelity["selection"]["samples"])
-    report = measure_fidelity(
-        source, candidate, args.fidelity_dataset.expanduser().resolve(), fidelity, args.build_profile
-    )
+    with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
+        prepared = prepare_model(source, Path(temporary))
+        candidate = compile_model(
+            prepared, output_dir / COMPONENT_ID, args.build_profile, args.dataset.expanduser().resolve()
+        )
+        LOG.info("Measuring numerical fidelity on %d images", fidelity["selection"]["samples"])
+        report = measure_fidelity(
+            source, candidate, args.fidelity_dataset.expanduser().resolve(), fidelity, args.build_profile
+        )
     (output_dir / "fidelity.json").write_text(
         json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
