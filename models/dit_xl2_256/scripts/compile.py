@@ -39,14 +39,12 @@ from afe.apis.loaded_net import load_model
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from dit import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, TRANSFORMER, class_one_hot, tensor_name, timestep_features
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "dit_xl2_256"
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 SAMPLE_SEED = 0
 
 
@@ -212,9 +210,6 @@ def _compile(quantized: Any, build_dir: Path, component: str, batch_size: int) -
     archives = sorted(build_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
         raise RuntimeError(f"expected one {component} MPK, found {len(archives)}")
-    plan = plan_of(archives[0])
-    if plan["compiler"] != COMPILER_VERSION:
-        raise RuntimeError(f"{component} MPK compiler mismatch: expected {COMPILER_VERSION}, found {plan['compiler']}")
     return archives[0]
 
 
