@@ -43,6 +43,8 @@ export const ACCURACY_METRIC_LABELS = {
   miou: "mIoU",
   overall_accuracy: "Overall accuracy",
   mean_class_accuracy: "Mean class accuracy",
+  dota_obb_map50: "DOTA mAP50",
+  dota_obb_map: "DOTA mAP 50–95",
   keypoint_repeatability: "Repeatability",
   homography_accuracy: "Homography accuracy",
   pose_auc_5: "Pose AUC@5°",
