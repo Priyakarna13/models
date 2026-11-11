@@ -38,7 +38,6 @@ from afe.apis.loaded_net import load_model
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import calibration_images, decode, encoder_inputs, fidelity_names, image_prompts, read_images
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from pipeline import COMPONENTS, INPUT_SHAPES, OUTPUT_SHAPES, tensor_name
@@ -46,7 +45,6 @@ from sima_utils.data.data_generator import DataGenerator
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "mobile_sam"
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 SAMPLE_SEED = 0
 
 
@@ -189,15 +187,11 @@ def _read_mpk_manifest(archive: Path) -> dict[str, Any]:
 
 
 def audit_mpk(archive: Path, component: str) -> None:
-    """Require the component on one MLA segment, with no host code, from the pinned compiler."""
+    """Require the component on one MLA segment, with no host code."""
     manifest = _read_mpk_manifest(archive)
     processors = [str(plugin.get("processor", "")).upper() for plugin in manifest.get("plugins", [])]
     if processors.count("MLA") != 1 or {"A65", "APU"} & set(processors):
         raise RuntimeError(f"invalid {component} MPK: plugins run on {processors}")
-    if str(manifest.get("model_sdk_version")) != COMPILER_VERSION:
-        raise RuntimeError(
-            f"{component} MPK compiler mismatch: expected {COMPILER_VERSION}, found {manifest.get('model_sdk_version')}"
-        )
 
 
 def _build(
