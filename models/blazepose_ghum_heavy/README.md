@@ -12,18 +12,19 @@ same landmarks in 3D, in metres around the hips. It runs as one component.
 
 ## Inputs and outputs
 
-**Input.** `input_1` is one RGB crop resized to 256×256 with bilinear
-resampling and scaled to 0–1, as a 1×256×256×3 (height, width, channel) float
+**Input.** `input_1` is one RGB crop: a square 1.25 times the longer side of
+the person's box, edge pixels repeated beyond the image, resized bilinearly to
+256×256 and scaled to 0–1, as a 1×256×256×3 (height, width, channel) float
 tensor.
 
 **Outputs.**
 
 - `Identity` [1, 195]: 39 records of x, y, z, visibility logit, and presence logit, in crop pixels.
-- `Identity_1` [1, 1]: the probability that the crop holds a person, already passed through a sigmoid.
+- `Identity_1` [1, 1]: the probability that the crop holds a person.
 - `Identity_4` [1, 117]: 39 records of x, y, z in metres around the hip midpoint.
 
-1. Keep the crop when `Identity_1` is at least 0.5, as MediaPipe does; do not apply a sigmoid to it again.
-2. Use the first 33 records of `Identity` and `Identity_4`; MediaPipe uses records 33 and 34 of `Identity` only to place the next frame's crop.
+1. Keep the crop when `Identity_1` is at least 0.5; it needs no sigmoid.
+2. Use the first 33 records of `Identity` and `Identity_4`; the rest only help place the next frame's crop.
 3. Apply a sigmoid to the visibility and presence logits.
 4. For a square crop of side s at (left, top), a landmark is at left + x × s / 256 and top + y × s / 256; undo any padding and rotation.
 5. z is depth relative to the hip midpoint, on roughly the scale of x.

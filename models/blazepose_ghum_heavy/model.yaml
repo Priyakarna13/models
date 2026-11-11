@@ -30,8 +30,7 @@ conversion:
     size_bytes: 27709200
 
 compilation:
-  # No registry dataset scores the landmarks; compile.py compares the quantized graph with the converted
-  # ONNX instead, and task accuracy is in Google's model card.
+  # compile.py compares the quantized graph with the converted ONNX on seeded inputs before it packages.
   format: onnx
   source: conversion
 
@@ -41,4 +40,18 @@ build_profiles:
       model:
         parameters: {precision: w16a16}
 
+accuracy:
+  # MediaPipe scores single-person Yoga, Dance and HIIT sets it has not released. accuracy.py crops each labelled
+  # COCO val2017 person from the ground-truth box as MediaPipe crops a detected person, without the rotation a
+  # detector gives and without the heatmap refinement the package leaves out.
+  datasets:
+  - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
+
 performance: {}
+
+reference_metrics:
+- origin: fp32_baseline
+  script: scripts/fp32_baseline_accuracy.py
+  dataset: {id: coco-2017, split: val}
+  conditions: FP32 ONNX on ONNX Runtime CPU; each of the 6352 labelled non-crowd val2017 people cropped from its ground-truth box as a square 1.25 times its longer side, edge pixels repeated, resized to 256x256 in [0, 1]; scored by pose presence
+  metrics: {coco_keypoint_map: 0.2037, coco_keypoint_ap50: 0.4269, coco_keypoint_ap75: 0.1759, coco_keypoint_ar: 0.3174}
