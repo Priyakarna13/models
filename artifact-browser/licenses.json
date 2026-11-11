@@ -14,6 +14,11 @@
     "summary": "Permissive license. Redistribution must keep the copyright notice and disclaimer.",
     "downloadable": true
   },
+  "LicenseRef-DINOv3": {
+    "name": "DINOv3 License",
+    "summary": "Meta's license with use restrictions. Redistribution must include a copy of the license, and the model may not be used for military, nuclear or other end uses that trade controls prohibit.",
+    "downloadable": true
+  },
   "LicenseRef-LFM-Open-1.0": {
     "name": "LFM Open License v1.0",
     "summary": "Use and redistribution are subject to Liquid AI's license. Commercial use by organizations meeting its revenue threshold requires a separate license. Include the license and notices.",

@@ -492,6 +492,9 @@ def test_every_single_component_script_without_a_dataset_benchmarks_its_own_fixe
     (first,), (second,) = (request.inputs for request in requests)
     assert (first.array.shape, str(first.array.dtype), first.options["image_format"]) == ((720, 1280, 3), "uint8", "RGB")
     assert np.array_equal(first.array, second.array) and first.array.std() > 10
+    # Neat sizes its input buffers, which the execution plan shows as its input, for the benchmark frame.
+    height, width = first.array.shape[:2]
+    assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (width, height)
     report = saved_report(tmp_path / "0")
     assert report["workload"]
     assert list(report["components"]) == ["model"]
