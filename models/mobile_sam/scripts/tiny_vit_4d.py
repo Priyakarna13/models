@@ -143,4 +143,3 @@ class ImageEncoder(torch.nn.Module):
         for block in self.stages[2]:
             x = block(x)
         return self.neck(x)
-
