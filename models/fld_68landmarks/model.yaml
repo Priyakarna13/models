@@ -85,6 +85,7 @@ reference_metrics:
 - origin: fp32_baseline
   script: scripts/fp32_baseline_accuracy.py
   dataset: {id: afw-faces, split: test}
-  conditions: FP32 ONNX on ONNX Runtime 1.21.1 CPU; all 44 annotated faces in AFW test_data/; 256x256 ibug crops; radius-6.4 heatmap centroid; NME over the outer-eye-corner distance (points 36 and 45); 8 of the 44 faces also occur in the quantization calibration split.
-  note: The pinned AFW face-crop subset, not full 300-W, an independent held-out set or a paper benchmark.
+  conditions: FP32 ONNX on ONNX Runtime 1.21.1 CPU; all 44 annotated faces in AFW test_data/; 256x256 ibug crops; radius-6.4 heatmap centroid; NME over the outer-eye-corner distance (points 36 and 45); 8 of the 44 faces also occur in the quantization calibration split; upstream 300W-LP training includes AFW, so this subset is not established as held-out from checkpoint training.
+  # Upstream training: https://github.com/hhj1897/fan_training/tree/5882f9edf2f1a07c80a6d1f3341a7cf1d348e217
+  note: The pinned AFW face-crop subset, not full 300-W or a paper benchmark. Exact per-image checkpoint training membership is not independently verified.
   metrics: {nme: 0.03292382306898405}
