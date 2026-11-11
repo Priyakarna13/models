@@ -71,7 +71,8 @@ def test_source_must_be_the_hugging_face_file_set(converter: ModuleType):
 
 
 @pytest.mark.parametrize(
-    ("architecture", "classes"), [("tf_efficientnet_lite4", 1000), ("tf_efficientnet_lite1", 1000), ("tf_efficientnet_lite4", 11821)]
+    ("architecture", "classes"),
+    [("tf_efficientnet_lite4", 1000), ("tf_efficientnet_lite1", 1000), ("tf_efficientnet_lite4", 11821)],
 )
 def test_config_must_name_the_architecture_and_imagenet_classes(tmp_path, architecture, classes, converter: ModuleType):
     (tmp_path / "config.json").write_text(

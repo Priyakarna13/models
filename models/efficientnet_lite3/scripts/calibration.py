@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import json
 import random
 import tarfile
 from collections.abc import Iterable
@@ -20,11 +19,10 @@ CROP = 300
 RESCALE = np.float32(1 / 255)
 MEAN = np.asarray([0.5, 0.5, 0.5], dtype=np.float32)
 STD = np.asarray([0.5, 0.5, 0.5], dtype=np.float32)
-# imagenet-2012/cal holds cal2012/<image> and imagenet-2012/val holds val2012/<image>, each with
-# annotations/labels_<split>.json, whose category IDs are the ImageNet class indices.
+# imagenet-2012/cal holds cal2012/<image>.
 IMAGE_SUFFIXES = (".jpeg",)
 CALIBRATION_SPLIT = "cal2012"
-VALIDATION_SPLIT = "val2012"
+CALIBRATION_SEED = 42
 CLASSES = 1000
 
 
@@ -62,15 +60,6 @@ def split_names(dataset: Path, split: str) -> list[str]:
     return names
 
 
-def validation_labels(dataset: Path) -> dict[str, int]:
-    """Each validation image's class index, from the extracted dataset's labels file."""
-    labels = json.loads((dataset / "annotations" / f"labels_{VALIDATION_SPLIT}.json").read_text(encoding="utf-8"))
-    if len(labels["categories"]) != CLASSES:
-        raise ValueError(f"expected {CLASSES} validation classes, found {len(labels['categories'])}")
-    names = {image["id"]: f"{VALIDATION_SPLIT}/{image['file_name']}" for image in labels["images"]}
-    return {names[annotation["image_id"]]: annotation["category_id"] for annotation in labels["annotations"]}
-
-
 def read_images(dataset: Path, names: Iterable[str]) -> dict[str, bytes]:
     """Read the requested images; an archive is scanned once rather than seeked per image."""
     wanted = set(names)
@@ -91,12 +80,13 @@ def read_images(dataset: Path, names: Iterable[str]) -> dict[str, bytes]:
 
 
 def calibration_samples(dataset: Path, count: int) -> np.ndarray:
-    """Every calibration image, preprocessed and stacked in NHWC order."""
+    """A seeded sample of the calibration images, preprocessed and stacked in NHWC order."""
     names = split_names(dataset, CALIBRATION_SPLIT)
-    if len(names) != count:
+    if count > len(names):
         raise ValueError(f"calibration requires {count} images, but {dataset} has {len(names)}")
-    images = read_images(dataset, names)
-    return np.stack([preprocess_image(images[name]) for name in names])
+    selected = random.Random(CALIBRATION_SEED).sample(names, count)
+    images = read_images(dataset, selected)
+    return np.stack([preprocess_image(images[name]) for name in selected])
 
 
 def fidelity_names(dataset: Path, seed: int, offset: int, samples: int) -> list[str]:
