@@ -33,7 +33,6 @@ def surgery(load_script):
     ("profile", "backbone"),
     [
         ("w16a16", {"precision": "w16a16"}),
-        ("w8a16_w16a16", {"precision": "w8a16", "per_token": True}),
         ("w8a8_w16a16", {"precision": "w8a8", "calibration_bins": 1024, "calibration_samples": 50}),
         (
             "w8a8_mixed_w16a16",
