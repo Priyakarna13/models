@@ -147,38 +147,11 @@ def test_vulcan_onnx_source() -> None:
     assert SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url() == uri
 
 
-def test_vulcan_conversion_pth_is_bounded_and_content_pinned() -> None:
-    uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{DIGEST}/123-2/source.pth"
-    source = SourceSpec.from_mapping({"uri": uri, "sha256": DIGEST, "size_bytes": 10})
-    assert source.resolve_url() == uri
-    assert source.filename == "source.pth"
-
-
-@pytest.mark.parametrize(
-    "suffix",
-    [
-        "latest/source.pth",
-        "123-0/source.pth",
-        "0-1/source.pth",
-        "123-2/weights.pth",
-        "123-2/nested/source.pth",
-        "123-2/source.pt",
-        "123-2/source.pth?download=1",
-        "123-2/%73ource.pth",
-        "123-2/../source.pth",
-        "123-2/source-provenance.json",
-    ],
-)
-def test_vulcan_conversion_pth_rejects_unbounded_paths(suffix: str) -> None:
-    uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{DIGEST}/{suffix}"
+@pytest.mark.parametrize("name", ["source.pth", "weights.pth", "source.pt"])
+def test_vulcan_does_not_admit_unused_checkpoint_transports(name: str) -> None:
+    uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{DIGEST}/123-2/{name}"
     with pytest.raises(SourcePolicyError):
         SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url()
-
-
-def test_vulcan_conversion_pth_rejects_path_checksum_disagreement() -> None:
-    uri = f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{DIGEST}/123-2/source.pth"
-    with pytest.raises(SourcePolicyError, match="path must match"):
-        SourceSpec(uri=uri, sha256="b" * 64, size_bytes=10).resolve_url()
 
 
 TORCHVISION_SHA256 = "a79551df90c79834bcd3bb3845ef9d966b5449a3a9b2833ae8404778ca5d65d2"

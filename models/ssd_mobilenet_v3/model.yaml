@@ -15,8 +15,9 @@ upstream:
   revision: 824e8c8726b65fd9d5abdc9702f81c2b0c4c0dc8
   derived_from: https://download.pytorch.org/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth
 conversion:
+  # Canonical public TorchVision checkpoint, verified by full SHA-256 and byte count.
   source:
-    uri: https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/a79551df90c79834bcd3bb3845ef9d966b5449a3a9b2833ae8404778ca5d65d2/41255127615-1/source.pth
+    uri: https://download.pytorch.org/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth
     sha256: a79551df90c79834bcd3bb3845ef9d966b5449a3a9b2833ae8404778ca5d65d2
     size_bytes: 14069355
 compilation:

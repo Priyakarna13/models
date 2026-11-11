@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cut SSD-MobileNet V2 at its raw box and class heads and compile it into one Modalix MPK."""
+"""Rename and reorder SSD-MobileNet V2's existing raw box and class heads and compile it into one Modalix MPK."""
 
 from __future__ import annotations
 
@@ -14,14 +14,14 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import numpy as np
 from afe.apis.defines import (
     BiasCorrectionType,
     HistogramMSEMethod,
     InputName,
+    QuantizationParams,
     RequantizationMode,
+    SkipCalibration,
     bfloat16_scheme,
-    default_quantization,
     gen2_target,
     quantization_scheme,
 )
@@ -29,7 +29,7 @@ from afe.apis.loaded_net import load_model
 from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
-from calibration import IMAGE_SIZE, calibration_images
+from calibration import calibration_images
 from model_registry.dependencies import resolve_model_sdk_version
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
@@ -52,23 +52,23 @@ def _parameters(profile_id: str) -> dict[str, Any]:
     return next(item["parameters"] for item in profiles[0]["components"] if item["id"] == COMPONENT_ID)
 
 
-def _quantization(precision: str, calibration_bins: int | None) -> Any:
+def _quantization(precision: str, calibration_bins: int | None) -> QuantizationParams:
+    """Only INT8 activation ranges depend on representative calibration images."""
     if precision == "w8a8":
-        config = (
-            default_quantization.with_activation_quantization(
-                quantization_scheme(asymmetric=True, per_channel=False, bits=8)
-            )
-            .with_weight_quantization(quantization_scheme(asymmetric=False, per_channel=True, bits=8))
-            .with_calibration(HistogramMSEMethod(calibration_bins))
-            .with_bias_correction(BiasCorrectionType.REGULAR)
+        config = QuantizationParams(
+            calibration_method=HistogramMSEMethod(calibration_bins),
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            biascorr_type=BiasCorrectionType.REGULAR,
         )
     elif precision == "w16a16":
-        config = default_quantization.with_activation_quantization(bfloat16_scheme()).with_weight_quantization(
-            bfloat16_scheme()
+        config = QuantizationParams(
+            calibration_method=SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=bfloat16_scheme(),
         )
     else:
         raise ValueError(f"unsupported precision: {precision}")
-    # with_activation_quantization turns per-token quantization on for BF16; neither build uses it.
     return config.with_requantization_mode(RequantizationMode.sima).with_per_token_quant(False)
 
 
@@ -191,13 +191,13 @@ def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path
     precision = str(parameters["precision"])
     calibration_bins = int(parameters["calibration_bins"]) if precision == "w8a8" else None
     quantization = _quantization(precision, calibration_bins)
+    calibration_data = None
     if precision == "w8a8":
         if dataset is None:
             raise ValueError("the INT8 build requires --dataset from dataset-registry")
         samples = calibration_images(dataset, int(parameters["calibration_samples"]))
-    else:
-        # BF16 derives nothing from representative data, but quantize() still needs one sample.
-        samples = np.zeros((1, IMAGE_SIZE, IMAGE_SIZE, 3), dtype=np.float32)
+        logging.info("Calibrating %s with %d sample(s)", precision, len(samples))
+        calibration_data = convert_data_generator_to_iterable(DataGenerator({InputName(INPUT_NAME): samples}))
     component_dir = output_dir / COMPONENT_ID
     component_dir.mkdir(parents=True, exist_ok=False)
 
@@ -208,9 +208,8 @@ def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path
             str(graph), shape_dict={INPUT_NAME: tuple(INPUT_SHAPE)}, layout="NCHW", flexible_batch_size=True
         )
         loaded = load_model(importer, target=gen2_target)
-        logging.info("Quantizing %s with %d sample(s)", precision, len(samples))
         quantized = loaded.quantize(
-            calibration_data=convert_data_generator_to_iterable(DataGenerator({InputName(INPUT_NAME): samples})),
+            calibration_data=calibration_data,
             quantization_config=quantization,
             model_name=f"{MODEL_ID}_{profile_id}",
             log_level=logging.INFO,

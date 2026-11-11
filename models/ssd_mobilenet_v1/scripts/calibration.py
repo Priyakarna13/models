@@ -27,13 +27,18 @@ def decode_image(content: bytes) -> np.ndarray:
 
 
 def stretch(image: np.ndarray) -> np.ndarray:
-    """Resize an HWC image to IMAGE_SIZE x IMAGE_SIZE with TF1's bilinear resize, as the source graph does.
+    """Resize an HWC image with the pinned source ONNX's asymmetric bilinear coordinates.
 
     TF1 samples source row y * height / IMAGE_SIZE, without OpenCV's half-pixel offset; OpenCV's
     INTER_LINEAR differs from the source graph by up to 0.98 on the [-1, 1] input scale.
     """
     height, width = image.shape[:2]
-    rows, columns = np.arange(IMAGE_SIZE) * (height / IMAGE_SIZE), np.arange(IMAGE_SIZE) * (width / IMAGE_SIZE)
+    # The pinned ONNX Resize has float32 output/input scales and divides each
+    # destination coordinate by that scale. Multiplying by its reciprocal, or
+    # using float64 coordinates, changes interpolation on non-integer ratios.
+    coordinates = np.arange(IMAGE_SIZE, dtype=np.float32)
+    rows = coordinates / np.float32(IMAGE_SIZE / height)
+    columns = coordinates / np.float32(IMAGE_SIZE / width)
     top, left = rows.astype(np.int64), columns.astype(np.int64)
     bottom, right = np.minimum(top + 1, height - 1), np.minimum(left + 1, width - 1)
     down = (rows - top).astype(np.float32)[:, None, None]

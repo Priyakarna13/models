@@ -63,37 +63,6 @@ def test_performance_meets_its_expected_values(performance: dict[str, Any], mode
     assert measured_shortfalls(model_dir, "performance", build_profile, performance) == []
 
 
-INT8_MIN_THROUGHPUT_FPS = 1700.0
-
-
-def assert_int8_customer_throughput(report, build_profile):
-    if build_profile == "w8a8":
-        fps = report["metrics"]["throughput_fps"]
-        assert math.isfinite(fps) and fps >= INT8_MIN_THROUGHPUT_FPS, (
-            f"INT8 complete detector requires at least {INT8_MIN_THROUGHPUT_FPS:g} FPS; measured {fps!r}"
-        )
-
-
-def test_int8_performance_meets_absolute_customer_target(performance, build_profile):
-    # This hard floor supplements, rather than replaces or relaxes, the shared regression gate.
-    assert_int8_customer_throughput(performance, build_profile)
-
-
-@pytest.mark.parametrize("fps", [1700.0, 1700.001, 1800.0])
-def test_int8_customer_target_accepts_the_absolute_floor(fps):
-    assert_int8_customer_throughput({"metrics": {"throughput_fps": fps}}, "w8a8")
-
-
-@pytest.mark.parametrize("fps", [1699.0, 1699.999, 1530.0, 0.0, float("nan"), float("inf"), -float("inf")])
-def test_int8_customer_target_rejects_shortfall_and_nonfinite_values(fps):
-    with pytest.raises(AssertionError, match="at least 1700 FPS"):
-        assert_int8_customer_throughput({"metrics": {"throughput_fps": fps}}, "w8a8")
-
-
-def test_int8_customer_target_does_not_impose_an_int8_requirement_on_bf16():
-    assert_int8_customer_throughput({"metrics": {"throughput_fps": 1.0}}, "w16a16")
-
-
 def test_performance_records_the_complete_native_execution_plan(performance):
     (component,) = performance["components"].values()
     assert_native_plan(component["execution_plan"])

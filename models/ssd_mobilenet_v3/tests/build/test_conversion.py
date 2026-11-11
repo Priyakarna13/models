@@ -54,8 +54,8 @@ def test_parity_rejects_nonfinite(bad, converter):
 def test_parity_rejects_changed_shape_or_large_error(converter):
     with pytest.raises(ValueError, match="shape"):
         converter.parity(np.ones(1), np.ones(2))
-    assert not converter.parity(np.ones(1), np.array([1.01]))["within_experimental_limits"]
-    assert converter.EXPERIMENTAL_MAX_NORMALIZED_RMSE == 1e-5
+    assert converter.parity(np.ones(1), np.array([1.01]))["max_abs"] > converter.MAX_ABSOLUTE_ERROR
+    assert converter.MAX_ABSOLUTE_ERROR == 5e-4
 
 
 def test_actual_export_keeps_full_upstream_fp32_contract(converted, converter):
@@ -147,8 +147,11 @@ def test_conversion_rejects_unpinned_architecture(converter):
 
 
 @pytest.fixture
-def reference(load_script):
-    return load_script("accuracy")
+def reference():
+    # Reuse the test-only source oracle, never the production accuracy entry point.
+    from models.ssd_mobilenet_v3.tests.benchmark.test_accuracy import SourceReference
+
+    return SourceReference()
 
 
 @pytest.fixture
@@ -209,76 +212,19 @@ def test_rgb_and_half_pixel_normalization_before_resize(converted, calibration):
     np.testing.assert_array_equal(calibration.preprocess_image(_png(red))[160, 160], [1, -1, -1])
 
 
-@pytest.mark.parametrize("host", ["artifact", "huggingface"])
-def test_checkpoint_mirror_preserves_original_bytes_and_provenance(monkeypatch, converter, tmp_path, host):
+@pytest.mark.parametrize("field", ["sha256", "size_bytes", "uri"])
+def test_checkpoint_rejects_changed_identity_before_fetch(monkeypatch, converter, field):
     source = {"type": "file", **converter.WEIGHTS_SOURCE}
-    source["uri"] = (
-        f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{converter.WEIGHTS_SHA256}/123-1/source.pth"
-        if host == "artifact"
-        else "hf://models/example/ssd@0123456789abcdef0123456789abcdef01234567/source.pth"
-    )
-    path = tmp_path / "verified.pth"
-    seen = []
-    monkeypatch.setattr(
-        converter,
-        "load_and_validate_model",
-        lambda _: {
-            "conversion": {"default": {"source": source}},
-            "upstream": {"derived_from": converter.WEIGHTS_URL},
-        },
-    )
-
-    class FakeFetcher:
-        def fetch(self, spec):
-            seen.append(spec)
-            return path, True
-
-    monkeypatch.setattr(converter, "Fetcher", FakeFetcher)
-    monkeypatch.setattr(converter, "verified_weights", lambda value: value)
-    assert converter.resolve_weights(None) == path
-    assert seen[0].uri == source["uri"]
-    assert (seen[0].sha256, seen[0].size_bytes) == (converter.WEIGHTS_SHA256, converter.WEIGHTS_SIZE)
-
-
-@pytest.mark.parametrize("case", ["sha256", "size", "provenance", "wrong_hash_path"])
-def test_checkpoint_mirror_rejects_changed_identity_before_fetch(monkeypatch, converter, case):
-    from model_registry.errors import SourcePolicyError
-
-    source = {"type": "file", **converter.WEIGHTS_SOURCE}
-    source["uri"] = (
-        f"https://artifacts.stg.neat.sima.ai/models-onnx/ssd_mobilenet_v3/{converter.WEIGHTS_SHA256}/123-1/source.pth"
-    )
-    model = {"conversion": {"default": {"source": source}}, "upstream": {"derived_from": converter.WEIGHTS_URL}}
-    if case == "sha256":
-        source["sha256"] = "0" * 64
-    elif case == "size":
-        source["size_bytes"] -= 1
-    elif case == "provenance":
-        model["upstream"]["derived_from"] = "https://example.invalid/not-the-original"
-    else:
-        source["uri"] = source["uri"].replace(converter.WEIGHTS_SHA256, "0" * 64)
-    monkeypatch.setattr(converter, "load_and_validate_model", lambda _: model)
+    source[field] = {"sha256": "0" * 64, "size_bytes": 1, "uri": "https://example.invalid/weights.pth"}[field]
+    monkeypatch.setattr(converter, "load_and_validate_model", lambda _: {"conversion": {"default": {"source": source}}})
 
     class NoFetcher:
         def __init__(self):
             raise AssertionError("a rejected checkpoint identity must not fetch")
 
     monkeypatch.setattr(converter, "Fetcher", NoFetcher)
-    with pytest.raises((ValueError, SourcePolicyError)):
+    with pytest.raises(ValueError):
         converter.resolve_weights(None)
-
-
-def test_numpy_source_oracle_does_not_require_board_image_io(load_script, monkeypatch):
-    import sys
-
-    # The conversion environment needs the NumPy oracle, not native image I/O.
-    monkeypatch.setitem(sys.modules, "cv2", None)
-    reference = load_script("accuracy")
-    assert reference.ANCHORS.shape == (3234, 4)
-    logits = np.full((3234, 91), -100, np.float32)
-    logits[:, 0] = 20
-    actual = reference.post_numpy(np.zeros((3234, 4), np.float32), logits)
-    assert len(actual["boxes"]) == 0
 
 
 def test_actual_surgery_cut_keeps_twelve_heads_and_leaves_folding_to_compile(converted, load_script):
@@ -326,3 +272,67 @@ def test_kept_head_parity_fails_closed(converter, case):
         expected["bbox_regression"] = np.zeros((1, 35, 4), np.float32)
     with pytest.raises(ValueError):
         converter.compare_heads(expected, heads)
+
+
+@pytest.fixture
+def real_source_outputs(converted, converter, coco_source_images):
+    """Run the published full source and upstream forward on the same real images."""
+    import onnxruntime as ort
+    import torch
+    from PIL import Image
+
+    torch.set_num_threads(1)
+    detector = converter.load_detector(converter.resolve_weights(None))
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    # Source conformance keeps the original operations; optional backend fusions
+    # can perturb near-tied NMS ordering without changing the saved ONNX.
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    probe = onnx.load(converted)
+    probe.graph.output.extend(onnx.helper.make_empty_tensor_value_info(name) for name in converter.HEADS)
+    session = ort.InferenceSession(probe.SerializeToString(), sess_options=options, providers=["CPUExecutionProvider"])
+    results = []
+    for path in coco_source_images:
+        with Image.open(path) as image:
+            rgb = np.array(image.convert("RGB"), copy=True)
+        pixels = torch.from_numpy(rgb).permute(2, 0, 1).float()[None] / 255
+        image = torch.nn.functional.interpolate(pixels, size=(320, 320), mode="bilinear", align_corners=False)
+        with torch.inference_mode():
+            expected = {key: value.numpy() for key, value in detector([image[0]])[0].items()}
+        actual = session.run(None, {converter.SOURCE_INPUT: image.numpy()})
+        results.append((path, expected, actual))
+    return results
+
+
+def test_actual_export_final_detections_match_upstream_on_real_coco(converted, converter, real_source_outputs):
+    # Final ordered labels/counts are exact; one absolute FP32 tolerance applies
+    # to final boxes and scores. A real NMS-selection change fails, not warns.
+    for path, expected, actual in real_source_outputs:
+        np.testing.assert_array_equal(actual[2], expected["labels"], err_msg=path.name)
+        for key, observed in zip(("boxes", "scores"), actual[:2], strict=True):
+            np.testing.assert_allclose(
+                observed, expected[key], atol=converter.MAX_ABSOLUTE_ERROR, rtol=0, err_msg=f"{path.name}: {key}"
+            )
+
+
+def test_actual_prepared_graph_matches_full_source_heads_on_real_coco(
+    converted, converter, calibration, load_script, real_source_outputs, tmp_path
+):
+    import onnxruntime as ort
+
+    surgery = load_script("surgery")
+    prepared = surgery.prepare_model(converted, tmp_path / "prepared.onnx")
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    # Source conformance keeps the original operations; optional backend fusions
+    # can perturb near-tied NMS ordering without changing the saved ONNX.
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    session = ort.InferenceSession(str(prepared), sess_options=options, providers=["CPUExecutionProvider"])
+    for path, _expected, full in real_source_outputs:
+        image = calibration.preprocess_image(path.read_bytes()).transpose(2, 0, 1)[None]
+        outputs = session.run(None, {surgery.INPUT_NAME: image})
+        assert len(outputs) == len(full[3:]) == 12
+        for (name, _shape), expected, actual in zip(surgery.OUTPUTS, full[3:], outputs, strict=True):
+            np.testing.assert_allclose(
+                actual, expected, atol=converter.MAX_ABSOLUTE_ERROR, rtol=0, err_msg=f"{path.name}: {name}"
+            )

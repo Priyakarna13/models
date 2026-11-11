@@ -277,3 +277,65 @@ def test_read_checks_directory_boundary_again_after_selection(load_script, tmp_p
     path.symlink_to(outside)
     with pytest.raises(ValueError, match="outside dataset"):
         list(module._image_bytes(dataset, names))
+
+
+@pytest.mark.parametrize("precision", ["w8a8", "w16a16"])
+def test_quantization_uses_explicit_precision_specific_observers(load_script, monkeypatch, precision):
+    module = load_script("compile")
+    seen = {}
+
+    class Params:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def with_requantization_mode(self, mode):
+            seen["requantization_mode"] = mode
+            return self
+
+        def with_per_token_quant(self, enabled):
+            seen["per_token_quant"] = enabled
+            return self
+
+    monkeypatch.setattr(module, "QuantizationParams", Params)
+    monkeypatch.setattr(module, "HistogramMSEMethod", lambda bins: ("histogram_mse", bins))
+    monkeypatch.setattr(module, "SkipCalibration", lambda: "skip_calibration")
+    monkeypatch.setattr(module, "bfloat16_scheme", lambda: "bf16")
+    monkeypatch.setattr(module, "quantization_scheme", lambda **kwargs: kwargs)
+    module._quantization(precision, 2048 if precision == "w8a8" else None)
+    assert seen["per_token_quant"] is False
+    if precision == "w8a8":
+        assert seen["calibration_method"] == ("histogram_mse", 2048)
+        assert seen["activation_quantization_scheme"] == {"asymmetric": True, "per_channel": False, "bits": 8}
+        assert seen["weight_quantization_scheme"] == {"asymmetric": False, "per_channel": True, "bits": 8}
+        assert seen["biascorr_type"] == module.BiasCorrectionType.REGULAR
+    else:
+        assert seen["calibration_method"] == "skip_calibration"
+        assert seen["activation_quantization_scheme"] == seen["weight_quantization_scheme"] == "bf16"
+        assert "biascorr_type" not in seen
+
+
+def test_bf16_quantization_receives_no_dummy_calibration_data(load_script, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    module = load_script("compile")
+    monkeypatch.setattr(module, "_parameters", lambda _: {"precision": "w16a16"})
+    monkeypatch.setattr(module, "_quantization", lambda *args: "bf16_skip_calibration")
+    monkeypatch.setattr(module, "prepare_model", lambda *args: tmp_path / "heads.onnx")
+    monkeypatch.setattr(module, "onnx_source", lambda *args, **kwargs: "imported")
+
+    def no_samples(*args, **kwargs):
+        raise AssertionError("BF16 must not read or synthesize calibration images")
+
+    class ReachedQuantize(Exception):
+        pass
+
+    def quantize(**kwargs):
+        assert kwargs["calibration_data"] is None
+        assert kwargs["quantization_config"] == "bf16_skip_calibration"
+        raise ReachedQuantize
+
+    monkeypatch.setattr(module, "calibration_images", no_samples)
+    monkeypatch.setattr(module, "DataGenerator", no_samples)
+    monkeypatch.setattr(module, "load_model", lambda *args, **kwargs: SimpleNamespace(quantize=quantize))
+    with pytest.raises(ReachedQuantize):
+        module.compile_model(tmp_path / "source.onnx", tmp_path / "output", "w16a16", None)

@@ -372,3 +372,111 @@ def test_read_checks_directory_boundary_again_after_selection(load_script, tmp_p
     path.symlink_to(outside)
     with pytest.raises(ValueError, match="outside dataset"):
         list(module._image_bytes(dataset, names))
+
+
+@pytest.mark.parametrize("precision", ["w8a8", "w16a16"])
+def test_quantization_uses_explicit_precision_specific_observers(load_script, monkeypatch, precision):
+    module = load_script("compile")
+    seen = {}
+
+    class Params:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def with_requantization_mode(self, mode):
+            seen["requantization_mode"] = mode
+            return self
+
+        def with_per_token_quant(self, enabled):
+            seen["per_token_quant"] = enabled
+            return self
+
+    monkeypatch.setattr(module, "QuantizationParams", Params)
+    monkeypatch.setattr(module, "HistogramMSEMethod", lambda bins: ("histogram_mse", bins))
+    monkeypatch.setattr(module, "SkipCalibration", lambda: "skip_calibration")
+    monkeypatch.setattr(module, "bfloat16_scheme", lambda: "bf16")
+    monkeypatch.setattr(module, "quantization_scheme", lambda **kwargs: kwargs)
+    module._quantization(precision, 2048 if precision == "w8a8" else None)
+    assert seen["per_token_quant"] is False
+    if precision == "w8a8":
+        assert seen["calibration_method"] == ("histogram_mse", 2048)
+        assert seen["activation_quantization_scheme"] == {"asymmetric": True, "per_channel": False, "bits": 8}
+        assert seen["weight_quantization_scheme"] == {"asymmetric": False, "per_channel": True, "bits": 8}
+        assert seen["biascorr_type"] == module.BiasCorrectionType.REGULAR
+    else:
+        assert seen["calibration_method"] == "skip_calibration"
+        assert seen["activation_quantization_scheme"] == seen["weight_quantization_scheme"] == "bf16"
+        assert "biascorr_type" not in seen
+
+
+def test_bf16_quantization_receives_no_dummy_calibration_data(load_script, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    module = load_script("compile")
+    monkeypatch.setattr(module, "_parameters", lambda _: {"precision": "w16a16"})
+    monkeypatch.setattr(module, "_quantization", lambda *args: "bf16_skip_calibration")
+    monkeypatch.setattr(module, "prepare_model", lambda *args: tmp_path / "heads.onnx")
+    monkeypatch.setattr(module, "onnx_source", lambda *args, **kwargs: "imported")
+
+    def no_samples(*args, **kwargs):
+        raise AssertionError("BF16 must not read or synthesize calibration images")
+
+    class ReachedQuantize(Exception):
+        pass
+
+    def quantize(**kwargs):
+        assert kwargs["calibration_data"] is None
+        assert kwargs["quantization_config"] == "bf16_skip_calibration"
+        raise ReachedQuantize
+
+    monkeypatch.setattr(module, "calibration_images", no_samples)
+    monkeypatch.setattr(module, "DataGenerator", no_samples)
+    monkeypatch.setattr(module, "load_model", lambda *args, **kwargs: SimpleNamespace(quantize=quantize))
+    with pytest.raises(ReachedQuantize):
+        module.compile_model(tmp_path / "source.onnx", tmp_path / "output", "w16a16", None)
+
+
+def test_pinned_source_preprocessor_matches_calibration_on_real_coco(
+    compiled, model_dir, coco_source_images, load_script
+):
+    import onnx
+    import onnxruntime as ort
+    from model_registry.fetch import Fetcher
+    from model_registry.model import load_model
+
+    # The compile stage already fetches this exact source. Reuse its verified
+    # content-addressed cache rather than check in another 29 MB model copy.
+    model = load_model(model_dir)
+    source, _hit, _digest, _size = Fetcher().fetch_source(model["components"][0]["source"])
+    surgery, calibration = load_script("surgery"), load_script("calibration")
+    graph = onnx.shape_inference.infer_shapes(onnx.load(source), strict_mode=False, data_prop=True)
+    # Keep all nodes/initializers: the legacy Loop body captures outer constants
+    # not listed as Loop inputs, which a flat graph extractor cannot discover.
+    del graph.graph.output[:]
+    graph.graph.output.append(
+        onnx.helper.make_tensor_value_info(surgery.BOUNDARY_INPUT, onnx.TensorProto.FLOAT, surgery.INPUT_SHAPE)
+    )
+    onnx.checker.check_model(graph, full_check=True)
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    session = ort.InferenceSession(graph.SerializeToString(), sess_options=options, providers=["CPUExecutionProvider"])
+    (input_info,) = session.get_inputs()
+    dtype = {"tensor(uint8)": np.uint8, "tensor(float)": np.float32}[input_info.type]
+    for path in coco_source_images:
+        content = path.read_bytes()
+        rgb = calibration.decode_image(content).astype(dtype, copy=False)[None]
+        (expected,) = session.run(None, {input_info.name: rgb})
+        actual = calibration.preprocess_image(content).transpose(2, 0, 1)[None]
+        # Arithmetic-order rounding is bounded on the normalized [-1, 1] input.
+        np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=0, err_msg=path.name)
+
+
+def test_stretch_preserves_the_pinned_onnx_float32_scale_division(load_script):
+    calibration = load_script("calibration")
+    pixels = np.broadcast_to(np.arange(427, dtype=np.float32)[:, None, None], (427, 640, 3))
+    coordinates = np.arange(300, dtype=np.float32) / np.float32(300 / 427)
+    top = coordinates.astype(np.int64)
+    weight = (coordinates - top).astype(np.float32)
+    expected = top.astype(np.float32) * (1 - weight) + (top + 1).astype(np.float32) * weight
+    np.testing.assert_array_equal(calibration.stretch(pixels)[:, 0, 0], expected)

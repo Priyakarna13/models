@@ -19,9 +19,6 @@ HF_URI_RE = re.compile(
 )
 HF_RESOLVE_RE = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/resolve/[a-f0-9]{40}/.+$")
 VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-[0-9]+/model\.onnx$")
-VULCAN_PTH_RE = re.compile(
-    r"^/models-onnx/[a-z][a-z0-9_]*/(?P<sha256>[a-f0-9]{64})/[1-9][0-9]*-[1-9][0-9]*/source\.pth$"
-)
 TORCHVISION_WEIGHTS_RE = re.compile(r"^/models/[a-z][a-z0-9_]*-(?P<hash_prefix>[a-f0-9]{8})\.pth$")
 GITHUB_RELEASE_RE = re.compile(r"^/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/releases/download/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
@@ -32,8 +29,8 @@ def _require_hugging_face_commit(path: str) -> None:
 
 
 def _require_vulcan_source(path: str) -> None:
-    if not VULCAN_ONNX_RE.fullmatch(path) and not VULCAN_PTH_RE.fullmatch(path):
-        raise SourcePolicyError("Vulcan sources must identify a versioned ONNX or conversion PTH file")
+    if not VULCAN_ONNX_RE.fullmatch(path):
+        raise SourcePolicyError("Vulcan sources must identify a versioned ONNX file")
 
 
 def _require_torchvision_weights(path: str) -> None:
@@ -143,10 +140,6 @@ class SourceSpec:
         require_path = HTTPS_HOST_CHECKS.get(hostname)
         if require_path:
             require_path(parts.path)
-        if hostname == "artifacts.stg.neat.sima.ai":
-            checkpoint = VULCAN_PTH_RE.fullmatch(parts.path)
-            if checkpoint is not None and checkpoint.group("sha256") != self.sha256:
-                raise SourcePolicyError("Vulcan conversion PTH path must match its declared SHA256")
         if hostname == "download.pytorch.org":
             weights = TORCHVISION_WEIGHTS_RE.fullmatch(parts.path)
             if weights is None or parts.port is not None:

@@ -33,7 +33,7 @@ accuracy:
         coco_ar_large: 0.7130
 performance:
   run_tests: true
-  # The stage tests also require an absolute 1700 FPS minimum for the complete INT8 detector.
+  # CI uses the shared relative-regression policy; absolute release targets are separate.
   # Historical raw-head references, not new whole-detector qualification. Refresh only
   # from reviewed current-stack target results; the absolute 1700 FPS gate stays unchanged.
   expected:

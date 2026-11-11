@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -8,6 +8,211 @@ from typing import Any
 import numpy as np
 import pytest
 from model_registry.model_tests import measured_shortfalls
+
+
+class SourceReference:
+    """Independent NumPy source decoder, used only by these tests."""
+
+    CLASSES = 91
+
+    GRIDS = (19, 10, 5, 3, 2, 1)
+
+    BOXES_PER_CELL = (3, 6, 6, 6, 6, 6)
+
+    PRIOR_WIDTHS = (
+        (0.10000000149011612, 0.2828427255153656, 0.1414213627576828),
+        (
+            0.3499999940395355,
+            0.4949747323989868,
+            0.2474873661994934,
+            0.6062177419662476,
+            0.2020624876022339,
+            0.41833001375198364,
+        ),
+        (0.5, 0.7071067690849304, 0.3535533845424652, 0.8660253882408142, 0.2886607050895691, 0.570087730884552),
+        (
+            0.6499999761581421,
+            0.9192387461662292,
+            0.4596193730831146,
+            1.1258329153060913,
+            0.3752588927745819,
+            0.7211102247238159,
+        ),
+        (
+            0.800000011920929,
+            1.1313709020614624,
+            0.5656854510307312,
+            1.3856406211853027,
+            0.4618571400642395,
+            0.8717797994613647,
+        ),
+        (
+            0.949999988079071,
+            1.3435028791427612,
+            0.6717514395713806,
+            1.6454482078552246,
+            0.5484553575515747,
+            0.9746794104576111,
+        ),
+    )
+
+    PRIOR_HEIGHTS = (
+        (0.10000000149011612, 0.1414213627576828, 0.2828427255153656),
+        (
+            0.3499999940395355,
+            0.2474873661994934,
+            0.4949747323989868,
+            0.20207259058952332,
+            0.6062480807304382,
+            0.41833001375198364,
+        ),
+        (0.5, 0.3535533845424652, 0.7071067690849304, 0.28867512941360474, 0.8660687208175659, 0.570087730884552),
+        (
+            0.6499999761581421,
+            0.459619402885437,
+            0.919238805770874,
+            0.37527766823768616,
+            1.1258893013000488,
+            0.7211102247238159,
+        ),
+        (
+            0.800000011920929,
+            0.5656854510307312,
+            1.1313709020614624,
+            0.46188023686408997,
+            1.3857098817825317,
+            0.8717797994613647,
+        ),
+        (
+            0.949999988079071,
+            0.6717514395713806,
+            1.3435028791427612,
+            0.5484827756881714,
+            1.6455304622650146,
+            0.9746794104576111,
+        ),
+    )
+
+    BOX_RECIPROCALS = np.asarray([0.1, 0.1, 0.2, 0.2], np.float32)
+
+    SCORE_THRESHOLD = 1e-8
+
+    IOU_THRESHOLD = 0.6
+
+    MAX_DETECTIONS = 100
+
+    RANKED_PAIRS = 1024
+
+    def make_anchors(self) -> np.ndarray:
+        """[1917, 4] (ymin, xmin, ymax, xmax) anchors in normalized coordinates, in the heads' cell-major order."""
+        levels = []
+        for size, widths, heights in zip(self.GRIDS, self.PRIOR_WIDTHS, self.PRIOR_HEIGHTS):
+            widths, heights = np.asarray(widths, np.float32), np.asarray(heights, np.float32)
+            step = np.float32(1.0) / np.float32(size)
+            centers = np.arange(size, dtype=np.float32) * step + np.float32(0.5) * step
+            center_y, center_x = (axis[..., None] for axis in np.meshgrid(centers, centers, indexing="ij"))
+            boxes = np.stack(
+                [center_y - heights / 2, center_x - widths / 2, center_y + heights / 2, center_x + widths / 2], axis=-1
+            )
+            levels.append(boxes.reshape(-1, 4))
+        return np.concatenate(levels).astype(np.float32)
+
+    def decode_boxes(self, encodings: np.ndarray) -> np.ndarray:
+        """Decode [1917, 4] (ty, tx, th, tw) encodings to clipped normalized (ymin, xmin, ymax, xmax)."""
+        anchor_height, anchor_width = self.ANCHORS[:, 2] - self.ANCHORS[:, 0], self.ANCHORS[:, 3] - self.ANCHORS[:, 1]
+        anchor_y, anchor_x = self.ANCHORS[:, 0] + anchor_height / 2, self.ANCHORS[:, 1] + anchor_width / 2
+        ty, tx, th, tw = (encodings * self.BOX_RECIPROCALS).T
+        center_y, center_x = ty * anchor_height + anchor_y, tx * anchor_width + anchor_x
+        height, width = np.exp(th) * anchor_height, np.exp(tw) * anchor_width
+        boxes = np.stack([center_y - height / 2, center_x - width / 2, center_y + height / 2, center_x + width / 2], -1)
+        return boxes.clip(0.0, 1.0)
+
+    def _iou(self, box: np.ndarray, others: np.ndarray) -> np.ndarray:
+        top, left = np.maximum(box[0], others[:, 0]), np.maximum(box[1], others[:, 1])
+        bottom, right = np.minimum(box[2], others[:, 2]), np.minimum(box[3], others[:, 3])
+        inter = np.maximum(bottom - top, 0) * np.maximum(right - left, 0)
+        area = (box[2] - box[0]) * (box[3] - box[1])
+        areas = (others[:, 2] - others[:, 0]) * (others[:, 3] - others[:, 1])
+        union = area + areas - inter
+        return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+
+    def ranked(self, values: np.ndarray, count: int) -> np.ndarray:
+        """Indices of the count largest values, largest first, ties in index order, like a stable descending sort."""
+        chosen = np.arange(len(values))
+        if len(values) > count:
+            cutoff = np.partition(values, len(values) - count)[len(values) - count]
+            above = np.flatnonzero(values > cutoff)
+            chosen = np.sort(np.concatenate([above, np.flatnonzero(values == cutoff)[: count - len(above)]]))
+        return chosen[np.argsort(-values[chosen], kind="stable")]
+
+    def select(self, boxes: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-class greedy NMS keeping the MAX_DETECTIONS best detections overall: (anchor indices, class indices).
+
+        Visiting every anchor/class pair in descending score and suppressing it against the kept boxes of its own
+        class gives TensorFlow's per-class NMS followed by its top-100 merge, without running NMS on every class.
+        The visit usually ends within a few hundred pairs, so only the best RANKED_PAIRS pairs are sorted; when they
+        cannot fill MAX_DETECTIONS, the walk restarts over four times as many, up to every pair.
+
+        TensorFlow concatenates the classes' NMS results in class order before its stable top-100, so equal scores,
+        common with INT8 logits, rank by class and then by anchor. Pairs are therefore flattened class-major.
+        """
+        anchor_count = scores.shape[0]
+        # decode_boxes() has already clipped to the image. Boxes outside it can collapse to a line or point.
+        positive_area = np.all(boxes[:, 2:] > boxes[:, :2], axis=1)
+        flat = scores.T.ravel()
+        count = self.RANKED_PAIRS
+        while True:
+            kept: dict[int, list[int]] = {}
+            anchors, classes = [], []
+            # Later pairs score no higher, so reaching the threshold also ends the walk.
+            finished = count >= flat.size
+            for pair in self.ranked(flat, count):
+                if flat[pair] <= self.SCORE_THRESHOLD:
+                    finished = True
+                    break
+                label, anchor = divmod(int(pair), anchor_count)
+                if not positive_area[anchor]:
+                    continue
+                same_class = kept.setdefault(label, [])
+                if same_class and (self._iou(boxes[anchor], boxes[same_class]) > self.IOU_THRESHOLD).any():
+                    continue
+                same_class.append(anchor)
+                anchors.append(anchor)
+                classes.append(label)
+                if len(anchors) == self.MAX_DETECTIONS:
+                    finished = True
+                    break
+            if finished:
+                return np.asarray(anchors, np.int64), np.asarray(classes, np.int64)
+            count *= 4
+
+    def decode(self, outputs: Sequence[np.ndarray], image_id: int, width: int, height: int) -> np.ndarray:
+        """Return COCO result rows [image_id, x, y, w, h, score, category_id] for one image."""
+        shapes = [tuple(output.shape) for output in outputs]
+        if shapes != self.OUTPUT_SHAPES:
+            raise ValueError(f"unexpected MPK outputs: {shapes}")
+        encodings = np.concatenate([output.reshape(-1, 4) for output in outputs[: len(self.GRIDS)]])
+        logits = np.concatenate([output.reshape(-1, self.CLASSES) for output in outputs[len(self.GRIDS) :]])
+        if not (np.isfinite(encodings).all() and np.isfinite(logits).all()):
+            raise ValueError("MPK output contains non-finite values")
+        boxes = self.decode_boxes(encodings)
+        # Class 0 is the background; scores cover the 90 label-map ids.
+        # Source sigmoid has no clipping; overflow of exp for a finite very
+        # negative logit correctly produces zero probability.
+        with np.errstate(over="ignore"):
+            scores = 1.0 / (1.0 + np.exp(-logits[:, 1:]))
+        anchor, label = self.select(boxes, scores)
+        top, left, bottom, right = (boxes[anchor] * [height, width, height, width]).T
+        ids = np.full(anchor.shape, image_id)
+        return np.stack([ids, left, top, right - left, bottom - top, scores[anchor, label], label + 1], axis=1)
+
+    def __init__(self):
+        self.OUTPUT_SHAPES = [
+            (1, size, size, boxes * channels)
+            for channels in (4, self.CLASSES)
+            for size, boxes in zip(self.GRIDS, self.BOXES_PER_CELL)
+        ]
+        self.ANCHORS = self.make_anchors()
 
 
 def _board_outputs(accuracy: ModuleType) -> list[np.ndarray]:
@@ -19,7 +224,7 @@ def _board_outputs(accuracy: ModuleType) -> list[np.ndarray]:
 
 
 def test_anchors_follow_the_tensorflow_ssd_generator(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     anchors = accuracy.ANCHORS
 
     assert anchors.shape == (1917, 4)
@@ -34,7 +239,7 @@ def test_anchors_follow_the_tensorflow_ssd_generator(load_script: Callable[[str]
 def test_priors_match_original_export_bits(load_script: Callable[[str], ModuleType]) -> None:
     import hashlib
 
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     # Original V1 constant-only anchor graph; independently identical V2 priors.
     # This hash is not generated by the NumPy reconstruction under test.
     assert hashlib.sha256(accuracy.ANCHORS.astype("<f4").tobytes()).hexdigest() == (
@@ -43,7 +248,7 @@ def test_priors_match_original_export_bits(load_script: Callable[[str], ModuleTy
 
 
 def test_coder_matches_original_reciprocal_multiply(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     regression = np.zeros((1917, 4), np.float32)
     regression[543, 1] = np.asarray(0x3EA7E282, np.uint32).view(np.float32)
     actual = accuracy.decode_boxes(regression)[543].view(np.uint32)
@@ -52,7 +257,7 @@ def test_coder_matches_original_reciprocal_multiply(load_script: Callable[[str],
 
 
 def test_nms_preserves_tiny_positive_union(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     boxes = np.tile(np.asarray([0, 0, 2**-22, 2**-22], np.float32), (2, 1))
     np.testing.assert_array_equal(accuracy._iou(boxes[0], boxes[1:]), [1.0])
     anchors, labels = accuracy.select(boxes, np.asarray([[0.9], [0.8]], np.float32))
@@ -60,7 +265,7 @@ def test_nms_preserves_tiny_positive_union(load_script: Callable[[str], ModuleTy
 
 
 def test_sigmoid_has_no_non_source_clipping(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     outputs = _board_outputs(accuracy)
     for head in outputs[6:]:
         head.fill(-1000)
@@ -70,7 +275,7 @@ def test_sigmoid_has_no_non_source_clipping(load_script: Callable[[str], ModuleT
 
 
 def test_zero_encodings_decode_to_the_anchors_clipped_to_the_image(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
 
     boxes = accuracy.decode_boxes(np.zeros((1917, 4), np.float32))
 
@@ -78,7 +283,7 @@ def test_zero_encodings_decode_to_the_anchors_clipped_to_the_image(load_script: 
 
 
 def test_decode_scales_boxes_to_the_image_and_keeps_label_map_ids(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     outputs = _board_outputs(accuracy)
     # The 1x1 level's square box, scored for class index 18, which is COCO category 18 (dog).
     outputs[11][0, 0, 0, 5 * 91 + 18] = 4.0
@@ -108,7 +313,7 @@ def _per_class_nms(accuracy: ModuleType, boxes: np.ndarray, scores: np.ndarray) 
 
 @pytest.mark.parametrize("seed", range(3))
 def test_select_matches_per_class_nms(seed: int, load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     rng = np.random.default_rng(seed)
     corners = rng.uniform(0, 0.8, (300, 2))
     boxes = np.hstack([corners, corners + rng.uniform(0.05, 0.3, (300, 2))]).astype(np.float32)
@@ -122,7 +327,7 @@ def test_select_matches_per_class_nms(seed: int, load_script: Callable[[str], Mo
 def test_select_ranks_tied_scores_by_class_as_tensorflow_merges_them(
     load_script: Callable[[str], ModuleType],
 ) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     rng = np.random.default_rng(7)
     # Small, scattered boxes rarely overlap, and three score levels tie across the 100-detection cutoff.
     corners = rng.uniform(0, 0.95, (300, 2))
@@ -136,7 +341,7 @@ def test_select_ranks_tied_scores_by_class_as_tensorflow_merges_them(
 
 
 def test_ranked_cuts_a_stable_descending_sort(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     rng = np.random.default_rng(0)
     for size, count in [(0, 5), (4, 5), (5, 5), (1000, 300), (1000, 1)]:
         values = rng.integers(0, 7, size).astype(np.float32)
@@ -147,7 +352,7 @@ def test_ranked_cuts_a_stable_descending_sort(load_script: Callable[[str], Modul
 def test_select_widens_the_ranking_until_it_fills_or_runs_out(
     ranked_pairs: int, monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str], ModuleType]
 ) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     monkeypatch.setattr(accuracy, "RANKED_PAIRS", ranked_pairs)
     rng = np.random.default_rng(5)
     # Two stacks of identical boxes: each class keeps one box per stack, so 12 survive out of 1800 pairs.
@@ -163,7 +368,7 @@ def test_select_widens_the_ranking_until_it_fills_or_runs_out(
 
 @pytest.mark.parametrize("output", [0, 6])
 def test_decode_rejects_non_finite_outputs(output: int, load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     outputs = _board_outputs(accuracy)
     outputs[output][0, 0, 0, 0] = np.nan
 
@@ -172,7 +377,7 @@ def test_decode_rejects_non_finite_outputs(output: int, load_script: Callable[[s
 
 
 def test_decode_rejects_another_output_layout(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     outputs = [output.transpose(0, 3, 1, 2) for output in _board_outputs(accuracy)]
 
     with pytest.raises(ValueError, match="unexpected MPK outputs"):
@@ -195,7 +400,7 @@ def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir:
 def test_select_discards_degenerate_boxes_before_the_topk_limit(
     ranked_pairs: int, monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str], ModuleType]
 ) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     monkeypatch.setattr(accuracy, "RANKED_PAIRS", ranked_pairs)
     monkeypatch.setattr(accuracy, "MAX_DETECTIONS", 2)
     # The first three high scores are a point, a horizontal line and a vertical line after clipping.
@@ -223,7 +428,7 @@ def test_select_discards_degenerate_boxes_before_the_topk_limit(
 def test_decode_prunes_high_score_boxes_that_collapse_after_clipping(
     offset: float, load_script: Callable[[str], ModuleType]
 ) -> None:
-    accuracy = load_script("accuracy")
+    accuracy = SourceReference()
     outputs = _board_outputs(accuracy)
     outputs[0][0, 0, 0, :4] = [offset, offset, 0, 0]
     outputs[6][0, 0, 0, 1] = 10.0
@@ -515,8 +720,9 @@ def test_native_multiclass_policy_matches_all_encoded_confidence_heads(load_scri
     module = load_script("accuracy")
     options = module.native_options()
     assert options.decode_type != module.pyneat.BoxDecodeType.YoloV26
-    assert len(module.OUTPUT_SHAPES) == 12
-    localization, confidence = module.OUTPUT_SHAPES[:6], module.OUTPUT_SHAPES[6:]
+    shapes = SourceReference().OUTPUT_SHAPES
+    assert len(shapes) == 12
+    localization, confidence = shapes[:6], shapes[6:]
     for loc, scores in zip(localization, confidence):
         assert loc[:3] == scores[:3]
         assert loc[-1] % 4 == 0

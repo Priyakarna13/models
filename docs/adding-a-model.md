@@ -97,7 +97,7 @@ A source comes from an approved host, in this form:
 | Hugging Face | `hf://models/<owner>/<repository>@<commit>/<file>`, with the full 40-character commit |
 | GitHub | `https://github.com/<owner>/<repository>/releases/download/<tag>/<file>`, a release file of a public repository |
 | TorchVision | official `https://download.pytorch.org/models/<name>-<hash-prefix>.pth` weights, pinned by full SHA-256 and size |
-| the registry | the ONNX files the registry converts, and content-addressed conversion PTH checkpoints |
+| the registry | the ONNX files the registry converts |
 
 The owner of a repository can replace or delete a GitHub release file, so only
 `conversion.source` pins one: Convert reads the checkpoint once, and the
@@ -111,7 +111,7 @@ To approve another host, add its entry to `HTTPS_HOST_CHECKS` in
 `tools/model_registry/source.py` with accept and reject tests. That reruns no
 stage.
 
-TorchVision filenames must contain an eight-character prefix of the declared full SHA-256. Registry conversion PTH paths must contain that full digest. Both require verified byte counts.
+TorchVision filenames must contain an eight-character prefix of the declared full SHA-256. The full SHA-256 and byte count are verified before use.
 
 Record hashes from the exact bytes the registry will fetch:
 

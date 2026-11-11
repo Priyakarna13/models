@@ -1,7 +1,7 @@
 """Measure the complete native SSD-MobileNet V2 COCO bounding-box AP and AR with its MPK on a Modalix board.
 
-The entry point measures native image preprocessing and native SSD decoding. The independent
-NumPy helpers below remain a source oracle, not a fallback or an equivalence claim.
+The entry point measures native image preprocessing and native SSD decoding.
+Independent NumPy source oracles live only in the model tests.
 
 The reference uses TensorFlow's MultipleGridAnchorGenerator anchors, FasterRcnnBoxCoder scales
 (10, 10, 5, 5), sigmoid scores, clipping and positive-area filtering, and per-class NMS at IoU 0.6.
@@ -33,94 +33,10 @@ ANNOTATIONS = "annotations/instances_val2017.json"
 IMAGES = "val2017"
 # Background plus the 90 ids of TensorFlow's COCO label map, which are the COCO category ids.
 CLASSES = 91
-# Six feature maps with three boxes per cell on the lowest one and six on the others.
-GRIDS = (19, 10, 5, 3, 2, 1)
-BOXES_PER_CELL = (3, 6, 6, 6, 6, 6)
-OUTPUT_SHAPES = [
-    (1, size, size, boxes * channels) for channels in (4, CLASSES) for size, boxes in zip(GRIDS, BOXES_PER_CELL)
-]
-# Frozen FP32 width/height constants from the pinned original V1 ONNX anchor
-# graph (SHA256 b8fba5e...); V2 priors were independently verified identical.
-# Source aspect ratio 0.3333 and constant-fold rounding are intentional.
-PRIOR_WIDTHS = (
-    (0.10000000149011612, 0.2828427255153656, 0.1414213627576828),
-    (
-        0.3499999940395355,
-        0.4949747323989868,
-        0.2474873661994934,
-        0.6062177419662476,
-        0.2020624876022339,
-        0.41833001375198364,
-    ),
-    (0.5, 0.7071067690849304, 0.3535533845424652, 0.8660253882408142, 0.2886607050895691, 0.570087730884552),
-    (
-        0.6499999761581421,
-        0.9192387461662292,
-        0.4596193730831146,
-        1.1258329153060913,
-        0.3752588927745819,
-        0.7211102247238159,
-    ),
-    (
-        0.800000011920929,
-        1.1313709020614624,
-        0.5656854510307312,
-        1.3856406211853027,
-        0.4618571400642395,
-        0.8717797994613647,
-    ),
-    (
-        0.949999988079071,
-        1.3435028791427612,
-        0.6717514395713806,
-        1.6454482078552246,
-        0.5484553575515747,
-        0.9746794104576111,
-    ),
-)
-PRIOR_HEIGHTS = (
-    (0.10000000149011612, 0.1414213627576828, 0.2828427255153656),
-    (
-        0.3499999940395355,
-        0.2474873661994934,
-        0.4949747323989868,
-        0.20207259058952332,
-        0.6062480807304382,
-        0.41833001375198364,
-    ),
-    (0.5, 0.3535533845424652, 0.7071067690849304, 0.28867512941360474, 0.8660687208175659, 0.570087730884552),
-    (
-        0.6499999761581421,
-        0.459619402885437,
-        0.919238805770874,
-        0.37527766823768616,
-        1.1258893013000488,
-        0.7211102247238159,
-    ),
-    (
-        0.800000011920929,
-        0.5656854510307312,
-        1.1313709020614624,
-        0.46188023686408997,
-        1.3857098817825317,
-        0.8717797994613647,
-    ),
-    (
-        0.949999988079071,
-        0.6717514395713806,
-        1.3435028791427612,
-        0.5484827756881714,
-        1.6455304622650146,
-        0.9746794104576111,
-    ),
-)
-BOX_RECIPROCALS = np.asarray([0.1, 0.1, 0.2, 0.2], np.float32)
 # AP evaluation policy, not the source graph or Neat customer detection default.
 SCORE_THRESHOLD = 1e-8
 IOU_THRESHOLD = 0.6
 MAX_DETECTIONS = 100
-# Pairs ranked before NMS starts; filling MAX_DETECTIONS on COCO val2017 usually visits a few hundred.
-RANKED_PAIRS = 1024
 # Metric name in model.yaml -> COCOeval_faster.stats_as_dict label. With maxDets [1, 10, 100], AR_all,
 # AR_second and AR_third are the recall at 1, 10 and 100 detections per image.
 METRICS = {
@@ -144,24 +60,6 @@ WORKERS = 4
 PREFETCH = 8
 
 
-def make_anchors() -> np.ndarray:
-    """[1917, 4] (ymin, xmin, ymax, xmax) anchors in normalized coordinates, in the heads' cell-major order."""
-    levels = []
-    for size, widths, heights in zip(GRIDS, PRIOR_WIDTHS, PRIOR_HEIGHTS):
-        widths, heights = np.asarray(widths, np.float32), np.asarray(heights, np.float32)
-        step = np.float32(1.0) / np.float32(size)
-        centers = np.arange(size, dtype=np.float32) * step + np.float32(0.5) * step
-        center_y, center_x = (axis[..., None] for axis in np.meshgrid(centers, centers, indexing="ij"))
-        boxes = np.stack(
-            [center_y - heights / 2, center_x - widths / 2, center_y + heights / 2, center_x + widths / 2], axis=-1
-        )
-        levels.append(boxes.reshape(-1, 4))
-    return np.concatenate(levels).astype(np.float32)
-
-
-ANCHORS = make_anchors()
-
-
 def prefetched(load: Callable, items: Sequence) -> Iterator:
     """Yield load(item) in order, keeping at most PREFETCH items in flight."""
     with ThreadPoolExecutor(WORKERS) as pool:
@@ -171,100 +69,6 @@ def prefetched(load: Callable, items: Sequence) -> Iterator:
             pending.append(pool.submit(load, item))
         while pending:
             yield pending.popleft().result()
-
-
-def decode_boxes(encodings: np.ndarray) -> np.ndarray:
-    """Apply the box coder to [1917, 4] (ty, tx, th, tw) encodings; returns (ymin, xmin, ymax, xmax) clipped to 0-1."""
-    anchor_height, anchor_width = ANCHORS[:, 2] - ANCHORS[:, 0], ANCHORS[:, 3] - ANCHORS[:, 1]
-    anchor_y, anchor_x = ANCHORS[:, 0] + anchor_height / 2, ANCHORS[:, 1] + anchor_width / 2
-    ty, tx, th, tw = (encodings * BOX_RECIPROCALS).T
-    center_y, center_x = ty * anchor_height + anchor_y, tx * anchor_width + anchor_x
-    height, width = np.exp(th) * anchor_height, np.exp(tw) * anchor_width
-    boxes = np.stack([center_y - height / 2, center_x - width / 2, center_y + height / 2, center_x + width / 2], -1)
-    return boxes.clip(0.0, 1.0)
-
-
-def _iou(box: np.ndarray, others: np.ndarray) -> np.ndarray:
-    top, left = np.maximum(box[0], others[:, 0]), np.maximum(box[1], others[:, 1])
-    bottom, right = np.minimum(box[2], others[:, 2]), np.minimum(box[3], others[:, 3])
-    inter = np.maximum(bottom - top, 0) * np.maximum(right - left, 0)
-    area = (box[2] - box[0]) * (box[3] - box[1])
-    areas = (others[:, 2] - others[:, 0]) * (others[:, 3] - others[:, 1])
-    union = area + areas - inter
-    return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
-
-
-def ranked(values: np.ndarray, count: int) -> np.ndarray:
-    """Indices of the count largest values, largest first, ties in index order, like a stable descending sort."""
-    chosen = np.arange(len(values))
-    if len(values) > count:
-        cutoff = np.partition(values, len(values) - count)[len(values) - count]
-        above = np.flatnonzero(values > cutoff)
-        chosen = np.sort(np.concatenate([above, np.flatnonzero(values == cutoff)[: count - len(above)]]))
-    return chosen[np.argsort(-values[chosen], kind="stable")]
-
-
-def select(boxes: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Per-class greedy NMS keeping the MAX_DETECTIONS best detections overall: (anchor indices, class indices).
-
-    Visiting every anchor/class pair in descending score and suppressing it against the kept boxes of its own
-    class gives TensorFlow's per-class NMS followed by its top-100 merge, without running NMS on every class.
-    The visit usually ends within a few hundred pairs, so only the best RANKED_PAIRS pairs are sorted; when they
-    cannot fill MAX_DETECTIONS, the walk restarts over four times as many, up to every pair.
-
-    TensorFlow concatenates the classes' NMS results in class order before its stable top-100, so equal scores,
-    common with INT8 logits, rank by class and then by anchor. Pairs are therefore flattened class-major.
-    """
-    anchor_count = scores.shape[0]
-    # decode_boxes() has already clipped to the image. Boxes outside it can collapse to a line or point.
-    positive_area = np.all(boxes[:, 2:] > boxes[:, :2], axis=1)
-    flat = scores.T.ravel()
-    count = RANKED_PAIRS
-    while True:
-        kept: dict[int, list[int]] = {}
-        anchors, classes = [], []
-        # Later pairs score no higher, so reaching the threshold also ends the walk.
-        finished = count >= flat.size
-        for pair in ranked(flat, count):
-            if flat[pair] <= SCORE_THRESHOLD:
-                finished = True
-                break
-            label, anchor = divmod(int(pair), anchor_count)
-            if not positive_area[anchor]:
-                continue
-            same_class = kept.setdefault(label, [])
-            if same_class and (_iou(boxes[anchor], boxes[same_class]) > IOU_THRESHOLD).any():
-                continue
-            same_class.append(anchor)
-            anchors.append(anchor)
-            classes.append(label)
-            if len(anchors) == MAX_DETECTIONS:
-                finished = True
-                break
-        if finished:
-            return np.asarray(anchors, np.int64), np.asarray(classes, np.int64)
-        count *= 4
-
-
-def decode(outputs: Sequence[np.ndarray], image_id: int, width: int, height: int) -> np.ndarray:
-    """Return COCO result rows [image_id, x, y, w, h, score, category_id] for one image."""
-    shapes = [tuple(output.shape) for output in outputs]
-    if shapes != OUTPUT_SHAPES:
-        raise ValueError(f"unexpected MPK outputs: {shapes}")
-    encodings = np.concatenate([output.reshape(-1, 4) for output in outputs[: len(GRIDS)]])
-    logits = np.concatenate([output.reshape(-1, CLASSES) for output in outputs[len(GRIDS) :]])
-    if not (np.isfinite(encodings).all() and np.isfinite(logits).all()):
-        raise ValueError("MPK output contains non-finite values")
-    boxes = decode_boxes(encodings)
-    # Class 0 is the background; scores cover the 90 label-map ids.
-    # Source sigmoid has no clipping; overflow of exp for a finite very
-    # negative logit correctly produces zero probability.
-    with np.errstate(over="ignore"):
-        scores = 1.0 / (1.0 + np.exp(-logits[:, 1:]))
-    anchor, label = select(boxes, scores)
-    top, left, bottom, right = (boxes[anchor] * [height, width, height, width]).T
-    ids = np.full(anchor.shape, image_id)
-    return np.stack([ids, left, top, right - left, bottom - top, scores[anchor, label], label + 1], axis=1)
 
 
 def coco_stats(scorer: COCOeval_faster, *, allow_missing_size_buckets: bool = False) -> dict[str, float]:
