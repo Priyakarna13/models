@@ -1,0 +1,104 @@
+display_name: DINOv3 ViT-H+/16
+description: Embeds an image as one vector and a 14×14 grid of patch vectors for image search and dense tasks.
+model_type: vision
+tasks: [image_embedding]
+
+modalities:
+  inputs: [image]
+  outputs: [embeddings]
+
+architecture: dinov3
+
+license:
+  spdx: LicenseRef-DINOv3
+  redistribution: restricted
+  attribution: Derived from Meta's facebook/dinov3-vith16plus-pretrain-lvd1689m and distributed under the DINOv3 License, which governs every build derived from it.
+
+upstream:
+  repository: https://huggingface.co/timm/vit_huge_plus_patch16_dinov3.lvd1689m
+  revision: dd0addc09788111fa893d24799a44744ba022eee
+  derived_from: https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m/tree/c807c9eeea853df70aec4069e6f56b28ddc82acc
+
+conversion:
+  source:
+    repository: timm/vit_huge_plus_patch16_dinov3.lvd1689m
+    revision: dd0addc09788111fa893d24799a44744ba022eee
+    main_file: model.safetensors
+    files:
+      model.safetensors: {sha256: 0d54131c846c91a78ec7641482f32e45b27cb4895f83653c038f305f18c7e61c, size_bytes: 3362084520}
+      config.json: {sha256: c22d89c036033b9f22445c136e6e050a27dd7f3bff26566b9dad0c66c9c84a83, size_bytes: 675}
+      LICENSE.md: {sha256: 25d122eb8f5b880fd23c736fb6ea8018ee45c12237e00b8a86d14c653904999e, size_bytes: 7503}
+
+compilation:
+  format: onnx
+  source: conversion
+  components: [blocks_0, blocks_1, blocks_2, blocks_3]
+
+calibrations:
+- id: imagenet-2012-cal
+  dataset: {id: imagenet-2012, variant: cal, sha256: e6c18b281f5ac5fc7cf6d36ef9a5f486ce95eb43ead99ee8523bd8162bc49a6f, size_bytes: 112710756}
+
+# AFE calibrates every precision. blocks_0 calibrates on the seeded imagenet-2012 cal images and each later
+# component on the float32 tokens the components before it give for them. BF16 activations take no ranges from it,
+# so w16a16 uses 4 images; w8a16's SmoothQuant moves activation outliers into the weights and measures them on 32.
+build_profiles:
+  w16a16:
+    calibration_dataset: imagenet-2012-cal
+    components:
+      blocks_0:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 4}
+      blocks_1:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 4}
+      blocks_2:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 4}
+      blocks_3:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 4}
+
+  w8a16:
+    calibration_dataset: imagenet-2012-cal
+    components:
+      blocks_0:
+        parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 32}
+      blocks_1:
+        parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 32}
+      blocks_2:
+        parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 32}
+      blocks_3:
+        parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 32}
+
+  # w8a8 is held back: calibrated on 50 imagenet-2012 cal images, ViT-H+/16's outputs keep no fidelity to the ONNX
+  # (cosine similarity 0.005 for class_embedding and 0.18 for patch_embeddings; w8a16: 0.997 and 0.994).
+
+pipeline:
+- {component: blocks_0}
+- {component: blocks_1}
+- {component: blocks_2}
+- {component: blocks_3}
+
+numerical_fidelity:
+  status: diagnostic
+  dataset: {id: imagenet-2012, variant: cal, sha256: e6c18b281f5ac5fc7cf6d36ef9a5f486ce95eb43ead99ee8523bd8162bc49a6f, size_bytes: 112710756}
+  # The 50 images after the first 50, so they stay apart from any calibration set.
+  selection: {method: seeded_random_without_replacement, seed: 42, offset: 50, samples: 50}
+  outputs: [class_embedding, patch_embeddings]
+
+performance: {}
+
+reference_metrics:
+- source: https://huggingface.co/timm/vit_huge_plus_patch16_dinov3.lvd1689m/blob/dd0addc09788111fa893d24799a44744ba022eee/README.md
+  dataset: {id: imagenet-real, split: val}
+  conditions: 512x512 center crop, linear classifier on the frozen CLS token, trained on ImageNet-1k train
+  note: >-
+    Top-1 against the ReaL labels of the ImageNet validation images, not the original labels of the registry's
+    imagenet-2012 val. The card refers to the DINOv3 paper (arXiv 2508.10104v1, Table 14 and appendix D.7) for the
+    protocol; Meta's linear classifier is not part of these weights.
+  metrics: {top1_accuracy: 0.903}
+- source: https://huggingface.co/timm/vit_huge_plus_patch16_dinov3.lvd1689m/blob/dd0addc09788111fa893d24799a44744ba022eee/README.md
+  dataset: {id: imagenet-r, split: test}
+  conditions: 512x512 center crop, linear classifier on the frozen CLS token, trained on ImageNet-1k train
+  note: ImageNet-Rendition.
+  metrics: {top1_accuracy: 0.90}
+- source: https://huggingface.co/timm/vit_huge_plus_patch16_dinov3.lvd1689m/blob/dd0addc09788111fa893d24799a44744ba022eee/README.md
+  dataset: {id: objectnet, split: test}
+  conditions: 512x512 center crop, linear classifier on the frozen CLS token, trained on ImageNet-1k train
+  metrics: {top1_accuracy: 0.786}
