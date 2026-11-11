@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import random
 import sys
 import tarfile
@@ -12,6 +13,10 @@ import numpy as np
 import onnx
 import pytest
 from onnx import numpy_helper
+
+# CI on the 50 declared cal images measured cosine 0.99994 (w16a16) and 0.99798 (w8a8) against the converted ONNX.
+# Keep margin for compiler rounding.
+FIDELITY_MIN_COSINE = {"w16a16": 0.9995, "w8a8": 0.995}
 
 
 def _image(width: int, height: int, colour: tuple[int, int, int] = (255, 0, 0)) -> bytes:
@@ -148,9 +153,14 @@ def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], 
 def test_compile_rejects_an_undeclared_build_profile(load_script: Callable[[str], ModuleType]) -> None:
     recipe = load_script("compile")
 
-    assert recipe.load_metadata(recipe.MODEL_DIR)["numerical_fidelity"]["outputs"] == ["predicted_depth"]
     with pytest.raises(ValueError, match="exactly one build profile named 'w32a32'"):
         recipe._parameters("w32a32")
+
+
+def test_numerical_fidelity_compares_the_depth(load_script: Callable[[str], ModuleType]) -> None:
+    recipe = load_script("compile")
+
+    assert recipe.load_metadata(recipe.MODEL_DIR)["numerical_fidelity"]["outputs"] == ["predicted_depth"]
 
 
 @pytest.mark.parametrize(("precision", "calibrates"), [("w8a8", True), ("w16a16", False)])
@@ -164,6 +174,11 @@ def test_quantization_calibrates_only_int8_activations(
     arguments = recipe.QuantizationParams.call_args.kwargs
     calibration = recipe.CalibrationMethod.from_str.return_value if calibrates else recipe.SkipCalibration.return_value
     assert arguments["calibration_method"] is calibration
+
+
+def test_quantization_rejects_an_undeclared_precision(load_script: Callable[[str], ModuleType]) -> None:
+    recipe = load_script("compile")
+
     with pytest.raises(ValueError, match="unsupported precision 'w4a8'"):
         recipe._quantization("w4a8")
 
@@ -192,7 +207,7 @@ def test_bf16_builds_quantize_without_calibration_data(
 @pytest.mark.parametrize(
     ("parameters", "message"),
     [
-        ({"precision": "fp32"}, "only the declared BF16 and INT8 build profiles"),
+        ({"precision": "fp32"}, "unsupported precision 'fp32'"),
         (
             {"precision": "w16a16", "input_name": "pixel_values", "input_shape": [1, 3, 256, 320]},
             "unsupported MiDaS v2.1 Small input shape",
@@ -304,3 +319,15 @@ def test_compile_main_rejects_an_unknown_invocation_or_missing_fidelity_dataset(
 
     assert stopped.value.code == 2
     assert message in capsys.readouterr().err
+
+
+def test_compiled_build_runs_on_one_mla_stage_and_follows_the_onnx(compiled: Path, build_profile: str) -> None:
+    (archive,) = (compiled / "model").glob("*_mpk.tar.gz")
+    with tarfile.open(archive, "r:gz") as stream:
+        (manifest,) = [name for name in stream.getnames() if name.endswith("_mpk.json")]
+        plugins = json.load(stream.extractfile(manifest))["plugins"]
+    processors = [str(plugin.get("processor", "")).upper() for plugin in plugins]
+    assert processors.count("MLA") == 1 and not {"A65", "APU"} & set(processors), processors
+    (metric,) = json.loads((compiled / "fidelity.json").read_text(encoding="utf-8"))["metrics"]
+    assert metric["name"] == "predicted_depth"
+    assert metric["cosine_similarity"] >= FIDELITY_MIN_COSINE[build_profile], metric

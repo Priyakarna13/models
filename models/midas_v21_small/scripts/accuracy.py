@@ -18,8 +18,10 @@ from pathlib import Path
 
 import model_report
 import numpy as np
-from calibration import HEIGHT, VALIDATION_SPLIT, WIDTH, preprocess_image
+from calibration import HEIGHT, WIDTH, preprocess_image
 
+# nyu-depth-v2 val holds test/rgb_NNNNN.jpg, NYU's official test split.
+VALIDATION_SPLIT = "test"
 DEPTH_DIR = "annotations/depth_test"
 # Ground truth is 16-bit millimetres, 0 where the sensor measured nothing, and NYU depth ends at 10 m.
 DEPTH_SCALE = 1000.0

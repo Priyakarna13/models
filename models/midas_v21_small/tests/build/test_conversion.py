@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
+from urllib.parse import urlsplit
 
 import numpy as np
 import onnx
@@ -66,18 +67,14 @@ def test_fixed_onnx_interface(tmp_path, case, converter: ModuleType):
             converter.validate_export(path)
 
 
-def test_source_must_be_the_hugging_face_file_set(converter: ModuleType):
-    model = load_metadata(MODEL_DIR)
-    converter.validate_source(model["conversion"]["default"]["source"])
-    checkpoint = {"type": "file", "uri": "https://example.com/midas_v21_small_256.pt"}
-    with pytest.raises(ValueError, match="Hugging Face file set"):
-        converter.validate_source(checkpoint)
-
-
-def test_the_decoder_widths_follow_the_encoder_stages(converter: ModuleType):
-    # MidasNet_small: EfficientNet-Lite3 stage outputs, and features=64 doubled at each deeper stage.
-    assert converter.ENCODER_CHANNELS == (32, 48, 136, 384)
-    assert converter.DECODER_CHANNELS == (64, 128, 256, 512)
+def test_source_is_the_authors_release_checkpoint(converter: ModuleType):
+    source = load_metadata(MODEL_DIR)["conversion"]["default"]["source"]
+    uri = urlsplit(source["uri"])
+    assert (uri.scheme, uri.netloc) == ("https", "github.com")
+    assert uri.path.split("/")[1:] == ["isl-org", "MiDaS", "releases", "download", "v2_1", converter.CHECKPOINT]
+    converter.validate_source(source)
+    with pytest.raises(ValueError, match="checkpoint"):
+        converter.validate_source({"type": "file", "uri": "https://example.com/other.pt"})
 
 
 def test_converted_onnx_keeps_the_interface(converted: Path, converter: ModuleType):

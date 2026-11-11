@@ -15,10 +15,9 @@ import numpy as np
 HEIGHT = WIDTH = 256
 MEAN = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
-# nyu-depth-v2 cal holds cal/rgb_NNNNN.jpg; val holds test/rgb_NNNNN.jpg, NYU's official test split.
+# nyu-depth-v2 cal holds cal/rgb_NNNNN.jpg.
 CALIBRATION_SPLIT = "cal"
 CALIBRATION_SEED = 42
-VALIDATION_SPLIT = "test"
 IMAGE_PREFIX = "rgb_"
 
 

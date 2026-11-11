@@ -29,6 +29,8 @@ conversion, and normalization turned off.
 3. For metric depth, fit a scale s and an offset t so that s × value + t matches 1 / distance at points of known distance, such as from a depth sensor.
 4. Take each pixel's distance as 1 / (s × value + t), capped at the farthest distance your scene can contain.
 
+No Neat decoder handles this output.
+
 ## Building applications
 
 Run the package with the [Neat Model

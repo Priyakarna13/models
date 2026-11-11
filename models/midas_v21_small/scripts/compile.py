@@ -69,8 +69,8 @@ def _quantization(precision: str) -> QuantizationParams:
 def compile_model(source: Path, component_dir: Path, profile_id: str, dataset: Path | None) -> AfeModel:
     parameters = _parameters(profile_id)
     precision = str(parameters.get("precision"))
-    if precision not in {"w16a16", "w8a8"}:
-        raise ValueError("this recipe supports only the declared BF16 and INT8 build profiles")
+    # Fails on an unsupported precision before anything is written.
+    quantization = _quantization(precision)
 
     input_name = str(parameters["input_name"])
     input_shape = tuple(int(value) for value in parameters["input_shape"])
@@ -94,7 +94,7 @@ def compile_model(source: Path, component_dir: Path, profile_id: str, dataset: P
         prepared = prepare_model(source, Path(temporary) / "model.onnx")
         importer = onnx_source(str(prepared), {input_name: input_shape}, {input_name: ScalarType.float32})
         loaded = load_model(importer, target=gen2_target)
-        quantized = loaded.quantize(data, _quantization(precision), model_name=model_name)
+        quantized = loaded.quantize(data, quantization, model_name=model_name)
     quantized.save(model_name=model_name, output_directory=str(component_dir))
     saved = AfeModel.load(model_name=f"{model_name}.sima", network_directory=str(component_dir))
     saved.compile(output_path=str(component_dir))

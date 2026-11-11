@@ -14,20 +14,19 @@ license:
   redistribution: allowed
   attribution: Derived from the MiDaS v2.1 Small weights (midas_v21_small_256.pt) released in isl-org/MiDaS, and distributed under MIT.
 
-# The Hugging Face file is byte-identical to midas_v21_small_256.pt in the MiDaS v2_1 GitHub release (same SHA-256
-# and size).
+# The v2_1 tag points at a 2020 commit; this revision's README links the release file below, and its
+# midas/model_loader.py builds midas_v21_small_256 as convert.py does.
 upstream:
-  repository: https://huggingface.co/Rizwandatapro/midas_v21_small_256
-  revision: 43569c4da79ce11609c0c4b3b65410619ddf1adb
-  derived_from: https://github.com/isl-org/MiDaS/tree/454597711a62eabcbf7d1e89f3fb9f569051ac9b
+  repository: https://github.com/isl-org/MiDaS
+  revision: 454597711a62eabcbf7d1e89f3fb9f569051ac9b
 
 conversion:
   source:
-    repository: Rizwandatapro/midas_v21_small_256
-    revision: 43569c4da79ce11609c0c4b3b65410619ddf1adb
-    main_file: midas_v21_small_256.pt
-    files:
-      midas_v21_small_256.pt: {sha256: 70d6b9c891758c67f974a6097fb0c608c7ee67fb81ac3e5588847d5596d56fca, size_bytes: 85761505}
+    # Neither isl-org nor Intel publishes this checkpoint on Hugging Face, so pin the authors' release asset as the
+    # source of record, rather than a third-party mirror.
+    uri: https://github.com/isl-org/MiDaS/releases/download/v2_1/midas_v21_small_256.pt
+    sha256: 70d6b9c891758c67f974a6097fb0c608c7ee67fb81ac3e5588847d5596d56fca
+    size_bytes: 85761505
 
 compilation:
   format: onnx

@@ -6,7 +6,7 @@ checkpoint's names, so the checkpoint loads strictly.
 """
 
 import argparse
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 import onnx
@@ -15,7 +15,6 @@ from model_registry.model import load_and_validate_model
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 CHECKPOINT = "midas_v21_small_256.pt"
-SOURCE = ("file_set", CHECKPOINT, [CHECKPOINT])
 INTERFACE = {"pixel_values": [1, 3, 256, 256], "predicted_depth": [1, 256, 256]}
 OUTPUTS = ("predicted_depth",)
 SEEDS = range(123, 127)
@@ -27,9 +26,9 @@ SHAPE_OPERATIONS = {"Shape", "ConstantOfShape", "Range", "ScatterND", "Where"}
 
 
 def validate_source(source):
-    declared = (source.get("type"), source.get("entrypoint"), [item.get("path") for item in source.get("files", [])])
-    if declared != SOURCE:
-        raise ValueError(f"Expected the Hugging Face file set {SOURCE}, model.yaml declares {declared}")
+    declared = (source.get("type"), PurePosixPath(str(source.get("uri", ""))).name)
+    if declared != ("file", CHECKPOINT):
+        raise ValueError(f"Expected the checkpoint file {CHECKPOINT}, model.yaml declares {declared}")
 
 
 def build_network():
