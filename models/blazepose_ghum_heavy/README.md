@@ -4,41 +4,38 @@
 
 ## Overview
 
-BlazePose GHUM Heavy 3D is the MediaPipe pose landmark network used by the
-multi-stream BlazePose 3D example in sima-neat/apps. It is the landmark stage
-only: your application detects a person, crops a square pose region around
-them, and passes that crop to the model. The model returns image-space
-landmarks, a pose-presence score, and world-space 3D landmarks for one person.
+BlazePose GHUM Heavy 3D is the largest MediaPipe pose landmark model. Your
+application finds a person, crops a square region around them, and passes the
+256×256 RGB crop to the model. The model returns 33 body landmarks in the crop
+with visibility scores, the probability that the crop holds a person, and the
+same landmarks in 3D, in metres around the hips. It runs as one component.
 
 ## Inputs and outputs
 
 **Input.** `input_1` is one RGB crop resized to 256×256 with bilinear
-resampling and scaled to 0–1, passed as a 1×256×256×3 (NHWC) float tensor.
+resampling and scaled to 0–1, as a 1×256×256×3 (height, width, channel) float
+tensor.
 
 **Outputs.**
 
-1. `Identity [1,195]`: 39 image-space records of x, y, z, visibility logit, and presence logit.
-2. `Identity_1 [1,1]`: global pose-presence probability, already activated.
-3. `Identity_4 [1,117]`: 39 world-space x, y, z records.
+- `Identity` [1, 195]: 39 records of x, y, z, visibility logit, and presence logit, in crop pixels.
+- `Identity_1` [1, 1]: the probability that the crop holds a person, already passed through a sigmoid.
+- `Identity_4` [1, 117]: 39 records of x, y, z in metres around the hip midpoint.
 
-Apply a sigmoid only to each landmark's visibility and presence logits; the
-model leaves them raw. Compare `Identity_1` with your threshold directly, as
-MediaPipe does at 0.5; applying a sigmoid to it again keeps crops with no
-person. The first 33 records of each landmark tensor are the public BlazePose body
-landmarks. MediaPipe uses only `Identity` records 33 and 34 as auxiliary
-landmarks for deriving the crop for the next frame; records 35–38 are not part
-of its postprocessed landmark outputs. MediaPipe likewise discards `Identity_4`
-records 33–38. Ignore those trailing records.
+1. Keep the crop when `Identity_1` is at least 0.5, as MediaPipe does; do not apply a sigmoid to it again.
+2. Use the first 33 records of `Identity` and `Identity_4`; MediaPipe uses records 33 and 34 of `Identity` only to place the next frame's crop.
+3. Apply a sigmoid to the visibility and presence logits.
+4. For a square crop of side s at (left, top), a landmark is at left + x × s / 256 and top + y × s / 256; undo any padding and rotation.
+5. z is depth relative to the hip midpoint, on roughly the scale of x.
+6. Rotate the world landmarks by the crop's rotation to return to camera orientation.
 
-`Identity` x and y are pixel positions in the 256×256 crop. For an
-axis-aligned square crop of side `s` at `(left, top)`, the source position is
-`left + x * s / 256` and `top + y * s / 256`; also remove any padding and
-rotation you applied. z is relative depth on roughly the scale of x, with the
-hip midpoint near zero, not metres. `Identity_4` x, y, and z are in metres
-around the hip midpoint and are not projected through the crop; rotate them by
-any crop rotation to return to camera orientation. These steps follow
-MediaPipe's
-[pose postprocessing graph](https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/modules/pose_landmark/tensors_to_pose_landmarks_and_segmentation.pbtxt).
+The landmarks, with the person's left side first in each pair, are: 0 nose;
+1–3 left eye inner, center, outer; 4–6 right eye inner, center, outer; 7–8
+ears; 9–10 mouth corners; 11–12 shoulders; 13–14 elbows; 15–16 wrists; 17–18
+pinkies; 19–20 index fingers; 21–22 thumbs; 23–24 hips; 25–26 knees; 27–28
+ankles; 29–30 heels; 31–32 foot tips.
+
+No Neat decoder handles these outputs.
 
 ## Building applications
 
