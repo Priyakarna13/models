@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Partition, validate, and compile the verified RF-DETR Seg Nano ONNX."""
+"""Partition, validate, and compile the verified RF-DETR Seg Nano ONNX into a backbone, a decoder and a mask head."""
 
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ from surgery import (
     BF16_REGIONS,
     BOUNDARY_SHAPES,
     BOXES,
+    DECODER_OUTPUTS,
     FEATURES,
     GLOBAL_ATTENTION_BLOCKS,
     INPUT,
@@ -50,6 +51,7 @@ from surgery import (
     OUTPUT_SHAPES,
     OUTPUTS,
     PROPOSALS,
+    QUERIES,
     SCORES,
     annotate_bf16_regions,
     graph_paths,
@@ -61,10 +63,11 @@ MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "rf_detr_seg_nano"
 # Precisions with BF16 activations. Their layer norms keep FP32 intermediates, as every measured build did.
 A16_PRECISIONS = ("w8a16", "w16a16")
-COMPONENT_IDS = ("backbone", "decoder")
+COMPONENT_IDS = ("backbone", "decoder", "mask_head")
 # Files the compilation phases pass to each other in the temporary directory.
 REFERENCE_OUTPUTS = "reference_outputs.npz"
 BACKBONE_OUTPUTS = "backbone_outputs.npz"
+DECODER_RESULTS = "decoder_outputs.npz"
 FIDELITY_REPORT = "fidelity.json"
 
 
@@ -80,9 +83,16 @@ COMPONENT_INTERFACES = {
     },
     "decoder": {
         "inputs": {name: _float32_bytes(BOUNDARY_SHAPES[name]) for name in (FEATURES, PROPOSALS)},
-        "outputs": [_float32_bytes(OUTPUT_SHAPES[name]) for name in OUTPUTS],
+        "outputs": [_float32_bytes({**OUTPUT_SHAPES, **BOUNDARY_SHAPES}[name]) for name in DECODER_OUTPUTS],
+    },
+    "mask_head": {
+        "inputs": {name: _float32_bytes(BOUNDARY_SHAPES[name]) for name in (FEATURES, QUERIES)},
+        "outputs": [_float32_bytes(OUTPUT_SHAPES["masks"])],
     },
 }
+# The last stage of every component returns float32: a pass-through, the cast that ends a BF16 output, or the
+# dequantization that ends an INT8 output.
+OUTPUT_KERNELS = {"pass_through", "cast_transform", "dequantization_transform"}
 
 
 def _component_parameters(metadata: dict[str, Any], profile_id: str) -> dict[str, dict[str, Any]]:
@@ -100,7 +110,7 @@ def _component_name(profile_id: str, component_id: str) -> str:
 
 def _bf16_regions(profile_id: str, component_parameters: dict[str, dict[str, Any]]) -> list[str]:
     """Return the backbone regions the build profile runs BF16, checking that its ID marks it mixed."""
-    if "bf16_regions" in component_parameters["decoder"]:
+    if any("bf16_regions" in component_parameters[name] for name in COMPONENT_IDS if name != "backbone"):
         raise ValueError("only the backbone declares bf16_regions")
     parameters = component_parameters["backbone"]
     regions = parameters.get("bf16_regions", [])
@@ -230,7 +240,7 @@ def audit_mpk(archive: Path, component_id: str) -> dict[str, Any]:
     terminal = plugins[-1] if plugins else {}
     kernel = str(terminal.get("config_params", {}).get("kernel", ""))
     output_sizes = [node.get("size") for node in terminal.get("output_nodes", [])]
-    if kernel != "pass_through" or output_sizes != contract["outputs"]:
+    if kernel not in OUTPUT_KERNELS or output_sizes != contract["outputs"]:
         raise RuntimeError(f"{component_id} MPK output interface mismatch: {output_sizes}")
     return {"elf": elfs[0], "mla_plugins": len(mla_plugins), "output_sizes": output_sizes}
 
@@ -283,7 +293,7 @@ def _features_to_nchw(features: np.ndarray) -> np.ndarray:
 
 
 def _output_to_nchw(name: str, output: np.ndarray) -> np.ndarray:
-    """Return a decoder output in the ONNX layout; AFE returns the four-dimensional masks channels-last."""
+    """Return an output in the ONNX layout; AFE returns the four-dimensional masks channels-last."""
     batch, queries, height, width = OUTPUT_SHAPES["masks"]
     if name == "masks" and output.shape == (batch, height, width, queries):
         return output.transpose(0, 3, 1, 2)
@@ -382,7 +392,8 @@ def _pipeline_description(component_parameters: dict[str, dict[str, Any]]) -> st
     """Name the compiled pipeline that fidelity compares with the original ONNX."""
     backbone = _precision_label(component_parameters["backbone"])
     decoder = _precision_label(component_parameters["decoder"])
-    return f"AFE {backbone} backbone → CPU TopK/Gather → AFE {decoder} decoder (JAX execute)"
+    mask_head = _precision_label(component_parameters["mask_head"])
+    return f"AFE {backbone} backbone → CPU TopK/Gather → AFE {decoder} decoder → AFE {mask_head} mask head (JAX execute)"
 
 
 def _calibration_names(
@@ -447,29 +458,37 @@ def _reference_outputs(source: Path, images: np.ndarray) -> dict[str, np.ndarray
     return {name: np.stack(values) for name, values in outputs.items()}
 
 
+def _execute_decoder(decoder: Any, features: np.ndarray, scores: np.ndarray, boxes: np.ndarray) -> list[np.ndarray]:
+    """Run the quantized decoder on one image's backbone outputs and return dets, labels and query features."""
+    inputs = {
+        InputName(FEATURES): to_afe_layout(features[None]),
+        InputName(PROPOSALS): select_top_proposals(scores[None], boxes[None]),
+    }
+    return [np.asarray(output) for output in decoder.execute(inputs=inputs, use_jax=True)]
+
+
 def _measure_fidelity(
-    decoder: Any,
+    mask_head: Any,
     backbone_outputs: _BackboneOutputs,
+    decoder_outputs: dict[str, np.ndarray],
     reference: dict[str, np.ndarray],
 ) -> list[dict[str, Any]]:
     """Compare the compiled pipeline's outputs on each fidelity image with the original ONNX's."""
-    errors = [_OutputError(name) for name in OUTPUTS]
-    for index, (features, scores, boxes) in enumerate(
-        zip(
-            backbone_outputs.evaluation_features,
-            backbone_outputs.evaluation_scores,
-            backbone_outputs.evaluation_boxes,
-            strict=True,
-        )
-    ):
+    errors = {name: _OutputError(name) for name in OUTPUTS}
+    for index, features in enumerate(backbone_outputs.evaluation_features):
         inputs = {
             InputName(FEATURES): to_afe_layout(features[None]),
-            InputName(PROPOSALS): select_top_proposals(scores[None], boxes[None]),
+            InputName(QUERIES): decoder_outputs["evaluation_queries"][index][None],
         }
-        outputs = decoder.execute(inputs=inputs, use_jax=True)
-        for error, output in zip(errors, outputs, strict=True):
-            error.add(reference[error.name][index][None], _output_to_nchw(error.name, np.asarray(output)))
-    return [error.summary() for error in errors]
+        (masks,) = mask_head.execute(inputs=inputs, use_jax=True)
+        actual = {
+            "dets": decoder_outputs["evaluation_dets"][index][None],
+            "labels": decoder_outputs["evaluation_labels"][index][None],
+            "masks": _output_to_nchw("masks", np.asarray(masks)),
+        }
+        for name, error in errors.items():
+            error.add(reference[name][index][None], actual[name])
+    return [error.summary() for error in errors.values()]
 
 
 def _prepare_phase(
@@ -483,9 +502,9 @@ def _prepare_phase(
 
     Then mark the backbone's BF16 regions, which ONNX Runtime cannot run.
     """
-    backbone_graph, decoder_graph = prepare_model(source, temporary_dir / "graphs")
+    backbone_graph, decoder_graph, mask_head_graph = prepare_model(source, temporary_dir / "graphs")
     images = load_images(fidelity_dataset, evaluation_names)
-    validate_float_split(source, backbone_graph, decoder_graph, images[0])
+    validate_float_split(source, backbone_graph, decoder_graph, mask_head_graph, images[0])
     np.savez(temporary_dir / REFERENCE_OUTPUTS, **_reference_outputs(source, images))
 
     if bf16_regions:
@@ -526,8 +545,8 @@ def _backbone_phase(
         strict=True,
     )
     outputs = _BackboneOutputs(np.concatenate(features), np.concatenate(scores), np.concatenate(boxes))
-    if _calibrates(component_parameters["decoder"]):
-        # The decoder calibrates on the proposals this quantized backbone selects.
+    if _calibrates(component_parameters["decoder"]) or _calibrates(component_parameters["mask_head"]):
+        # The decoder and mask head calibrate on what this quantized backbone produces.
         outputs.calibration_features, outputs.calibration_proposals = _decoder_calibration_inputs(
             backbone, calibration_images
         )
@@ -539,14 +558,10 @@ def _decoder_phase(
     temporary_dir: Path,
     profile_id: str,
     parameters: dict[str, Any],
-    fidelity_config: dict[str, Any],
-    candidate: str,
+    mask_head_calibrates: bool,
 ) -> None:
-    """Compile the decoder, then measure the whole pipeline's fidelity and write its report."""
+    """Compile the decoder, then save its outputs for the fidelity images and the mask head's calibration."""
     backbone_outputs = _BackboneOutputs.load(temporary_dir / BACKBONE_OUTPUTS)
-    with np.load(temporary_dir / REFERENCE_OUTPUTS) as saved:
-        reference = dict(saved)
-
     calibration_inputs = None
     if _calibrates(parameters):
         calibration_inputs = {
@@ -563,7 +578,60 @@ def _decoder_phase(
     )
     _compile_component(decoder, temporary_dir / name, "decoder", parameters["precision"])
 
-    metrics = _measure_fidelity(decoder, backbone_outputs, reference)
+    results: dict[str, list[np.ndarray]] = {"evaluation_dets": [], "evaluation_labels": [], "evaluation_queries": []}
+    for features, scores, boxes in zip(
+        backbone_outputs.evaluation_features,
+        backbone_outputs.evaluation_scores,
+        backbone_outputs.evaluation_boxes,
+        strict=True,
+    ):
+        dets, labels, queries = _execute_decoder(decoder, features, scores, boxes)
+        for key, value in zip(results, (dets, labels, queries), strict=True):
+            results[key].append(value[0])
+    if mask_head_calibrates:
+        # The mask head calibrates on the query features this quantized decoder produces.
+        results["calibration_queries"] = []
+        for features, proposals in zip(
+            backbone_outputs.calibration_features, backbone_outputs.calibration_proposals, strict=True
+        ):
+            inputs = {InputName(FEATURES): to_afe_layout(features[None]), InputName(PROPOSALS): proposals[None]}
+            queries = np.asarray(decoder.execute(inputs=inputs, use_jax=True)[2])
+            results["calibration_queries"].append(queries[0])
+    np.savez(temporary_dir / DECODER_RESULTS, **{key: np.stack(value) for key, value in results.items()})
+
+
+def _mask_head_phase(
+    graph: Path,
+    temporary_dir: Path,
+    profile_id: str,
+    parameters: dict[str, Any],
+    fidelity_config: dict[str, Any],
+    candidate: str,
+) -> None:
+    """Compile the mask head, then measure the whole pipeline's fidelity and write its report."""
+    backbone_outputs = _BackboneOutputs.load(temporary_dir / BACKBONE_OUTPUTS)
+    with np.load(temporary_dir / DECODER_RESULTS) as saved:
+        decoder_outputs = dict(saved)
+    with np.load(temporary_dir / REFERENCE_OUTPUTS) as saved:
+        reference = dict(saved)
+
+    calibration_inputs = None
+    if _calibrates(parameters):
+        calibration_inputs = {
+            FEATURES: backbone_outputs.calibration_features,
+            QUERIES: decoder_outputs["calibration_queries"],
+        }
+    name = _component_name(profile_id, "mask_head")
+    mask_head = _quantize_component(
+        graph,
+        name,
+        parameters,
+        calibration_inputs,
+        {tensor: tuple(BOUNDARY_SHAPES[tensor]) for tensor in (FEATURES, QUERIES)},
+    )
+    _compile_component(mask_head, temporary_dir / name, "mask_head", parameters["precision"])
+
+    metrics = _measure_fidelity(mask_head, backbone_outputs, decoder_outputs, reference)
     _write_fidelity(temporary_dir, profile_id, fidelity_config, candidate, metrics)
 
 
@@ -649,7 +717,7 @@ def compile_model(
     temporary_root = os.environ.get("RUNNER_TEMP")
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=temporary_root) as temporary:
         temporary_dir = Path(temporary)
-        backbone_graph, decoder_graph = graph_paths(temporary_dir / "graphs")
+        backbone_graph, decoder_graph, mask_head_graph = graph_paths(temporary_dir / "graphs")
         _run_phase(
             "RF-DETR graph preparation",
             _prepare_phase,
@@ -662,6 +730,7 @@ def compile_model(
         graph_hashes = {
             "backbone": sha256_file(backbone_graph)[0],
             "decoder": sha256_file(decoder_graph)[0],
+            "mask_head": sha256_file(mask_head_graph)[0],
         }
 
         _run_phase(
@@ -678,12 +747,22 @@ def compile_model(
         )
 
         _run_phase(
-            "RF-DETR decoder compilation and fidelity",
+            "RF-DETR decoder compilation",
             _decoder_phase,
             graph=decoder_graph,
             temporary_dir=temporary_dir,
             profile_id=profile_id,
             parameters=component_parameters["decoder"],
+            mask_head_calibrates=_calibrates(component_parameters["mask_head"]),
+        )
+
+        _run_phase(
+            "RF-DETR mask head compilation and fidelity",
+            _mask_head_phase,
+            graph=mask_head_graph,
+            temporary_dir=temporary_dir,
+            profile_id=profile_id,
+            parameters=component_parameters["mask_head"],
             fidelity_config=fidelity_config,
             candidate=_pipeline_description(component_parameters),
         )

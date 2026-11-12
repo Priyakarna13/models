@@ -6,11 +6,11 @@
 
 RF-DETR Seg Nano is the Nano size of Roboflow's RF-DETR transformer instance
 segmenter, trained on COCO. For each object, it returns a box, class scores,
-and a pixel mask. It runs as two components: a backbone that proposes
-candidate boxes, and a decoder that turns the best 100 candidates into 100
-detections. Your application selects those candidates on the CPU between the
-two components. RF-DETR predicts each object once, so the application does not
-need to remove overlapping boxes.
+and a pixel mask. It runs as three components: a backbone that proposes
+candidate boxes, a decoder that turns the best 100 candidates into 100
+detections, and a mask head that draws a mask for each detection. The
+application selects candidates on the CPU before the decoder. RF-DETR predicts
+each object once, so overlapping boxes need no removal.
 
 ## Inputs and outputs
 
@@ -18,25 +18,24 @@ need to remove overlapping boxes.
 the aspect ratio. Scale the RGB values to 0–1, subtract the ImageNet mean
 (0.485, 0.456, 0.406), and divide by the standard deviation (0.229, 0.224,
 0.225). The reference scripts pass this image as a 312×312×3 (height, width,
-channel) float tensor, with Neat's resize, color conversion, and normalization
-turned off.
+channel) float tensor.
 
 **Between the components.** The backbone returns `backbone_features`,
 `proposal_scores`, and `proposal_boxes`, with 676 proposals. Take the 100
 highest scores, breaking ties by the lower proposal index, and gather their
 boxes in that order. Pass the gathered boxes as `proposals`, with
-`backbone_features`, to the decoder. Keep this order, because the decoder
-treats each of the 100 positions differently.
+`backbone_features`, to the decoder, keeping this order. Pass the decoder's
+`decoder_queries` with `backbone_features` to the mask head.
 
 **Outputs.** The decoder returns `dets`, 100 boxes as normalized (cx, cy, w,
-h), `labels`, 91 class logits for each box, and `masks`, 78×78 mask logits in
-height, width, box order.
+h), and `labels`, 91 class logits for each box. The mask head returns `masks`,
+78×78 mask logits in height, width, box order.
 
 1. Apply a sigmoid to `labels` and rank all 100 × 91 box-class pairs by score.
 2. Keep the 100 best pairs, then drop those with an unused class index.
 3. Convert each box to corners: (cx - w/2, cy - h/2) and (cx + w/2, cy + h/2).
 4. Multiply x by the image width and y by the image height, and clip to the image.
-5. Resize each kept box's mask logits bilinearly to the image size. Positive pixels belong to the object.
+5. Resize each kept box's mask logits bilinearly to the image. Positive pixels belong to the object.
 
 Class index i is COCO category ID i. Eleven of the 91 indexes are unused.
 

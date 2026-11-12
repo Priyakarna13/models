@@ -1,4 +1,4 @@
-"""Measure RF-DETR Seg Nano COCO mask AP and AR and box AP with both MPKs on a Modalix board.
+"""Measure RF-DETR Seg Nano COCO mask AP and AR and box AP with its three MPKs on a Modalix board.
 
 Detections follow upstream RF-DETR's PostProcess for segmentation (rfdetr a459eeade, RFDETRSegNanoConfig
 num_select 100): the 100 best query/class pairs by sigmoid score, boxes scaled to the image, and each pair's
@@ -223,8 +223,8 @@ def evaluate(
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:
     mpks = dict(value.split("=", 1) for value in values)
-    if set(mpks) != {"backbone", "decoder"}:
-        raise SystemExit("--mpk must name exactly backbone=<path> and decoder=<path>")
+    if set(mpks) != {"backbone", "decoder", "mask_head"}:
+        raise SystemExit("--mpk must name exactly backbone=<path>, decoder=<path> and mask_head=<path>")
     return {name: Path(path) for name, path in mpks.items()}
 
 
@@ -234,7 +234,7 @@ def log(*values: object) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mpk", action="append", required=True, help="component=path, for backbone and decoder")
+    parser.add_argument("--mpk", action="append", required=True, help="component=path, for each of the three")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
     parser.add_argument("--limit", type=int, help="measure a seeded sample of images (local runs only)")
@@ -250,15 +250,17 @@ def main(argv: list[str] | None = None) -> int:
     records = ground_truth.loadImgs(image_ids)
     valid = np.isin(np.arange(CLASSES), ground_truth.getCatIds())
 
-    backbone, decoder = ModelArtifact(mpks["backbone"]), ModelArtifact(mpks["decoder"])
+    backbone, decoder, mask_head = (ModelArtifact(mpks[name]) for name in ("backbone", "decoder", "mask_head"))
 
     def infer(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         features, scores, boxes = backbone(image)
-        # The decoder's EV74 input stage needs the features in EV74 memory; only the proposals pass through NumPy.
+        # The decoder's and mask head's EV74 input stages need their inputs in EV74 memory; only the proposals
+        # pass through NumPy.
         proposals = select_top_proposals(view(scores), view(boxes))
-        # Outputs are views into the decoder's buffers, so copy them before the next image runs.
-        dets, labels, masks = (view(output).copy() for output in decoder(features.cvu(), proposals))
-        return dets, labels, masks
+        dets, labels, queries = decoder(features.cvu(), proposals)
+        (masks,) = mask_head(features.cvu(), queries.cvu())
+        # Outputs are views into the MPKs' buffers, so copy them before the next image runs.
+        return view(dets).copy(), view(labels).copy(), view(masks).copy()
 
     started = time.monotonic()
     detections = evaluate(dataset, records, valid, infer)

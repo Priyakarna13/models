@@ -250,7 +250,11 @@ def test_compile_recipe_uses_one_grouped_entrypoint_and_direct_afe_api() -> None
     assert "requests" not in source
     assert "urllib" not in source
     assert 'get_context("spawn")' in source
-    assert source.index('"RF-DETR backbone compilation"') < source.index('"RF-DETR decoder compilation and fidelity"')
+    assert (
+        source.index('"RF-DETR backbone compilation"')
+        < source.index('"RF-DETR decoder compilation"')
+        < source.index('"RF-DETR mask head compilation and fidelity"')
+    )
 
 
 def _metadata() -> dict:
@@ -258,27 +262,23 @@ def _metadata() -> dict:
 
 
 @pytest.mark.parametrize(
-    ("profile_id", "backbone"),
+    ("profile_id", "backbone", "mask_head"),
     [
-        ("w8a8_w16a16", {"precision": "w8a8", "calibration_bins": 1024, "calibration_samples": 50}),
-        ("w8a16_w16a16", {"precision": "w8a16", "per_token": True}),
+        ("w8a16_w16a16", {"precision": "w8a16", "per_token": True}, {"precision": "w16a16"}),
         (
-            "w8a8_mixed_w16a16",
-            {
-                "precision": "w8a8",
-                "calibration_bins": 1024,
-                "calibration_samples": 50,
-                "bf16_regions": ["residual", "attention_global", "projector", "head", "outputs"],
-            },
+            "w8a16_w16a16_w8a8",
+            {"precision": "w8a16", "per_token": True},
+            {"precision": "w8a8", "calibration_bins": 2048, "calibration_samples": 50},
         ),
     ],
 )
 def test_compile_reads_each_declared_build_profile(
-    load_script: Callable[[str], ModuleType], profile_id: str, backbone: dict
+    load_script: Callable[[str], ModuleType], profile_id: str, backbone: dict, mask_head: dict
 ) -> None:
     assert load_script("compile")._component_parameters(_metadata(), profile_id) == {
         "backbone": backbone,
         "decoder": {"precision": "w16a16", "calibration_bins": 2048, "calibration_samples": 50},
+        "mask_head": mask_head,
     }
 
 
@@ -289,14 +289,16 @@ def test_compile_describes_the_pipeline_and_rejects_undeclared_settings(
     parameters = {
         "backbone": {"precision": "w8a16", "per_token": True},
         "decoder": {"precision": "w16a16", "calibration_bins": 2048, "calibration_samples": 50},
+        "mask_head": {"precision": "w8a8", "calibration_bins": 2048, "calibration_samples": 50},
     }
 
     assert compile_module._pipeline_description(parameters) == (
-        "AFE W8A16 per-token backbone → CPU TopK/Gather → AFE W16A16 decoder (JAX execute)"
+        "AFE W8A16 per-token backbone → CPU TopK/Gather → AFE W16A16 decoder → AFE W8A8 mask head (JAX execute)"
     )
     mixed = {**parameters, "backbone": {"precision": "w8a8", "bf16_regions": ["residual", "head"]}}
     assert compile_module._pipeline_description(mixed) == (
-        "AFE W8A8 mixed (BF16 residual, head) backbone → CPU TopK/Gather → AFE W16A16 decoder (JAX execute)"
+        "AFE W8A8 mixed (BF16 residual, head) backbone → CPU TopK/Gather → AFE W16A16 decoder → "
+        "AFE W8A8 mask head (JAX execute)"
     )
     with pytest.raises(ValueError, match="no build profile 'w32a32'"):
         compile_module._component_parameters(_metadata(), "w32a32")
@@ -493,7 +495,9 @@ def test_model_declares_onnx_and_whole_model_benchmarks() -> None:
     model = load_metadata(MODEL_DIR)
 
     for profile in model["build_profiles"]:
-        assert profile["compile_invocations"] == [{"id": profile["id"], "components": ["backbone", "decoder"]}]
+        assert profile["compile_invocations"] == [
+            {"id": profile["id"], "components": ["backbone", "decoder", "mask_head"]}
+        ]
     assert model["components"][0]["source"]["type"] == "conversion"
     assert model["calibrations"][0]["dataset"]["id"] == "coco-2017"
     assert model["numerical_fidelity"]["outputs"] == ["dets", "labels", "masks"]
@@ -690,8 +694,10 @@ def test_bf16_regions_require_the_mixed_token(load_script: Callable[[str], Modul
     compile_module = load_script("compile")
     decoder = {"precision": "w16a16"}
 
-    def regions(profile_id: str, backbone: dict, decoder: dict = decoder) -> list[str]:
-        return compile_module._bf16_regions(profile_id, {"backbone": backbone, "decoder": decoder})
+    def regions(profile_id: str, backbone: dict, decoder: dict = decoder, mask_head: dict = decoder) -> list[str]:
+        return compile_module._bf16_regions(
+            profile_id, {"backbone": backbone, "decoder": decoder, "mask_head": mask_head}
+        )
 
     w8a8 = {"precision": "w8a8", "bf16_regions": ["residual", "head"]}
     assert regions("w8a8_mixed_w16a16", w8a8) == ["residual", "head"]
@@ -708,6 +714,8 @@ def test_bf16_regions_require_the_mixed_token(load_script: Callable[[str], Modul
         regions("w8a8_mixed_w16a16", {"precision": "w8a8", "bf16_regions": ["residual", "residual"]})
     with pytest.raises(ValueError, match="only the backbone"):
         regions("w8a8_w16a16", {"precision": "w8a8"}, {**decoder, "bf16_regions": ["head"]})
+    with pytest.raises(ValueError, match="only the backbone"):
+        regions("w8a8_w16a16", {"precision": "w8a8"}, decoder, {**decoder, "bf16_regions": ["head"]})
 
 
 def test_the_bf16_guard_requires_the_operations_afe_quantized_in_bf16(

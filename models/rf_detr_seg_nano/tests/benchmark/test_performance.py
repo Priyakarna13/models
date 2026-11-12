@@ -13,7 +13,7 @@ def test_performance_meets_its_expected_values(
 
 
 def test_performance_records_each_components_execution_plan(performance: dict[str, Any]) -> None:
-    assert list(performance["components"]) == ["backbone", "decoder"]
+    assert list(performance["components"]) == ["backbone", "decoder", "mask_head"]
     for item in performance["components"].values():
         plan = item["execution_plan"]
         assert (plan["schema"], plan["schema_version"]) == ("sima.neat.execution_plan", 1)
@@ -43,14 +43,7 @@ def test_instance_selection_keeps_confident_pairs_with_binary_masks(load_script)
     masks = np.full((1, 2, 2, queries), -1.0, np.float32)
     masks[0, 0, 0, 5] = 1.0
 
-    class Output:
-        def __init__(self, array):
-            self.array = array
-
-        def to_numpy(self, copy=True):
-            return self.array
-
-    categories, scores, binary = performance_script.select_instances(Output(logits), Output(masks))
+    categories, scores, binary = performance_script.select_instances(logits, masks)
 
     assert categories.tolist() == [7, 3]
     np.testing.assert_allclose(scores, 1 / (1 + np.exp(-np.array([4.0, 1.0]))), rtol=1e-6)

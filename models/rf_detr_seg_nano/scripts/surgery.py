@@ -33,6 +33,9 @@ FEATURES = "backbone_features"
 SCORES = "proposal_scores"
 BOXES = "proposal_boxes"
 PROPOSALS = "proposals"
+# The decoder's final query features, which the mask head turns into masks.
+QUERIES = "decoder_queries"
+HIDDEN_SIZE = 256
 INPUT_SHAPE = [1, 3, IMAGE_SIZE, IMAGE_SIZE]
 OUTPUT_SHAPES = {
     "dets": [1, QUERY_COUNT, 4],
@@ -40,12 +43,14 @@ OUTPUT_SHAPES = {
     "masks": [1, QUERY_COUNT, MASK_SIZE, MASK_SIZE],
 }
 OUTPUTS = list(OUTPUT_SHAPES)
+DECODER_OUTPUTS = ["dets", "labels", QUERIES]
 
 BOUNDARY_SHAPES = {
     FEATURES: [1, 256, FEATURE_SIZE, FEATURE_SIZE],
     SCORES: [1, PROPOSAL_COUNT],
     BOXES: [1, PROPOSAL_COUNT, 4],
     PROPOSALS: [1, QUERY_COUNT, 4],
+    QUERIES: [1, QUERY_COUNT, HIDDEN_SIZE],
 }
 
 # Backbone regions a mixed build profile can run BF16 in an otherwise INT8 backbone.
@@ -289,6 +294,28 @@ def _cut_points(model: onnx.ModelProto) -> dict[str, str]:
     ]
     _require(len(features) == 1, f"one backbone feature map crosses the cut, found {features}")
     return {features[0]: FEATURES, scores.output[0]: SCORES, gather.input[0]: BOXES, gather.output[0]: PROPOSALS}
+
+
+def _mask_queries(model: onnx.ModelProto) -> str:
+    """Find the query features the segmentation head reads, by structure.
+
+    The head computes q' = proj(x + mlp(norm(x))) for the decoder's final query features x, then the per-query
+    mask product q' . s over every pixel feature s; x is the residual input that no bias Add produces.
+    """
+    graph = _index(onnx.shape_inference.infer_shapes(model))
+    products = [
+        node
+        for node in model.graph.node
+        if node.op_type == "MatMul" and graph.shapes.get(node.output[0]) == [1, QUERY_COUNT, MASK_SIZE**2]
+    ]
+    _require(len(products) == 1, f"one per-query mask product, found {len(products)}")
+    bias = _producer(graph.producers, products[0].input[0], "Add")
+    projection = _producer(graph.producers, next(name for name in bias.input if name not in graph.constants), "MatMul")
+    residual = _producer(graph.producers, projection.input[0], "Add")
+    sources = [name for name in residual.input if graph.producers.get(name, residual).op_type != "Add"]
+    _require(len(sources) == 1, f"one query input to the mask head's residual at {residual.name}")
+    _require(graph.shapes.get(sources[0]) == BOUNDARY_SHAPES[QUERIES], "query features shape")
+    return sources[0]
 
 
 def _optimize_window_attention(model: onnx.ModelProto, blocks: int) -> onnx.ModelProto:
@@ -811,12 +838,12 @@ def annotate_bf16_regions(graph: Path, regions: list[str]) -> dict[str, int]:
     return {precision: list(marks.values()).count(precision) for precision in ("bfloat16", "int8")}
 
 
-def graph_paths(output_dir: Path) -> tuple[Path, Path]:
-    """Return where prepare_model writes the backbone and decoder graphs."""
-    return tuple(output_dir / f"rf_detr_seg_nano_{part}.onnx" for part in ("backbone", "decoder"))
+def graph_paths(output_dir: Path) -> tuple[Path, Path, Path]:
+    """Return where prepare_model writes the backbone, decoder and mask head graphs."""
+    return tuple(output_dir / f"rf_detr_seg_nano_{part}.onnx" for part in ("backbone", "decoder", "mask_head"))
 
 
-def prepare_model(source: Path, output_dir: Path) -> tuple[Path, Path]:
+def prepare_model(source: Path, output_dir: Path) -> tuple[Path, Path, Path]:
     from onnxsim import simplify
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -826,7 +853,9 @@ def prepare_model(source: Path, output_dir: Path) -> tuple[Path, Path]:
     _require_folded(full)
     full = _remove_noop_masks(full, {"Where": 6, "ScatterND": 1})
     full = _remove_identities(full, {"Cast": 4, "Expand": 1, "Gather": 2})
-    for old, new in _cut_points(full).items():
+    cuts = _cut_points(full)
+    cuts[_mask_queries(full)] = QUERIES
+    for old, new in cuts.items():
         _rename_value(full, old, new)
     for name, shape in BOUNDARY_SHAPES.items():
         _set_value_info(full, name, shape)
@@ -836,10 +865,22 @@ def prepare_model(source: Path, output_dir: Path) -> tuple[Path, Path]:
     onnx.checker.check_model(full)
 
     full_path = output_dir / "rf_detr_seg_nano_full.onnx"
-    backbone_path, decoder_path = graph_paths(output_dir)
+    backbone_path, decoder_path, mask_head_path = graph_paths(output_dir)
     onnx.save(full, full_path)
     onnx.utils.extract_model(str(full_path), str(backbone_path), [INPUT], [FEATURES, SCORES, BOXES])
-    onnx.utils.extract_model(str(full_path), str(decoder_path), [FEATURES, PROPOSALS], OUTPUTS)
+    onnx.utils.extract_model(str(full_path), str(decoder_path), [FEATURES, PROPOSALS], DECODER_OUTPUTS)
+    # The mask head compiles on its own, so it can run at a lower precision than the decoder's transformer.
+    onnx.utils.extract_model(str(full_path), str(mask_head_path), [FEATURES, QUERIES], ["masks"])
+    mask_head, valid = simplify(
+        onnx.load(mask_head_path),
+        overwrite_input_shapes={name: BOUNDARY_SHAPES[name] for name in (FEATURES, QUERIES)},
+        dynamic_input_shape=False,
+    )
+    if not valid:
+        raise RuntimeError("RF-DETR mask head simplification failed validation")
+    mask_head.ir_version = 8
+    onnx.checker.check_model(mask_head)
+    onnx.save(mask_head, mask_head_path)
 
     decoder = onnx.load(decoder_path)
     decoder, valid = simplify(
@@ -866,13 +907,14 @@ def prepare_model(source: Path, output_dir: Path) -> tuple[Path, Path]:
     backbone.ir_version = 8
     onnx.checker.check_model(backbone)
     onnx.save(backbone, backbone_path)
-    return backbone_path, decoder_path
+    return backbone_path, decoder_path, mask_head_path
 
 
 def validate_float_split(
     source: Path,
     backbone: Path,
     decoder: Path,
+    mask_head: Path,
     image: np.ndarray,
 ) -> None:
     import onnxruntime as ort
@@ -883,6 +925,7 @@ def validate_float_split(
     reference = ort.InferenceSession(reference_model.SerializeToString(), providers=["CPUExecutionProvider"])
     backbone_session = ort.InferenceSession(str(backbone), providers=["CPUExecutionProvider"])
     decoder_session = ort.InferenceSession(str(decoder), providers=["CPUExecutionProvider"])
+    mask_head_session = ort.InferenceSession(str(mask_head), providers=["CPUExecutionProvider"])
     sample = image[None]
     features, scores, boxes = backbone_session.run(None, {INPUT: sample})
     *expected, selected = reference.run(None, {INPUT: sample})
@@ -893,7 +936,9 @@ def validate_float_split(
         raise RuntimeError(f"RF-DETR split selects different proposals; largest score gap {gaps.max():.2e}")
     # Compare the decoder on TopK's own order so a tie swap cannot pair queries with other boxes.
     proposals = np.take_along_axis(boxes, selected[..., None], 1).astype(np.float32)
-    actual = decoder_session.run(None, {FEATURES: features, PROPOSALS: proposals})
+    dets, labels, queries = decoder_session.run(None, {FEATURES: features, PROPOSALS: proposals})
+    (masks,) = mask_head_session.run(None, {FEATURES: features, QUERIES: queries})
+    actual = [dets, labels, masks]
     for name, expected_value, actual_value in zip(OUTPUTS, expected, actual, strict=True):
         maximum_error = float(np.max(np.abs(actual_value - expected_value)))
         if name == "masks":

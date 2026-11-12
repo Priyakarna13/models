@@ -1,9 +1,10 @@
 """Benchmark RF-DETR Seg Nano with Neat Core and save its report.
 
-Given --mpk backbone=<path> --mpk decoder=<path> and --dataset coco-2017-val=<extracted directory>, the
-script measures the whole model as it runs on one COCO image in a 720p frame: Neat's preprocessing and the
-backbone, the top 100 proposals on the CPU, the decoder with its mask head, and an application's selection of
-the confident instances and their masks on the CPU, each stage working on a different frame at the same time.
+Given --mpk backbone=<path> --mpk decoder=<path> --mpk mask_head=<path> and --dataset coco-2017-val=<extracted
+directory>, the script measures the whole model as it runs on one COCO image in a 720p frame: Neat's
+preprocessing and the backbone, the top 100 proposals on the CPU, the decoder, the mask head, and an application's
+selection of the confident instances and their masks on the CPU, each stage working on a different frame at the
+same time.
 It also records each MPK's MLA layer and stage stats and its execution plan.
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import random
 import threading
+from collections import deque
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -67,15 +69,15 @@ def select_top_proposals(scores: pyneat.Tensor, boxes: pyneat.Tensor) -> pyneat.
     return pyneat.Tensor.from_numpy(proposals, copy=True, memory=pyneat.TensorMemory.EV74)
 
 
-def select_instances(labels: pyneat.Tensor, masks: pyneat.Tensor) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def select_instances(labels: np.ndarray, masks: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The confident query/class pairs, best first, with their scores and binary masks."""
-    logits = labels.to_numpy(copy=False).reshape(QUERY_COUNT * CLASSES)
+    logits = labels.reshape(QUERY_COUNT * CLASSES)
     # A logit above the threshold's logit is a score above it, so the sigmoid runs only on the kept pairs.
     candidates = np.flatnonzero(logits > np.log(SCORE_THRESHOLD / (1 - SCORE_THRESHOLD)))
     order = candidates[np.argsort(-logits[candidates], kind="stable")[:TOP_INSTANCES]]
     scores = 1.0 / (1.0 + np.exp(-logits[order]))
     # The decoder returns the mask logits channels-last: height, width, then one channel per query.
-    binary = np.moveaxis(masks.to_numpy(copy=False)[0][:, :, order // CLASSES] > 0, -1, 0)
+    binary = np.moveaxis(masks[0][:, :, order // CLASSES] > 0, -1, 0)
     return order % CLASSES, scores, binary
 
 
@@ -133,7 +135,7 @@ def frame_tensor(path: Path) -> pyneat.Tensor:
 
 
 def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor) -> tuple[pyneat.ModelRunner, ...]:
-    """A runner for each model. The decoder's is built from one real backbone output."""
+    """A runner for each model. The decoder's and mask head's are built from one real upstream output."""
     run_options = pyneat.RunOptions()
     run_options.queue_depth = QUEUE_DEPTH
     run_options.overflow_policy = pyneat.OverflowPolicy.Block
@@ -141,24 +143,28 @@ def build_runners(models: dict[str, pyneat.Model], image: pyneat.Tensor) -> tupl
     features, scores, boxes = backbone.run([image], timeout_ms=TIMEOUT_MS)
     # The decoder's EV74 input stage cannot read the backbone's output memory, so features are copied with cvu().
     decoder = models["decoder"].build([features.cvu(), select_top_proposals(scores, boxes)], run_options=run_options)
-    return backbone, decoder
+    _, _, queries = decoder.run([features.cvu(), select_top_proposals(scores, boxes)], timeout_ms=TIMEOUT_MS)
+    mask_head = models["mask_head"].build([features.cvu(), queries.cvu()], run_options=run_options)
+    return backbone, decoder, mask_head
 
 
-def infer_one(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor) -> None:
+def infer_one(runners: tuple[pyneat.ModelRunner, ...], image: pyneat.Tensor) -> None:
+    backbone, decoder, mask_head = runners
     features, scores, boxes = backbone.run([image], timeout_ms=TIMEOUT_MS)
-    _, labels, masks = decoder.run([features.cvu(), select_top_proposals(scores, boxes)], timeout_ms=TIMEOUT_MS)
-    select_instances(labels, masks)
+    _, labels, queries = decoder.run([features.cvu(), select_top_proposals(scores, boxes)], timeout_ms=TIMEOUT_MS)
+    (masks,) = mask_head.run([features.cvu(), queries.cvu()], timeout_ms=TIMEOUT_MS)
+    select_instances(labels.to_numpy(copy=False), masks.to_numpy(copy=False))
 
 
-def measure_latency(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor) -> list[float]:
-    """Seconds per frame through all three stages with nothing else in flight, after the warm-up."""
+def measure_latency(runners: tuple[pyneat.ModelRunner, ...], image: pyneat.Tensor) -> list[float]:
+    """Seconds per frame through every stage with nothing else in flight, after the warm-up."""
     for _ in range(WARMUP_FRAMES):
-        infer_one(backbone, decoder, image)
+        infer_one(runners, image)
     seconds: list[float] = []
     ends = time.perf_counter() + MIN_DURATION_S
     while len(seconds) < MEASURED_FRAMES or time.perf_counter() < ends:
         started = time.perf_counter()
-        infer_one(backbone, decoder, image)
+        infer_one(runners, image)
         seconds.append(time.perf_counter() - started)
     return seconds
 
@@ -219,13 +225,17 @@ def run_together(*stages: Callable[[], None], runners: tuple[pyneat.ModelRunner,
         raise errors[0]
 
 
-def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner, image: pyneat.Tensor) -> Throughput:
+def measure_throughput(runners: tuple[pyneat.ModelRunner, ...], image: pyneat.Tensor) -> Throughput:
     """Frames per second and board telemetry with every stage busy, each on a different frame. The measured span
     starts after WARMUP_FRAMES outputs and lasts at least MEASURED_FRAMES frames and MIN_DURATION_S seconds."""
     monitor = pyneat.TelemetryMonitor()
     measured = threading.Event()
     throughput: Throughput | None = None
-    pushed = {"backbone": 0, "decoder": 0}
+    backbone, decoder, mask_head = runners
+    pushed = {"backbone": 0, "decoder": 0, "mask_head": 0}
+    # What each frame's later stages need from earlier ones, in frame order: every runner keeps frames in order.
+    mask_features: deque[pyneat.Tensor] = deque()
+    frame_labels: deque[np.ndarray] = deque()
 
     def push_inputs() -> None:
         try:
@@ -240,6 +250,8 @@ def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner
         try:
             for features, scores, boxes in drain(backbone, "backbone", pushed):
                 proposals = select_top_proposals(scores, boxes)
+                # The mask head reads the same features later, so it gets its own EV74 copy.
+                mask_features.append(features.cvu())
                 push(decoder, [features.cvu(), proposals], "decoder")
                 pushed["decoder"] += 1
                 # The decoder holds its inputs now, so the backbone gets its output buffers back.
@@ -247,11 +259,21 @@ def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner
         finally:
             decoder.close_input()
 
+    def forward_queries() -> None:
+        try:
+            for _, labels, queries in drain(decoder, "decoder", pushed):
+                frame_labels.append(labels.to_numpy(copy=True))
+                push(mask_head, [mask_features.popleft(), queries.cvu()], "mask_head")
+                pushed["mask_head"] += 1
+                del labels, queries
+        finally:
+            mask_head.close_input()
+
     def pull_outputs() -> None:
         nonlocal throughput
         outputs, started = 0, 0.0
-        for tensors in drain(decoder, "decoder", pushed):
-            select_instances(tensors[1], tensors[2])
+        for tensors in drain(mask_head, "mask_head", pushed):
+            select_instances(frame_labels.popleft(), tensors[0].to_numpy(copy=False))
             # Return the decoder's output buffers before the next pull.
             del tensors
             outputs += 1
@@ -267,13 +289,13 @@ def measure_throughput(backbone: pyneat.ModelRunner, decoder: pyneat.ModelRunner
             raise RuntimeError("the pipeline stopped before the measured span ended")
 
     try:
-        run_together(push_inputs, forward_proposals, pull_outputs, runners=(backbone, decoder))
+        run_together(push_inputs, forward_proposals, forward_queries, pull_outputs, runners=runners)
     finally:
         # A failure inside the measured span leaves the monitor running.
         if monitor.running():
             monitor.stop()
-        backbone.close()
-        decoder.close()
+        for runner in runners:
+            runner.close()
     return throughput
 
 
@@ -299,7 +321,7 @@ def write_report(
         models,
         workload=(
             f"{image} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, Neat preprocessing stretched to "
-            f"{IMAGE_SIZE}x{IMAGE_SIZE}, backbone, top {QUERY_COUNT} proposals on the CPU, decoder with mask head, "
+            f"{IMAGE_SIZE}x{IMAGE_SIZE}, backbone, top {QUERY_COUNT} proposals on the CPU, decoder, mask head, "
             f"and the top {TOP_INSTANCES} instances above {SCORE_THRESHOLD} with their {IMAGE_SIZE // 4}x"
             f"{IMAGE_SIZE // 4} masks on the CPU, pipelined {QUEUE_DEPTH} frames deep"
         ),
@@ -321,19 +343,20 @@ def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, ou
     models = {
         "backbone": pyneat.Model(str(mpks["backbone"]), image_options()),
         "decoder": pyneat.Model(str(mpks["decoder"])),
+        "mask_head": pyneat.Model(str(mpks["mask_head"])),
     }
     path = sample_image(dataset)
     image = frame_tensor(path)
-    backbone, decoder = build_runners(models, image)
-    latencies = measure_latency(backbone, decoder, image)
-    throughput = measure_throughput(backbone, decoder, image)
+    runners = build_runners(models, image)
+    latencies = measure_latency(runners, image)
+    throughput = measure_throughput(runners, image)
     write_report(output, f"{dataset_id} {path.name}", latencies, throughput, models, mla_layer_stats, mla_stage_stats)
 
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:
     mpks = dict(value.split("=", 1) for value in values if "=" in value)
-    if len(mpks) != len(values) or set(mpks) != {"backbone", "decoder"}:
-        raise SystemExit("--mpk must name exactly backbone=<path> and decoder=<path>")
+    if len(mpks) != len(values) or set(mpks) != {"backbone", "decoder", "mask_head"}:
+        raise SystemExit("--mpk must name exactly backbone=<path>, decoder=<path> and mask_head=<path>")
     return {name: Path(path) for name, path in mpks.items()}
 
 

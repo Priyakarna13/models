@@ -31,7 +31,7 @@ conversion:
 compilation:
   format: onnx
   source: conversion
-  components: [backbone, decoder]
+  components: [backbone, decoder, mask_head]
 
 calibrations:
 - id: coco-2017-cal
@@ -40,6 +40,7 @@ calibrations:
 # On-demand because Spot runners repeatedly lost RF-DETR compiles mid-run (sima-neat/vulcan#298).
 build_profiles:
   w8a16_w16a16:
+    # The most accurate build: 0.402 COCO mask AP at 62.4 FPS on a DevKit, against the FP32 ONNX's 0.404.
     # The decoder calibrates on this backbone's outputs; W8A16 skips backbone calibration.
     calibration_dataset: coco-2017-cal
     runner_market: on-demand
@@ -49,9 +50,40 @@ build_profiles:
       # Sin/Cos use INT8 lookup tables even at BF16, so the decoder needs calibrated ranges.
       decoder:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+      mask_head:
+        parameters: {precision: w16a16}
 
-  # No w8a8_w16a16: on a DevKit it ran at 77.5 FPS against w8a16_w16a16's 62.8, but scored 0.357 COCO mask AP,
-  # 11.8% below the FP32 ONNX's 0.404, against w8a16_w16a16's 0.402. compile.py keeps its recipe.
+  w8a16_w16a16_w8a8:
+    # The fastest build: an INT8 mask head cuts its four 78x78 blocks from 6.8 ms to 2.1 ms of MLA time, for
+    # 88.6 FPS and 0.398 COCO mask AP on a DevKit.
+    calibration_dataset: coco-2017-cal
+    runner_market: on-demand
+    components:
+      backbone:
+        parameters: {precision: w8a16, per_token: true}
+      # Sin/Cos use INT8 lookup tables even at BF16, so the decoder needs calibrated ranges.
+      decoder:
+        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+      # The mask head calibrates on this build's quantized backbone features and decoder queries.
+      mask_head:
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
+
+  # No w8a16: with the mask head inside the decoder, Model Compiler 3.0.0.1 (sima-mlc 3.0.0.dev0+master.194) failed
+  # a W8A16 decoder in its large-tensor support with "Overlap in L1 detected" at MLA_0/conv2d_add_54, with and
+  # without per_token; w8a16_w16a16_w8a8 lowers the mask head's precision instead. compile.py keeps its recipe.
+  # w8a16:
+  #   calibration_dataset: coco-2017-cal
+  #   runner_market: on-demand
+  #   components:
+  #     backbone:
+  #       parameters: {precision: w8a16, per_token: true}
+  #     decoder:
+  #       parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 50}
+  #     mask_head:
+  #       parameters: {precision: w16a16}
+
+  # No w8a8_w16a16: before the mask head became its own component, it ran at 77.5 FPS on a DevKit against
+  # w8a16_w16a16's 62.8, but scored 0.357 COCO mask AP, 11.8% below the FP32 ONNX's 0.404. compile.py keeps its recipe.
   # w8a8_w16a16:
   #   calibration_dataset: coco-2017-cal
   #   runner_market: on-demand
@@ -60,9 +92,11 @@ build_profiles:
   #       parameters: {precision: w8a8, calibration_bins: 1024, calibration_samples: 50}
   #     decoder:
   #       parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+  #     mask_head:
+  #       parameters: {precision: w16a16}
 
-  # No w8a8_mixed_w16a16: RF-DETR Nano's BF16 regions ran at 61.7 FPS and scored 0.395 COCO mask AP on a DevKit,
-  # slower and less accurate than w8a16_w16a16, so it offers no trade-off. compile.py keeps its recipe.
+  # No w8a8_mixed_w16a16: before the mask head became its own component, RF-DETR Nano's BF16 regions ran at 61.7 FPS
+  # and scored 0.395 COCO mask AP on a DevKit, slower and less accurate than w8a16_w16a16. compile.py keeps its recipe.
   # w8a8_mixed_w16a16:
   #   calibration_dataset: coco-2017-cal
   #   runner_market: on-demand
@@ -75,11 +109,14 @@ build_profiles:
   #         bf16_regions: [residual, attention_global, projector, head, outputs]
   #     decoder:
   #       parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
+  #     mask_head:
+  #       parameters: {precision: w16a16}
 
 pipeline:
 - {component: backbone}
 - {cpu: Top 100 proposals}
 - {component: decoder}
+- {component: mask_head}
 
 numerical_fidelity:
   # Reordered queries can lower numerical similarity for equivalent detections.
