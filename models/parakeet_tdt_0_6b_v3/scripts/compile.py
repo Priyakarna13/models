@@ -7,21 +7,37 @@ import base64
 import gc
 import json
 import logging
-import multiprocessing
 import os
 import resource
 import shutil
+import site
+import subprocess
+import sysconfig
 import tarfile
 import tempfile
+import venv
 from importlib.metadata import version
 from pathlib import Path
 
+import model_registry
 import numpy as np
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from onnx_export import partition
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
+# Kept in this compile input so dependency changes invalidate compilation, not conversion.
+EXPORT_REQUIREMENTS = (
+    "torch==2.8.0",
+    "transformers==5.16.1",
+    "safetensors==0.8.0",
+    "numpy==1.26.4",
+    "onnx==1.17.0",
+    "onnxsim==0.7.3",
+    "onnxruntime==1.21.1",
+    "librosa==0.11.0",
+    "scipy==1.14.1",
+)
 RUNTIME_FILES = (
     "predictor_cpu_int8.onnx",
     "joiner_cpu_int8.onnx",
@@ -142,6 +158,56 @@ def prepare_model(source: Path, temporary: Path, component: Path) -> None:
     (temporary / "config.json").write_text(json.dumps(config))
 
 
+def prepare_in_environment(source: Path, temporary: Path, component: Path) -> None:
+    """Install export dependencies in a disposable environment, keeping the compiler unchanged."""
+    with tempfile.TemporaryDirectory(dir=temporary, prefix="export-env-") as directory:
+        directory = Path(directory)
+        venv.EnvBuilder(with_pip=True).create(directory)
+        python = directory / "bin/python"
+        packages = Path(sysconfig.get_path("purelib", vars={"base": str(directory), "platbase": str(directory)}))
+        # Reuse compatible compiler packages as fallbacks. Pip installs missing or conflicting versions only
+        # in the export environment, whose own packages precede these paths. Include CI's registry tooling.
+        inherited = [
+            *site.getsitepackages(),
+            *os.environ.get("PYTHONPATH", "").split(os.pathsep),
+            str(Path(model_registry.__file__).resolve().parent.parent),
+        ]
+        paths = list(dict.fromkeys(str(Path(path).resolve()) for path in inherited if path))
+        (packages / "compiler-packages.pth").write_text("\n".join(paths) + "\n")
+        subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-m",
+                "pip",
+                "--isolated",
+                "install",
+                "--disable-pip-version-check",
+                *EXPORT_REQUIREMENTS,
+            ],
+            check=True,
+        )
+        # Isolated mode prevents PYTHONPATH or user packages from overriding the installed export pins.
+        bootstrap = (
+            "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+            "from transformers import AutoModelForRNNT, AutoModelForTDT, AutoProcessor; "
+            "from compile import prepare_model; prepare_model(*(Path(p) for p in sys.argv[2:]))"
+        )
+        subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-c",
+                bootstrap,
+                str(MODEL_DIR / "scripts"),
+                str(source),
+                str(temporary),
+                str(component),
+            ],
+            check=True,
+        )
+
+
 def compile_model(source: Path, profile: str, output: Path) -> Path:
     # Limit simulator memory on the default 32 GB compile runner.
     simulator_threads = os.environ.setdefault("SIMA_MLA_SIM_PARALLEL", "1")
@@ -155,11 +221,7 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
     component.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(dir=output, prefix="encoder-") as temporary:
         temporary = Path(temporary)
-        worker = multiprocessing.get_context("spawn").Process(target=prepare_model, args=(source, temporary, component))
-        worker.start()
-        worker.join()
-        if worker.exitcode != 0:
-            raise RuntimeError(f"Source preparation failed: {worker.exitcode}")
+        prepare_in_environment(source, temporary, component)
         shutil.copyfile(temporary / "graphs/source-validation.json", output / "source-validation.json")
         config = json.loads((temporary / "config.json").read_text())
         encoder_path = temporary / "encoder.onnx"

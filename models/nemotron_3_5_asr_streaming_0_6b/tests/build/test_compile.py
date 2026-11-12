@@ -1,7 +1,9 @@
 import json
 import math
 import sys
+from pathlib import Path
 
+import pytest
 from model_registry.runtime_files import read_runtime_files
 
 
@@ -201,3 +203,42 @@ def test_partition_retains_only_used_inputs_and_preserves_metadata(load_script):
     onnx.checker.check_model(encoder)
     with pytest.raises(ValueError, match="declared"):
         partition(model, ["missing"])
+
+
+@pytest.mark.parametrize("install_fails", [False, True])
+def test_export_dependencies_are_installed_only_in_the_export_environment(
+    tmp_path, load_script, monkeypatch, install_fails
+):
+    from types import SimpleNamespace
+
+    recipe = load_script("compile")
+    calls = []
+
+    def create(directory):
+        path = recipe.sysconfig.get_path("purelib", vars={"base": str(directory), "platbase": str(directory)})
+        Path(path).mkdir(parents=True)
+
+    def run(command, **kwargs):
+        assert kwargs == {"check": True}
+        calls.append(command)
+        assert command[1] == "-I"
+        assert str(tmp_path) in command[0] and command[0] != sys.executable
+        if install_fails:
+            raise recipe.subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(recipe.venv, "EnvBuilder", lambda **kwargs: SimpleNamespace(create=create))
+    monkeypatch.setattr(recipe.subprocess, "run", run)
+    if install_fails:
+        with pytest.raises(recipe.subprocess.CalledProcessError):
+            recipe.prepare_in_environment(tmp_path / "weights.pth", tmp_path, tmp_path / "model")
+        assert len(calls) == 1
+    else:
+        recipe.prepare_in_environment(tmp_path / "weights.pth", tmp_path, tmp_path / "model")
+        install, prepare = calls
+        assert install[2:7] == ["-m", "pip", "--isolated", "install", "--disable-pip-version-check"]
+        assert "transformers==5.16.1" in install and "torch==2.8.0" in install
+        assert install[7:] == list(recipe.EXPORT_REQUIREMENTS)
+        assert prepare[0] == install[0] and prepare[2] == "-c"
+        assert "AutoModelForRNNT" in prepare[3] and "AutoModelForTDT" in prepare[3]
+        assert "prepare_model" in prepare[3]
+    assert not list(tmp_path.glob("export-env-*"))

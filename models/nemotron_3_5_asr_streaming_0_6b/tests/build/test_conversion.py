@@ -49,7 +49,8 @@ def test_converted_checkpoint_preserves_every_source_tensor_and_asset(converted,
         assert (hashlib.sha256(data).hexdigest(), len(data)) == (assets[name]["sha256"], assets[name]["size_bytes"])
 
 
-def test_surgery_changes_only_the_compile_fingerprint(tmp_path, model_dir):
+@pytest.mark.parametrize("changed_file", ["surgery.py", "compile.py"])
+def test_compile_changes_do_not_invalidate_conversion(tmp_path, model_dir, changed_file):
     root = model_dir.parents[1]
     for name in ("schemas", "taxonomies"):
         shutil.copytree(root / name, tmp_path / name)
@@ -66,8 +67,14 @@ def test_surgery_changes_only_the_compile_fingerprint(tmp_path, model_dir):
         return compile_fingerprint(tmp_path, model["id"], "w8a16", "w8a16", "test", conversion_sources=selected)
 
     before = compiled()
-    surgery = target / "scripts/surgery.py"
-    surgery.write_text(surgery.read_text() + "\n# changed compiler adaptation\n")
+    changed = target / "scripts" / changed_file
+    contents = changed.read_text()
+    if changed_file == "compile.py":
+        assert "transformers==5.16.1" in contents
+        contents = contents.replace("transformers==5.16.1", "transformers==5.16.2")
+    else:
+        contents += "\n# changed compiler adaptation\n"
+    changed.write_text(contents)
     assert conversion_fingerprint(tmp_path, model) == original
     assert compiled() != before
 
