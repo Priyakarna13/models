@@ -146,6 +146,13 @@ def iou(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
     return overlap / (area + areas - overlap + 1e-9)
 
 
+def class_aware(corners: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Offset each class's boxes by CLASS_OFFSET, in float32 as Ultralytics does, so one NMS pass never compares two
+    classes. At these offsets float32 rounds a high class's coordinates (to 1/16 pixel from class 69), which decides
+    some overlaps near IOU_THRESHOLD the way Ultralytics' NMS does."""
+    return corners + (labels * CLASS_OFFSET).astype(np.float32)[:, None]
+
+
 def nms(boxes: np.ndarray, scores: np.ndarray) -> np.ndarray:
     """Greedy NMS like torchvision: indices of the kept boxes, best first, dropping overlaps above IOU_THRESHOLD."""
     order = np.argsort(-scores, kind="stable")
@@ -185,7 +192,7 @@ def select(outputs: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.nd
     distances = edge_distances(distributions[unique])[inverse]
     corners = np.hstack([ANCHORS[anchor] - distances[:, :2], ANCHORS[anchor] + distances[:, 2:]])
     corners *= ANCHOR_STRIDES[anchor]
-    kept = nms(corners + (label * CLASS_OFFSET)[:, None], scores)
+    kept = nms(class_aware(corners, label), scores)
     return corners[kept], scores[kept], label[kept], coefficients[anchor[kept]]
 
 

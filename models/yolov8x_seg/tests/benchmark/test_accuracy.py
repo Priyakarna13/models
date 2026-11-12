@@ -84,6 +84,16 @@ def test_nms_suppresses_overlaps_within_a_class_only(accuracy_script: ModuleType
     assert [(round(item["score"], 4), item["category_id"]) for item in results] == [(0.8808, 1), (0.6225, 2)]
 
 
+def test_nms_offsets_classes_in_float32_like_ultralytics(accuracy_script: ModuleType) -> None:
+    # These boxes overlap at IoU 0.700035. Ultralytics' float32 class offset rounds class 79's coordinates to 1/16
+    # pixel, which keeps both; for class 0 the overlap stays above the threshold and NMS keeps one.
+    corners = np.array([[100, 100, 200, 200], [100, 100, 200, 242.85]], np.float32)
+    scores = np.array([0.9, 0.8], np.float32)
+
+    for label, kept in ((79, 2), (0, 1)):
+        assert len(accuracy_script.nms(accuracy_script.class_aware(corners, np.full(2, label)), scores)) == kept
+
+
 def test_decode_keeps_at_most_300_detections(accuracy_script: ModuleType) -> None:
     outputs = _board_outputs(accuracy_script)
     # Every stride-8 anchor predicts a separate small box for one class.
