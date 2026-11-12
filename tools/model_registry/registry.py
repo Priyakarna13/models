@@ -658,6 +658,9 @@ def build_catalog_snapshot(
         if model["id"] not in deferred:
             continue
         entry = dict(model)
+        # Selections belong to the target branch and are restored by the server;
+        # a base catalog's approval metadata must not be submitted as our own.
+        entry.pop("approved_deployments", None)
         # Categories follow this checkout's taxonomy, which may have renamed IDs
         # since the carried entry was published.
         entry["categories"] = validate_model_categorization(all_models[model["id"]], taxonomy)

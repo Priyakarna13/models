@@ -1507,6 +1507,30 @@ def test_progress_publication_does_not_reimport_base_packages(
     assert captured["selected_matrix"] == (None if continuing_revision else selected)
 
 
+def test_deferred_catalog_entry_does_not_publish_server_owned_approvals(monkeypatch):
+    prior = {
+        "id": "deferred", "build_on_demand": True,
+        "builds": [{"run_id": "existing-build"}], "packages": [{"run_id": "existing-package"}],
+        "build_requirements": {"w8a16": {"compiler_version": "original"}},
+        "approved_deployments": {"w8a16": {"candidate_id": "base-branch-selection"}},
+    }
+    original = json.loads(json.dumps(prior))
+    monkeypatch.setattr("model_registry.registry.load_models", lambda _: {"deferred": object()})
+    monkeypatch.setattr("model_registry.registry._catalog_models", lambda _: {})
+    monkeypatch.setattr("model_registry.registry._head_matrix", lambda *_: [])
+    monkeypatch.setattr("model_registry.registry.validate_model_categorization", lambda *_: {})
+    document = build_catalog_snapshot(
+        repository=ROOT, branch="feature", git_sha="a" * 40,
+        previous={"models": [prior]}, incremental=True,
+    )
+    entry = document["models"][0]
+    assert "approved_deployments" not in entry
+    assert entry["builds"] == prior["builds"]
+    assert entry["packages"] == prior["packages"]
+    assert entry["build_requirements"] == prior["build_requirements"]
+    assert prior == original
+
+
 @pytest.mark.parametrize("continuing_revision", [False, True])
 @pytest.mark.parametrize("has_previous", [False, True])
 def test_deferred_conversion_inheritance_respects_catalog_revision(monkeypatch, continuing_revision, has_previous):
