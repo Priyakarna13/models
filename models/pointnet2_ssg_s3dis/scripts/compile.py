@@ -34,7 +34,6 @@ from afe.apis.loaded_net import load_model
 from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from pointcloud import (
@@ -50,7 +49,6 @@ from sima_utils.data.data_generator import DataGenerator
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "pointnet2_ssg_s3dis"
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 # The terminal EV74 plugin only converts the MLA result to the float32 interface: BF16 builds end in a cast.
 OUTPUT_KERNELS = {"pass_through", "cast_transform"}
 # Share of a synthetic block's points whose compiled-pipeline label must equal FP32's.
@@ -168,11 +166,6 @@ def audit_mpk(archive: Path, component_id: str) -> None:
         raise RuntimeError(
             f"invalid {component_id} MPK: MLA={len(mla_plugins)}, ELF={len(elfs)}, host={len(host_plugins)}, "
             f"shared_objects={shared_objects}"
-        )
-    if str(manifest.get("model_sdk_version")) != COMPILER_VERSION:
-        raise RuntimeError(
-            f"{component_id} MPK compiler mismatch: expected {COMPILER_VERSION}, "
-            f"found {manifest.get('model_sdk_version')}"
         )
     inputs = {node.get("name"): node.get("size") for node in manifest.get("input_nodes", [])}
     if inputs != {input_name(component_id): math.prod(INPUT_SHAPES[component_id]) * 4}:

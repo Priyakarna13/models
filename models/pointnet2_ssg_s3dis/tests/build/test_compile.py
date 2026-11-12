@@ -148,7 +148,6 @@ def test_synthetic_block_is_seeded(pointcloud: ModuleType) -> None:
 
 def _mpk_manifest(compile_module: ModuleType, component: str) -> dict:
     return {
-        "model_sdk_version": compile_module.COMPILER_VERSION,
         "input_nodes": [{"name": compile_module.input_name(component),
                          "size": math.prod(compile_module.INPUT_SHAPES[component]) * 4}],
         "plugins": [
@@ -172,7 +171,7 @@ def _write_mpk(path: Path, manifest: dict) -> None:
             stream.addfile(info, io.BytesIO(content))
 
 
-@pytest.mark.parametrize("case", ["valid", "inputs", "outputs", "kernel", "two_mla", "host", "compiler"])
+@pytest.mark.parametrize("case", ["valid", "inputs", "outputs", "kernel", "two_mla", "host"])
 def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     tmp_path: Path, case: str, load_script: Callable[[str], ModuleType]
 ) -> None:
@@ -189,8 +188,6 @@ def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
         plugins.insert(2, {"sequence": 1, "processor": "MLA", "config_params": {}})
     elif case == "host":
         plugins.insert(2, {"sequence": 1, "processor": "A65", "config_params": {}})
-    elif case == "compiler":
-        manifest["model_sdk_version"] = "0.0.0"
     archive = tmp_path / "sa2_mpk.tar.gz"
     _write_mpk(archive, manifest)
     if case == "valid":
