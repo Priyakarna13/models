@@ -448,15 +448,15 @@ benchmarked. The DevKit has no publication credentials.
 
 On the DevKit, the workflow first checks that the profile's components are
 registered and its package receipt is present. It then caches the model's
-accuracy datasets on the DevKit's NVMe, the same step the accuracy stage uses;
+performance and accuracy datasets on the DevKit's NVMe;
 the performance stage does not run when that step fails.
 `scripts/run_model_performance.sh` then:
 
 1. lists each component's MPK with `model-registry model-component-mpks`;
-2. resolves the model's first accuracy dataset from that cache with
-   `model-registry resolve-devkit-accuracy` and extracts it under
-   `/media/nvme/neat-tests/`, which it removes when it exits; a build profile
-   that accuracy does not measure gets no `--dataset`;
+2. resolves `performance.dataset`, or the profile's first accuracy dataset, with
+   `model-registry resolve-devkit-datasets --stage performance` and extracts it
+   under `/media/nvme/neat-tests/`, which it removes when it exits; a profile
+   without either input gets no `--dataset`;
 3. fetches the model's pinned `resources` with `model-registry fetch-resources`
    and passes them as `--resources`, laid out as the package installs them, and
    installs `scripts/requirements-performance.txt`, when the model has it, in a

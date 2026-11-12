@@ -155,14 +155,15 @@ in build parameters. Core execution plans supply tensor details after compilatio
 ## 5. Declare datasets and calibration
 
 Each stage pins the Dataset Registry archive it uses: a `calibrations` entry,
-`numerical_fidelity.dataset`, and each `accuracy.datasets` entry. A pin gives
+`numerical_fidelity.dataset`, optional `performance.dataset`, and each
+`accuracy.datasets` entry. A pin gives
 the dataset ID, variant, SHA-256 and size. An archive goes by its Registry
 source ID, `<id>-<variant>` such as `coco-2017-val`. A build profile names its
 calibration with `calibration_dataset`. Keep sample selections in their
 consuming stage.
 
 Calibration is compiler input for quantization. It is not accuracy evidence.
-Calibration, fidelity, and accuracy datasets resolve through Dataset Registry
+Calibration, fidelity, performance, and accuracy datasets resolve through Dataset Registry
 and need working Artifactory access. See [Datasets for local model
 development](datasets.md).
 
@@ -339,7 +340,7 @@ is always benchmarked again.
 | a model's `resources`: a source pin or an `install_path` | that model's compilation, and the stages after it |
 | a model's tests, or `scripts/run_model_tests.sh` | nothing. The changed test runs the next time its stage runs. |
 | a model's `fp32_baseline_accuracy.py` | nothing; no stage runs it |
-| a model's `performance.py`, its requirements, or `performance` declaration, including `scope` | that model's performance stages |
+| a model's `performance.py`, its requirements, or `performance` declaration, including `scope` and `dataset` | that model's performance stages |
 | a profile's `benchmark_baseline` | that profile's performance; no compilation |
 | `accuracy.py`, its requirements, the `accuracy` datasets, or one of their pins | that model's accuracy stages |
 | a task's entry in `datasets/<id>.yaml` | the accuracy stages of models with that task that evaluate the dataset |
