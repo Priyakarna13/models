@@ -377,6 +377,14 @@ Conventions the code relies on:
 
 ## Model browser
 
+The default Cards overview groups available models by their existing architecture
+ID. Each architecture in `taxonomies/model-taxonomy.yaml` requires a short
+`description` that covers the whole family, without size-specific claims. Keep
+family text there; derive membership, tasks and hero selection from filtered
+models. Family cards select the existing Model family filter; search and Table
+continue to show individual models. This is catalog metadata: do not add taxonomy
+or browser files to conversion, compile or benchmark fingerprints.
+
 Before changing `artifact-browser/`, read its
 [design context](artifact-browser/DESIGN.md) and
 [README](artifact-browser/README.md#how-the-page-is-built). What users see is in
@@ -441,7 +449,8 @@ outputs. Start from the template in
    numbered list, give the class-index mapping, and name the Neat decoder that
    handles the outputs when one exists.
 5. `## Building applications`: the `BUILDING_APPLICATIONS` text from
-   `tools/model_registry/documentation.py`, unchanged.
+   `tools/model_registry/documentation.py`, unchanged. LLiMa deployments
+   (`interface.format: huggingface`) use `GENAI_BUILDING_APPLICATIONS` instead.
 
 Write the README for an application developer:
 
