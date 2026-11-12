@@ -80,6 +80,11 @@ architectures:
     description: Detects objects in images by predicting a set of boxes with a transformer.
     paradigm: transformer
     allowed_model_types: [vision]
+  dfine:
+    display_name: D-FINE
+    description: Detects objects in images by refining box edges as distributions with a transformer decoder.
+    paradigm: transformer
+    allowed_model_types: [vision]
   dinov3:
     display_name: DINOv3
     description: Encodes images into a global embedding and patch embeddings with a vision transformer.
