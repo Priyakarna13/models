@@ -177,6 +177,7 @@ function modelSearchDocument(model) {
     model.documentation?.overview_markdown,
     taxonomyLabel("model_types", model.model_type),
     taxonomyLabel("architectures", model.architecture_id),
+    state.taxonomy?.architectures?.[model.architecture_id]?.description,
     taxonomyLabel("architecture_paradigms", model.architecture_paradigm),
     ...(model.tasks || []).flatMap((id) => [id, taxonomyLabel("tasks", id)]),
     ...(model.input_modalities || []).flatMap((id) => [id, taxonomyLabel("modalities", id)]),
@@ -282,6 +283,22 @@ export function compareModels(left, right) {
   return a.family.localeCompare(b.family) || a.rank - b.rank || a.name.localeCompare(b.name);
 }
 
+// Use the complete, filtered catalog; a family's hero follows the existing model order.
+export function groupModelFamilies(models) {
+  const groups = new Map();
+  for (const model of [...models].sort(compareModels)) {
+    const id = model.architecture_id;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(model);
+  }
+  return [...groups].sort(([left], [right]) => left.localeCompare(right)).map(([id, members]) => ({
+    id,
+    models: members,
+    hero: members.find((model) => documentationHeroUrl(model.documentation)) || members[0],
+    tasks: [...new Set(members.flatMap((model) => model.tasks || []))].sort(),
+  }));
+}
+
 function modelCardImage(model) {
   const heroUrl = documentationHeroUrl(model.documentation);
   return heroUrl
@@ -298,7 +315,16 @@ function catalogMetric(measurements, key) {
 
 // The whole model's throughput and latency for the build profile.
 function tablePerformance(variant) {
-  const result = readPerformance(variant.performance);
+  const order = variant.details.map((detail) => detail.summary.run.metadata.component_id);
+  const result = readPerformance(variant.performance, order);
+  if (result.kind === "supported" && result.value.scope === "components") {
+    return result.value.components.map(({ id, measurements }) => {
+      const label = id.replaceAll("_", " ");
+      const rate = catalogMetric(measurements, "throughput_fps");
+      const latency = catalogMetric(measurements, "latency_avg_ms");
+      return `<span class="catalog-reading"><small>${escapeHtml(label)}</small><span>${escapeHtml(rate || "Not measured")}</span>${latency ? `<small>${escapeHtml(latency)}</small>` : ""}</span>`;
+    }).join("");
+  }
   const measurements = result.kind === "supported" ? result.value.measurements : {};
   const rate = catalogMetric(measurements, "throughput_fps");
   const latency = catalogMetric(measurements, "latency_avg_ms");
@@ -388,9 +414,33 @@ function renderModelCard(model) {
   </button>`;
 }
 
+function renderFamilyCard(family) {
+  const entry = state.taxonomy?.architectures?.[family.id];
+  const target = family.models.length === 1
+    ? `data-run-id="${escapeHtml(activeModelBuild(family.models[0]).build.run_id)}"`
+    : `data-family-id="${escapeHtml(family.id)}"`;
+  const tasks = family.tasks.map((id) => `<span class="model-card-tag">${escapeHtml(taxonomyLabel("tasks", id))}</span>`).join("");
+  return `<button class="model-card" type="button" data-family-card="${escapeHtml(family.id)}" ${target}>
+    ${modelCardImage(family.hero)}
+    <span class="model-card-body">
+      <strong>${escapeHtml(taxonomyLabel("architectures", family.id))}</strong>
+      ${entry?.description ? `<span class="model-card-description">${escapeHtml(entry.description)}</span>` : ""}
+      <span class="model-card-tags">${tasks}</span>
+    </span>
+  </button>`;
+}
+
+export function familyOverview() {
+  if (!state.taxonomy || elements["architecture-filter"].disabled) return false;
+  return catalogMode() && state.catalogLayout === "cards" && !filters().query && !categoryFilters().architecture_id;
+}
+
 function renderModels() {
   const models = filteredModels();
-  elements["result-count"].textContent = `${models.length}${state.hasMore ? "+" : ""} model${models.length === 1 ? "" : "s"}`;
+  const families = familyOverview() ? groupModelFamilies(models) : null;
+  elements["result-count"].textContent = families
+    ? `${families.length} model ${families.length === 1 ? "family" : "families"}`
+    : `${models.length}${state.hasMore ? "+" : ""} model${models.length === 1 ? "" : "s"}`;
   if (!models.length) {
     const noBuilds = !state.compileRuns.length && elements["branch-filter"].value;
     elements["result-list"].innerHTML = noBuilds
@@ -399,7 +449,8 @@ function renderModels() {
     return;
   }
   const sorted = [...models].sort(compareModels);
-  if (state.catalogLayout === "table") renderCatalogTable(sorted);
+  if (families) elements["result-list"].innerHTML = families.map(renderFamilyCard).join("");
+  else if (state.catalogLayout === "table") renderCatalogTable(sorted);
   else elements["result-list"].innerHTML = sorted.map(renderModelCard).join("");
 }
 
@@ -407,7 +458,11 @@ export function renderRuns() {
   tableRequestId += 1;
   const modelsMode = catalogMode();
   const runTitle = elements["history-filter"].checked ? "Build history" : "Latest builds";
-  elements["result-title"].textContent = modelsMode ? "Models" : runTitle;
+  const family = categoryFilters().architecture_id;
+  elements["result-title"].textContent = modelsMode
+    ? family ? taxonomyLabel("architectures", family) : familyOverview() ? "Model families" : "Models"
+    : runTitle;
+  elements["clear-family"].hidden = !modelsMode || !family;
   elements["load-more"].textContent = modelsMode ? "Load more models" : "Load more builds";
   elements["result-list"].setAttribute("aria-busy", "false");
   elements["result-list"].dataset.layout = modelsMode ? state.catalogLayout : "rows";

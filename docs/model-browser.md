@@ -21,8 +21,17 @@ view uses the main catalog and hides branch/compiler filters, build history,
 the Details section and contributor navigation. The developer view keeps those
 controls. Selecting a branch in the developer UI changes the catalog, not the UI.
 
-The catalog opens as a grid of cards, one per model. **Cards** and **Table**
-switch between the two views and remember the choice. The table shows the model,
+The catalog opens as a grid of cards, one per available **Model family**, sorted
+by its existing architecture ID. Selecting a family applies its sidebar filter
+and shows individual model cards in the same grid. A family with one available
+model opens that model directly. **All model families** clears only the family
+selection; other filters remain. Family selection is shareable in the URL, and
+returning from a model or using browser Back preserves the browsing context.
+Branch, compiler and task filters apply before grouping, so families without a
+usable build do not appear. Search always shows matching individual models.
+
+**Cards** and **Table** switch between the two views and remember the choice.
+The table always shows individual models,
 selected precision, measured accuracy and whole-model performance. Changing
 the precision updates its measurements; opening the model shows the full results.
 Both views share search and filters. The table groups models by task, with the
@@ -39,8 +48,19 @@ Dropdown menus use matching text and backgrounds in both themes.
 Filter dropdowns stay neutral after mouse selection; keyboard use shows a neutral focus outline.
 The selected precision tab has a soft blue fill and border.
 
-A card shows four things, all
-taken from the model directory:
+A family card shows four things:
+
+| Card element | Source |
+| --- | --- |
+| Image | First available model hero in the existing model order |
+| Name | Architecture `display_name` in `taxonomies/model-taxonomy.yaml` |
+| One-line description | Architecture `description` in the same taxonomy |
+| Task labels | Union of tasks of the family's currently available models |
+
+Descriptions cover the whole family. Historical catalogs without them omit the
+description. No extra family image or maintained model list is needed.
+
+Individual model cards use the model directory:
 
 | Card element | Source |
 | --- | --- |
@@ -55,7 +75,7 @@ Changing the name, description, or hero does not recompile or remeasure any
 build, because none of them is part of a fingerprint.
 
 The search field matches model, build-profile, and component names and the taxonomy
-labels. Task and model family filters sit beside the cards. Developer view also
+labels and family descriptions. Task and model family filters sit beside the cards. Developer view also
 shows Branch, Compiler and Build history directly in the filter panel. Customer
 view keeps only Task and Model family. Category filters list the values the
 loaded builds use and are hidden when fewer than two remain; developer controls
@@ -66,20 +86,22 @@ chart shows all measured precisions together. Hover over a point to see the mode
 variant, throughput and accuracy. Accuracy is the vertical axis and throughput
 in inferences/s is the horizontal axis. The dataset, variant and split appear below
 the chart title. Accuracy is grouped by dataset and metric; when more than one
-group is available, choose it with **Dataset & metric**.
+group is available, choose it with **Dataset & metric**. The axis title gives the
+metric's unit and says "lower is better" for an error metric such as EPE.
 A multi-component model shows its [whole-model result](benchmarking.md#multi-component-models), with all its components running as one pipeline. Select up to three points or use the compact
 **Add model** selector to show detailed measurements, including power and memory.
 Remove a selected variant using the × in its table heading or its chart label.
 The chart labels only selected variants plotted against its current dataset and metric.
 Selections without matching accuracy or throughput appear only in the comparison table.
 The graph, table and model selector update together. The link
-preserves the task and selected variants. LLM, VLM and audio comparisons show **TBD**.
+preserves the task and selected variants. Tasks containing only LLM, VLM or audio models
+show **TBD**. Multimodal detectors can still join a vision-task comparison.
 
 On a phone, the section navigation shortens **Developer docs** to **Docs**.
 
 ## The model page
 
-Selecting a card opens the model page. The page is built to be read at a glance:
+Selecting an individual model opens its page. The page is built to be read at a glance:
 each section shows its key facts directly, and longer detail sits in a row
 marked with › that opens in place. The header places the model image beside its
 name, description and download action in both UI modes; narrow screens stack them.
@@ -92,11 +114,17 @@ use the same layout with extra fields for package identifiers, component counts,
 format, checksums and attribution. Dialogs and action buttons use softly rounded corners.
 The model's License section retains attribution in both views. Dialog actions
 place Cancel on the left, Copy CLI command in the middle and Download on the right.
+A model whose license does not permit redistribution has no download action. Its
+header shows **Not available for download** in that place, and its Details section
+has no package card.
 A model with several build profiles shows
 one tab per profile, labelled with its variant ID in uppercase, such as
 **W8A8**. Profiles with a W8A8 component come first and the page opens on the
 first tab, whatever order `model.yaml` declares. The GitHub link in the header opens
-the model's folder at the commit the README comes from. LLM and VLM pages show
+the model's folder at the commit the README comes from. The original-model link
+beside it opens the page `upstream.model_card` names. It shows the Hugging Face
+logo for a Hugging Face page and an external-link icon for any other host, such
+as a GitHub release page. LLM and VLM pages show
 the selected build's maximum context length (input plus output tokens) and image
 input resolution directly below the variant selector. Native deployments supply
 their verified settings, including fixed image resolutions without compiler
@@ -213,24 +241,28 @@ in this order:
    components, and **Download CSV** lists each component's layer timings.
 3. **Accuracy.** For each dataset the run evaluated, in `model.yaml` order:
    the coverage (full when the run evaluated every sample of its split,
-   sampled otherwise), the first four metrics, the evaluated sample count, and
+   sampled otherwise), the first four metrics in their units (ratios as
+   percentages, EPE in pixels, D1-all in percent), the evaluated sample count, and
    the commit and GitHub workflow of the run that measured them. With more than
    one dataset, each result is titled by its dataset name. The catalog table
-   and **Compare** use the first dataset.
+   and **Compare** use the first dataset. Under each of the four metrics, both
+   views show its published score and its FP32 baseline when `reference_metrics`
+   records them for the measured dataset.
    In the developer UI, each dataset's **Evaluation details** explains the coverage and lists
-   the remaining metrics, each with its published score when
-   `reference_metrics` in `model.yaml` records one for the measured dataset.
-   Its **Published scores** row lists every reference entry with its dataset,
-   conditions, and source. A build with no accuracy result yet shows only the
-   published scores.
+   the remaining metrics, each with its published score and its FP32 baseline
+   when `reference_metrics` in `model.yaml` records them for the measured
+   dataset. The **Published scores** and **FP32 baseline** rows list each
+   origin's entries with their dataset, conditions, and source or script. A
+   build with no accuracy result yet shows only the reference scores, each
+   origin under its own explanation.
 4. **Details (developer UI only).** The package with its size, checksum, and download buttons.
-   A single-component package downloads as its MPK. A multi-component package
-   downloads as a ZIP of its MPKs and also offers **Download components**.
+   A package downloads as a ZIP of its MPKs. A single-component build published before
+   packages became ZIPs downloads as its MPK.
    Then come rows for build provenance (the commit and workflow that compiled the
    build), source models, the package's numerical fidelity, and each
    component's files, checksum, and compile parameters.
-5. **License.** The SPDX identifier, whether redistribution is allowed, and the
-   attribution.
+5. **License.** The license identifier and name, whether redistribution is
+   allowed, one sentence on what the license asks, and the attribution.
 
 A section that has no data, such as Accuracy for a model with neither an
 accuracy result nor published scores, is left out.
@@ -382,3 +414,9 @@ separately through repository administration and checked again at runtime.
 Developer deployments serve model hero illustrations from the matching registry
 environment’s CDN. Existing production illustrations are backfilled before browser
 cutover; image loading retains bounded retries and the registry API fallback.
+
+For models declaring `performance.scope: components`, the Performance section
+shows a component selector. Each selection has its own throughput, latency,
+power, memory, workload and telemetry, with no combined score. The catalog table
+lists the components' measurements separately. Models using the default
+whole-model scope, such as RF-DETR, keep their pipeline-level result.

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from model_registry import cli
 from model_registry.cli import main
 
@@ -29,6 +30,8 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
         "check-report",
         "publish",
         "promotion",
+        "conversion-entrypoint",
+        "publish-conversion",
         "publish-candidate",
         "publish-branch-deployment",
         "publish-report",
@@ -93,7 +96,10 @@ def test_verify_artifact_preserves_runner_provenance(monkeypatch, tmp_path):
     assert recorded == expected
 
 
-def test_publish_candidate_forwards_workflow_arguments_and_writes_summary(monkeypatch, tmp_path, capsys) -> None:
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_publish_candidate_forwards_workflow_arguments_and_writes_summary(
+    monkeypatch, tmp_path, capsys, environment
+) -> None:
     calls = []
     result = {
         "deployment_id": "candidate-id", "manifest_digest": "b" * 64,
@@ -111,7 +117,7 @@ def test_publish_candidate_forwards_workflow_arguments_and_writes_summary(monkey
         "repository": tmp_path, "dist_dir": tmp_path / "compiled", "output_dir": tmp_path / "candidate",
         "model_id": "qwen3_5_0_8b", "build_profile_id": "w4a16", "api_url": "https://registry.example.invalid",
         "aws_region": "us-west-2", "bucket": "models", "kms_key_id": "key",
-        "environment": "staging", "branch": "feature/llima-models", "git_sha": "a" * 40,
+        "environment": environment, "branch": "feature/llima-models", "git_sha": "a" * 40,
         "github_run_id": "123", "github_run_attempt": "1", "github_run_url": "https://example.invalid/run/123",
     }
     assert main([
@@ -127,6 +133,7 @@ def test_publish_candidate_forwards_workflow_arguments_and_writes_summary(monkey
     assert calls == [expected]
     assert json.loads(capsys.readouterr().out) == result
     text = summary.read_text()
+    assert f"Candidate ready: **qwen3_5_0_8b/w4a16** ({environment})" in text
     assert all(value in text for value in (result["deployment_id"], result["manifest_digest"], result["commit_sha"]))
     assert "latest_successful" in text
 
@@ -161,9 +168,9 @@ def test_fetch_reports_file_set_root(monkeypatch, tmp_path: Path, capsys) -> Non
     result = main(
         [
             "fetch",
-            str(ROOT / "models" / "rf_detr_small"),
+            str(ROOT / "models" / "resnet_50"),
             "--component",
-            "backbone",
+            "model",
             "--json",
         ]
     )
@@ -278,6 +285,22 @@ def test_invalid_model_has_nonzero_exit(capsys) -> None:
     assert "compilation.source" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command", ("validate", "validate-models"))
+def test_validation_rejects_a_resource_outside_the_source_policy(command: str, monkeypatch, capsys) -> None:
+    source = {"uri": "https://unapproved.example/tables.json", "sha256": "b" * 64, "size_bytes": 1}
+    model = {"id": "resnet_50", "resources": {"runtime": {"source": source, "install_path": "runtime"}}}
+    monkeypatch.setattr(cli, "load_and_validate_model", lambda *_args: model)
+    monkeypatch.setattr(cli, "load_models", lambda _repository: {"resnet_50": model})
+    arguments = [str(ROOT / "models" / "resnet_50")] if command == "validate" else ["--repository", str(ROOT)]
+    assert main([command, *arguments]) == 2
+    assert "resource runtime: source policy" in capsys.readouterr().err
+
+
+def test_fetch_resources_prints_nothing_for_a_model_without_resources(capsys, tmp_path: Path) -> None:
+    assert main(["fetch-resources", str(ROOT / "models" / "resnet_50"), "--output-dir", str(tmp_path / "out")]) == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_matrix_emits_workflow_json(capsys) -> None:
     result = main(["matrix", "--repository", str(ROOT), "--models", "resnet_50", "--compiler-version", "fixture"])
     assert result == 0
@@ -319,10 +342,10 @@ def test_resolve_devkit_accuracy_caches_each_accuracy_dataset_of_the_profile(
 
     # One JSON line per dataset model.yaml's accuracy names.
     assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [{
-        "name": "imagenet-2012-mini",
+        "name": "imagenet-2012-val",
         "path": str(dataset),
-        "sha256": "d769e759abba1fe6e03db704020dcff3f1e8309a8cac8885ab60f5a0e512c239",
-        "size_bytes": 356052889,
+        "sha256": "018bf95eb75b8b7f1d7766303cdecf3c45ecb02ccf4cf161122ae885c4d7a36f",
+        "size_bytes": 6666407650,
     }]
 
 
@@ -372,6 +395,37 @@ def test_check_report_records_the_devkit_beside_the_checked_report(monkeypatch, 
     assert calls == [(tmp_path / "model-report.json", ROOT, "resnet_50", "w8a8", "performance")]
     assert json.loads((tmp_path / "environment.json").read_text(encoding="utf-8")) == {"board_model": "Modalix"}
     assert capsys.readouterr().out == "Checked the performance report: latency_avg_ms, throughput_fps\n"
+
+
+def test_check_report_accepts_independent_components_without_top_level_metrics(monkeypatch, tmp_path, capsys):
+    fixture = json.loads((ROOT / "artifact-browser/fixtures/model-report-performance.json").read_text())
+    report = {key: fixture[key] for key in ("schema", "schema_version", "stage", "runtime")}
+    report.update(scope="components", components={
+        name: {
+            **fixture["components"]["model"],
+            "metrics": {**fixture["metrics"], "throughput_fps": rate},
+            "workload": name,
+            "telemetry": {},
+        }
+        for name, rate in (("image_encoder", 230.5), ("text_encoder", 643.9))
+    })
+    path = tmp_path / "model-report.json"
+    content = json.dumps(report)
+    path.write_text(content)
+    monkeypatch.setattr("model_registry.report_publication.runner_environment", lambda: {"board_model": "Modalix"})
+
+    assert main([
+        "check-report", str(tmp_path), "--repository", str(ROOT), "--stage", "performance",
+        "--model", "clip_vit_b_16", "--build-profile", "w8a16",
+    ]) == 0
+
+    assert path.read_text() == content
+    assert json.loads((tmp_path / "environment.json").read_text()) == {"board_model": "Modalix"}
+    metrics = ", ".join(sorted(fixture["metrics"]))
+    assert capsys.readouterr().out.splitlines() == [
+        f"Checked the performance report for image_encoder: {metrics}",
+        f"Checked the performance report for text_encoder: {metrics}",
+    ]
 
 
 def test_matrix_rejects_unknown_manual_model(capsys) -> None:
@@ -500,7 +554,8 @@ def test_publishing_a_report_requires_a_test_outcome(monkeypatch, extra: tuple[s
     ("argument", "base_branches"),
     [(None, []), ("", []), ("develop", ["develop"]), ("develop,release-1.0", ["develop", "release-1.0"])],
 )
-def test_publish_catalog_passes_optional_base_branches(monkeypatch, argument, base_branches) -> None:
+@pytest.mark.parametrize("force_rebuild_all", [False, True])
+def test_publish_catalog_passes_optional_base_branches(monkeypatch, argument, base_branches, force_rebuild_all) -> None:
     calls = []
 
     def publish(**kwargs):
@@ -514,10 +569,75 @@ def test_publish_catalog_passes_optional_base_branches(monkeypatch, argument, ba
         "--git-sha", "a" * 40, "--bucket", "model-artifacts",
         "--environment", "staging",
     ]
+    if force_rebuild_all:
+        args.append("--force-rebuild-all")
     if argument is not None:
         args.extend(["--base-branches", argument])
     assert main(args) == 0
+    assert calls[0]["force_rebuild_all"] == force_rebuild_all
     assert calls[0]["base_branches"] == base_branches
     assert calls[0]["branch"] == "feat/names"
     assert calls[0]["bucket"] == "model-artifacts"
     assert calls[0]["environment"] == "staging"
+
+
+@pytest.mark.parametrize(("declared", "printed"), [({}, "model.onnx"), ({"outputs": ["a.onnx", "b.pth"]}, "a.onnx")])
+def test_conversion_entrypoint_prints_the_first_output(tmp_path, capsys, declared, printed):
+    (tmp_path / "model.yaml").write_text(yaml.safe_dump({"conversion": declared}))
+    assert main(["conversion-entrypoint", str(tmp_path)]) == 0
+    assert capsys.readouterr().out == printed + "\n"
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_publish_conversion_cli_forwards_arguments_and_workflow(monkeypatch, tmp_path, capsys, environment):
+    calls = []
+    client, store = object(), object()
+    monkeypatch.setattr(
+        "model_registry.registry.SigV4RegistryClient", lambda api, region: calls.append((api, region)) or client,
+    )
+    monkeypatch.setattr(
+        "model_registry.registry.S3ArtifactStore", lambda bucket, **kw: calls.append((bucket, kw)) or store,
+    )
+    monkeypatch.setattr(
+        "model_registry.conversion.publish_conversion",
+        lambda *args, **kw: calls.append((args, kw)) or {"run_id": "converted"},
+    )
+    for key, value in {"GITHUB_REF_NAME": "canary", "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123"}.items():
+        monkeypatch.setenv(key, value)
+    assert main(["publish-conversion", "yolo26n", str(tmp_path / "onnx"),
+                 "--repository", str(tmp_path), "--api-url", "https://registry.test",
+                 "--bucket", "artifacts", "--kms-key-id", "key", "--aws-region", "us-west-2",
+                 "--environment", environment, "--validation", "passed"]) == 0
+    assert calls == [("https://registry.test", "us-west-2"), ("artifacts", {"kms_key_id": "key"}),
+                     ((tmp_path, "yolo26n", tmp_path / "onnx"), {
+                         "client": client, "store": store, "bucket": "artifacts", "environment": environment,
+                         "branch": "canary", "git_sha": "a" * 40, "workflow": "123", "validation": "passed"})]
+    assert json.loads(capsys.readouterr().out) == {"run_id": "converted"}
+
+
+@pytest.mark.parametrize("validation", ["failed", "skipped"])
+def test_publish_conversion_cli_rejects_unvalidated_output(validation):
+    with pytest.raises(SystemExit) as error:
+        main(["publish-conversion", "yolo26n", "output", "--api-url", "https://registry.test",
+              "--bucket", "artifacts", "--environment", "production", "--validation", validation])
+    assert error.value.code == 2
+
+
+def test_model_runtime_directory_verifies_assets_and_omits_unneeded_arguments(tmp_path, capsys):
+    import hashlib
+
+    profile = tmp_path / "test/w16a16"
+    profile.mkdir(parents=True)
+    arguments = ["model-runtime-directory", str(tmp_path), "--model", "test", "--build-profile", "w16a16"]
+    assert main(arguments) == 0
+    assert capsys.readouterr().out == ""
+    asset = profile / "tokenizer.json"
+    asset.write_text("{}")
+    (profile / "compile-outputs.json").write_text(json.dumps({
+        "runtime_files": [{"path": asset.name, "sha256": hashlib.sha256(asset.read_bytes()).hexdigest()}],
+    }))
+    assert main(arguments) == 0
+    assert capsys.readouterr().out.strip() == str(profile)
+    asset.write_text("corrupted")
+    assert main(arguments) != 0
+    assert "SHA-256" in capsys.readouterr().err
