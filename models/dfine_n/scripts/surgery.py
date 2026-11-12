@@ -117,6 +117,15 @@ def index(model):
     return GraphIndex(model, values, producers, users, constants)
 
 
+def extract(model, inputs, outputs):
+    """Extract a subgraph with inferred intermediate shapes.
+
+    onnx 1.17's Extractor inferred shapes itself; later releases keep only the value_info
+    already present, so the rewrites below would see no intermediate shapes.
+    """
+    return onnx.utils.Extractor(onnx.shape_inference.infer_shapes(model)).extract_model(inputs, outputs)
+
+
 def validate_source(model):
     metadata = {p.key: p.value for p in model.metadata_props}
     require(metadata.get("model_id") == MODEL_ID, "model identity mismatch")
@@ -285,7 +294,7 @@ def split_model(model):
 
     # Prove the permitted routing copies each selected index across its last axis.
     # Shape freezing removes all model-data dependencies from this tiny integer graph.
-    index_graph = onnx.utils.Extractor(model).extract_model([indices], [n.input[1] for n in gathers])
+    index_graph = extract(model, [indices], [n.input[1] for n in gathers])
     require([x.name for x in index_graph.graph.input] == [indices], "index expansion depends on model data")
     expected_indices = np.arange(QUERY_COUNT, dtype=np.int64)[None]
     expanded = ReferenceEvaluator(index_graph).run(None, {indices: expected_indices})
@@ -297,8 +306,8 @@ def split_model(model):
     decoder_inputs = [memory, content.output[0], references.output[0]]
     needed = set().union(*(ancestors(name, producers, decoder_inputs) for name in OUTPUTS))
     require("input" not in needed, "decoder retains a backbone dependency")
-    backbone = onnx.utils.Extractor(model).extract_model(["input"], backbone_outputs)
-    decoder = onnx.utils.Extractor(model).extract_model(decoder_inputs, list(OUTPUTS))
+    backbone = extract(model, ["input"], backbone_outputs)
+    decoder = extract(model, decoder_inputs, list(OUTPUTS))
     require(all(name in needed for name in decoder_inputs), "unused decoder boundary")
     require(not any(n.op_type == "GatherElements" for n in decoder.graph.node), "unresolved dynamic gather")
     require(not any(n.op_type == "TopK" for n in backbone.graph.node), "proposal selection remained in backbone")
@@ -325,7 +334,7 @@ def _constant_scalar(graph, name):
     if name in graph.constants:
         value = graph.constants[name]
     else:
-        value = ReferenceEvaluator(onnx.utils.Extractor(graph.model).extract_model([], [name])).run(None, {})[0]
+        value = ReferenceEvaluator(extract(graph.model, [], [name])).run(None, {})[0]
     require(np.asarray(value).size == 1, f"expected a scalar constant: {name}")
     return int(np.asarray(value).reshape(()))
 
@@ -346,9 +355,7 @@ def _splice(model, old, new_nodes, initializers):
 
 def _prune(model):
     """Drop what no longer reaches an output; keep the public inputs and outputs."""
-    model = onnx.utils.Extractor(model).extract_model(
-        [v.name for v in model.graph.input], [v.name for v in model.graph.output]
-    )
+    model = extract(model, [v.name for v in model.graph.input], [v.name for v in model.graph.output])
     onnx.checker.check_model(model, full_check=True)
     return model
 
