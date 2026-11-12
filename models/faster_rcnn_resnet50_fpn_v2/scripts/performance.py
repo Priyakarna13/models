@@ -79,6 +79,9 @@ def image_options() -> pyneat.ModelOptions:
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Image
     options.preprocess.enable = pyneat.AutoFlag.On
+    # Size Neat's input buffers for the benchmark frame; it otherwise allocates for 1920x1080.
+    options.preprocess.input_max_width = FRAME_WIDTH
+    options.preprocess.input_max_height = FRAME_HEIGHT
     options.preprocess.resize.enable = pyneat.AutoFlag.On
     options.preprocess.resize.mode = pyneat.ResizeMode.Letterbox
     options.preprocess.normalize.enable = pyneat.AutoFlag.On
