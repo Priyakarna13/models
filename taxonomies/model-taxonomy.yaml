@@ -77,7 +77,6 @@ architectures:
     allowed_model_types: [vision]
   detr:
     display_name: DETR
-    description: Detects objects in images using a transformer and convolutional image features.
     paradigm: transformer
     allowed_model_types: [vision]
   dla:
