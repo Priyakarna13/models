@@ -245,15 +245,19 @@ async function checkCatalogLayouts(browser, url) {
         await page.locator('#nav-models').click();
         await page.locator('.catalog-table').first().waitFor();
         if (await tableButton.getAttribute('aria-pressed') !== 'true') throw new Error('returning lost table selection');
+        // Every RF-DETR model, once under each of its tasks: the detectors and the instance segmenters.
+        const rfDetr = ids.filter(id => id.startsWith('rf_detr_'));
+        const rfDetrRows = rfDetr.reduce((rows, id) => rows + tasksByModel[id].length, 0);
+        const rfDetrTasks = [...new Set(rfDetr.flatMap(id => tasksByModel[id]))].sort((a, b) => a.localeCompare(b));
         await page.locator('#search').fill('rf detr');
-        await page.waitForFunction(() => document.querySelectorAll('.catalog-model-link').length === 4);
-        if (await page.locator('.catalog-task-group').count() !== 1 || await page.locator('.catalog-task-group h3').innerText() !== 'Object Detection') throw new Error('filtered task grouping is incorrect');
+        await page.waitForFunction(rows => document.querySelectorAll('.catalog-model-link').length === rows, rfDetrRows);
+        if (JSON.stringify(await page.locator('.catalog-task-group h3').allTextContents()) !== JSON.stringify(rfDetrTasks)) throw new Error('filtered task grouping is incorrect');
         await settled();
         // A package result is the model's one reading; its components are not listed or added up.
         const packageText = await page.locator('[data-catalog-entry="rf_detr_nano"] [data-table-performance]').innerText();
         if (!packageText.includes('inferences/s') || /backbone|decoder/.test(packageText)) throw new Error('package measurement is not the model\'s one reading');
         await page.getByRole('button', {name: 'Cards', exact: true}).click();
-        if (await page.locator('.model-card').count() !== 4) throw new Error('switching lost the search filter');
+        if (await page.locator('.model-card').count() !== rfDetr.length) throw new Error('switching lost the search filter');
         await tableButton.click();
         await page.locator('#search').fill('');
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
