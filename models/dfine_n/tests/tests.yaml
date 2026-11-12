@@ -1,4 +1,4 @@
-# Initial measured on-device baseline; update from the first published profile.
+# Published registry runs of revision 7850b296 (orchestrator 43139889090), CPU float decode.
 conversion:
   run_tests: true
 compile:
@@ -8,52 +8,52 @@ accuracy:
   expected:
     w16a16:
       coco-2017-val:
-        coco_map: 0.4150250830734953
-        coco_ap50: 0.5969580415170108
-        coco_ap75: 0.4400045052655942
-        coco_ap_small: 0.20665518823194398
-        coco_ap_medium: 0.45534593610736174
-        coco_ap_large: 0.6172106844660908
-        coco_ar1: 0.33563890253258144
-        coco_ar10: 0.5569048591578504
-        coco_ar100: 0.6201869849612739
-        coco_ar_small: 0.3727666547336906
-        coco_ar_medium: 0.6869902938960516
-        coco_ar_large: 0.8538070845223211
+        coco_map: 0.416733662665512
+        coco_ap50: 0.5971927061939634
+        coco_ap75: 0.44483382735064214
+        coco_ap_small: 0.20947421980092198
+        coco_ap_medium: 0.4572328665394218
+        coco_ap_large: 0.618151962588033
+        coco_ar1: 0.33680112940573126
+        coco_ar10: 0.5585622337977568
+        coco_ar100: 0.6219324163775595
+        coco_ar_small: 0.37592539314911877
+        coco_ar_medium: 0.6881961585533196
+        coco_ar_large: 0.8542692084925588
     w8a8_w16a16:
       coco-2017-val:
-        coco_map: 0.3894425205267707
-        coco_ap50: 0.5602833355976845
-        coco_ap75: 0.41532271789651165
-        coco_ap_small: 0.1843900993733137
-        coco_ap_medium: 0.441006911011631
-        coco_ap_large: 0.5827386492721492
-        coco_ar1: 0.3246911670810264
-        coco_ar10: 0.5364863494867185
-        coco_ar100: 0.5931702436986236
-        coco_ar_small: 0.32700166100578393
-        coco_ar_medium: 0.673181019133127
-        coco_ar_large: 0.8380525498144081
+        coco_map: 0.39518835416742737
+        coco_ap50: 0.568819449768952
+        coco_ap75: 0.42423415875935394
+        coco_ap_small: 0.18777332039143893
+        coco_ap_medium: 0.442711649783431
+        coco_ap_large: 0.5947845306297856
+        coco_ar1: 0.3255543837358274
+        coco_ar10: 0.5371222567565733
+        coco_ar100: 0.5947588955024771
+        coco_ar_small: 0.331491667664814
+        coco_ar_medium: 0.6744101828214457
+        coco_ar_large: 0.8381378735816218
     w8a8_mixed_w16a16:
       coco-2017-val:
-        coco_map: 0.41442737462257645
-        coco_ap50: 0.5963333636612137
-        coco_ap75: 0.43822055438959123
-        coco_ap_small: 0.20817715132070336
-        coco_ap_medium: 0.4548726651457745
-        coco_ap_large: 0.6147739640118804
-        coco_ar1: 0.3352010704472498
-        coco_ar10: 0.5574751259439654
-        coco_ar100: 0.6213384205197283
-        coco_ar_small: 0.3705665918777512
-        coco_ar_medium: 0.6889127474787088
-        coco_ar_large: 0.8515009194676924
+        coco_map: 0.415245645595433
+        coco_ap50: 0.5965581048466632
+        coco_ap75: 0.4414500378045159
+        coco_ap_small: 0.2082480462025208
+        coco_ap_medium: 0.4559249721702594
+        coco_ap_large: 0.6146541460294881
+        coco_ar1: 0.3342544639840149
+        coco_ar10: 0.5573885931662298
+        coco_ar100: 0.6222325368613473
+        coco_ar_small: 0.3703174032184969
+        coco_ar_medium: 0.6903131330633963
+        coco_ar_large: 0.8535192999153637
 performance:
   run_tests: true
   expected:
     w16a16:
-      throughput_fps: 169.34414378881831
+      throughput_fps: 173.03521194969645
     w8a8_w16a16:
-      throughput_fps: 200.74907052823156
+      throughput_fps: 202.95891725884994
     w8a8_mixed_w16a16:
-      throughput_fps: 170.29213111307362
+      throughput_fps: 173.50095728562357
