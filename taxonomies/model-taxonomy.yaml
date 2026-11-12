@@ -75,6 +75,10 @@ architectures:
     description: Estimates scene depth from images.
     paradigm: transformer
     allowed_model_types: [vision]
+  detr:
+    display_name: DETR
+    paradigm: transformer
+    allowed_model_types: [vision]
   dla:
     display_name: DLA
     description: Classifies images by combining features across layers and resolutions.
