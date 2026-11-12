@@ -52,6 +52,25 @@ def validate_export(path):
         raise ValueError("This conversion workflow requires one self-contained ONNX file")
 
 
+def name_constants(path):
+    """Name the initializers in order of first use and clear the doc strings, which hold the source's path, so a
+    repeated conversion writes the same bytes; tf2onnx numbers its folded constants differently on each run."""
+    model = onnx.load(path)
+    model.doc_string = model.graph.doc_string = ""
+    initializers = {value.name: value for value in model.graph.initializer}
+    names = {}
+    for node in model.graph.node:
+        for index, name in enumerate(node.input):
+            if name in initializers:
+                node.input[index] = names.setdefault(name, f"constant_{len(names)}")
+    if len(names) != len(initializers):
+        raise ValueError(f"{len(initializers) - len(names)} initializers are not node inputs")
+    for name, value in initializers.items():
+        value.name = names[name]
+    model.graph.initializer.sort(key=lambda value: int(value.name.removeprefix("constant_")))
+    onnx.save(model, path)
+
+
 def compare_outputs(expected, actual):
     """Return each output's largest ONNX-against-TFLite difference, raising beyond its tolerance."""
     errors = {}
@@ -71,6 +90,7 @@ def convert(source, output_dir):
     output = output_dir / "model.onnx"
     converter = [sys.executable, "-m", "tf2onnx.convert", "--opset", str(OPSET)]
     subprocess.run([*converter, "--tflite", str(source), "--output", str(output)], check=True)
+    name_constants(output)
     validate_export(output)
 
     import onnxruntime as ort
