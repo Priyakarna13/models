@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import io
 import json
+import shutil
 import tarfile
 from collections.abc import Callable
 from pathlib import Path
@@ -211,6 +213,162 @@ def test_roi_align_samples_as_torchvision_within_opencvs_grid(load_script: Calla
         expected = _reference_roi_align(features[level], box, 1 / (4 << level))
         # OpenCV places samples on a 1/32-pixel grid, so values on this unit-range map move by at most 1/32.
         np.testing.assert_allclose(actual, expected, atol=1 / 32)
+
+
+def test_both_benchmark_scripts_hold_the_same_kernel(load_script: Callable[[str], ModuleType]) -> None:
+    performance, accuracy = load_script("performance"), load_script("accuracy")
+
+    assert performance.KERNEL_SOURCE == accuracy.KERNEL_SOURCE
+    for name in (
+        "load_kernel",
+        "_raw_format",
+        "backbone_format",
+        "box_head_format",
+        "new_grid",
+        "pool_regions",
+        "box_head_graph",
+        "grid_tensor",
+    ):
+        assert inspect.getsource(getattr(performance, name)) == inspect.getsource(getattr(accuracy, name))
+
+
+def test_the_kernels_layout_matches_the_backbones(load_script: Callable[[str], ModuleType]) -> None:
+    calibration, performance = load_script("calibration"), load_script("performance")
+
+    assert performance.LEVEL_SIZES == calibration.LEVEL_SIZES
+    assert performance.LEVEL_ROWS == calibration.LEVEL_ROWS
+    assert performance.ROW_STRIDE == calibration.BACKBONE_CHANNELS + 1
+    assert performance.GRID_SHAPE == (
+        calibration.GRID_ROWS * calibration.PITCH,
+        calibration.GRID_COLS * calibration.PITCH,
+        calibration.CHANNELS,
+    )
+
+
+def _backbone_rows(calibration: ModuleType) -> np.ndarray:
+    """A backbone output in float32: varied maps, and objectness and offsets that select varied boxes."""
+    rng = np.random.default_rng(0)
+    rows = rng.uniform(-1, 1, (calibration.LEVEL_ROWS[-1], calibration.BACKBONE_CHANNELS)).astype(np.float32)
+    rows[calibration.LEVEL_ROWS[4] :, : calibration.CHANNELS] = 0
+    rows[:, calibration.CHANNELS + calibration.ANCHORS :] *= 0.1
+    return rows
+
+
+def _int8_raw(rows: np.ndarray, scale: float, zero_point: int) -> np.ndarray:
+    raw = np.zeros((len(rows), rows.shape[1] + 1), np.int8)
+    raw[:, :-1] = np.clip(np.rint(rows * scale) + zero_point, -128, 127)
+    return raw
+
+
+def _bf16_raw(rows: np.ndarray) -> np.ndarray:
+    raw = np.zeros((len(rows), rows.shape[1] + 1), np.uint16)
+    raw[:, :-1] = (np.ascontiguousarray(rows).view(np.uint32) + 0x8000) >> 16
+    return raw
+
+
+def _regions(array: np.ndarray) -> np.ndarray:
+    """A (200, 320, 256) box head input -> its (1000, 8, 8, 256) cells."""
+    return array.reshape(25, 8, 40, 8, 256).transpose(0, 2, 1, 3, 4).reshape(1000, 8, 8, 256)
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="the kernel builds with gcc")
+@pytest.mark.parametrize("kind", ["int8", "bf16"])
+def test_the_kernel_selects_and_pools_regions_as_the_python_steps_do(
+    load_script: Callable[[str], ModuleType], kind: str
+) -> None:
+    calibration, performance = load_script("calibration"), load_script("performance")
+    size = (800, 1067)
+    rows = _backbone_rows(calibration)
+    if kind == "int8":
+        backbone = performance.RawFormat(performance.KIND_INT8, np.int8, 60.0, 3)
+        box_head = performance.RawFormat(performance.KIND_INT8, np.int8, 90.0, 5)
+        raw = _int8_raw(rows, backbone.scale, backbone.zero_point)
+        real = (raw[:, :-1].astype(np.float32) - backbone.zero_point) / backbone.scale
+        # Equal INT8 scores order differently here, and rounding moves a value by one step on each side.
+        least_shared, tolerance = 0.7, 1.01 / box_head.scale + 1.01 / backbone.scale
+    else:
+        backbone = box_head = performance.RawFormat(performance.KIND_BF16, np.uint16, 1.0, 0)
+        raw = _bf16_raw(rows)
+        real = (raw[:, :-1].astype(np.uint32) << 16).view(np.float32)
+        least_shared, tolerance = 0.95, 0.02
+    kernel = performance.load_kernel()
+    grid = performance.new_grid(box_head)
+
+    boxes = performance.pool_regions(kernel, raw, backbone, box_head, (0.0, 0.0, float(size[1]), float(size[0])), grid)
+
+    features, rpn = calibration.unpack_backbone(real[None, None])
+    expected = calibration.proposals(rpn, size)
+    shared = {tuple(box) for box in np.round(boxes, 2).tolist()} & {
+        tuple(box) for box in np.round(expected, 2).tolist()
+    }
+    assert len(boxes) == grid.count == len(expected)
+    assert len(shared) >= least_shared * len(expected)
+
+    cells = _regions(grid.array).astype(np.float32)
+    if kind == "int8":
+        cells = (cells - box_head.zero_point) / box_head.scale
+    else:
+        cells = (_regions(grid.array).astype(np.uint32) << 16).view(np.float32)
+    levels = calibration.roi_levels(boxes)
+    for index in range(0, len(boxes), 50):
+        level = levels[index]
+        reference = _reference_roi_align(features[level], boxes[index], 1 / (4 << level))
+        np.testing.assert_allclose(cells[index, :7, :7], reference, atol=tolerance)
+    # The gaps between regions, and the grid past the last region, hold the real zero.
+    assert (_regions(grid.array)[:, 7:] == box_head.zero_point).all()
+    assert (_regions(grid.array)[:, :, 7:] == box_head.zero_point).all()
+    assert (_regions(grid.array)[len(boxes) :] == box_head.zero_point).all()
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="the kernel builds with gcc")
+def test_the_kernel_clears_the_regions_a_shorter_frame_leaves_behind(load_script: Callable[[str], ModuleType]) -> None:
+    calibration, performance = load_script("calibration"), load_script("performance")
+    backbone = performance.RawFormat(performance.KIND_BF16, np.uint16, 1.0, 0)
+    raw = _bf16_raw(_backbone_rows(calibration))
+    kernel = performance.load_kernel()
+    grid = performance.new_grid(backbone)
+    window = (0.0, 0.0, 1067.0, 800.0)
+    count = len(performance.pool_regions(kernel, raw, backbone, backbone, window, grid))
+    # A longer frame left regions past this frame's count, in the cells the kernel writes.
+    grid_rows, grid_cols = np.unravel_index(np.arange(count, performance.REGIONS), (25, 40))
+    for row, col in zip(grid_rows, grid_cols, strict=True):
+        grid.array[row * 8 : row * 8 + 7, col * 8 : col * 8 + 7] = 1
+    grid.count = performance.REGIONS
+
+    performance.pool_regions(kernel, raw, backbone, backbone, window, grid)
+
+    assert (_regions(grid.array)[count:] == 0).all()
+
+
+def test_the_kernel_refuses_a_raw_output_of_another_size(load_script: Callable[[str], ModuleType]) -> None:
+    performance = load_script("performance")
+    raw_format = performance.RawFormat(performance.KIND_INT8, np.int8, 60.0, 3)
+
+    with pytest.raises(ValueError, match="unexpected raw backbone output"):
+        performance.pool_regions(None, np.zeros(16, np.int8), raw_format, raw_format, (0, 0, 1, 1), None)
+
+
+@pytest.mark.parametrize(
+    ("config", "kind", "dtype", "scale", "zero_point"),
+    [
+        (
+            {"kernel": "dequantization_transform", "params": {"channel_params": [[60.5, 3]]}},
+            "KIND_INT8",
+            np.int8,
+            60.5,
+            3,
+        ),
+        ({"kernel": "cast_transform", "params": {}}, "KIND_BF16", np.uint16, 1.0, 0),
+    ],
+)
+def test_the_package_step_gives_the_raw_format(
+    load_script: Callable[[str], ModuleType], config: dict, kind: str, dtype: type, scale: float, zero_point: int
+) -> None:
+    performance = load_script("performance")
+
+    assert performance._raw_format({"config_params": config}) == performance.RawFormat(
+        getattr(performance, kind), dtype, scale, zero_point
+    )
 
 
 def test_a_lone_proposal_decodes_to_its_anchor_clipped_to_the_image(load_script: Callable[[str], ModuleType]) -> None:
