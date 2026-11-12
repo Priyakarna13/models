@@ -7,6 +7,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .artifact import record_compile_outputs
 from .errors import ValidationError
 from .model import load_models
 from .package import PROFILE_RESULT_FILES, _link_or_copy, assemble_package
@@ -212,6 +213,14 @@ def publish_candidate(
             if result_file.is_file():
                 shutil.copyfile(result_file, compiled / model_id / build_profile_id / name)
     package_root = output / "packages"
+    profile = compiled / model_id / build_profile_id
+    manifest = profile / "compile-outputs.json"
+    metadata = json.loads(manifest.read_text()) if manifest.is_file() else {}
+    record_compile_outputs(
+        profile, model_id=model_id, build_profile_id=build_profile_id,
+        compile_invocation_id=build_profile_id, component_ids=sorted(expected),
+    )
+    _save(manifest, {**metadata, **json.loads(manifest.read_text())})
     for package in packages:
         assemble_package(
             repository=root, compiled_dir=compiled, output_dir=package_root,

@@ -191,6 +191,8 @@ Any expensive model may set top-level `build-on-demand: true` (default `false`).
 Pushes still validate it and publish catalog metadata, but never compile or
 benchmark it. A manual **Vulcan Model Orchestrator** dispatch must select its
 `models` and `profiles`; the planner also requires `--include-on-demand`.
+A manually selected on-demand build runs its declared benchmarks after candidate
+finalization, or runs missing benchmarks when the compiled build is reused.
 The flag changes scheduling and catalog metadata only, never fingerprints.
 Publication in the selected `VULCAN_ENV` uses `publish-candidate` once per complete model/profile;
 it binds every required compile/package run before registering on-demand

@@ -423,8 +423,9 @@ before Models consumes them.
 Model authors do not publish benchmark results directly. After a build profile's
 package publishes, **Vulcan Model Compile** starts **Vulcan Model
 Benchmarking** on the same branch for each build profile whose performance or
-accuracy benchmark fingerprint has no completed run. On-demand builds are not
-benchmarked. The DevKit has no publication credentials.
+accuracy benchmark fingerprint has no completed run. A manually selected on-demand
+build starts its declared benchmarks after candidate finalization. Pushes skip
+on-demand models; manually selecting an unchanged build runs any missing benchmarks. The DevKit has no publication credentials.
 
 On the DevKit, the workflow first checks that the profile's components are
 registered and its package receipt is present. It then caches the model's
