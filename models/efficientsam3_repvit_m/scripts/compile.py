@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Split the verified EfficientSAM3 ONNX and compile its text encoder and image model into BF16 MPKs.
+"""Export EfficientSAM3 from its converted weights, split it, and compile its text encoder and image model into BF16
+MPKs.
 
-The text encoder compiles first. The image model calibrates on the quantized encoder's features packed with each
-prompt's token mask, as the board runs them, and numerical fidelity compares the whole pipeline with the original
-ONNX. Calibration takes the first images of the coco-2017 cal archive's seeded order and fidelity a later span; each
-image gets one COCO category prompt, spread over the 80 names.
+surgery.py builds the graph from the weights, exports it to ONNX and accepts it only if it reproduces the upstream
+PyTorch model's recorded outputs. The text encoder compiles first. The image model calibrates on the quantized
+encoder's features packed with each prompt's token mask, as the board runs them, and numerical fidelity compares
+the whole pipeline with the exported ONNX. Calibration takes the first images of the coco-2017 cal archive's seeded
+order and fidelity a later span; each image gets one COCO category prompt, spread over the 80 names.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from surgery import (
     QUERIES,
     TEXT_INPUT,
     TEXT_OUTPUT,
+    export_model,
     graph_paths,
     prepare_model,
     validate_float_split,
@@ -294,7 +297,7 @@ def _write_fidelity(output_dir: Path, profile_id: str, config: dict[str, Any], m
         "model_id": MODEL_ID,
         "build_profile_id": profile_id,
         "status": config["status"],
-        "reference": "Original full ONNX (ONNX Runtime)",
+        "reference": "FP32 PyTorch export (ONNX Runtime)",
         "candidate": CANDIDATE,
         "dataset": {key: config["dataset"][key] for key in ("id", "variant", "sha256")},
         "selection": selection,
@@ -321,12 +324,16 @@ def _measure_fidelity(
 
 
 def _prepare_phase(source: Path, fidelity_dataset: Path, fidelity_names: tuple[str, ...], temporary_dir: Path) -> None:
-    """Split the ONNX into the two component graphs, check the split, and save the reference outputs."""
-    text_graph, image_graph = prepare_model(source, temporary_dir / "graphs")
+    """Export the weights to ONNX, split it into the two component graphs, check the split, and save the reference
+    outputs."""
+    exported = export_model(source, temporary_dir / "graphs" / f"{MODEL_ID}.onnx")
+    text_graph, image_graph = prepare_model(exported, temporary_dir / "graphs")
     images = load_images(fidelity_dataset, fidelity_names)
-    report, reference = validate_float_split(source, text_graph, image_graph, images, prompts(len(fidelity_names)))
-    logging.info("Float split matches the converted graph: %s", json.dumps(report))
+    report, reference = validate_float_split(exported, text_graph, image_graph, images, prompts(len(fidelity_names)))
+    logging.info("Float split matches the exported graph: %s", json.dumps(report))
     np.savez(temporary_dir / REFERENCE_OUTPUTS, **reference)
+    # The components compile from their own graphs; the 1.6 GB export is not needed again.
+    exported.unlink()
 
 
 def _text_encoder_phase(
@@ -507,8 +514,8 @@ def main() -> int:
     source = args.model.expanduser().resolve()
     dataset = args.dataset.expanduser().resolve()
     fidelity_dataset = args.fidelity_dataset.expanduser().resolve()
-    if source.suffix != ".onnx":
-        parser.error("--model must be the verified ONNX from the manual conversion workflow")
+    if source.suffix not in {".pt", ".pth"}:
+        parser.error("--model must be the weights bundle from the conversion workflow")
     if not source.is_file():
         parser.error(f"source does not exist: {source}")
     if not dataset.exists():

@@ -27,6 +27,9 @@ upstream:
 # Its MobileCLIP-S0 text encoder is not loaded. The sam3 wheel provides the model code without its dependencies:
 # sam3 0.1.4 declares iopath>=0.1.10, which publishes no wheel, so convert.py unpacks only the package.
 conversion:
+  # The assembled upstream weights with the PyTorch model's outputs on four cases. surgery.py builds the graph to
+  # compile from them and exports the ONNX, so compiler adaptations do not rerun the conversion.
+  outputs: [weights.pth]
   source:
     repository: Simon7108528/EfficientSAM3
     revision: 85b05896928f974e308f889d7ccb2eefc069de98

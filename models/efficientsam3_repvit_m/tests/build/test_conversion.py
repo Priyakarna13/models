@@ -1,4 +1,4 @@
-"""Small checks for conversion failures that a synthetic smoke input can miss."""
+"""Checks of the conversion's checkpoint handling and of the weights bundle it publishes."""
 
 import sys
 import zipfile
@@ -6,8 +6,6 @@ from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
-import numpy as np
-import onnx
 import pytest
 from model_registry.model import load_model as load_metadata
 
@@ -17,69 +15,6 @@ MODEL_DIR = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def converter(load_script: Callable[[str], ModuleType]) -> ModuleType:
     return load_script("convert")
-
-
-def _outputs(converter):
-    rng = np.random.default_rng(0)
-    scores = np.zeros(converter.QUERIES)
-    scores[0] = 0.9
-    return {
-        "text_features": rng.standard_normal(converter.INTERFACE["text_features"][1:]),
-        "scores": scores,
-        "boxes_px": rng.uniform(0, 1008, (converter.QUERIES, 4)),
-        "mask_logits": rng.standard_normal((converter.QUERIES, 8, 8)),
-    }
-
-
-@pytest.mark.parametrize("case", ["valid", "padding", "confident_box", "score", "shape", "nan"])
-def test_output_agreement(case, converter):
-    expected = _outputs(converter)
-    actual = {name: value.copy() for name, value in expected.items()}
-    if case == "valid":
-        actual["boxes_px"][0] += 0.05
-    elif case == "padding":
-        # Padding positions carry no prompt and are masked out of the image model.
-        actual["text_features"][4:] += 1
-    elif case == "confident_box":
-        actual["boxes_px"][0, 0] += 1
-    elif case == "score":
-        actual["scores"][3] += 0.01
-    elif case == "shape":
-        actual["scores"] = actual["scores"][:-1]
-    else:
-        actual["mask_logits"][0, 0, 0] = np.nan
-    if case in {"valid", "padding"}:
-        converter.compare_outputs(expected, actual, valid=4)
-    else:
-        with pytest.raises(ValueError):
-            converter.compare_outputs(expected, actual, valid=4)
-
-
-@pytest.mark.parametrize("case", ["valid", "opset", "order", "dtype", "shape"])
-def test_fixed_onnx_interface(tmp_path, case, converter):
-    helper = onnx.helper
-    values = {
-        name: helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, shape)
-        for name, shape in converter.INTERFACE.items()
-    }
-    inputs = [values[name] for name in converter.INPUTS]
-    outputs = [values[name] for name in converter.OUTPUTS]
-    if case == "order":
-        inputs.reverse()
-    elif case == "dtype":
-        outputs[0].type.tensor_type.elem_type = onnx.TensorProto.DOUBLE
-    elif case == "shape":
-        inputs[0].type.tensor_type.shape.dim[1].dim_value = 32
-    nodes = [helper.make_node("Constant", [], [value.name], value_float=0.0) for value in outputs]
-    graph = helper.make_graph(nodes, "fixture", inputs, outputs)
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18 if case == "opset" else 17)])
-    path = tmp_path / "model.onnx"
-    onnx.save(model, path)
-    if case == "valid":
-        converter.validate_export(path)
-    else:
-        with pytest.raises(ValueError):
-            converter.validate_export(path)
 
 
 def test_source_must_be_the_pinned_file_set(converter):
@@ -143,3 +78,41 @@ def test_package_unpacking_keeps_only_sam3(tmp_path, monkeypatch, converter):
     assert (tmp_path / "out/sam3/__init__.py").is_file()
     assert not (tmp_path / "out/sam3-0.1.4.dist-info").exists()
     assert sys.path[0] == str(tmp_path / "out")
+
+
+def test_bundle_holds_the_weights_settings_and_upstream_cases(converted: Path, converter):
+    torch = pytest.importorskip("torch")
+    bundle = torch.load(converted, map_location="cpu", weights_only=True)
+
+    assert sorted(bundle) == ["cases", "position_encoding", "settings", "state_dict"]
+    assert bundle["settings"] == {
+        "grid": 48,
+        "text_heads": 16,
+        "heads": 8,
+        "norm_eps": 1e-5,
+        "groups": 8,
+        "score_scale": 0.0625,
+        "score_limit": 12.0,
+    }
+    assert bundle["position_encoding"].shape == (1, 256, 48, 48)
+    weights = bundle["state_dict"]
+    assert weights["backbone.language_backbone.encoder.token_embedding.weight"].shape == (49408, 1024)
+    assert weights["backbone.vision_backbone.trunk.model.backbone.model.stem.conv1.c.weight"].shape == (32, 3, 3, 3)
+    assert weights["backbone.vision_backbone.trunk.model.head.3.weight"].shape == (1024, 1024, 3, 3)
+    assert weights["transformer.decoder.query_embed.weight"].shape == (200, 256)
+    assert weights["segmentation_head.instance_seg_head.weight"].shape == (256, 256, 1, 1)
+    for name, value in weights.items():
+        assert torch.isfinite(value).all(), name
+    # surgery.py must reproduce the upstream model's outputs on these cases.
+    assert [case["prompt"] for case in bundle["cases"]] == [prompt for _, prompt in converter.CASES]
+    shapes = {
+        "pixel_values": (1, 3, 1008, 1008),
+        "text_features": (16, 256),
+        "scores": (200,),
+        "boxes_px": (200, 4),
+        "mask_logits": (200, 192, 192),
+    }
+    for case in bundle["cases"]:
+        assert {name: tuple(case[name].shape) for name in shapes} == shapes
+        assert all(case[name].dtype == torch.float32 and torch.isfinite(case[name]).all() for name in shapes)
+        assert 0 <= case["scores"].min() and case["scores"].max() <= 1

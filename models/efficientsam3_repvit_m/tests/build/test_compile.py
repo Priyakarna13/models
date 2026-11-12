@@ -89,6 +89,116 @@ def test_benchmarks_require_the_packaged_tokenizer(
         load_script(script_name).load_tokenizer(tmp_path)
 
 
+def _upstream_outputs(surgery: ModuleType) -> dict[str, np.ndarray]:
+    rng = np.random.default_rng(0)
+    scores = np.zeros(surgery.QUERIES)
+    scores[0] = 0.9
+    return {
+        "text_features": rng.standard_normal(surgery.INTERFACE["text_features"][1:]),
+        "scores": scores,
+        "boxes_px": rng.uniform(0, 1008, (surgery.QUERIES, 4)),
+        "mask_logits": rng.standard_normal((surgery.QUERIES, 8, 8)),
+    }
+
+
+@pytest.mark.parametrize("case", ["valid", "padding", "confident_box", "score", "shape", "nan"])
+def test_export_must_agree_with_the_upstream_outputs(case: str, load_script: Callable[[str], ModuleType]) -> None:
+    surgery = load_script("surgery")
+    expected = _upstream_outputs(surgery)
+    actual = {name: value.copy() for name, value in expected.items()}
+    if case == "valid":
+        actual["boxes_px"][0] += 0.05
+    elif case == "padding":
+        # Padding positions carry no prompt and are masked out of the image model.
+        actual["text_features"][4:] += 1
+    elif case == "confident_box":
+        actual["boxes_px"][0, 0] += 1
+    elif case == "score":
+        actual["scores"][3] += 0.01
+    elif case == "shape":
+        actual["scores"] = actual["scores"][:-1]
+    else:
+        actual["mask_logits"][0, 0, 0] = np.nan
+    if case in {"valid", "padding"}:
+        surgery.compare_outputs(expected, actual, valid=4)
+    else:
+        with pytest.raises(ValueError):
+            surgery.compare_outputs(expected, actual, valid=4)
+
+
+@pytest.mark.parametrize("case", ["valid", "opset", "order", "dtype", "shape"])
+def test_export_has_the_fixed_onnx_interface(
+    tmp_path: Path, case: str, load_script: Callable[[str], ModuleType]
+) -> None:
+    surgery = load_script("surgery")
+    helper = onnx.helper
+    values = {
+        name: helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, shape)
+        for name, shape in surgery.INTERFACE.items()
+    }
+    inputs = [values[name] for name in surgery.EXPORT_INPUTS]
+    outputs = [values[name] for name in surgery.EXPORT_OUTPUTS]
+    if case == "order":
+        inputs.reverse()
+    elif case == "dtype":
+        outputs[0].type.tensor_type.elem_type = onnx.TensorProto.DOUBLE
+    elif case == "shape":
+        inputs[0].type.tensor_type.shape.dim[1].dim_value = 32
+    nodes = [helper.make_node("Constant", [], [value.name], value_float=0.0) for value in outputs]
+    graph = helper.make_graph(nodes, "fixture", inputs, outputs)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18 if case == "opset" else 17)])
+    path = tmp_path / "model.onnx"
+    onnx.save(model, path)
+    if case == "valid":
+        surgery.validate_export(path)
+    else:
+        with pytest.raises(ValueError):
+            surgery.validate_export(path)
+
+
+def test_resize_sizes_fold_to_constants(load_script: Callable[[str], ModuleType]) -> None:
+    from onnx.reference import ReferenceEvaluator
+
+    surgery = load_script("surgery")
+    helper = onnx.helper
+
+    def resize(source: str, target: str, name: str) -> list[onnx.NodeProto]:
+        return [
+            helper.make_node("Shape", [source], [f"{name}/shape"], name=f"{name}/Shape"),
+            helper.make_node("Slice", [f"{name}/shape", "zero", "two", "zero"], [f"{name}/lead"], name=f"{name}/Slice"),
+            helper.make_node("Concat", [f"{name}/lead", f"{name}/target"], [f"{name}/sizes"], axis=0),
+            helper.make_node("Resize", [source, "", "", f"{name}/sizes"], [target], mode="nearest"),
+        ]
+
+    def integers(name: str, *values: int) -> onnx.TensorProto:
+        return onnx.numpy_helper.from_array(np.array(values, np.int64), name)
+
+    graph = helper.make_graph(
+        [*resize("x", "middle", "first"), *resize("middle", "y", "second")],
+        "fixture",
+        [helper.make_tensor_value_info("x", onnx.TensorProto.FLOAT, [1, 3, 2, 2])],
+        [helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, [1, 3, 8, 8])],
+        initializer=[
+            integers("zero", 0),
+            integers("two", 2),
+            integers("first/target", 4, 4),
+            integers("second/target", 8, 8),
+            integers("unused", 7),
+        ],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    x = np.arange(12, dtype=np.float32).reshape(1, 3, 2, 2)
+    (expected,) = ReferenceEvaluator(model).run(None, {"x": x})
+
+    folded = surgery.fold_resize_sizes(model)
+
+    assert [node.op_type for node in folded.graph.node] == ["Resize", "Resize"]
+    sizes = {tensor.name: onnx.numpy_helper.to_array(tensor).tolist() for tensor in folded.graph.initializer}
+    # The second Resize's input has a known shape only once the first has its constant size.
+    assert sizes == {"first/sizes": [1, 3, 4, 4], "second/sizes": [1, 3, 8, 8]}
+    np.testing.assert_array_equal(ReferenceEvaluator(folded).run(None, {"x": x})[0], expected)
+
+
 def _folded_source(surgery: ModuleType) -> onnx.ModelProto:
     """A folded graph with the converted interface and the decoder's Sin, Cos and Log counts."""
     helper = onnx.helper
