@@ -7,6 +7,210 @@ import pytest
 from model_registry.runtime_files import read_runtime_files
 
 
+@pytest.mark.parametrize("kind,expected", [
+    ("nemotron", [7880, 16944, 25904]),
+    ("parakeet", [64000, 96000, 128000]),
+])
+def test_first_text_waits_for_real_input_and_skips_empty_chunks(load_script, monkeypatch, kind, expected):
+    import numpy as np
+
+    benchmark = load_script("performance")
+
+    class Clock:
+        now = 0.0
+
+        def perf_counter(self):
+            return self.now
+
+        def sleep(self, seconds):
+            assert seconds > 0
+            self.now += seconds
+
+    clock = Clock()
+    arrivals, closed = [], []
+
+    class Transcriber:
+        config = {"kind": kind}
+
+        def transcribe(self, audio, language):
+            assert language == "auto"
+            try:
+                for text in ("", "  ", "Hello"):
+                    arrivals.append(clock.now)
+                    clock.now += 0.1
+                    yield text
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(benchmark, "time", clock)
+    audio = np.zeros(480000, np.float32)
+    elapsed = benchmark.time_to_first_text(Transcriber(), audio)
+    assert arrivals == pytest.approx([samples / 16000 for samples in expected])
+    assert elapsed == pytest.approx(expected[-1] / 16000 + 0.1)
+    assert closed == [True]
+    assert benchmark.available_samples(kind, 100, len(audio)) == len(audio)
+
+
+def test_first_text_does_not_sleep_again_when_processing_falls_behind(load_script, monkeypatch):
+    import numpy as np
+
+    benchmark = load_script("performance")
+    clock = [0.0]
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(benchmark.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(benchmark.time, "sleep", sleep)
+
+    class Transcriber:
+        config = {"kind": "parakeet"}
+
+        def transcribe(self, *_):
+            clock[0] += 3
+            yield ""
+            clock[0] += 3
+            yield "Hello"
+
+    assert benchmark.time_to_first_text(Transcriber(), np.zeros(480000)) == pytest.approx(10)
+    assert sleeps == [4]
+
+
+@pytest.mark.parametrize("kind", ["nemotron", "parakeet"])
+def test_pacing_matches_runtime_audio_windows(load_script, monkeypatch, kind):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    benchmark, runtime = load_script("performance"), load_script("transcribe")
+    seen = []
+
+    def mel(raw, *_, **kwargs):
+        seen.append(int(raw.max()) + 1)
+        frames = (49 if kwargs.get("center") else 56) if kind == "nemotron" else len(raw) // 160
+        return np.zeros((1, frames, 128), np.float32)
+
+    monkeypatch.setattr(runtime, "log_mel", mel)
+    monkeypatch.setattr(runtime, "Decoder", lambda *_: SimpleNamespace(tokens=[1], step=lambda _: None))
+    transcriber = runtime.Transcriber.__new__(runtime.Transcriber)
+    transcriber.config = {"kind": kind}
+    transcriber.zero_states = {}
+    transcriber.processor = {"prompt_dictionary": {"auto": 0}}
+    transcriber.filters = transcriber.window = transcriber.predictor = transcriber.joiner = None
+    transcriber.tensor = lambda value: value
+    transcriber.tokenizer = SimpleNamespace(decode=lambda *_, **__: "Hello")
+    outputs = {f"b{layer:02d}/next_{name}": None for layer in range(24) for name in ("keys", "values", "conv")}
+    outputs.update({"sub/next_sub1": None, "sub/next_sub2": None})
+    transcriber.encode = lambda _: (np.zeros((1, 175, 640), np.float32), outputs)
+    audio = np.arange(480000, dtype=np.float32)
+    list(transcriber.transcribe(audio))
+    assert seen == [benchmark.available_samples(kind, index, len(audio)) for index in range(len(seen))]
+
+
+def test_unpaced_recording_rejects_no_visible_text(load_script):
+    import numpy as np
+
+    benchmark = load_script("performance")
+
+    class Transcriber:
+        def transcribe(self, *_):
+            yield ""
+            yield "  "
+
+    with pytest.raises(RuntimeError, match="No visible text"):
+        benchmark.transcribe_recording(Transcriber(), np.zeros(480000))
+    with pytest.raises(ValueError, match="Unknown ASR kind"):
+        benchmark.available_samples("other", 0, 480000)
+
+
+def test_audio_validation_and_performance_fingerprint_boundary(load_script, model_dir, tmp_path):
+    import wave
+
+    from model_registry.fingerprints import _compile_input_files
+
+    benchmark = load_script("performance")
+    path = tmp_path / "audio.wav"
+    with wave.open(str(path), "wb") as stream:
+        stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        stream.writeframes(bytes(30 * 16000 * 2))
+    assert len(benchmark.load_audio(path)) == 480000
+    with wave.open(str(path), "wb") as stream:
+        stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        stream.writeframes(bytes(16000 * 2))
+    with pytest.raises(ValueError, match="at least 30 seconds"):
+        benchmark.load_audio(path)
+    with wave.open(str(path), "wb") as stream:
+        stream.setparams((2, 2, 16000, 0, "NONE", "not compressed"))
+        stream.writeframes(bytes(16000 * 4))
+    with pytest.raises(ValueError, match="mono PCM16"):
+        benchmark.load_audio(path)
+    inputs = _compile_input_files(model_dir.parents[1], model_dir.name)
+    assert model_dir / "scripts/performance.py" not in inputs
+
+
+def test_rtf_counts_unique_audio_and_uses_separate_paced_trials(load_script, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    benchmark = load_script("performance")
+    clock = [0.0]
+    recording = np.zeros(480000, np.float32)
+    monkeypatch.setattr(benchmark.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(benchmark, "encoder_stats", lambda *_: ({}, {}))
+    monkeypatch.setattr(benchmark, "WARMUP_RECORDINGS", 2)
+    monkeypatch.setattr(benchmark, "MEASURED_RECORDINGS", 2)
+    monkeypatch.setattr(benchmark, "MIN_DURATION_S", 0)
+    monkeypatch.setattr(benchmark, "FIRST_TEXT_TRIALS", 5)
+    paced = []
+
+    def first_text(*_):
+        paced.append(True)
+        clock[0] += 4.5
+        return 4.5
+
+    monkeypatch.setattr(benchmark, "time_to_first_text", first_text)
+
+    class Monitor:
+        def start(self):
+            self.started = clock[0]
+
+        def stop(self):
+            assert clock[0] - self.started == 30
+            return "unpaced telemetry"
+
+    class Transcriber:
+        config = {"kind": "parakeet"}
+        model = "encoder"
+
+        def transcribe(self, audio, language):
+            assert audio is recording
+            clock[0] += 15  # Total encoder windows are irrelevant to the unique 30 s of audio.
+            yield "Full transcript"
+
+    fake_neat = SimpleNamespace(TelemetryMonitor=Monitor, BenchmarkReport=SimpleNamespace)
+    monkeypatch.setitem(sys.modules, "pyneat", fake_neat)
+    report = SimpleNamespace(document={"metrics": {}}, evidence={}, save=lambda _: None)
+
+    def from_performance(core, models, **kwargs):
+        assert core.latency_ms == 15000
+        assert core.throughput_samples == 2
+        assert core.throughput_duration_ms == 30000
+        assert core.fps == pytest.approx(2 / 30)
+        assert kwargs["telemetry"] == "unpaced telemetry"
+        return report
+
+    monkeypatch.setattr(benchmark.model_report, "from_performance", from_performance)
+    audio_path = tmp_path / "speech.wav"
+    audio_path.write_bytes(b"input")
+    benchmark.benchmark_pipeline(Transcriber(), recording, audio_path, tmp_path)
+    assert report.document["metrics"] == {"real_time_factor": 0.5, "time_to_first_text_ms": 4500}
+    assert len(paced) == 5
+    assert report.evidence["asr-timings.json"]["audio_samples"] == 480000
+
+
 def test_complete_runtime_payload(compiled):
     import onnx
 

@@ -360,6 +360,24 @@ threshold includes zero-time layers. Stage indices remain visible per layer.
 
 ## Workload and measurements
 
+ASR scripts may additionally report `real_time_factor` (unpaced processing
+seconds divided by unique audio seconds; lower is better) and
+`time_to_first_text_ms`. Nemotron and Parakeet's standalone scripts accept the
+same real-speech WAV with `--audio`, along with `--mpk`, `--resources` and
+`--output`. Use a fixed 30-second, 16 kHz mono PCM16 English excerpt from
+[LibriSpeech test-clean](https://www.openslr.org/12/) for the first comparison:
+concatenate utterances `6930-75918-0000` through `0003` in order and retain
+the first 480,000 samples, preserving existing silence without adding any.
+The report records its SHA-256 and duration. These scripts include the frontend,
+encoder, CPU predictor and joiner; Parakeet's overlapping context contributes
+to processing time but is counted only once in audio duration. Their paced pass
+waits for each chunk and its lookahead before processing it, measuring from
+the first audio sample to the first non-whitespace decoded text. Leading
+silence therefore counts. Models stay loaded, and input file decoding,
+warm-up and separate diagnostic profiling are excluded. The browser shows
+these additional metrics under Other measurements. CI stages remain undeclared
+until the speech input is pinned and real DevKit regression baselines exist.
+
 The workload is the script's [benchmark input](#benchmark-input) on the image
 route, or on the tensor route for a model whose inputs are not images, with the
 script's model and benchmark options; the report's `workload`
