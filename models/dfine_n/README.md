@@ -30,7 +30,7 @@ Decode them on the CPU, as `scripts/accuracy.py` does:
 
 1. Apply sigmoid; rank all 300×80 query/class pairs.
 2. Keep 300 pairs, including different classes per box; do not suppress overlaps.
-3. Convert to corners, scale to original dimensions, and clip to the image.
+3. Convert to corners, scale to original dimensions, clip to the image, and drop boxes left empty.
 4. Map class indices through sorted COCO category IDs, including their gaps.
 
 Public tensor boundaries remain FP32. Choose a package that balances accuracy

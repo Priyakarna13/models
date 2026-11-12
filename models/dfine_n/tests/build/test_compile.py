@@ -59,7 +59,18 @@ def test_only_int8_backbones_calibrate(compiler, model_dir):
 
 
 @pytest.mark.parametrize(
-    "case", ["unknown", "decoder_int8", "decoder_regions", "half_calibration", "zero_bins", "bool_samples", "token"]
+    "case",
+    [
+        "unknown",
+        "w8a16",
+        "decoder_int8",
+        "decoder_regions",
+        "decoder_calibration",
+        "half_calibration",
+        "zero_bins",
+        "bool_samples",
+        "token",
+    ],
 )
 def test_component_parameters_reject_undeclared_or_inconsistent_profiles(compiler, model_dir, case):
     metadata = copy.deepcopy(load_model(model_dir))
@@ -68,10 +79,14 @@ def test_component_parameters_reject_undeclared_or_inconsistent_profiles(compile
     assert profile["id"] == "w16a16"
     if case == "unknown":
         profile["id"] = "w32a32"
+    elif case == "w8a16":
+        backbone["precision"] = "w8a16"
     elif case == "decoder_int8":
         decoder["precision"] = "w8a8"
     elif case == "decoder_regions":
         decoder["bf16_regions"] = ["outputs"]
+    elif case == "decoder_calibration":
+        decoder.update(calibration_bins=2048, calibration_samples=50)
     elif case == "half_calibration":
         backbone["calibration_bins"] = 2048
     elif case == "zero_bins":
@@ -94,18 +109,13 @@ def test_mixed_regions_are_explicit_and_validated(compiler, model_dir, regions):
 
 
 @pytest.mark.parametrize(
-    ("parameters", "calibrates", "per_token"),
+    ("parameters", "calibrates"),
     [
-        ({"precision": "w8a8", "calibration_bins": 1024, "calibration_samples": 50}, True, False),
-        ({"precision": "w8a16", "per_token": True}, False, True),
-        ({"precision": "w8a16"}, False, False),
-        ({"precision": "w16a16", "calibration_bins": 2048, "calibration_samples": 50}, True, False),
-        ({"precision": "w16a16"}, False, False),
+        ({"precision": "w8a8", "calibration_bins": 1024, "calibration_samples": 50}, True),
+        ({"precision": "w16a16"}, False),
     ],
 )
-def test_quantization_config_states_calibration_and_per_token_per_precision(
-    compiler, monkeypatch, parameters, calibrates, per_token
-):
+def test_quantization_config_states_calibration_per_precision(compiler, monkeypatch, parameters, calibrates):
     for name in ("QuantizationParams", "HistogramMSEMethod", "SkipCalibration", "bfloat16_scheme"):
         monkeypatch.setattr(compiler, name, MagicMock())
     monkeypatch.setattr(compiler, "quantization_scheme", lambda **kwargs: kwargs)
@@ -119,27 +129,23 @@ def test_quantization_config_states_calibration_and_per_token_per_precision(
         assert arguments["calibration_method"] is compiler.HistogramMSEMethod.return_value
     else:
         assert arguments["calibration_method"] is compiler.SkipCalibration.return_value
-    assert arguments.get("per_token_quant", False) is per_token
-    int8_weights = {"asymmetric": False, "per_channel": True, "bits": 8}
+    assert "per_token_quant" not in arguments
     if parameters["precision"] == "w8a8":
         assert arguments["activation_quantization_scheme"] == {"asymmetric": True, "per_channel": False, "bits": 8}
-        assert arguments["weight_quantization_scheme"] == int8_weights
+        assert arguments["weight_quantization_scheme"] == {"asymmetric": False, "per_channel": True, "bits": 8}
         assert arguments["biascorr_type"] == "regular"
     else:
         assert arguments["activation_quantization_scheme"] is compiler.bfloat16_scheme.return_value
+        assert arguments["weight_quantization_scheme"] is compiler.bfloat16_scheme.return_value
         assert "biascorr_type" not in arguments
-        if parameters["precision"] == "w8a16":
-            assert arguments["weight_quantization_scheme"] == int8_weights
-        else:
-            assert arguments["weight_quantization_scheme"] is compiler.bfloat16_scheme.return_value
 
 
 @pytest.mark.parametrize(
     ("parameters", "message"),
     [
         ({"precision": "int8"}, "Unsupported"),
+        ({"precision": "w8a16"}, "Unsupported"),
         ({"precision": "w8a8"}, "W8A8 component must declare calibration_bins"),
-        ({"precision": "w16a16", "per_token": True}, "only a W8A16 component can declare per_token"),
     ],
 )
 def test_quantization_config_rejects_undeclared_settings(compiler, monkeypatch, parameters, message):
@@ -149,7 +155,7 @@ def test_quantization_config_rejects_undeclared_settings(compiler, monkeypatch, 
         compiler.quantization_config(parameters)
 
 
-def test_calibration_images_are_selected_only_for_calibrated_components(compiler, tmp_path):
+def test_calibration_images_are_selected_only_for_a_calibrated_backbone(compiler, tmp_path):
     for index in range(8):
         Image.new("RGB", (2, 2), color=(index, index, index)).save(tmp_path / f"{index}.jpg")
     calibrated = {
@@ -164,9 +170,6 @@ def test_calibration_images_are_selected_only_for_calibrated_components(compiler
     assert names == compiler.select_images(tmp_path, 42, 0, 3)
     with pytest.raises(ValueError, match="require --dataset"):
         compiler.calibration_images(calibrated, None, tmp_path, selection)
-    mismatched = {**calibrated, "decoder": {"precision": "w16a16", "calibration_bins": 2048, "calibration_samples": 4}}
-    with pytest.raises(ValueError, match="same images"):
-        compiler.calibration_images(mismatched, tmp_path, tmp_path, selection)
     with pytest.raises(ValueError, match="disjoint"):
         compiler.calibration_images(calibrated, tmp_path, tmp_path, {**selection, "offset": 2})
     with pytest.raises(ValueError, match="same verified dataset"):
@@ -238,7 +241,7 @@ def test_mixed_policy_checks_applied_convolutions_not_annotations_or_ingress(com
 
 
 @pytest.mark.parametrize("backbone_calibrates", [False, True])
-def test_backbone_phase_saves_decoder_calibration_from_its_quantized_outputs(
+def test_backbone_phase_calibrates_only_w8a8_and_saves_owned_evaluation_outputs(
     compiler, tmp_path, monkeypatch, backbone_calibrates
 ):
     image = np.zeros((1, 3, 640, 640), np.float32)
@@ -267,17 +270,21 @@ def test_backbone_phase_saves_decoder_calibration_from_its_quantized_outputs(
     if backbone_calibrates:
         parameters = {"precision": "w8a8", "calibration_bins": 1024, "calibration_samples": 1}
     else:
-        parameters = {"precision": "w8a16", "per_token": True}
-    compiler.backbone_phase("profile", parameters, tmp_path, ("cal",), ("eval",), tmp_path)
+        parameters = {"precision": "w16a16"}
+    names = ("cal",) if backbone_calibrates else ()
+    compiler.backbone_phase("profile", parameters, tmp_path, names, ("eval",), tmp_path)
     assert calls[0][1] == "dfine_n_profile_backbone"
     assert calls[0][2] is parameters
-    assert (calls[0][3] is None) is not backbone_calibrates
-    with np.load(tmp_path / "decoder-calibration.npz", allow_pickle=False) as values:
+    if backbone_calibrates:
+        assert list(calls[0][3]) == ["input"] and calls[0][3]["input"] is image
+    else:
+        assert calls[0][3] is None
+    assert not (tmp_path / "decoder-calibration.npz").exists()
+    with np.load(tmp_path / "backbone-evaluation.npz", allow_pickle=False) as values:
         assert np.all(values["attention_memory"] == 2)
         assert np.all(values["query_content"] == 3)
-        assert np.all(values["reference_logits"] == 4)
-    with np.load(tmp_path / "backbone-evaluation.npz", allow_pickle=False) as values:
         assert np.all(values["proposal_scores"] == np.arange(2000))
+        assert np.all(values["reference_logits"] == 4)
 
 
 def test_calibration_is_rgb_over_255_and_selection_is_disjoint(load_script, tmp_path):

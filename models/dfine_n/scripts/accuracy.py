@@ -24,7 +24,6 @@ import pyneat
 from faster_coco_eval import COCO, COCOeval_faster
 from PIL import Image
 
-IMAGE_SIZE = 640
 QUERY_COUNT = 300
 CLASSES = 80
 TIMEOUT_MS = 120000
