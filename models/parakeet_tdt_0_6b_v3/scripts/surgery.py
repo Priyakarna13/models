@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -29,11 +28,10 @@ def controls(valid, device="cpu"):
 
 
 class Subsampling(nn.Module):
-    def __init__(self, model, optimized=False):
+    def __init__(self, model):
         super().__init__()
         self.sub = model.encoder.subsampling
         self.scale = model.encoder.input_scale
-        self.optimized = optimized
 
     def forward(self, features, padding_masks):
         x = features
@@ -45,7 +43,7 @@ class Subsampling(nn.Module):
                     stage += 1
                 # The following pointwise Conv has its own identical mask.
                 # Retain that later mask, including when the Conv has a bias.
-                if not self.optimized or index not in (2, 5):
+                if index not in (2, 5):
                     start, size = MASK_OFFSETS[stage], MASK_LENGTHS[stage]
                     x = x * padding_masks[:, :, start : start + size]
         # Original Flatten(C,F)+Linear is exactly this frequency-wide Conv.
@@ -54,27 +52,23 @@ class Subsampling(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, model, index, optimized=False):
+    def __init__(self, model, index):
         super().__init__()
         self.block = model.encoder.layers[index]
-        self.optimized = optimized
         self.register_buffer("positions", model.encoder.encode_positions(torch.zeros(1, FRAMES, 1024)))
-        if optimized:
-            a = self.block.self_attn
-            self.register_buffer("qkv_weight", torch.cat([p.weight for p in (a.q_proj, a.k_proj, a.v_proj)]))
+        a = self.block.self_attn
+        self.register_buffer("qkv_weight", torch.cat([p.weight for p in (a.q_proj, a.k_proj, a.v_proj)]))
+        self.register_buffer(
+            "qkv_bias",
+            None if a.q_proj.bias is None else torch.cat([p.bias for p in (a.q_proj, a.k_proj, a.v_proj)]),
+        )
+        for number, ff in enumerate((self.block.feed_forward1, self.block.feed_forward2), 1):
+            self.register_buffer(f"ff{number}_weight_half", ff.linear2.weight.detach() * 0.5)
             self.register_buffer(
-                "qkv_bias",
-                None if a.q_proj.bias is None else torch.cat([p.bias for p in (a.q_proj, a.k_proj, a.v_proj)]),
+                f"ff{number}_bias_half", None if ff.linear2.bias is None else ff.linear2.bias.detach() * 0.5
             )
-            for number, ff in enumerate((self.block.feed_forward1, self.block.feed_forward2), 1):
-                self.register_buffer(f"ff{number}_weight_half", ff.linear2.weight.detach() * 0.5)
-                self.register_buffer(
-                    f"ff{number}_bias_half", None if ff.linear2.bias is None else ff.linear2.bias.detach() * 0.5
-                )
 
     def _feed_forward(self, ff, x, number):
-        if not self.optimized:
-            return 0.5 * ff(x)
         x = ff.activation(ff.linear1(x))
         x = F.dropout(x, p=ff.activation_dropout, training=self.training)
         return F.linear(x, getattr(self, f"ff{number}_weight_half"), getattr(self, f"ff{number}_bias_half"))
@@ -103,24 +97,7 @@ class Block(nn.Module):
         b = self.block
         x = hidden + self._feed_forward(b.feed_forward1, b.norm_feed_forward1(hidden), 1)
         norm = b.norm_self_att(x)
-        a = b.self_attn
-        if self.optimized:
-            projected = self._attention_nchw(norm, attention_bias)
-        else:
-            q = a.q_proj(norm).reshape(1, FRAMES, 8, 128).transpose(1, 2)
-            k = a.k_proj(norm).reshape(1, FRAMES, 8, 128).transpose(1, 2)
-            v = a.v_proj(norm).reshape(1, FRAMES, 8, 128).transpose(1, 2)
-            rk = a.relative_k_proj(self.positions).reshape(1, 2 * FRAMES - 1, 8, 128).permute(0, 2, 3, 1)
-            relative = (q + a.bias_v.reshape(1, 8, 1, 128)) @ rk
-            # Keep heads last so the skew is a spatial rearrangement.
-            shifted = F.pad(relative.permute(0, 2, 3, 1), (0, 0, 1, 0))
-            shifted = shifted.reshape(1, 2 * FRAMES, FRAMES, 8)[:, 1:]
-            shifted = shifted.reshape(1, FRAMES, 2 * FRAMES - 1, 8)[:, :, :FRAMES]
-            bd = shifted.permute(0, 3, 1, 2) * a.scaling
-            ac = ((q + a.bias_u.reshape(1, 8, 1, 128)) @ k.transpose(2, 3)) * a.scaling
-            weights = F.softmax(ac + bd + attention_bias[..., :FRAMES], dim=-1)
-            attended = (weights @ v).transpose(1, 2).reshape(1, FRAMES, 1024)
-            projected = a.o_proj(attended)
+        projected = self._attention_nchw(norm, attention_bias)
         x = x + projected
         c = b.conv
         conv = c.pointwise_conv1(b.norm_conv(x).transpose(1, 2))
@@ -187,7 +164,7 @@ def compose(model, directory):
 
     masks, bias = controls(MEL)
     graph = add(
-        Subsampling(model, optimized=True),
+        Subsampling(model),
         (torch.zeros(1, 1, MEL, 128), masks),
         ["features", "padding_masks"],
         ["hidden"],
@@ -198,7 +175,7 @@ def compose(model, directory):
     for layer in range(24):
         prefix = f"b{layer:02d}/"
         graph = add(
-            Block(model, layer, optimized=True),
+            Block(model, layer),
             (torch.zeros(1, FRAMES, 1024), masks, bias),
             ["hidden", "padding_masks", "attention_bias"],
             ["next_hidden"],
@@ -221,24 +198,6 @@ def compose(model, directory):
     )
     result.graph.output.extend(graph.output)
     encoder_outputs = ["encoded"]
-    for module, arguments, inputs, outputs, prefix in (
-        (
-            Predictor(model),
-            (torch.tensor([[8192]]), torch.zeros(2, 1, 640), torch.zeros(2, 1, 640)),
-            ["token", "hidden", "cell"],
-            ["prediction", "next_hidden", "next_cell"],
-            "predictor/",
-        ),
-        (
-            Joiner(model),
-            (torch.zeros(1, 1, 640), torch.zeros(1, 1, 640)),
-            ["encoder_frame", "predictor_output"],
-            ["token_logits", "duration_logits"],
-            "joiner/",
-        ),
-    ):
-        graph = add(module, arguments, inputs, outputs, prefix, {})
-        result.graph.output.extend(graph.output)
     return result, encoder_outputs
 
 
@@ -261,23 +220,40 @@ def export_checkpoint(checkpoint: Path, output: Path) -> Path:
     with tempfile.TemporaryDirectory(dir=output, prefix="export-") as work:
         with torch.inference_mode():
             graph, encoder_outputs = compose(model, Path(work))
+    from onnx_export import export_part
+
+    for module, arguments, inputs, outputs, name in (
+        (
+            Predictor(model),
+            (torch.tensor([[8192]]), torch.zeros(2, 1, 640), torch.zeros(2, 1, 640)),
+            ["token", "hidden", "cell"],
+            ["prediction", "next_hidden", "next_cell"],
+            "predictor",
+        ),
+        (
+            Joiner(model),
+            (torch.zeros(1, 1, 640), torch.zeros(1, 1, 640)),
+            ["encoder_frame", "predictor_output"],
+            ["token_logits", "duration_logits"],
+            "joiner",
+        ),
+    ):
+        path = output / (name + ".onnx")
+        cpu_graph = export_part(module, arguments, inputs, outputs, path)
+        onnx.save_model(cpu_graph, path)
+        onnx.checker.check_model(str(path))
     runtime = {
         "kind": KIND,
         "sample_rate": 16000,
         "blank_token_id": 8192,
         "max_symbols_per_step": int(model.config.max_symbols_per_step),
         "encoder_outputs": encoder_outputs,
-        "predictor_outputs": [value.name for value in graph.graph.output if value.name.startswith("predictor/")],
-        "joiner_outputs": [value.name for value in graph.graph.output if value.name.startswith("joiner/")],
         "frontend": frontend_metadata(processor),
         "assets": {
             name: json.loads((checkpoint / name).read_text()) for name in ("tokenizer.json", "processor_config.json")
         },
     }
-    if KIND == "nemotron":
-        runtime.update(chunk_ms=560, lookahead=6, history_frames=56)
-    else:
-        runtime.update(left_seconds=10, chunk_seconds=2, right_seconds=2, window_seconds=14)
+    runtime.update(left_seconds=10, chunk_seconds=2, right_seconds=2, window_seconds=14)
     entry = graph.metadata_props.add()
     entry.key = "sima.asr"
     entry.value = json.dumps(runtime, sort_keys=True)
@@ -293,23 +269,16 @@ def export_checkpoint(checkpoint: Path, output: Path) -> Path:
 
 
 def compare_checkpoint(converted: Path, model) -> dict:
-    import tempfile
-    from pathlib import Path
-
     import numpy as np
     import onnx
     import onnxruntime as ort
     import torch
-    from onnx_export import partition
 
     converted = Path(converted)
     graph = onnx.load(converted, load_external_data=False)
-    config = json.loads(next(item.value for item in graph.metadata_props if item.key == "sima.asr"))
-    encoder = partition(graph, config["encoder_outputs"])
-    del graph
     inputs = {
         value.name: np.zeros([dim.dim_value for dim in value.type.tensor_type.shape.dim], np.float32)
-        for value in encoder.graph.input
+        for value in graph.graph.input
     }
     rng = np.random.default_rng(440)
     torch.set_num_threads(2)
@@ -323,17 +292,12 @@ def compare_checkpoint(converted: Path, model) -> dict:
         ).pooler_output.numpy()
     tolerance = 0.003
     del model
-    with tempfile.TemporaryDirectory(dir=converted.parent) as work:
-        work = Path(work)
-        os.link(converted.parent / "model.onnx.ext", work / "model.onnx.ext")
-        path = work / "encoder.onnx"
-        onnx.save_model(encoder, path)
-        del encoder
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 2
-        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
-        actual = session.run(["encoded"], inputs)[0]
+    del graph
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 2
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    session = ort.InferenceSession(str(converted), options, providers=["CPUExecutionProvider"])
+    actual = session.run(["encoded"], inputs)[0]
     np.testing.assert_allclose(actual, reference, atol=tolerance, rtol=2e-4)
     return {
         "checked_output": "encoded",

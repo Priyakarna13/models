@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import tempfile
 import time
 from pathlib import Path
 
@@ -71,14 +70,13 @@ def bf16_bits(value):
 
 
 class Decoder:
-    """Greedy RNNT/TDT with prediction caching and duration carry between chunks."""
+    """Greedy RNNT decoding with cached predictor output until the next token."""
 
     def __init__(self, predictor, joiner, config):
         self.predictor, self.joiner, self.config = predictor, joiner, config
         self.tokens = []
         self.hidden = np.zeros((2, 1, 640), np.float32)
         self.cell = self.hidden.copy()
-        self.skip = 0
         self.predict(config["blank_token_id"])
 
     def predict(self, token):
@@ -87,32 +85,25 @@ class Decoder:
         )
 
     def step(self, encoded):
-        frame = self.skip
+        frame = 0
         while frame < encoded.shape[1]:
-            advance = 1
             for _ in range(self.config["max_symbols_per_step"]):
                 values = self.joiner.run(
                     None, dict(encoder_frame=encoded[:, frame : frame + 1], predictor_output=self.prediction)
                 )
                 token = int(values[0].argmax())
-                duration = int(values[1].argmax()) if self.config["kind"] == "parakeet" else 0
                 if token != self.config["blank_token_id"]:
                     self.tokens.append(token)
                     self.predict(token)
-                if self.config["kind"] == "parakeet":
-                    if duration or token == self.config["blank_token_id"]:
-                        advance = max(1, duration)
-                        break
-                elif token == self.config["blank_token_id"]:
+                if token == self.config["blank_token_id"]:
                     break
-            frame += advance
-        self.skip = max(0, frame - encoded.shape[1])
+            frame += 1
 
 
 class Transcriber:
     """Own one encoder Run. Call transcribe() for each independent utterance."""
 
-    def __init__(self, package):
+    def __init__(self, mpk, package):
         import onnxruntime as ort
         import pyneat as pn
         from tokenizers import Tokenizer
@@ -131,14 +122,11 @@ class Transcriber:
             ort.InferenceSession(str(package / (name + "_cpu_int8.onnx")), options, providers=["CPUExecutionProvider"])
             for name in ("predictor", "joiner")
         ]
-        archives = list(package.glob("*_mpk.tar.gz"))
-        if len(archives) != 1:
-            raise ValueError("Extract one complete model package into its own directory")
         options = pn.ModelOptions()
         terminal = pn.InferenceTerminalPolicy()
         terminal.mla_only = True
         options.inference_terminal = terminal
-        self.model = pn.Model(archives[0], options)
+        self.model = pn.Model(Path(mpk), options)
         self.graph = pn.Graph("speech_encoder")
         ingress = pn.InputOptions()
         ingress.payload_type = pn.PayloadType.Tensor
@@ -202,80 +190,54 @@ class Transcriber:
         return encoded, outputs
 
     def transcribe(self, audio, language="auto"):
-        """Yield cumulative text after each 560 ms chunk or 2 s central window."""
+        """Yield cumulative text after each 560 ms chunk."""
         audio = np.asarray(audio, dtype=np.float32)
         if audio.ndim != 1 or not np.isfinite(audio).all():
             raise ValueError("Expected finite mono PCM samples")
         decoder = Decoder(self.predictor, self.joiner, self.config)
         states = dict(self.zero_states)
-        if self.config["kind"] == "nemotron":
-            prompt = self.processor["prompt_dictionary"].get(language)
-            if prompt is None:
-                raise ValueError(f"Unknown language prompt: {language}")
-            one_hot = np.zeros((1, 1, 128), np.float32)
-            one_hot[..., prompt] = 1
-            states["language_one_hot"] = self.tensor(one_hot)
-            index = mel_index = 0
-            while len(audio):
-                first = index == 0
-                start = 0 if first else mel_index * 160 - 256
-                if start >= len(audio):
-                    break
-                size = 7880 if first else 9360
-                real = min(size, len(audio) - start)
-                raw = np.pad(audio[start : start + size], (0, size - real))
-                features = log_mel(raw, self.filters, self.window, center=first)
-                count = 49 if first else 56
-                features = features[:, :count]
-                fixed = np.pad(features, ((0, 0), (7 if first else 0, 0), (0, 0)))
-                mask = np.ones((1, 48, 1, 1), np.float32)
-                if first:
-                    mask[:, :3] = 0
-                    mask[:, 32] = 0
-                bias = np.zeros((1, 7, 64, 1), np.float32)
-                bias[:, :, : 56 - min(index * 7, 56)] = -10000
-                states.update(
-                    features=self.tensor(fixed), subsampling_mask=self.tensor(mask), attention_bias=self.tensor(bias)
-                )
-                encoded, outputs = self.encode(states)
-                states["sub0"] = self.tensor(
-                    np.pad(features[:, -1:, None, :], ((0, 0), (0, 0), (0, 0), (2, 6))).transpose(0, 2, 3, 1)
-                )
-                states["sub1"], states["sub2"] = outputs["sub/next_sub1"], outputs["sub/next_sub2"]
-                for layer in range(24):
-                    for name in ("keys", "values", "conv"):
-                        states[f"b{layer:02d}/{name}"] = outputs[f"b{layer:02d}/next_{name}"]
-                decoder.step(encoded)
-                yield self.tokenizer.decode(decoder.tokens, skip_special_tokens=True)
-                mel_index += count
-                index += 1
-                if real < size:
-                    break
-        else:
-            if language != "auto":
-                raise ValueError("Parakeet has no language prompt")
-            for target in range(0, len(audio), 32000):
-                start, end = max(0, target - 160000), min(len(audio), target + 64000)
-                raw = audio[start:end]
-                if len(raw) < 320:
-                    raw = np.pad(raw, (0, 320 - len(raw)))
-                features = log_mel(raw, self.filters, self.window, normalize=True)
-                valid = min(1400, features.shape[1])
-                fixed = np.pad(features[:, :valid], ((0, 0), (0, 1400 - valid), (0, 0)))[..., None]
-                masks = np.zeros((1, 1232, 1, 1), np.float32)
-                for stride, offset, size in zip((2, 4, 8), (0, 704, 1056), (700, 350, 175), strict=True):
-                    masks[:, offset : offset + min((valid + stride - 1) // stride, size)] = 1
-                bias = np.zeros((1, 1, 176, 1), np.float32)
-                bias[:, :, (valid + 7) // 8 :] = -10000
-                encoded, _ = self.encode(
-                    dict(
-                        features=self.tensor(fixed), padding_masks=self.tensor(masks), attention_bias=self.tensor(bias)
-                    )
-                )
-                first = (target - start) // 1280
-                count = min(25, (len(audio) - target + 1279) // 1280)
-                decoder.step(encoded[:, first : first + count])
-                yield self.tokenizer.decode(decoder.tokens, skip_special_tokens=True)
+        prompt = self.processor["prompt_dictionary"].get(language)
+        if prompt is None:
+            raise ValueError(f"Unknown language prompt: {language}")
+        one_hot = np.zeros((1, 1, 128), np.float32)
+        one_hot[..., prompt] = 1
+        states["language_one_hot"] = self.tensor(one_hot)
+        index = mel_index = 0
+        while len(audio):
+            first = index == 0
+            start = 0 if first else mel_index * 160 - 256
+            if start >= len(audio):
+                break
+            size = 7880 if first else 9360
+            real = min(size, len(audio) - start)
+            raw = np.pad(audio[start : start + size], (0, size - real))
+            features = log_mel(raw, self.filters, self.window, center=first)
+            count = 49 if first else 56
+            features = features[:, :count]
+            fixed = np.pad(features, ((0, 0), (7 if first else 0, 0), (0, 0)))
+            mask = np.ones((1, 48, 1, 1), np.float32)
+            if first:
+                mask[:, :3] = 0
+                mask[:, 32] = 0
+            bias = np.zeros((1, 7, 64, 1), np.float32)
+            bias[:, :, : 56 - min(index * 7, 56)] = -10000
+            states.update(
+                features=self.tensor(fixed), subsampling_mask=self.tensor(mask), attention_bias=self.tensor(bias)
+            )
+            encoded, outputs = self.encode(states)
+            states["sub0"] = self.tensor(
+                np.pad(features[:, -1:, None, :], ((0, 0), (0, 0), (0, 0), (2, 6))).transpose(0, 2, 3, 1)
+            )
+            states["sub1"], states["sub2"] = outputs["sub/next_sub1"], outputs["sub/next_sub2"]
+            for layer in range(24):
+                for name in ("keys", "values", "conv"):
+                    states[f"b{layer:02d}/{name}"] = outputs[f"b{layer:02d}/next_{name}"]
+            decoder.step(encoded)
+            yield self.tokenizer.decode(decoder.tokens, skip_special_tokens=True)
+            mel_index += count
+            index += 1
+            if real < size:
+                break
 
 
 
@@ -325,14 +287,9 @@ def load_dataset(directory):
     return np.concatenate(pieces), {'source': 'fleurs-en-us-test', 'recordings': selected}
 
 
-def available_samples(kind, index, total):
+def available_samples(index, total):
     """Last raw sample required by the runtime's chunk, including FFT context."""
-    if kind == "nemotron":
-        needed = 7880 if index == 0 else (49 + 56 * (index - 1)) * 160 - 256 + 9360
-    elif kind == "parakeet":
-        needed = index * 32000 + 64000
-    else:
-        raise ValueError(f"Unknown ASR kind: {kind}")
+    needed = 7880 if index == 0 else (49 + 56 * (index - 1)) * 160 - 256 + 9360
     return min(total, needed)
 
 
@@ -353,7 +310,7 @@ def time_to_first_text(transcriber, audio):
     try:
         index = 0
         while True:
-            ready = available_samples(transcriber.config["kind"], index, len(audio)) / SAMPLE_RATE
+            ready = available_samples(index, len(audio)) / SAMPLE_RATE
             delay = started + ready - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
@@ -394,11 +351,15 @@ def benchmark_pipeline(transcriber, audio, input_metadata, output):
     benchmark.fps = len(seconds) / span
     benchmark.throughput_duration_ms = span * 1000
     benchmark.throughput_samples = len(seconds)
-    kind = transcriber.config["kind"]
-    profile = "560 ms cached chunks" if kind == "nemotron" else "14 s windows (10 s past + 2 s new + 2 s lookahead)"
+    profile = '560 ms cached chunks'
     digest = hashlib.sha256(audio.astype('<f4', copy=False).tobytes()).hexdigest()
     report = model_report.from_performance(
         benchmark, {"model": transcriber.model}, telemetry=telemetry,
+        execution_plans={"model": {
+            "status": "unavailable",
+            "reason": "Core cannot export a Model execution plan for this inference-only Graph route",
+            "evidence": "encoder-run.json",
+        }},
         mla_layer_stats={"model": {"status": "not requested", "layers": []}},
         mla_stage_stats={"model": {"status": "not requested", "stages": []}},
         workload=(
@@ -409,7 +370,9 @@ def benchmark_pipeline(transcriber, audio, input_metadata, output):
             "RTF is unpaced processing seconds / unique audio seconds (overlap counted once). "
             "Time to first text is the mean of five paced replays from first audio sample to first visible "
             "text, including input buffering/lookahead and leading silence. Models stay loaded; "
-            "WAV decoding and warm-up are excluded; separate encoder profiling is not requested."
+            "WAV decoding and warm-up are excluded; separate encoder profiling is not requested. "
+            "The executed inference graph is saved as encoder-run.json; Core does not expose "
+            "a Model.execution_plan() for this inference-only Graph route."
         ),
     )
     report.document["metrics"].update(
@@ -418,10 +381,11 @@ def benchmark_pipeline(transcriber, audio, input_metadata, output):
     )
     report.evidence["asr-timings.json"] = {
         "input": input_metadata, "audio_sha256": digest, "audio_samples": len(audio), "sample_rate": SAMPLE_RATE,
-        "model_kind": kind, "language": "auto", "unpaced_seconds": seconds,
+        "model_kind": "nemotron", "language": "auto", "unpaced_seconds": seconds,
         "unpaced_span_seconds": span, "paced_first_text_seconds": first_text,
         "final_transcript": transcript,
     }
+    report.evidence["encoder-run.json"] = json.loads(transcriber.run.json())
     report.save(output)
     print(json.dumps(report.document["metrics"], indent=2))
 
@@ -447,15 +411,9 @@ def main():
     else:
         audio = load_audio(args.audio)
         input_metadata = {'source': args.audio.name, 'wav_sha256': hashlib.sha256(args.audio.read_bytes()).hexdigest()}
-    # Use the supplied archive with the package's CPU assets; never edit or repack the archive.
-    with tempfile.TemporaryDirectory(prefix="asr-benchmark-") as temporary:
-        staged = Path(temporary)
-        for path in package.iterdir():
-            if path.is_file() and not path.name.endswith(".tar.gz"):
-                (staged / path.name).symlink_to(path)
-        (staged / "encoder_mpk.tar.gz").symlink_to(mpk)
-        with Transcriber(staged) as transcriber:
-            benchmark_pipeline(transcriber, audio, input_metadata, args.output)
+    with Transcriber(mpk, package) as transcriber:
+        benchmark_pipeline(transcriber, audio, input_metadata, args.output)
+
 
 
 if __name__ == "__main__":

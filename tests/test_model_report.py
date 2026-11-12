@@ -72,6 +72,29 @@ def test_energy_per_inference_matches_cores_energy_for_its_sample_count(tmp_path
     assert metrics["energy_per_inference_joules"] == pytest.approx(CORE_REPORT["energy_joules"] / 1000)
 
 
+@pytest.mark.parametrize("plan", [
+    {"schema": "sima.neat.execution_plan", "model": "inference-only"},
+    {"status": "unavailable", "reason": "stage plan is not exported", "evidence": "encoder-run.json"},
+])
+def test_custom_route_plan_does_not_build_an_unused_default_route(tmp_path, plan):
+    class InferenceModel:
+        def execution_plan(self):
+            raise AssertionError("the default route was not measured")
+
+    report = model_report.from_performance(
+        Saved(CORE_REPORT), {"model": InferenceModel()}, workload="inference-only",
+        execution_plans={"model": plan},
+    )
+    report.save(tmp_path)
+    assert saved_report(tmp_path)["components"]["model"]["execution_plan"] == plan
+
+
+@pytest.mark.parametrize("plans", [{}, {"other": {}}])
+def test_custom_route_plans_must_cover_exactly_the_measured_components(plans):
+    with pytest.raises(ValueError, match="exactly the measured components"):
+        model_report.from_performance(Saved(CORE_REPORT), {"model": Model("m")}, workload="w", execution_plans=plans)
+
+
 def test_energy_per_inference_does_not_depend_on_the_compiled_batch(tmp_path):
     # Core's throughput already counts each inference of a batch, so equal power and rate mean equal energy.
     single = model_report.from_performance(Saved(CORE_REPORT), {"model": Model("m")}, workload="w")

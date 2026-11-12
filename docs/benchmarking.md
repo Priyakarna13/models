@@ -141,6 +141,10 @@ it runs on, and the tensors between steps. The plan comes from the same Model
 the script benchmarks, so it reflects that script's options, such as a box
 decoder. The model page draws it as the component's execution graph.
 
+For a custom Graph route, pass its plan in `from_performance(execution_plans=...)`
+instead of exporting the Model's default route. If Core cannot export that plan,
+use a status/reason object and save `json.loads(run.json())` as report evidence.
+
 A failed call exits unsuccessfully. Keep the log: a missing report is not a
 successful benchmark. Keep archives and results outside Git.
 

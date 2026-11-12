@@ -1,4 +1,4 @@
-"""Bounded PyTorch exports and standard ONNX graph composition/extraction."""
+"""Bounded PyTorch exports and standard ONNX graph composition."""
 
 from __future__ import annotations
 
@@ -22,21 +22,6 @@ def append_graph(destination: Any, graph: Any, *, prefix: str, replacements: dic
     destination.graph.initializer.extend(part.graph.initializer)
     destination.graph.value_info.extend(part.graph.value_info)
     return part.graph
-
-
-def partition(model: Any, output_names: list[str]) -> Any:
-    """Extract a region with ONNX, retaining only its used public inputs."""
-    from onnx.utils import Extractor
-
-    if not set(output_names) <= {value.name for value in model.graph.output}:
-        raise ValueError("Partition outputs must be declared graph outputs")
-    result = Extractor(model).extract_model([value.name for value in model.graph.input], output_names)
-    used = {name for node in result.graph.node for name in node.input} | set(output_names)
-    inputs = [value for value in result.graph.input if value.name in used]
-    result.graph.ClearField("input")
-    result.graph.input.extend(inputs)
-    result.metadata_props.extend(model.metadata_props)
-    return result
 
 
 def export_part(module: Any, arguments: tuple, inputs: list[str], outputs: list[str], path: Path) -> Any:

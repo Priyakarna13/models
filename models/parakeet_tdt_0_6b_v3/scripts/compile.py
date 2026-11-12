@@ -23,7 +23,6 @@ import model_registry
 import numpy as np
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
-from onnx_export import partition
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 # Kept in this compile input so dependency changes invalidate compilation, not conversion.
@@ -84,24 +83,12 @@ def runtime_contract(archive: Path, logical_outputs: list[str]) -> dict:
     return dict(inputs=inputs, outputs=outputs)
 
 
-def cpu_model(graph, outputs: list[str], source_dir: Path, destination: Path, prefix: str) -> None:
+def cpu_model(source: Path, destination: Path) -> None:
     import onnx
     import onnxruntime as ort
     from onnxruntime.quantization import QuantType, quantize_dynamic
 
-    part = partition(graph, outputs)
-    for node in part.graph.node:
-        for ports in (node.input, node.output):
-            for index, name in enumerate(ports):
-                ports[index] = name.removeprefix(prefix)
-    for values in (part.graph.input, part.graph.output, part.graph.value_info, part.graph.initializer):
-        for value in values:
-            value.name = value.name.removeprefix(prefix)
-    onnx.external_data_helper.load_external_data_for_model(part, str(source_dir))
-    onnx.external_data_helper.convert_model_from_external_data(part)
     with tempfile.TemporaryDirectory(dir=destination.parent) as directory:
-        source = Path(directory) / "float.onnx"
-        onnx.save_model(part, source)
         # Fold checkpoint Transpose/Reshape constants before dynamic quantization,
         # which requires constant MatMul weights to be initializers.
         optimized = Path(directory) / "optimized.onnx"
@@ -134,25 +121,7 @@ def prepare_model(source: Path, temporary: Path, component: Path) -> None:
             raise ValueError(f"Unexpected runtime asset: {filename}")
         (component / filename).write_text(json.dumps(document) + "\n")
     for name in ("predictor", "joiner"):
-        cpu_model(
-            graph,
-            config[name + "_outputs"],
-            graph_path.parent,
-            component / (name + "_cpu_int8.onnx"),
-            name + "/",
-        )
-    encoder = partition(graph, config["encoder_outputs"])
-    weights = {
-        onnx.external_data_helper.ExternalDataInfo(tensor).location
-        for tensor in encoder.graph.initializer
-        if onnx.external_data_helper.uses_external_data(tensor)
-    }
-    for name in weights:
-        try:
-            os.link(graph_path.parent / name, temporary / name)
-        except OSError:
-            shutil.copyfile(graph_path.parent / name, temporary / name)
-    onnx.save_model(encoder, temporary / "encoder.onnx")
+        cpu_model(graph_path.parent / (name + ".onnx"), component / (name + "_cpu_int8.onnx"))
     (temporary / "config.json").write_text(json.dumps(config))
 
 
@@ -222,13 +191,9 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
         prepare_in_environment(source, temporary, component)
         shutil.copyfile(temporary / "graphs/source-validation.json", output / "source-validation.json")
         config = json.loads((temporary / "config.json").read_text())
-        encoder_path = temporary / "encoder.onnx"
+        encoder_path = temporary / "graphs/model.onnx"
         parameters = selected["components"][0]["parameters"]
-        keys = (
-            ("chunk_ms", "lookahead")
-            if config["kind"] == "nemotron"
-            else ("left_seconds", "chunk_seconds", "right_seconds")
-        )
+        keys = ("left_seconds", "chunk_seconds", "right_seconds")
         expected = {"precision": "w8a16", **{key: config[key] for key in keys}}
         if parameters != expected:
             raise ValueError(f"Build parameters must match the pinned encoder: {expected}")

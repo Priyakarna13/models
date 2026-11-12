@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -15,10 +14,9 @@ from torch.nn import functional as F
 
 
 class PaddingCache:
-    def __init__(self, states, first=False):
+    def __init__(self, states):
         self.states = states
         self.next = {}
-        self.first = first
 
     def update(self, x, key, conv):
         old = self.states[key]
@@ -26,64 +24,11 @@ class PaddingCache:
         self.next[key] = torch.cat([old, x], dim=axis).narrow(
             axis, old.shape[axis] + x.shape[axis] - old.shape[axis], old.shape[axis]
         )
-        if self.first and x.ndim == 4:
-            # HF's first causal Conv2d invocation has one extra leading zero.
-            shape = list(old.shape)
-            shape[2] = conv.left_pad_init - conv.left_pad
-            old = torch.cat([old.new_zeros(shape), old], dim=2)
         return torch.cat([old, x], dim=axis)
 
 
-class SubsamplingStep(nn.Module):
-    def __init__(self, model, first):
-        super().__init__()
-        self.subsampling = model.encoder.subsampling
-        self.scale = model.encoder.input_scale
-        self.first = first
-
-    def forward(self, features, sub0, sub1, sub2):
-        cache = PaddingCache({f"subsampling.{i}": s for i, s in enumerate((sub0, sub1, sub2))}, self.first)
-        x = self.subsampling(features, padding_cache=cache) * self.scale
-        return (x, *(cache.next[f"subsampling.{i}"] for i in range(3)))
-
-
-class BlockStep(nn.Module):
-    def __init__(self, model, index, frames=4):
-        super().__init__()
-        self.block = model.encoder.layers[index]
-        self.index = index
-        self.frames = frames
-        # Relative positions are translation invariant. With 56 left-padding
-        # slots and the current chunk, this constant works during warm-up too.
-        positions = model.encoder.encode_positions(torch.zeros(1, frames, 1024), cached_frames=56)
-        self.register_buffer("positions", positions)
-
-    def forward(self, hidden, keys, values, conv, attention_bias):
-        b = self.block
-        x = hidden + 0.5 * b.feed_forward1(b.norm_feed_forward1(hidden))
-        normalized = b.norm_self_att(x)
-        a = b.self_attn
-        q = a.q_proj(normalized).reshape(1, self.frames, 8, 128).transpose(1, 2)
-        k = a.k_proj(normalized).reshape(1, self.frames, 8, 128).transpose(1, 2)
-        v = a.v_proj(normalized).reshape(1, self.frames, 8, 128).transpose(1, 2)
-        k = torch.cat([keys, k], dim=2)
-        v = torch.cat([values, v], dim=2)
-        rk = a.relative_k_proj(self.positions).reshape(1, 2 * (56 + self.frames) - 1, 8, 128).permute(0, 2, 3, 1)
-        bd = a._rel_shift((q + a.bias_v.reshape(1, 8, 1, 128)) @ rk)[..., : 56 + self.frames] * a.scaling
-        ac = ((q + a.bias_u.reshape(1, 8, 1, 128)) @ k.transpose(2, 3)) * a.scaling
-        # A 560 ms public bias carrier has 64 columns for 16-byte DMA alignment.
-        # Only the 56 cached plus current-frame columns participate in attention.
-        weights = F.softmax(ac + bd + attention_bias[..., : 56 + self.frames], dim=-1)
-        attended = (weights @ v).transpose(1, 2).reshape(1, self.frames, 1024)
-        x = x + a.o_proj(attended)
-        cache = PaddingCache({f"conv.{self.index}": conv})
-        x = x + b.conv(b.norm_conv(x), padding_cache=cache)
-        x = x + 0.5 * b.feed_forward2(b.norm_feed_forward2(x))
-        return b.norm_out(x), k[:, :, -56:], v[:, :, -56:], cache.next[f"conv.{self.index}"]
-
-
 class ProjectionStep(nn.Module):
-    def __init__(self, model, frames=4):
+    def __init__(self, model, frames=7):
         super().__init__()
         self.linear = model.prompt_projector.linear_1
         self.activation = model.prompt_projector.act
@@ -127,16 +72,18 @@ class JoinerStep(nn.Module):
         return self.joint(predictor_output, encoder_frame)
 
 
-class UnifiedSubsamplingConvProjectionStep(SubsamplingStep):
+class UnifiedSubsamplingConvProjectionStep(nn.Module):
     """One steady-shape graph; stage masks reproduce first-chunk zero padding."""
 
     def __init__(self, model, frames=7):
-        super().__init__(model, False)
+        super().__init__()
+        self.subsampling = model.encoder.subsampling
+        self.scale = model.encoder.input_scale
         self.frames = frames
 
     def forward(self, features, sub0, sub1, sub2, subsampling_mask):
         s = self.subsampling
-        cache = PaddingCache({"subsampling.0": sub0[..., :131], "subsampling.1": sub1, "subsampling.2": sub2}, False)
+        cache = PaddingCache({"subsampling.0": sub0[..., :131], "subsampling.1": sub1, "subsampling.2": sub2})
         # First chunk: prepend seven zero mel frames; zero the three artificial
         # stem rows and one artificial second-stage row, including their biases.
         x = s.act_fn(s.conv_in(features.unsqueeze(1), padding_cache=cache))
@@ -150,10 +97,14 @@ class UnifiedSubsamplingConvProjectionStep(SubsamplingStep):
         return x, cache.next["subsampling.1"], cache.next["subsampling.2"]
 
 
-class OptimizedBlockStep(BlockStep):
-    def __init__(self, model, index, frames=7, conv_tail_matmul=True):
-        super().__init__(model, index, frames)
-        self.conv_tail_matmul = conv_tail_matmul
+class OptimizedBlockStep(nn.Module):
+    def __init__(self, model, index, frames=7):
+        super().__init__()
+        self.block = model.encoder.layers[index]
+        self.index = index
+        self.frames = frames
+        positions = model.encoder.encode_positions(torch.zeros(1, frames, 1024), cached_frames=56)
+        self.register_buffer("positions", positions)
         a = self.block.self_attn
         self.register_buffer(
             "qkv_weight", torch.cat([p.weight.detach() for p in (a.q_proj, a.k_proj, a.v_proj)])[:, :, None, None]
@@ -196,14 +147,11 @@ class OptimizedBlockStep(BlockStep):
         projected = F.conv2d(attended, self.attention_output_weight, a.o_proj.bias).squeeze(2).transpose(1, 2)
         x = x + projected
         cache = PaddingCache({f"conv.{self.index}": conv})
-        if self.conv_tail_matmul:
-            c = b.conv
-            z = F.glu(c.pointwise_conv1(b.norm_conv(x).transpose(1, 2)), dim=1)
-            z = c.depthwise_conv(z, padding_cache=cache).transpose(1, 2)
-            z = c.activation(c.norm(z))
-            z = F.linear(z, c.pointwise_conv2.weight[:, :, 0], c.pointwise_conv2.bias)
-        else:
-            z = b.conv(b.norm_conv(x), padding_cache=cache)
+        c = b.conv
+        z = F.glu(c.pointwise_conv1(b.norm_conv(x).transpose(1, 2)), dim=1)
+        z = c.depthwise_conv(z, padding_cache=cache).transpose(1, 2)
+        z = c.activation(c.norm(z))
+        z = F.linear(z, c.pointwise_conv2.weight[:, :, 0], c.pointwise_conv2.bias)
         x = x + z
         x = x + 0.5 * b.feed_forward2(b.norm_feed_forward2(x))
         return b.norm_out(x), k[:, :, :, -56:], v[:, :, :, -56:], cache.next[f"conv.{self.index}"]
@@ -283,24 +231,6 @@ def compose(model, directory):
     )
     result.graph.output.extend([*graph.output, *state_outputs])
     encoder_outputs = [value.name for value in result.graph.output]
-    for module, arguments, inputs, outputs, prefix in (
-        (
-            PredictorStep(model),
-            (torch.tensor([[13087]]), torch.zeros(2, 1, 640), torch.zeros(2, 1, 640)),
-            ["token", "hidden", "cell"],
-            ["prediction", "next_hidden", "next_cell"],
-            "predictor/",
-        ),
-        (
-            JoinerStep(model),
-            (torch.zeros(1, 1, 640), torch.zeros(1, 1, 640)),
-            ["encoder_frame", "predictor_output"],
-            ["logits"],
-            "joiner/",
-        ),
-    ):
-        graph = add(module, arguments, inputs, outputs, prefix, {})
-        result.graph.output.extend(graph.output)
     # Independently exported blocks repeat this preparation. Hoist equal constants
     # and operations; no model values or mask domains change.
     from onnx import numpy_helper
@@ -360,23 +290,40 @@ def export_checkpoint(checkpoint: Path, output: Path) -> Path:
     with tempfile.TemporaryDirectory(dir=output, prefix="export-") as work:
         with torch.inference_mode():
             graph, encoder_outputs = compose(model, Path(work))
+    from onnx_export import export_part
+
+    for module, arguments, inputs, outputs, name in (
+        (
+            PredictorStep(model),
+            (torch.tensor([[13087]]), torch.zeros(2, 1, 640), torch.zeros(2, 1, 640)),
+            ["token", "hidden", "cell"],
+            ["prediction", "next_hidden", "next_cell"],
+            "predictor",
+        ),
+        (
+            JoinerStep(model),
+            (torch.zeros(1, 1, 640), torch.zeros(1, 1, 640)),
+            ["encoder_frame", "predictor_output"],
+            ["logits"],
+            "joiner",
+        ),
+    ):
+        path = output / (name + ".onnx")
+        cpu_graph = export_part(module, arguments, inputs, outputs, path)
+        onnx.save_model(cpu_graph, path)
+        onnx.checker.check_model(str(path))
     runtime = {
         "kind": KIND,
         "sample_rate": 16000,
         "blank_token_id": 13087,
         "max_symbols_per_step": int(model.config.max_symbols_per_step),
         "encoder_outputs": encoder_outputs,
-        "predictor_outputs": [value.name for value in graph.graph.output if value.name.startswith("predictor/")],
-        "joiner_outputs": [value.name for value in graph.graph.output if value.name.startswith("joiner/")],
         "frontend": frontend_metadata(processor),
         "assets": {
             name: json.loads((checkpoint / name).read_text()) for name in ("tokenizer.json", "processor_config.json")
         },
     }
-    if KIND == "nemotron":
-        runtime.update(chunk_ms=560, lookahead=6, history_frames=56)
-    else:
-        runtime.update(left_seconds=10, chunk_seconds=2, right_seconds=2, window_seconds=14)
+    runtime.update(chunk_ms=560, lookahead=6, history_frames=56)
     entry = graph.metadata_props.add()
     entry.key = "sima.asr"
     entry.value = json.dumps(runtime, sort_keys=True)
@@ -392,23 +339,16 @@ def export_checkpoint(checkpoint: Path, output: Path) -> Path:
 
 
 def compare_checkpoint(converted: Path, model) -> dict:
-    import tempfile
-    from pathlib import Path
-
     import numpy as np
     import onnx
     import onnxruntime as ort
     import torch
-    from onnx_export import partition
 
     converted = Path(converted)
     graph = onnx.load(converted, load_external_data=False)
-    config = json.loads(next(item.value for item in graph.metadata_props if item.key == "sima.asr"))
-    encoder = partition(graph, config["encoder_outputs"])
-    del graph
     inputs = {
         value.name: np.zeros([dim.dim_value for dim in value.type.tensor_type.shape.dim], np.float32)
-        for value in encoder.graph.input
+        for value in graph.graph.input
     }
     rng = np.random.default_rng(440)
     torch.set_num_threads(2)
@@ -436,17 +376,12 @@ def compare_checkpoint(converted: Path, model) -> dict:
         ).pooler_output.numpy()
     tolerance = 0.03
     del model
-    with tempfile.TemporaryDirectory(dir=converted.parent) as work:
-        work = Path(work)
-        os.link(converted.parent / "model.onnx.ext", work / "model.onnx.ext")
-        path = work / "encoder.onnx"
-        onnx.save_model(encoder, path)
-        del encoder
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 2
-        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
-        actual = session.run(["encoded"], inputs)[0]
+    del graph
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 2
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    session = ort.InferenceSession(str(converted), options, providers=["CPUExecutionProvider"])
+    actual = session.run(["encoded"], inputs)[0]
     np.testing.assert_allclose(actual, reference, atol=tolerance, rtol=2e-4)
     return {
         "checked_output": "encoded",

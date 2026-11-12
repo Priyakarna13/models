@@ -373,7 +373,7 @@ jobs:
           echo "BENCHMARK_RUNTIME=$runtime" >> "$GITHUB_ENV"
 
       - name: Install trusted dataset tooling
-        # Cache explicit performance inputs and accuracy datasets before running model code.
+        # Both stages read the accuracy dataset: accuracy scores it, and performance benchmarks a sample of it.
         if: steps.stages.outputs.accuracy == 'true' || steps.stages.outputs.performance == 'true'
         env:
           DATASET_REGISTRY_ENVIRONMENT: ${{ inputs.environment != 'default' && inputs.environment || vars.VULCAN_ENV || 'staging' }}

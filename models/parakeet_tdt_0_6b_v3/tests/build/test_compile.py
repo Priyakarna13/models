@@ -7,11 +7,7 @@ import pytest
 from model_registry.runtime_files import read_runtime_files
 
 
-@pytest.mark.parametrize("kind,expected", [
-    ("nemotron", [7880, 16944, 25904]),
-    ("parakeet", [64000, 96000, 128000]),
-])
-def test_first_text_waits_for_real_input_and_skips_empty_chunks(load_script, monkeypatch, kind, expected):
+def test_first_text_waits_for_real_input_and_skips_empty_chunks(load_script, monkeypatch):
     import numpy as np
 
     benchmark = load_script("performance")
@@ -30,7 +26,6 @@ def test_first_text_waits_for_real_input_and_skips_empty_chunks(load_script, mon
     arrivals, closed = [], []
 
     class Transcriber:
-        config = {"kind": kind}
 
         def transcribe(self, audio, language):
             assert language == "auto"
@@ -45,10 +40,11 @@ def test_first_text_waits_for_real_input_and_skips_empty_chunks(load_script, mon
     monkeypatch.setattr(benchmark, "time", clock)
     audio = np.zeros(480000, np.float32)
     elapsed = benchmark.time_to_first_text(Transcriber(), audio)
+    expected = [64000, 96000, 128000]
     assert arrivals == pytest.approx([samples / 16000 for samples in expected])
     assert elapsed == pytest.approx(expected[-1] / 16000 + 0.1)
     assert closed == [True]
-    assert benchmark.available_samples(kind, 100, len(audio)) == len(audio)
+    assert benchmark.available_samples(100, len(audio)) == len(audio)
 
 
 def test_first_text_does_not_sleep_again_when_processing_falls_behind(load_script, monkeypatch):
@@ -66,7 +62,6 @@ def test_first_text_does_not_sleep_again_when_processing_falls_behind(load_scrip
     monkeypatch.setattr(benchmark.time, "sleep", sleep)
 
     class Transcriber:
-        config = {"kind": "parakeet"}
 
         def transcribe(self, *_):
             clock[0] += 3
@@ -78,8 +73,7 @@ def test_first_text_does_not_sleep_again_when_processing_falls_behind(load_scrip
     assert sleeps == [4]
 
 
-@pytest.mark.parametrize("kind", ["nemotron", "parakeet"])
-def test_pacing_matches_runtime_audio_windows(load_script, monkeypatch, kind):
+def test_pacing_matches_runtime_audio_windows(load_script, monkeypatch):
     from types import SimpleNamespace
 
     import numpy as np
@@ -89,13 +83,13 @@ def test_pacing_matches_runtime_audio_windows(load_script, monkeypatch, kind):
 
     def mel(raw, *_, **kwargs):
         seen.append(int(raw.max()) + 1)
-        frames = (49 if kwargs.get("center") else 56) if kind == "nemotron" else len(raw) // 160
+        frames = len(raw) // 160
         return np.zeros((1, frames, 128), np.float32)
 
     monkeypatch.setattr(runtime, "log_mel", mel)
     monkeypatch.setattr(runtime, "Decoder", lambda *_: SimpleNamespace(tokens=[1], step=lambda _: None))
     transcriber = runtime.Transcriber.__new__(runtime.Transcriber)
-    transcriber.config = {"kind": kind}
+    transcriber.config = {}
     transcriber.zero_states = {}
     transcriber.processor = {"prompt_dictionary": {"auto": 0}}
     transcriber.filters = transcriber.window = transcriber.predictor = transcriber.joiner = None
@@ -106,7 +100,7 @@ def test_pacing_matches_runtime_audio_windows(load_script, monkeypatch, kind):
     transcriber.encode = lambda _: (np.zeros((1, 175, 640), np.float32), outputs)
     audio = np.arange(480000, dtype=np.float32)
     list(transcriber.transcribe(audio))
-    assert seen == [benchmark.available_samples(kind, index, len(audio)) for index in range(len(seen))]
+    assert seen == [benchmark.available_samples(index, len(audio)) for index in range(len(seen))]
 
 
 def test_unpaced_recording_rejects_no_visible_text(load_script):
@@ -121,8 +115,6 @@ def test_unpaced_recording_rejects_no_visible_text(load_script):
 
     with pytest.raises(RuntimeError, match="No visible text"):
         benchmark.transcribe_recording(Transcriber(), np.zeros(480000))
-    with pytest.raises(ValueError, match="Unknown ASR kind"):
-        benchmark.available_samples("other", 0, 480000)
 
 
 def test_audio_validation_and_performance_fingerprint_boundary(load_script, model_dir, tmp_path):
@@ -208,8 +200,8 @@ def test_rtf_counts_unique_audio_and_uses_separate_paced_trials(load_script, mon
             return "unpaced telemetry"
 
     class Transcriber:
-        config = {"kind": "parakeet"}
         model = "encoder"
+        run = SimpleNamespace(json=lambda: json.dumps({"schema": "sima.neat.graph_run", "graph": {"nodes": []}}))
 
         def transcribe(self, audio, language):
             assert audio is recording
@@ -226,6 +218,8 @@ def test_rtf_counts_unique_audio_and_uses_separate_paced_trials(load_script, mon
         assert core.throughput_duration_ms == 30000
         assert core.fps == pytest.approx(2 / 30)
         assert kwargs["telemetry"] == "unpaced telemetry"
+        assert kwargs["execution_plans"]["model"]["status"] == "unavailable"
+        assert kwargs["execution_plans"]["model"]["evidence"] == "encoder-run.json"
         assert kwargs["mla_layer_stats"] == {"model": {"status": "not requested", "layers": []}}
         assert kwargs["mla_stage_stats"] == {"model": {"status": "not requested", "stages": []}}
         return report
@@ -236,6 +230,7 @@ def test_rtf_counts_unique_audio_and_uses_separate_paced_trials(load_script, mon
     benchmark.benchmark_pipeline(Transcriber(), recording, {"source": "test"}, tmp_path)
     assert report.document["metrics"] == {"real_time_factor": 0.5, "time_to_first_text_ms": 4500}
     assert len(paced) == 5
+    assert report.evidence["encoder-run.json"]["schema"] == "sima.neat.graph_run"
     assert report.evidence["asr-timings.json"]["audio_samples"] == 480000
 
 
@@ -265,6 +260,7 @@ def test_complete_runtime_payload(compiled):
         assert any(node.op_type in {"DynamicQuantizeLSTM", "MatMulInteger"} for node in model.graph.node)
     config = json.loads((component / "runtime_config.json").read_text())
     assert config["outputs"][0]["name"] == "encoded"
+    assert not {"predictor_outputs", "joiner_outputs"}.intersection(config)
 
 
 def test_predictor_runs_only_after_nonblank_tokens(load_script):
@@ -287,10 +283,10 @@ def test_predictor_runs_only_after_nonblank_tokens(load_script):
         def run(self, _, inputs):
             output = np.zeros((1, 1, 4), np.float32)
             output[..., next(self.decisions)] = 1
-            return [output]
+            return [output, np.array([[[1.0, 0.0, 0.0, 0.0, 0.0]]], np.float32)]
 
     predictor = Predictor()
-    decoder = runtime.Decoder(predictor, Joiner(), dict(kind="nemotron", blank_token_id=3, max_symbols_per_step=10))
+    decoder = runtime.Decoder(predictor, Joiner(), dict(blank_token_id=3, max_symbols_per_step=10))
     decoder.step(np.zeros((1, 2, 640), np.float32))
     assert decoder.tokens == [0, 1, 2]
     assert predictor.tokens == [3, 0, 1, 2]
@@ -314,7 +310,7 @@ def test_tdt_duration_carries_to_the_next_chunk(load_script):
             return [np.array([[[1.0, 0.0]]], np.float32), np.array([[[0.0, 0.0, 0.0, 0.0, 1.0]]], np.float32)]
 
     joiner = Joiner()
-    decoder = runtime.Decoder(Predictor(), joiner, dict(kind="parakeet", blank_token_id=1, max_symbols_per_step=10))
+    decoder = runtime.Decoder(Predictor(), joiner, dict(blank_token_id=1, max_symbols_per_step=10))
     decoder.step(np.zeros((1, 2, 640), np.float32))
     assert decoder.skip == 2
     decoder.step(np.zeros((1, 2, 640), np.float32))
@@ -355,7 +351,7 @@ def test_compile_manifest_uses_shared_runtime_files_contract(tmp_path, load_scri
         validate()
 
 
-def test_prepare_runs_surgery_before_partitioning(tmp_path, load_script, monkeypatch):
+def test_prepare_exports_encoder_and_cpu_models_separately(tmp_path, load_script, monkeypatch):
     import onnx
     from onnx import TensorProto, helper
 
@@ -381,8 +377,6 @@ def test_prepare_runs_surgery_before_partitioning(tmp_path, load_script, monkeyp
             "sima.asr": json.dumps(
                 {
                     "encoder_outputs": ["encoded"],
-                    "predictor_outputs": [],
-                    "joiner_outputs": [],
                     "assets": assets,
                 }
             )
@@ -404,39 +398,42 @@ def test_prepare_runs_surgery_before_partitioning(tmp_path, load_script, monkeyp
     component, work = tmp_path / "component", tmp_path / "work"
     component.mkdir()
     work.mkdir()
-    monkeypatch.setattr(recipe, "cpu_model", lambda *args: None)
+    calls = []
+    monkeypatch.setattr(recipe, "cpu_model", lambda source, destination: calls.append((source, destination)))
     recipe.prepare_model(source, work, component)
     for filename, document in assets.items():
         assert json.loads((component / filename).read_text()) == document
     assert "assets" not in json.loads((work / "config.json").read_text())
-    onnx.checker.check_model(str(work / "encoder.onnx"))
+    onnx.checker.check_model(str(work / "graphs/model.onnx"))
+    assert calls == [(work / "graphs" / (name + ".onnx"), component / (name + "_cpu_int8.onnx"))
+                     for name in ("predictor", "joiner")]
 
 
-def test_partition_retains_only_used_inputs_and_preserves_metadata(load_script):
-    import pytest
+def test_cpu_quantization_preserves_public_names_and_shapes(tmp_path, load_script):
+    import numpy as np
+    import onnx
 
-    partition = load_script("onnx_export").partition
-    onnx = pytest.importorskip("onnx")
-    from onnx import TensorProto, helper
+    ort = pytest.importorskip("onnxruntime")
+    from onnx import TensorProto, helper, numpy_helper
 
-    def value(name):
-        return helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, 2])
-
+    recipe = load_script("compile")
+    source, destination = tmp_path / "cpu.onnx", tmp_path / "cpu_int8.onnx"
+    def value(name, shape):
+        return helper.make_tensor_value_info(name, TensorProto.FLOAT, shape)
+    weights = np.random.default_rng(440).normal(size=(32, 16)).astype(np.float32)
     graph = helper.make_graph(
-        [helper.make_node("Identity", ["audio"], ["encoded"]), helper.make_node("Identity", ["token"], ["prediction"])],
-        "regions",
-        [value("audio"), value("token")],
-        [value("encoded"), value("prediction")],
+        [helper.make_node("MatMul", ["encoder_frame", "weight"], ["logits"])],
+        "joiner", [value("encoder_frame", [1, 1, 32])], [value("logits", [1, 1, 16])],
+        [numpy_helper.from_array(weights, "weight")],
     )
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=8)
-    helper.set_model_props(model, {"sima.asr": "metadata"})
-    encoder = partition(model, ["encoded"])
-    assert [value.name for value in encoder.graph.input] == ["audio"]
-    assert [value.name for value in encoder.graph.output] == ["encoded"]
-    assert encoder.metadata_props == model.metadata_props
-    onnx.checker.check_model(encoder)
-    with pytest.raises(ValueError, match="declared"):
-        partition(model, ["missing"])
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=8), source)
+    recipe.cpu_model(source, destination)
+    session = ort.InferenceSession(str(destination), providers=["CPUExecutionProvider"])
+    assert [item.name for item in session.get_inputs()] == ["encoder_frame"]
+    assert [(item.name, item.shape) for item in session.get_outputs()] == [("logits", [1, 1, 16])]
+    data = np.random.default_rng(441).normal(size=(1, 1, 32)).astype(np.float32)
+    actual = session.run(None, {"encoder_frame": data})[0]
+    np.testing.assert_allclose(actual, data @ weights, atol=0.2, rtol=0.03)
 
 
 @pytest.mark.parametrize("install_fails", [False, True])
