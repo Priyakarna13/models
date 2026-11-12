@@ -182,6 +182,7 @@ architectures:
     allowed_model_types: [vision]
   sam:
     display_name: SAM
+    description: Segments objects in images from point or box prompts.
     paradigm: transformer
     allowed_model_types: [vision]
   siglip:
