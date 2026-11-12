@@ -307,7 +307,8 @@ branch, a base branch's catalog records a build with its current compile
 fingerprint. It runs a benchmark (the performance or accuracy stage) only when
 no completed registry run carries its current benchmark fingerprint. Models
 with `build-on-demand: true` compile only when a manual dispatch selects them,
-and selected Model Compiler builds run missing declared benchmarks;
+and skip automatic benchmarking. After promotion, models with declared
+benchmarks can use the manual **Vulcan Model Benchmarking** workflow;
 see [on-demand builds](#on-demand-builds).
 
 | Stage | Fingerprint inputs |

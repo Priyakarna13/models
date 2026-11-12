@@ -859,6 +859,16 @@ def test_manual_on_demand_build_selects_only_requested_model_and_profile(stage_r
     )
 
 
+def test_manual_on_demand_build_does_not_schedule_missing_benchmarks(stage_repository: Path) -> None:
+    document = _published_catalog(stage_repository)
+    _mark_on_demand(stage_repository)
+    _edit(stage_repository, "scripts/performance.py")
+    registry = FakeRegistry({BRANCH: document}, _published_runs(document))
+    plan = _plan(stage_repository, registry, model_ids=[PLAN_MODEL], profile_ids=["w16a16"], include_on_demand=True)
+    assert plan["compile"] == {"include": []}
+    assert plan["benchmark"] == {"include": []}
+
+
 @pytest.mark.parametrize("incremental", [False, True])
 def test_catalog_lists_unbuilt_on_demand_models_without_pending_builds(
     stage_repository: Path, incremental: bool,
@@ -947,15 +957,3 @@ def test_registry_failures_other_than_not_found_propagate(stage_repository: Path
     registry.read = read
     with pytest.raises(RegistryPublicationError, match="403 forbidden"):
         _plan(stage_repository, registry, base_branches=["develop"])
-
-
-def test_manual_on_demand_selection_benchmarks_a_reused_build(stage_repository: Path) -> None:
-    document = _published_catalog(stage_repository)
-    _mark_on_demand(stage_repository)
-    _edit(stage_repository, "scripts/performance.py")
-    registry = FakeRegistry({BRANCH: document}, _published_runs(document))
-    plan = _plan(stage_repository, registry, model_ids=[PLAN_MODEL], profile_ids=["w16a16"], include_on_demand=True)
-    assert plan["compile"] == {"include": []}
-    entry, = plan["benchmark"]["include"]
-    assert entry["build_on_demand"] is True
-    assert entry["stages"] == ["performance"]

@@ -218,8 +218,6 @@ jobs:
       benchmark_count: ${{ steps.plan.outputs.benchmark_count }}
       benchmark_matrix: ${{ steps.plan.outputs.benchmark_matrix }}
       candidate_matrix: ${{ steps.plan.outputs.candidate_matrix }}
-      candidate_benchmark_matrix: ${{ steps.plan.outputs.candidate_benchmark_matrix }}
-      candidate_benchmark_count: ${{ steps.plan.outputs.candidate_benchmark_count }}
       candidate_count: ${{ steps.plan.outputs.candidate_count }}
     steps:
       - name: Check out the trusted revision
@@ -276,17 +274,13 @@ jobs:
           # Benchmarks run on Modalix boards only.
           benchmark_matrix="$(jq -c '{include: [.benchmark.include[] | select(.target == "modalix")]}' <<< "$plan")"
           compile_count="$(jq -r '.include | length' <<< "$compile_matrix")"
-          candidate_matrix="$(jq -c '{include: [.include[] | select(.build_on_demand and .runner_script != "scripts/run_llima_compilation.sh") | {model_id, build_profile_id, compile_invocation_id}] | unique_by([.model_id, .build_profile_id])}' <<< "$compile_matrix")"
+          candidate_matrix="$(jq -c '{include: [.include[] | select(.build_on_demand and .runner_script != "scripts/run_llima_compilation.sh") | {model_id, build_profile_id}] | unique}' <<< "$compile_matrix")"
           candidate_count="$(jq -r '.include | length' <<< "$candidate_matrix")"
-          candidate_benchmark_matrix="$(jq -c '{include: [.include[] | select(.build_on_demand and .runner_script != "scripts/run_llima_compilation.sh" and .target == "modalix" and (.stages | length > 0))] | unique_by([.model_id, .build_profile_id])}' <<< "$compile_matrix")"
-          candidate_benchmark_count="$(jq -r '.include | length' <<< "$candidate_benchmark_matrix")"
           benchmark_count="$(jq -r '.include | length' <<< "$benchmark_matrix")"
           {
             echo "compile_matrix=$compile_matrix"
             echo "compile_count=$compile_count"
             echo "candidate_matrix=$candidate_matrix"
-            echo "candidate_benchmark_matrix=$candidate_benchmark_matrix"
-            echo "candidate_benchmark_count=$candidate_benchmark_count"
             echo "candidate_count=$candidate_count"
             echo "benchmark_matrix=$benchmark_matrix"
             echo "benchmark_count=$benchmark_count"
@@ -526,52 +520,8 @@ jobs:
             _candidate/publication.json
             _candidate/branch-publication.json
             _candidate/uploads/*.json
-            _candidate/compiled/
-            _candidate/packages/**/registry-publication.json
           if-no-files-found: ignore
           retention-days: 14
-
-      - name: Stage the finalized package receipt for benchmarking
-        run: >-
-          install -D -m 0644
-          "_candidate/packages/$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"
-          "_candidate/compiled/$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"
-
-      - name: Retain the finalized model output for benchmarking
-        uses: actions/upload-artifact@v7
-        with:
-          name: compiled-model-${{ matrix.model_id }}-${{ matrix.build_profile_id }}-${{ matrix.compile_invocation_id }}
-          overwrite: true
-          path: _candidate/compiled
-          if-no-files-found: error
-          retention-days: 14
-
-  benchmark-candidates:
-    name: Benchmark finalized candidate
-    needs: [select, plan, resolve-vulcan-config, resolve-benchmark-runner, publish-candidates]
-    if: >-
-      !cancelled() && (needs.publish-candidates.result == 'success' || needs.publish-candidates.result == 'failure') &&
-      needs.plan.outputs.candidate_benchmark_count != '0'
-    permissions:
-      actions: write
-      contents: read
-      id-token: write
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.candidate_benchmark_matrix) }}
-    uses: ./.github/workflows/vulcan-model-benchmarking.yml
-    with:
-      environment: ${{ needs.select.outputs.vulcan_environment }}
-      source_run_id: ${{ github.run_id }}
-      source_sha: ${{ github.sha }}
-      source_branch: ${{ github.ref_name }}
-      model_id: ${{ matrix.model_id }}
-      build_profile_id: ${{ matrix.build_profile_id }}
-      compile_invocation_id: ${{ matrix.compile_invocation_id }}
-      stages: ${{ join(matrix.stages, ',') }}
-      vulcan_config: ${{ toJSON(needs.resolve-vulcan-config.outputs) }}
-      devkit_runner: ${{ toJSON(needs.resolve-benchmark-runner.outputs) }}
-    secrets: inherit
 
   publish-catalog:
     name: Publish the catalog at this revision

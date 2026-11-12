@@ -164,7 +164,6 @@ def test_compile_workflow_has_independent_build_stages() -> None:
         "publish-candidates",
         "benchmark",
         "benchmark-without-compiles",
-        "benchmark-candidates",
         "report-partial-publication",
     }
 
@@ -226,7 +225,7 @@ def test_workflow_never_schedules_pull_requests_on_vulcan() -> None:
     assert self_hosted == ["compile"]
     # The DevKits are reachable only through the benchmark workflow, which a pull request never starts.
     assert [name for name, job in jobs.items() if job.get("uses") == LOCAL_BENCHMARK_WORKFLOW] == [
-        "benchmark-candidates", "benchmark", "benchmark-without-compiles",
+        "benchmark", "benchmark-without-compiles",
     ]
 
 
@@ -396,8 +395,6 @@ def test_plan_compares_fingerprints_with_the_environment_registry() -> None:
         "benchmark_matrix": "${{ steps.plan.outputs.benchmark_matrix }}",
         "candidate_count": "${{ steps.plan.outputs.candidate_count }}",
         "candidate_matrix": "${{ steps.plan.outputs.candidate_matrix }}",
-        "candidate_benchmark_count": "${{ steps.plan.outputs.candidate_benchmark_count }}",
-        "candidate_benchmark_matrix": "${{ steps.plan.outputs.candidate_benchmark_matrix }}",
     }
 
 
@@ -484,9 +481,9 @@ def test_native_candidates_are_not_published_again_by_the_multi_invocation_job()
     native = {"model_id": "qwen", "build_profile_id": "w4a16", "build_on_demand": True,
               "runner_script": "scripts/run_llima_compilation.sh"}
     generic = {"model_id": "vision", "build_profile_id": "w8a8", "build_on_demand": True,
-               "runner_script": "scripts/run_model_compilation.sh", "compile_invocation_id": "w8a8"}
+               "runner_script": "scripts/run_model_compilation.sh"}
     assert run_jq(program, {"include": [native, generic, generic, {**generic, "build_on_demand": False}]}) == {
-        "include": [{"model_id": "vision", "build_profile_id": "w8a8", "compile_invocation_id": "w8a8"}],
+        "include": [{"model_id": "vision", "build_profile_id": "w8a8"}],
     }
 
 
@@ -726,8 +723,7 @@ def test_failed_builds_are_reported_after_the_snapshot() -> None:
     assert [job["name"] for job in load(BUILD_WORKFLOW)["jobs"].values()] == ["Compile", "Publish", "Benchmark"]
     benchmark_names = [job["name"] for job in load(BENCHMARK_WORKFLOW)["jobs"].values()]
     assert benchmark_names == [
-        "Resolve Vulcan config", "Resolve the benchmark DevKit runner", "Stage benchmark input",
-        "Benchmark on DevKit", "Publish benchmarks to Vulcan",
+        "Resolve Vulcan config", "Resolve the benchmark DevKit runner", "Stage benchmark input", "Benchmark on DevKit", "Publish benchmarks to Vulcan",
         "Check model tests and clean up",
     ]
 
@@ -1286,62 +1282,3 @@ def test_mpk_candidate_selects_its_branch_with_private_or_public_registry_reads(
     assert reads[0][1].startswith((public_url or private_url) + "/v1/")
     assert result["selection"]["deployment_id"] == json.loads(candidate.read_text())["deployment_id"]
     assert json.loads((tmp_path / "branch-publication.json").read_text()) == result
-
-
-def test_only_mla_candidates_with_declared_stages_are_benchmarked_after_finalization():
-    jobs = load(WORKFLOW)["jobs"]
-    plan = step(jobs["plan"], "Compare fingerprints with published runs")
-    program = jq_program(plan["run"], 'candidate_benchmark_matrix="$(jq -c')
-    candidate = {"model_id": "asr", "build_profile_id": "w8a16", "compile_invocation_id": "encoder",
-                 "build_on_demand": True, "runner_script": "scripts/run_model_compilation.sh",
-                 "target": "modalix", "stages": ["performance"]}
-    entries = [candidate, candidate, {**candidate, "build_on_demand": False},
-               {**candidate, "runner_script": "scripts/run_llima_compilation.sh"},
-               {**candidate, "target": "davinci"}, {**candidate, "stages": []}]
-    assert run_jq(program, {"include": entries}) == {"include": [candidate]}
-    publish = jobs["publish-candidates"]
-    retain = step(publish, "Retain the finalized model output for benchmarking")
-    assert retain["with"]["name"].endswith("-${{ matrix.compile_invocation_id }}")
-    assert retain["with"]["overwrite"] == "true"
-    receipts = step(publish, "Retain publication receipts even when publication fails")
-    assert "_candidate/compiled/" in receipts["with"]["path"]
-    assert "_candidate/packages/**/registry-publication.json" in receipts["with"]["path"]
-    assert step_index(publish, "Publish and finalize the complete candidate") < step_index(
-        publish, "Stage the finalized package receipt for benchmarking") < step_index(
-        publish, "Retain the finalized model output for benchmarking")
-    benchmark = jobs["benchmark-candidates"]
-    assert "publish-candidates" in benchmark["needs"]
-    assert benchmark["uses"] == LOCAL_BENCHMARK_WORKFLOW
-    assert benchmark["with"]["source_run_id"] == "${{ github.run_id }}"
-    assert benchmark["with"]["compile_invocation_id"] == "${{ matrix.compile_invocation_id }}"
-    for result in ("success", "failure", "skipped", "cancelled"):
-        assert evaluate(benchmark["if"], {
-            "cancelled()": False, "needs.publish-candidates.result": result,
-            "needs.plan.outputs.candidate_benchmark_count": "1",
-        }) is (result in {"success", "failure"})
-
-
-@pytest.mark.parametrize("missing_receipt", [False, True])
-def test_candidate_benchmark_receipt_staging(tmp_path, missing_receipt):
-    workdir = tmp_path / "workdir with spaces"
-    workdir.mkdir()
-    candidate = workdir / "_candidate"
-    receipt = Path("asr/w8a16/packages/default/registry-publication.json")
-    source = candidate / "packages" / receipt
-    target = candidate / "compiled" / receipt
-    payload = b'{"packages": [{"run_id": "published-package"}]}\n'
-    if not missing_receipt:
-        source.parent.mkdir(parents=True)
-        source.write_bytes(payload)
-    result = subprocess.run(
-        ["bash", "-c", step(load(WORKFLOW)["jobs"]["publish-candidates"],
-                            "Stage the finalized package receipt for benchmarking")["run"]],
-        cwd=workdir, env={**os.environ, "MODEL_ID": "asr", "BUILD_PROFILE_ID": "w8a16"},
-        capture_output=True, text=True,
-    )
-    if missing_receipt:
-        assert result.returncode != 0
-        assert not target.exists()
-    else:
-        assert result.returncode == 0, result.stderr
-        assert target.read_bytes() == payload

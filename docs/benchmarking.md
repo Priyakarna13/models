@@ -390,6 +390,10 @@ layer/stage profiling. The browser shows
 these additional metrics under Other measurements. Initial CI runs collect
 measurements with an explicit regression-test skip until real baselines exist.
 
+Publication also retains `encoder-run.json` and `asr-timings.json` as registry
+artifacts, preserving the executed graph, recording selection, individual
+timings and final transcript after CI removes its temporary evidence.
+
 The workload is the script's [benchmark input](#benchmark-input) on the image
 route, or on the tensor route for a model whose inputs are not images, with the
 script's model and benchmark options; the report's `workload`
@@ -450,9 +454,10 @@ before Models consumes them.
 Model authors do not publish benchmark results directly. After a build profile's
 package publishes, **Vulcan Model Compile** starts **Vulcan Model
 Benchmarking** on the same branch for each build profile whose performance or
-accuracy benchmark fingerprint has no completed run. A manually selected on-demand
-build starts its declared benchmarks after candidate finalization. Pushes skip
-on-demand models; manually selecting an unchanged build runs any missing benchmarks. The DevKit has no publication credentials.
+accuracy benchmark fingerprint has no completed run. On-demand builds skip
+this automatic path. After promotion, dispatch **Vulcan Model Benchmarking**
+from the promoted branch with `source_run_id` empty; it restores the package
+selected in that branch's registry catalog. The DevKit has no publication credentials.
 
 On the DevKit, the workflow first checks that the profile's components are
 registered and its package receipt is present. It then caches the model's

@@ -285,12 +285,10 @@ Publish job; models with multiple invocations join them in the orchestrator's
 `publish-candidates` job before publication.
 Each complete candidate publishes independently of failures in other models
 or profiles.
-For manually selected Model Compiler builds with declared Modalix benchmarks,
-`benchmark-candidates` then calls `vulcan-model-benchmarking.yml`, using the
-finalized inputs and package receipt retained by `publish-candidates`. A reused
-build runs only missing benchmarks. Inspect the benchmark jobs separately:
-missing inputs fail staging, and a failed benchmark leaves the finalized
-candidate and published compile/package runs intact. Other candidates continue.
+On-demand builds skip automatic benchmarking. After promotion, dispatch
+**Vulcan Model Benchmarking** from the promoted branch with `source_run_id`
+empty to restore the catalog-selected package. Benchmark results are published
+under that package's registry run.
 Develop and Main require separate approval and promotion. Use the manual
 [Promote model workflow](model-promotion.md) from Develop, choosing the target;
 Main is production-only, uses a separate protected gate and retains S3 storage.

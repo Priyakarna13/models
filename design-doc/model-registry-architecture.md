@@ -206,7 +206,7 @@ metadata before requesting selection. See [promotion operations](../docs/model-p
 configuration, retries, and the staging acceptance boundary.
 
 ```text
-push or manual dispatch (Vulcan Model Orchestrator)
+push (Vulcan Model Orchestrator, every push)
   -> select: validate the catalog, resolve the compiler pin and base branches
      portal (in parallel): build and smoke-test the model browser; gates browser publication independently of model processing
        -> on main and develop: resolve-staging-browser-config + checked portal -> publish-model-browser to staging
@@ -222,8 +222,7 @@ push or manual dispatch (Vulcan Model Orchestrator)
        benchmark: the benchmark workflow for the new Modalix build, as soon as it publishes
        on-demand LLiMa: finalize the complete candidate, then select it in its feature catalog
   -> publish-candidates (other on-demand models): join all invocations, finalize and select in the feature catalog
-       -> benchmark-candidates: run declared Modalix benchmarks using the finalized inputs and package receipt
-  -> publish the catalog snapshot, once every compile call ends, including ordinary builds' benchmarks
+  -> publish the catalog snapshot, once every compile call ends, including each new build's benchmarks
 benchmarks (vulcan-model-benchmarking.yml, called per build profile inside the orchestrator run, or dispatched by hand)
   -> stage the build, on a GitHub-hosted runner
   -> performance and accuracy on a DevKit, then the model's benchmark tests on each model report
@@ -270,9 +269,9 @@ compile fingerprint, or when a maintainer forces a rebuild. A reused build is
 queued for the benchmarks whose fingerprints have no completed run. Benchmarks
 run on staging DevKits for either registry environment, only for Modalix targets, and only after the profile's
 package publishes. On-demand models compile only on the explicit manual
-selection described below. For Model Compiler builds, `benchmark-candidates`
-runs declared stages after candidate finalization; a reused build runs only
-its missing benchmarks. Pushes still skip on-demand models.
+selection described below, and the orchestrator skips their benchmarks. After
+promotion, dispatch **Vulcan Model Benchmarking** from the promoted branch with
+`source_run_id` empty to restore and measure its catalog-selected package.
 
 The orchestrator passes its resolved `VULCAN_ENV` to every benchmark it calls.
 A manual benchmark dispatch defaults to repository `VULCAN_ENV`, with the same
@@ -391,14 +390,6 @@ Ordinary catalog README and hero publication stays branch-retained and is not
 part of the candidate. DevKit qualification is separate; it is not claimed as
 frozen candidate evidence in this iteration.
 
-For Model Compiler candidates with declared Modalix benchmarks,
-`benchmark-candidates` calls `vulcan-model-benchmarking.yml` after publication.
-It stages the finalized components and package receipt retained by
-`publish-candidates`. Other candidates continue if one publication fails;
-missing inputs fail the affected staging job. A failed benchmark fails its job
-without undoing candidate finalization or the published compile/package runs.
-The catalog snapshot does not wait for `benchmark-candidates`.
-
 When the README, hero image, and their presentation metadata match the current
 catalog on the same branch, the next catalog reuses the completed documentation
 run and its immutable S3 versions. The catalog's `source_commit` still identifies
@@ -414,9 +405,8 @@ not remove protected candidates. The summary and `candidate.json` report the
 actual returned protection, digest and provenance. Stable keys resume the same
 GitHub run across attempts, including interrupted publication; expired assembly
 requires a new workflow run. Compiler outputs and publication receipts remain
-GitHub artifacts for recovery. Rebuilding an on-demand profile rebuilds it whole,
-since older source runs cannot be rebound as new provenance. An existing matching
-build can instead be reused for missing benchmarks. Ordinary automatic fingerprint reuse is unchanged.
+GitHub artifacts for recovery. An on-demand profile is always rebuilt whole,
+since older source runs cannot be rebound as new provenance. Ordinary automatic fingerprint reuse is unchanged.
 
 Vulcan limits a candidate to 32 roles, 512 required names, 512 actual S3
 dependencies and a 1 MiB frozen manifest. The producer checks the role/name
