@@ -369,9 +369,9 @@ Both scripts concatenate the float32 WAVs in filename order and retain the
 first 480,000 samples (30 seconds), preserving existing silence without adding
 any. They record the selected filenames, sample counts and PCM SHA-256.
 Standalone runs also accept `--audio` for a local PCM16 or float32 WAV.
-Both benchmarks use the repository’s Python `transcribe.py` runtime. The model
-downloads contain the encoder, CPU models and required assets; they omit
-`transcribe.py` and its installation requirements.
+Both benchmarks keep their Python runtime directly in `performance.py`. The
+model downloads contain the encoder, CPU models and required assets; they omit
+the Python runtime and its installation requirements.
 These scripts include the frontend,
 encoder, CPU predictor and joiner; Parakeet's overlapping context contributes
 to processing time but is counted only once in audio duration. Their paced pass

@@ -84,7 +84,7 @@ def test_pacing_matches_runtime_audio_windows(load_script, monkeypatch, kind):
 
     import numpy as np
 
-    benchmark, runtime = load_script("performance"), load_script("transcribe")
+    benchmark = runtime = load_script("performance")
     seen = []
 
     def mel(raw, *_, **kwargs):
@@ -270,7 +270,7 @@ def test_complete_runtime_payload(compiled):
 def test_predictor_runs_only_after_nonblank_tokens(load_script):
     import numpy as np
 
-    runtime = load_script("transcribe")
+    runtime = load_script("performance")
 
     class Predictor:
         def __init__(self):
@@ -299,7 +299,7 @@ def test_predictor_runs_only_after_nonblank_tokens(load_script):
 def test_tdt_duration_carries_to_the_next_chunk(load_script):
     import numpy as np
 
-    runtime = load_script("transcribe")
+    runtime = load_script("performance")
 
     class Predictor:
         def run(self, _, inputs):

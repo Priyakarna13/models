@@ -12,7 +12,7 @@ Parakeet converts multilingual speech into text using overlapping audio windows.
 2. Use a 14-second window: 10 seconds of history, 2 seconds of new audio, and 2 seconds of lookahead. Normalize each feature bin over valid frames, pad to 1,400 frames, and mask padding. Decode only the central 25 encoded frames; the packaged helper handles shorter starting and ending windows.
 3. Run the encoder to obtain `encoded`, with 640 channels per frame.
 4. Run `predictor_cpu_int8.onnx` with `token`, `hidden`, and `cell`; retain `prediction`, `next_hidden`, and `next_cell`. Read `token_logits` and `duration_logits` from the joiner. Update the predictor after text tokens and advance by the predicted duration, carrying any remaining advance to the next window.
-5. Map token indices through `tokenizer.json`; index 8192 is blank. The repository’s `scripts/transcribe.py` example implements feature preparation, state handling, and decoding using the public Python API and the two CPU models.
+5. Map token indices through `tokenizer.json`; index 8192 is blank.
 
 ## Building applications
 

@@ -12,7 +12,7 @@ Nemotron converts multilingual speech into text as audio arrives. The package co
 2. Use 560 ms chunks with 480 ms lookahead. The first call consumes 49 feature frames; later calls consume 56. Preserve the subsampling, key, value, and convolution states between calls. Select a prompt from `processor_config.json`; `auto` selects automatic recognition.
 3. Run the encoder to obtain `encoded`, with 640 channels per frame. The encoder also returns `sub/next_sub1`, `sub/next_sub2`, and each layer’s `next_keys`, `next_values`, and `next_conv` for feedback.
 4. Run `predictor_cpu_int8.onnx` with `token`, `hidden`, and `cell`; retain `prediction`, `next_hidden`, and `next_cell`. Repeat the joiner on each encoded frame until it emits blank, updating the predictor after each text token.
-5. Map token indices through `tokenizer.json`; index 13087 is blank. The repository’s `scripts/transcribe.py` example implements feature preparation, state handling, and decoding using the public Python API and the two CPU models.
+5. Map token indices through `tokenizer.json`; index 13087 is blank.
 
 ## Building applications
 

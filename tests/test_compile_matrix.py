@@ -12,7 +12,7 @@ from model_registry.compile_matrix import build_matrix
 from model_registry.conversion import conversion_fingerprint
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
-from model_registry.fingerprints import COMPILE_TOOLING, benchmark_fingerprint, compile_fingerprint
+from model_registry.fingerprints import COMPILE_TOOLING, PERFORMANCE_TOOLING, benchmark_fingerprint, compile_fingerprint
 from model_registry.model import load_and_validate_model, load_models
 from model_registry.registry import RegistryPublicationError, publish_catalog
 
@@ -847,3 +847,34 @@ def test_new_runner_classes_do_not_change_compile_fingerprint(model_repository, 
     path.write_text(yaml.safe_dump(authored, sort_keys=False))
     load_and_validate_model(path.parent, model_repository / "schemas/model.schema.json")
     assert _fingerprint(model_repository, "alpha", COMPILER_VERSION) == before
+
+
+@pytest.mark.parametrize("model_id", ["nemotron_3_5_asr_streaming_0_6b", "parakeet_tdt_0_6b_v3"])
+def test_asr_decoder_change_only_invalidates_performance(model_repository: Path, model_id: str) -> None:
+    target = model_repository / "models" / model_id
+    shutil.copytree(ROOT / "models" / model_id, target)
+    for relative in PERFORMANCE_TOOLING:
+        path = model_repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, path)
+    model = load_and_validate_model(target)
+    conversions = {model_id: {
+        "conversion_fingerprint": conversion_fingerprint(model_repository, model), "sha256": "a" * 64,
+    }}
+    builds = {"model": {"run_id": "compiled", "artifact_sha256": "a" * 64}}
+
+    def fingerprints():
+        return (
+            compile_fingerprint(model_repository, model_id, "w8a16", "w8a16", "test", conversion_sources=conversions),
+            benchmark_fingerprint(model_repository, model, "w8a16", builds, "performance"),
+        )
+
+    before_compile, before_performance = fingerprints()
+    script = target / "scripts/performance.py"
+    original = script.read_text()
+    changed = original.replace("            advance = 1\n", "            advance = 2\n", 1)
+    assert changed != original  # Change the real decoder implementation, not just the benchmark wrapper.
+    script.write_text(changed)
+    after_compile, after_performance = fingerprints()
+    assert after_compile == before_compile
+    assert after_performance != before_performance
