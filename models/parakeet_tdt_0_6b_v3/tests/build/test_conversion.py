@@ -1,113 +1,92 @@
-import json
+"""Conversion preserves the checkpoint; graph adaptations belong to compilation."""
+
+import hashlib
+import shutil
+import sys
+from unittest.mock import MagicMock
+
+import pytest
+from model_registry.conversion import conversion_fingerprint
+from model_registry.fetch import Fetcher
+from model_registry.fingerprints import COMPILE_TOOLING, compile_fingerprint
+from model_registry.model import load_model
 
 
-def test_converted_graph_has_static_regions(converted):
-    import onnx
-
-    model = onnx.load(converted, load_external_data=False)
-    onnx.checker.check_model(str(converted))
-    config = json.loads(next(item.value for item in model.metadata_props if item.key == "sima.asr"))
-    assert config["encoder_outputs"][0] == "encoded"
-    assert len(config["predictor_outputs"]) == 3
-    assert len(config["joiner_outputs"]) in (1, 2)
-    for value in [*model.graph.input, *model.graph.output]:
-        assert all(dim.dim_value > 0 for dim in value.type.tensor_type.shape.dim)
-
-
-def test_export_matches_original_checkpoint(converted, load_script):
-    import os
-    import tempfile
-    from pathlib import Path
-
-    import numpy as np
-    import onnx
-    import onnxruntime as ort
-    import torch
-
-    partition = load_script("onnx_export").partition
-    from transformers import AutoModelForRNNT, AutoModelForTDT
-
-    converted = Path(converted)
-    graph = onnx.load(converted, load_external_data=False)
-    config = json.loads(next(item.value for item in graph.metadata_props if item.key == "sima.asr"))
-    encoder = partition(graph, config["encoder_outputs"])
-    del graph
-    inputs = {
-        value.name: np.zeros([dim.dim_value for dim in value.type.tensor_type.shape.dim], np.float32)
-        for value in encoder.graph.input
-    }
-    rng = np.random.default_rng(440)
-    torch.set_num_threads(2)
-    if config["kind"] == "nemotron":
-        features = rng.normal(size=(1, 49, 128)).astype(np.float32)
-        inputs["features"][:, 7:] = features
-        inputs["subsampling_mask"].fill(1)
-        inputs["subsampling_mask"][:, :, :3] = 0
-        inputs["subsampling_mask"][:, :, 32] = 0
-        inputs["attention_bias"][..., :56] = -10000
-        inputs["language_one_hot"][..., 101] = 1
-        model = AutoModelForRNNT.from_pretrained(
-            converted.parent, dtype=torch.float32, attn_implementation="sdpa"
-        ).eval()
-        with torch.inference_mode():
-            reference = model.get_audio_features(
-                torch.from_numpy(features),
-                prompt_ids=torch.tensor([101]),
-                use_cache=True,
-                num_lookahead_tokens=6,
-                output_attention_mask=False,
-            ).pooler_output.numpy()
-        tolerance = 0.03
-    else:
-        features = rng.normal(size=(1, 1400, 128)).astype(np.float32)
-        inputs["features"][:, 0] = features
-        inputs["padding_masks"].fill(1)
-        inputs["attention_bias"][..., -1] = -10000
-        model = AutoModelForTDT.from_pretrained(
-            converted.parent, dtype=torch.float32, attn_implementation="sdpa"
-        ).eval()
-        with torch.inference_mode():
-            reference = model.get_audio_features(
-                torch.from_numpy(features), attention_mask=torch.ones(1, 1400, dtype=torch.long)
-            ).pooler_output.numpy()
-        tolerance = 0.003
-    del model
-    with tempfile.TemporaryDirectory(dir=converted.parent) as work:
-        work = Path(work)
-        os.link(converted.parent / "model.onnx.ext", work / "model.onnx.ext")
-        path = work / "encoder.onnx"
-        onnx.save_model(encoder, path)
-        del encoder
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 2
-        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
-        actual = session.run(["encoded"], inputs)[0]
-    np.testing.assert_allclose(actual, reference, atol=tolerance, rtol=2e-4)
-
-
-def test_partition_retains_only_used_inputs_and_preserves_metadata(load_script):
-    import pytest
-
-    partition = load_script("onnx_export").partition
-    onnx = pytest.importorskip("onnx")
-    from onnx import TensorProto, helper
-
-    def value(name):
-        return helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, 2])
-
-    graph = helper.make_graph(
-        [helper.make_node("Identity", ["audio"], ["encoded"]), helper.make_node("Identity", ["token"], ["prediction"])],
-        "regions",
-        [value("audio"), value("token")],
-        [value("encoded"), value("prediction")],
+def test_conversion_packages_unchanged_tensors_and_assets(tmp_path, load_script, monkeypatch):
+    recipe = load_script("convert")
+    source = tmp_path / "model.safetensors"
+    source.write_bytes(b"weights")
+    (tmp_path / "config.json").write_text('{"original": true}')
+    metadata = {"entrypoint": source.name, "files": [{"path": source.name}, {"path": "config.json"}]}
+    torch, safetensors = MagicMock(), MagicMock()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "safetensors.torch", safetensors)
+    result = recipe.convert(source, tmp_path / "out", metadata)
+    safetensors.load_file.assert_called_once_with(source)
+    torch.save.assert_called_once_with(
+        {"state_dict": safetensors.load_file.return_value, "assets": {"config.json": '{"original": true}'}},
+        result,
     )
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=8)
-    helper.set_model_props(model, {"sima.asr": "metadata"})
-    encoder = partition(model, ["encoded"])
-    assert [value.name for value in encoder.graph.input] == ["audio"]
-    assert [value.name for value in encoder.graph.output] == ["encoded"]
-    assert encoder.metadata_props == model.metadata_props
-    onnx.checker.check_model(encoder)
-    with pytest.raises(ValueError, match="declared"):
-        partition(model, ["missing"])
+    assert result.name == "weights.pth"
+
+
+def test_converted_checkpoint_preserves_every_source_tensor_and_asset(converted, model_dir):
+    import torch
+    from safetensors import safe_open
+
+    checkpoint = torch.load(converted, map_location="cpu", weights_only=True)
+    source = load_model(model_dir)["conversion"]["default"]["source"]
+    original, *_ = Fetcher().fetch_source(source)
+    with safe_open(original, framework="pt") as tensors:
+        assert set(checkpoint["state_dict"]) == set(tensors.keys())
+        for name, value in checkpoint["state_dict"].items():
+            expected = tensors.get_tensor(name)
+            assert value.dtype == expected.dtype and torch.equal(value, expected)
+    assets = {item["path"]: item for item in source["files"] if item["path"] != source["entrypoint"]}
+    assert set(checkpoint["assets"]) == set(assets)
+    for name, content in checkpoint["assets"].items():
+        data = content.encode("utf-8")
+        assert (hashlib.sha256(data).hexdigest(), len(data)) == (assets[name]["sha256"], assets[name]["size_bytes"])
+
+
+def test_surgery_changes_only_the_compile_fingerprint(tmp_path, model_dir):
+    root = model_dir.parents[1]
+    for name in ("schemas", "taxonomies"):
+        shutil.copytree(root / name, tmp_path / name)
+    target = tmp_path / "models" / model_dir.name
+    shutil.copytree(model_dir, target)
+    for name in COMPILE_TOOLING:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / name, tmp_path / name)
+    model = load_model(target)
+    original = conversion_fingerprint(tmp_path, model)
+    selected = {model["id"]: {"conversion_fingerprint": original, "sha256": "a" * 64}}
+
+    def compiled():
+        return compile_fingerprint(tmp_path, model["id"], "w8a16", "w8a16", "test", conversion_sources=selected)
+
+    before = compiled()
+    surgery = target / "scripts/surgery.py"
+    surgery.write_text(surgery.read_text() + "\n# changed compiler adaptation\n")
+    assert conversion_fingerprint(tmp_path, model) == original
+    assert compiled() != before
+
+
+def test_checkpoint_roundtrip_does_not_change_tensors_or_assets(tmp_path, load_script):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    convert, surgery = load_script("convert"), load_script("surgery")
+    source = tmp_path / "model.safetensors"
+    expected = {"weight": torch.arange(12, dtype=torch.float32).reshape(3, 4), "count": torch.tensor([3])}
+    safetensors.save_file(expected, source)
+    text = '{"model_type": "original"}\r\n'
+    (tmp_path / "config.json").write_bytes(text.encode("utf-8"))
+    metadata = {"entrypoint": source.name, "files": [{"path": source.name}, {"path": "config.json"}]}
+    converted = convert.convert(source, tmp_path / "converted", metadata)
+    restored = tmp_path / "restored"
+    surgery.restore_checkpoint(converted, restored)
+    assert (restored / "config.json").read_bytes().decode("utf-8") == text
+    actual = safetensors.load_file(restored / source.name)
+    assert actual.keys() == expected.keys()
+    for name, value in expected.items():
+        assert value.dtype == actual[name].dtype and torch.equal(actual[name], value)

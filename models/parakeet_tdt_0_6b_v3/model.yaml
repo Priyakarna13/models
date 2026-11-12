@@ -18,10 +18,11 @@ upstream:
   repository: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
   revision: 541d1f99c6b0c3cd0b11a95167540bb8edefd82b
 conversion:
+  outputs: [weights.pth]
   source:
     repository: nvidia/parakeet-tdt-0.6b-v3
     revision: 541d1f99c6b0c3cd0b11a95167540bb8edefd82b
-    main_file: config.json
+    main_file: model.safetensors
     files:
       model.safetensors:
         sha256: 3a2026366188c8c68598edbbff92f8d11590a08e0ae2e6775544e7b07d6a5e11

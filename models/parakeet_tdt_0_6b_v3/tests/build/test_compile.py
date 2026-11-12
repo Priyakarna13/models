@@ -1,5 +1,6 @@
 import json
 import math
+import sys
 
 from model_registry.runtime_files import read_runtime_files
 
@@ -7,6 +8,9 @@ from model_registry.runtime_files import read_runtime_files
 def test_complete_runtime_payload(compiled):
     import onnx
 
+    validation = json.loads((compiled / "source-validation.json").read_text())
+    assert validation["checked_output"] == "encoded"
+    assert math.isfinite(validation["max_abs_error"])
     component = compiled / "model"
     assert len(list(component.glob("*_mpk.tar.gz"))) == 1
     names = {item["path"] for item in read_runtime_files(compiled)}
@@ -115,7 +119,7 @@ def test_compile_manifest_uses_shared_runtime_files_contract(tmp_path, load_scri
         validate()
 
 
-def test_prepare_restores_assets_from_conversion_without_sidecars(tmp_path, load_script, monkeypatch):
+def test_prepare_runs_surgery_before_partitioning(tmp_path, load_script, monkeypatch):
     import onnx
     from onnx import TensorProto, helper
 
@@ -148,8 +152,19 @@ def test_prepare_restores_assets_from_conversion_without_sidecars(tmp_path, load
             )
         },
     )
-    source = tmp_path / "model.onnx"
-    onnx.save(graph, source)
+    from types import SimpleNamespace
+
+    source = tmp_path / "weights.pth"
+    source.write_bytes(b"checkpoint")
+
+    def export_model(weights, output):
+        assert weights == source
+        output.mkdir()
+        path = output / "model.onnx"
+        onnx.save(graph, path)
+        return path
+
+    monkeypatch.setitem(sys.modules, "surgery", SimpleNamespace(export_model=export_model))
     component, work = tmp_path / "component", tmp_path / "work"
     component.mkdir()
     work.mkdir()
@@ -159,3 +174,30 @@ def test_prepare_restores_assets_from_conversion_without_sidecars(tmp_path, load
         assert json.loads((component / filename).read_text()) == document
     assert "assets" not in json.loads((work / "config.json").read_text())
     onnx.checker.check_model(str(work / "encoder.onnx"))
+
+
+def test_partition_retains_only_used_inputs_and_preserves_metadata(load_script):
+    import pytest
+
+    partition = load_script("onnx_export").partition
+    onnx = pytest.importorskip("onnx")
+    from onnx import TensorProto, helper
+
+    def value(name):
+        return helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, 2])
+
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["audio"], ["encoded"]), helper.make_node("Identity", ["token"], ["prediction"])],
+        "regions",
+        [value("audio"), value("token")],
+        [value("encoded"), value("prediction")],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=8)
+    helper.set_model_props(model, {"sima.asr": "metadata"})
+    encoder = partition(model, ["encoded"])
+    assert [value.name for value in encoder.graph.input] == ["audio"]
+    assert [value.name for value in encoder.graph.output] == ["encoded"]
+    assert encoder.metadata_props == model.metadata_props
+    onnx.checker.check_model(encoder)
+    with pytest.raises(ValueError, match="declared"):
+        partition(model, ["missing"])

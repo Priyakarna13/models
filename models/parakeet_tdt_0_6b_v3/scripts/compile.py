@@ -110,8 +110,10 @@ def cpu_model(graph, outputs: list[str], source_dir: Path, destination: Path, pr
 def prepare_model(source: Path, temporary: Path, component: Path) -> None:
     """Release all export and CPU-quantization objects before the encoder compiler starts."""
     import onnx
+    from surgery import export_model
 
-    graph = onnx.load(source, load_external_data=False)
+    graph_path = export_model(source, temporary / "graphs")
+    graph = onnx.load(graph_path, load_external_data=False)
     config = json.loads(next(item.value for item in graph.metadata_props if item.key == "sima.asr"))
     for filename, document in config.pop("assets").items():
         if filename not in {"tokenizer.json", "processor_config.json"}:
@@ -121,7 +123,7 @@ def prepare_model(source: Path, temporary: Path, component: Path) -> None:
         cpu_model(
             graph,
             config[name + "_outputs"],
-            source.parent,
+            graph_path.parent,
             component / (name + "_cpu_int8.onnx"),
             name + "/",
         )
@@ -133,9 +135,9 @@ def prepare_model(source: Path, temporary: Path, component: Path) -> None:
     }
     for name in weights:
         try:
-            os.link(source.parent / name, temporary / name)
+            os.link(graph_path.parent / name, temporary / name)
         except OSError:
-            shutil.copyfile(source.parent / name, temporary / name)
+            shutil.copyfile(graph_path.parent / name, temporary / name)
     onnx.save_model(encoder, temporary / "encoder.onnx")
     (temporary / "config.json").write_text(json.dumps(config))
 
@@ -158,6 +160,7 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
         worker.join()
         if worker.exitcode != 0:
             raise RuntimeError(f"Source preparation failed: {worker.exitcode}")
+        shutil.copyfile(temporary / "graphs/source-validation.json", output / "source-validation.json")
         config = json.loads((temporary / "config.json").read_text())
         encoder_path = temporary / "encoder.onnx"
         parameters = selected["components"][0]["parameters"]
