@@ -182,6 +182,7 @@ architectures:
     allowed_model_types: [vision]
   sesr:
     display_name: SESR
+    description: Upscales images with small collapsible-linear-block super-resolution networks.
     paradigm: cnn
     allowed_model_types: [vision]
   siglip:
