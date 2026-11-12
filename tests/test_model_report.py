@@ -265,7 +265,7 @@ PYNEAT_ENUMS = {
     "PixelFormat": ("RGB",),
     "TensorMemory": ("EV74",),
     "BoxDecodeType": (
-        "YoloV8", "YoloV26", "YoloV26Pose", "YoloV26Seg", "YoloV8Obb", "YoloV26Obb", "SuperPoint", "YoloX"
+        "YoloV8", "YoloV8Seg", "YoloV26", "YoloV26Pose", "YoloV26Seg", "YoloV8Obb", "YoloV26Obb", "SuperPoint", "YoloX"
     ),
     "BoxDecodeTypeOption": ("Split3Interleaved",),
     "SuperPointProfile": ("MagicLeapDemoV1", "LightGlueV1"),
