@@ -150,6 +150,33 @@ def test_audio_validation_and_performance_fingerprint_boundary(load_script, mode
     assert model_dir / "scripts/performance.py" not in inputs
 
 
+def test_fleurs_float32_selection_is_ordered_and_preserves_samples(load_script, tmp_path):
+    import numpy as np
+    from scipy.io import wavfile
+
+    benchmark = load_script("performance")
+    folder = tmp_path / "audio/test"
+    folder.mkdir(parents=True)
+    first = np.full(16 * 16000, 0.125, np.float32)
+    second = np.full(20 * 16000, 0.25, np.float32)
+    for name, audio in (("1.wav", first), ("2.wav", second)):
+        wavfile.write(folder / name, 16000, audio)
+    # Sentence IDs can repeat, filenames cannot; preserve literal transcript quotes.
+    rows = ['5\t2.wav\t"Second sentence"\tsecond sentence\ts e c\t320000\tFEMALE',
+            '5\t1.wav\tFirst sentence\tfirst sentence\tf i r\t256000\tMALE']
+    (tmp_path / "test.tsv").write_text('\n'.join(rows) + '\n')
+    audio, metadata = benchmark.load_dataset(tmp_path)
+    assert np.array_equal(audio, np.concatenate((first, second[:14 * 16000])))
+    assert [item['id'] for item in metadata['recordings']] == ['en_us/test/1', 'en_us/test/2']
+    assert [item['samples_used'] for item in metadata['recordings']] == [256000, 224000]
+    (tmp_path / "test.tsv").write_text('\n'.join(rows).replace('256000', '1'))
+    with pytest.raises(ValueError, match="sample count differs"):
+        benchmark.load_dataset(tmp_path)
+    wavfile.write(folder / 'nonfinite.wav', 16000, np.array([np.nan], np.float32))
+    with pytest.raises(ValueError, match="finite audio"):
+        benchmark.read_audio(folder / 'nonfinite.wav')
+
+
 def test_rtf_counts_unique_audio_and_uses_separate_paced_trials(load_script, monkeypatch, tmp_path):
     from types import SimpleNamespace
 
@@ -159,7 +186,6 @@ def test_rtf_counts_unique_audio_and_uses_separate_paced_trials(load_script, mon
     clock = [0.0]
     recording = np.zeros(480000, np.float32)
     monkeypatch.setattr(benchmark.time, "perf_counter", lambda: clock[0])
-    monkeypatch.setattr(benchmark, "encoder_stats", lambda *_: ({}, {}))
     monkeypatch.setattr(benchmark, "WARMUP_RECORDINGS", 2)
     monkeypatch.setattr(benchmark, "MEASURED_RECORDINGS", 2)
     monkeypatch.setattr(benchmark, "MIN_DURATION_S", 0)
@@ -200,12 +226,14 @@ def test_rtf_counts_unique_audio_and_uses_separate_paced_trials(load_script, mon
         assert core.throughput_duration_ms == 30000
         assert core.fps == pytest.approx(2 / 30)
         assert kwargs["telemetry"] == "unpaced telemetry"
+        assert kwargs["mla_layer_stats"] == {"model": {"status": "not requested", "layers": []}}
+        assert kwargs["mla_stage_stats"] == {"model": {"status": "not requested", "stages": []}}
         return report
 
     monkeypatch.setattr(benchmark.model_report, "from_performance", from_performance)
     audio_path = tmp_path / "speech.wav"
     audio_path.write_bytes(b"input")
-    benchmark.benchmark_pipeline(Transcriber(), recording, audio_path, tmp_path)
+    benchmark.benchmark_pipeline(Transcriber(), recording, {"source": "test"}, tmp_path)
     assert report.document["metrics"] == {"real_time_factor": 0.5, "time_to_first_text_ms": 4500}
     assert len(paced) == 5
     assert report.evidence["asr-timings.json"]["audio_samples"] == 480000
@@ -223,9 +251,9 @@ def test_complete_runtime_payload(compiled):
     assert {
         "model/predictor_cpu_int8.onnx",
         "model/joiner_cpu_int8.onnx",
-        "model/transcribe.py",
         "model/frontend.npz",
     } <= names
+    assert not {"model/transcribe.py", "model/requirements.txt"}.intersection(names)
     for name in ("predictor", "joiner"):
         model = onnx.load(component / (name + "_cpu_int8.onnx"))
         assert any(tensor.data_type == onnx.TensorProto.INT8 for tensor in model.graph.initializer)
@@ -319,7 +347,9 @@ def test_compile_manifest_uses_shared_runtime_files_contract(tmp_path, load_scri
             component_ids=["model"],
         )
 
-    assert len(validate()["runtime_files"]) == len(recipe.RUNTIME_FILES)
+    manifest = validate()
+    assert len(manifest["runtime_files"]) == len(recipe.RUNTIME_FILES)
+    assert not any(item["path"].endswith((".py", "/requirements.txt")) for item in manifest["runtime_files"])
     (component / "predictor_cpu_int8.onnx").write_bytes(b"changed")
     with pytest.raises(ValidationError, match="SHA-256"):
         validate()

@@ -45,8 +45,6 @@ RUNTIME_FILES = (
     "processor_config.json",
     "runtime_config.json",
     "frontend.npz",
-    "transcribe.py",
-    "requirements.txt",
     "LICENSE.txt",
     "NOTICE.txt",
 )
@@ -306,8 +304,6 @@ def compile_model(source: Path, profile: str, output: Path) -> Path:
     }
     np.savez(component / "frontend.npz", **arrays)
     for source_name, target_name in (
-        ("transcribe.py", "transcribe.py"),
-        ("requirements-runtime.txt", "requirements.txt"),
         ("LICENSE.txt", "LICENSE.txt"),
         ("NOTICE.txt", "NOTICE.txt"),
     ):

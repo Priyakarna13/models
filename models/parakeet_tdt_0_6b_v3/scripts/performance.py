@@ -1,20 +1,22 @@
 """Measure complete ASR processing and live-style time to first visible text.
 
 Usage: PYTHONPATH=tools python performance.py --mpk encoder_mpk.tar.gz \
-    --resources extracted-package --audio speech.wav --output results
+    --dataset fleurs-en-us-test=extracted-dataset --output results
 
-Use the same 30 s, 16 kHz mono PCM16 speech WAV for both models: concatenate
-LibriSpeech test-clean 6930-75918-0000 through 0003 and retain the first 30 s.
-Other recordings are accepted and identified by SHA-256 in the report. The unpaced
+Use the same 30 s of FLEURS English test speech for both models: concatenate
+recordings in filename order and retain the first 480,000 samples, without
+adding silence. The report identifies each recording and the resulting PCM.
+--audio optionally takes a local PCM16 or float32 WAV instead. The unpaced
 pass measures full-recording latency and RTF, including log-mel extraction,
 encoder calls and INT8 CPU prediction/joining. Overlapping context counts once
 in audio duration. A separate paced pass waits for each chunk's input, including
 lookahead, before processing it. Time to first text starts at the first audio
 sample and ends at the first non-whitespace decoded text (leading silence counts).
-Loading, WAV decoding, warm-up and diagnostic profiling are outside both passes.
+Loading, WAV decoding and warm-up are outside both passes. Separate encoder
+layer/stage profiling is not requested.
 
-CI stage declaration and regression baselines await a pinned speech dataset and
-real DevKit measurements; this script can already benchmark a local package.
+The Python runtime is imported from the repository, not shipped in the model download.
+The first CI runs collect measurements; regression thresholds need a real baseline.
 """
 
 from __future__ import annotations
@@ -24,7 +26,6 @@ import hashlib
 import json
 import tempfile
 import time
-import wave
 from pathlib import Path
 
 import model_report
@@ -39,15 +40,49 @@ FIRST_TEXT_TRIALS = 5
 
 
 def load_audio(path):
-    with wave.open(str(path), "rb") as stream:
-        if (stream.getframerate(), stream.getnchannels(), stream.getsampwidth(), stream.getcomptype()) != (
-            SAMPLE_RATE, 1, 2, "NONE"
-        ):
-            raise ValueError("Expected a 16 kHz mono PCM16 WAV")
-        audio = np.frombuffer(stream.readframes(stream.getnframes()), dtype="<i2").astype(np.float32) / 32768
+    audio = read_audio(path)
     if len(audio) < 30 * SAMPLE_RATE:
         raise ValueError("Use at least 30 seconds of real speech to exercise steady-state windows")
     return audio
+
+
+def read_audio(path):
+    from scipy.io import wavfile
+
+    rate, audio = wavfile.read(path)
+    if rate != SAMPLE_RATE or audio.ndim != 1 or audio.dtype not in (np.dtype('int16'), np.dtype('float32')):
+        raise ValueError("Expected a 16 kHz mono PCM16 or float32 WAV")
+    audio = audio.astype(np.float32) / 32768 if audio.dtype == np.int16 else audio
+    if not len(audio) or not np.isfinite(audio).all():
+        raise ValueError("Expected nonempty finite audio")
+    return audio
+
+
+def load_dataset(directory):
+    rows = [line.split('\t') for line in (directory / 'test.tsv').read_text(encoding='utf-8').splitlines()]
+    if not rows or any(len(row) != 7 for row in rows):
+        raise ValueError("Expected the original seven-column FLEURS test.tsv")
+    filenames = [row[1] for row in rows]
+    if len(set(filenames)) != len(filenames) or any(
+        Path(name).name != name or not name.endswith('.wav') for name in filenames
+    ):
+        raise ValueError("Expected unique, safe FLEURS WAV filenames")
+    pieces, selected, remaining = [], [], 30 * SAMPLE_RATE
+    for row in sorted(rows, key=lambda row: row[1]):
+        path = directory / 'audio/test' / row[1]
+        audio = read_audio(path)
+        if len(audio) != int(row[5]):
+            raise ValueError(f"FLEURS sample count differs from the TSV: {row[1]}")
+        count = min(remaining, len(audio))
+        pieces.append(audio[:count])
+        selected.append({'id': f'en_us/test/{path.stem}', 'samples_used': count,
+                         'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+        remaining -= count
+        if not remaining:
+            break
+    if remaining:
+        raise ValueError("FLEURS input contains less than 30 seconds of audio")
+    return np.concatenate(pieces), {'source': 'fleurs-en-us-test', 'recordings': selected}
 
 
 def available_samples(kind, index, total):
@@ -93,46 +128,9 @@ def time_to_first_text(transcriber, audio):
         iterator.close()
 
 
-def encoder_stats(transcriber, audio):
-    """Profile separately, using real tensors captured during an untimed warm-up."""
+def benchmark_pipeline(transcriber, audio, input_metadata, output):
     import pyneat
 
-    encode = transcriber.encode
-    seeds = {}
-
-    def capture(inputs):
-        seeds.clear()
-        seeds.update(inputs)
-        return encode(inputs)
-
-    transcriber.encode = capture
-    try:
-        transcribe_recording(transcriber, audio)
-    finally:
-        transcriber.encode = encode
-    options = pyneat.BenchmarkOptions()
-    options.inputs = [seeds[port["name"]] for port in transcriber.config["inputs"]]
-    options.num_samples = 10
-    options.min_duration_ms = 0
-    options.include_mla_layer_stats = True
-    options.include_mla_stage_stats = True
-    stats = transcriber.model.benchmark(options)
-    layers, stages = stats.mla_layer_stats, stats.mla_stage_stats
-    return (
-        {"model": {"status": layers.status, "layers": [
-            {"stage_index": layer.stage_index, "name": layer.name, "latency_us": layer.latency_us}
-            for layer in layers.layers
-        ]}},
-        {"model": {"status": stages.status, "stages": [
-            {"stage_index": stage.stage_index, "latency_us": stage.latency_us} for stage in stages.stages
-        ]}},
-    )
-
-
-def benchmark_pipeline(transcriber, audio, audio_path, output):
-    import pyneat
-
-    layer_stats, stage_stats = encoder_stats(transcriber, audio)
     for _ in range(WARMUP_RECORDINGS):
         transcribe_recording(transcriber, audio)
     monitor = pyneat.TelemetryMonitor()
@@ -158,18 +156,20 @@ def benchmark_pipeline(transcriber, audio, audio_path, output):
     benchmark.throughput_samples = len(seconds)
     kind = transcriber.config["kind"]
     profile = "560 ms cached chunks" if kind == "nemotron" else "14 s windows (10 s past + 2 s new + 2 s lookahead)"
-    digest = hashlib.sha256(audio_path.read_bytes()).hexdigest()
+    digest = hashlib.sha256(audio.astype('<f4', copy=False).tobytes()).hexdigest()
     report = model_report.from_performance(
         benchmark, {"model": transcriber.model}, telemetry=telemetry,
-        mla_layer_stats=layer_stats, mla_stage_stats=stage_stats,
+        mla_layer_stats={"model": {"status": "not requested", "layers": []}},
+        mla_stage_stats={"model": {"status": "not requested", "stages": []}},
         workload=(
-            f"One {duration:.3f} s 16 kHz mono recording, SHA-256 {digest}; {profile}; auto language. "
+            f"One {duration:.3f} s 16 kHz mono stream from {input_metadata['source']}, float32 PCM SHA-256 {digest}; "
+            f"{profile}; auto language. "
             "Full log-mel frontend, BF16 encoder and INT8 CPU predictor/joiner, one recording at a time. "
             "Latency is unpaced full-recording transcription; throughput is recordings/s. "
             "RTF is unpaced processing seconds / unique audio seconds (overlap counted once). "
             "Time to first text is the mean of five paced replays from first audio sample to first visible "
             "text, including input buffering/lookahead and leading silence. Models stay loaded; "
-            "WAV decoding, warm-up and separate profiling are excluded."
+            "WAV decoding and warm-up are excluded; separate encoder profiling is not requested."
         ),
     )
     report.document["metrics"].update(
@@ -177,7 +177,7 @@ def benchmark_pipeline(transcriber, audio, audio_path, output):
         time_to_first_text_ms=float(np.mean(first_text) * 1000),
     )
     report.evidence["asr-timings.json"] = {
-        "audio_sha256": digest, "audio_samples": len(audio), "sample_rate": SAMPLE_RATE,
+        "input": input_metadata, "audio_sha256": digest, "audio_samples": len(audio), "sample_rate": SAMPLE_RATE,
         "model_kind": kind, "language": "auto", "unpaced_seconds": seconds,
         "unpaced_span_seconds": span, "paced_first_text_seconds": first_text,
         "final_transcript": transcript,
@@ -189,15 +189,24 @@ def benchmark_pipeline(transcriber, audio, audio_path, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", required=True, help="encoder archive, optionally model=path")
-    parser.add_argument("--resources", type=Path, required=True, help="extracted package or its model directory")
-    parser.add_argument("--audio", type=Path, required=True, help="same speech WAV for both models")
+    parser.add_argument("--resources", type=Path, help="package resources; defaults to the encoder's directory")
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--audio", type=Path, help="same speech WAV for both models")
+    inputs.add_argument("--dataset", help="fleurs-en-us-test=extracted-dataset")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     mpk = Path(args.mpk.removeprefix("model=")).resolve(strict=True)
-    package = args.resources.resolve(strict=True)
+    package = args.resources.resolve(strict=True) if args.resources else mpk.parent
     if (package / "model/runtime_config.json").is_file():
         package = package / "model"
-    audio = load_audio(args.audio)
+    if args.dataset:
+        name, separator, path = args.dataset.partition('=')
+        if name != 'fleurs-en-us-test' or not separator:
+            parser.error("--dataset must be fleurs-en-us-test=directory")
+        audio, input_metadata = load_dataset(Path(path))
+    else:
+        audio = load_audio(args.audio)
+        input_metadata = {'source': args.audio.name, 'wav_sha256': hashlib.sha256(args.audio.read_bytes()).hexdigest()}
     # Use the supplied archive with the package's CPU assets; never edit or repack the archive.
     with tempfile.TemporaryDirectory(prefix="asr-benchmark-") as temporary:
         staged = Path(temporary)
@@ -206,7 +215,7 @@ def main():
                 (staged / path.name).symlink_to(path)
         (staged / "encoder_mpk.tar.gz").symlink_to(mpk)
         with Transcriber(staged) as transcriber:
-            benchmark_pipeline(transcriber, audio, args.audio, args.output)
+            benchmark_pipeline(transcriber, audio, input_metadata, args.output)
 
 
 if __name__ == "__main__":

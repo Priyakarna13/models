@@ -362,21 +362,26 @@ threshold includes zero-time layers. Stage indices remain visible per layer.
 
 ASR scripts may additionally report `real_time_factor` (unpaced processing
 seconds divided by unique audio seconds; lower is better) and
-`time_to_first_text_ms`. Nemotron and Parakeet's standalone scripts accept the
-same real-speech WAV with `--audio`, along with `--mpk`, `--resources` and
-`--output`. Use a fixed 30-second, 16 kHz mono PCM16 English excerpt from
-[LibriSpeech test-clean](https://www.openslr.org/12/) for the first comparison:
-concatenate utterances `6930-75918-0000` through `0003` in order and retain
-the first 480,000 samples, preserving existing silence without adding any.
-The report records its SHA-256 and duration. These scripts include the frontend,
+`time_to_first_text_ms`. Nemotron and Parakeet pin the same FLEURS English test
+archive with `performance.dataset`. The runner resolves and unpacks it, then
+passes `--dataset fleurs-en-us-test=<directory>` to the model's script.
+Both scripts concatenate the float32 WAVs in filename order and retain the
+first 480,000 samples (30 seconds), preserving existing silence without adding
+any. They record the selected filenames, sample counts and PCM SHA-256.
+Standalone runs also accept `--audio` for a local PCM16 or float32 WAV.
+Both benchmarks use the repository’s Python `transcribe.py` runtime. The model
+downloads contain the encoder, CPU models and required assets; they omit
+`transcribe.py` and its installation requirements.
+These scripts include the frontend,
 encoder, CPU predictor and joiner; Parakeet's overlapping context contributes
 to processing time but is counted only once in audio duration. Their paced pass
 waits for each chunk and its lookahead before processing it, measuring from
 the first audio sample to the first non-whitespace decoded text. Leading
-silence therefore counts. Models stay loaded, and input file decoding,
-warm-up and separate diagnostic profiling are excluded. The browser shows
-these additional metrics under Other measurements. CI stages remain undeclared
-until the speech input is pinned and real DevKit regression baselines exist.
+silence therefore counts. Models stay loaded; input file decoding
+and warm-up are excluded. These ASR scripts do not request separate encoder
+layer/stage profiling. The browser shows
+these additional metrics under Other measurements. Initial CI runs collect
+measurements with an explicit regression-test skip until real baselines exist.
 
 The workload is the script's [benchmark input](#benchmark-input) on the image
 route, or on the tensor route for a model whose inputs are not images, with the
