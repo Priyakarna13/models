@@ -183,6 +183,62 @@ def replace_functions(model: onnx.ModelProto, expected=EXPECTED) -> None:
     model.graph.node.extend(nodes)
 
 
+def build_attention(weight, bias, output_weight, output_bias, heads, *, fuse_qkv=False):
+    """Build attention on (1, 1, tokens, channels), preserving head order, scale and additive masks.
+
+    The model's seven measured attention shapes use channel-first internals.
+    Only text self-attention fuses Q/K/V: its forward takes one shared input instead of three distinct inputs.
+    """
+    import torch
+    from torch import nn
+
+    width = weight.shape[1]
+    _require(heads > 0 and width % heads == 0, f"attention width {width} and heads {heads}")
+    head_size = width // heads
+
+    def projection(w, b, scale=1.0):
+        layer = nn.Conv2d(width, w.shape[0], 1)
+        layer.weight.data.copy_(w[:, :, None, None] * scale)
+        layer.bias.data.copy_(b * scale)
+        return layer.requires_grad_(False)
+
+    class Attention(nn.Module):
+        def __init__(self):
+            super().__init__()
+            if fuse_qkv:
+                self.qkv = projection(
+                    torch.cat([weight[:width] * head_size**-0.5, weight[width:]]),
+                    torch.cat([bias[:width] * head_size**-0.5, bias[width:]]),
+                )
+            else:
+                self.q = projection(weight[:width], bias[:width], head_size**-0.5)
+                self.k = projection(weight[width : 2 * width], bias[width : 2 * width])
+                self.v = projection(weight[2 * width :], bias[2 * width :])
+            self.o = projection(output_weight, output_bias)
+
+        def heads_first(self, x):
+            # Channel h*D+d maps to [d, h, token]; concatenating heads reverses this packing.
+            return torch.cat(torch.split(x, head_size, dim=1), dim=2)
+
+        def forward(self, query, key=None, value=None, bias=None):
+            if fuse_qkv:
+                _require(key is None and value is None, "fused self-attention takes one shared Q/K/V input")
+                q, k, v = self.qkv(query.permute(0, 3, 1, 2)).split(width, dim=1)
+            else:
+                _require(key is not None and value is not None, "attention requires key and value inputs")
+                query, key, value = (x.permute(0, 3, 1, 2) for x in (query, key, value))
+                q, k, v = self.q(query), self.k(key), self.v(value)
+            q, k, v = (self.heads_first(x) for x in (q, k, v))
+            scores = torch.einsum("nchw,nchq->nqhw", q, k)
+            if bias is not None:
+                scores = scores + bias.permute(0, 3, 1, 2)
+            out = torch.einsum("nchw,nqhc->nqhw", scores.softmax(1), v)
+            merged = torch.cat(torch.split(out, 1, dim=2), dim=1)
+            return self.o(merged).permute(0, 2, 3, 1)
+
+    return Attention().eval()
+
+
 def build_graph(weights):
     """Return the computation to compile, built from the upstream weights convert.py bundled."""
     import torch
@@ -254,40 +310,26 @@ def build_graph(weights):
                 x = layer(x) if index == len(self.layers) - 1 else F.relu(layer(x))
             return x
 
-    class Attention(nn.Module):
-        """nn.MultiheadAttention on token tensors with a folded query scale and an additive bias."""
-
-        def __init__(self, name, heads=settings["heads"]):
-            super().__init__()
-            weight, bias = state[f"{name}.in_proj_weight"], state[f"{name}.in_proj_bias"]
-            width, self.heads = weight.shape[1], heads
-            self.dim = width // self.heads
-            self.q = Linear(weight[:width], bias[:width], self.dim**-0.5)
-            self.k = Linear(weight[width : 2 * width], bias[width : 2 * width])
-            self.v = Linear(weight[2 * width :], bias[2 * width :])
-            self.o = linear(f"{name}.out_proj")
-
-        def heads_first(self, x):
-            return x.reshape(1, x.shape[2], self.heads, self.dim).transpose(1, 2)
-
-        def forward(self, query, key, value, bias=None):
-            q, k, v = self.heads_first(self.q(query)), self.heads_first(self.k(key)), self.heads_first(self.v(value))
-            scores = torch.einsum("bhqd,bhkd->bhqk", q, k)
-            if bias is not None:
-                scores = scores + bias
-            out = torch.einsum("bhqk,bhkd->bhqd", scores.softmax(-1), v)
-            return self.o(out.transpose(1, 2).reshape(1, 1, query.shape[2], self.heads * self.dim))
+    def attention(name, heads=settings["heads"], *, fuse_qkv=False):
+        return build_attention(
+            state[f"{name}.in_proj_weight"],
+            state[f"{name}.in_proj_bias"],
+            state[f"{name}.out_proj.weight"],
+            state[f"{name}.out_proj.bias"],
+            heads,
+            fuse_qkv=fuse_qkv,
+        )
 
     class TextBlock(nn.Module):
         def __init__(self, name):
             super().__init__()
             self.ln_1, self.ln_2 = Norm(f"{name}.ln_1"), Norm(f"{name}.ln_2")
-            self.attn = Attention(f"{name}.attn", settings["text_heads"])
+            self.attn = attention(f"{name}.attn", settings["text_heads"], fuse_qkv=True)
             self.fc, self.proj = linear(f"{name}.mlp.c_fc"), linear(f"{name}.mlp.c_proj")
 
         def forward(self, x, causal):
             h = self.ln_1(x)
-            x = x + self.attn(h, h, h, causal)
+            x = x + self.attn(h, bias=causal)
             return x + self.proj(gelu(self.fc(self.ln_2(x))))
 
     class TextEncoder(nn.Module):
@@ -474,8 +516,8 @@ def build_graph(weights):
                 self.value = Linear(weight[2 * width :], bias[2 * width :])
                 self.out = linear(f"{name}.self_attn.out_proj")
             else:
-                self.self_attn = Attention(f"{name}.self_attn")
-            self.cross_attn = Attention(f"{name}.cross_attn_image")
+                self.self_attn = attention(f"{name}.self_attn")
+            self.cross_attn = attention(f"{name}.cross_attn_image")
             self.linear1, self.linear2 = linear(f"{name}.linear1"), linear(f"{name}.linear2")
 
         def forward(self, x, pos, key, value, bias=None):
@@ -487,9 +529,9 @@ def build_graph(weights):
     class DecoderLayer(nn.Module):
         def __init__(self, name):
             super().__init__()
-            self.self_attn, self.norm2 = Attention(f"{name}.self_attn"), Norm(f"{name}.norm2")
-            self.ca_text, self.catext_norm = Attention(f"{name}.ca_text"), Norm(f"{name}.catext_norm")
-            self.cross_attn, self.norm1 = Attention(f"{name}.cross_attn"), Norm(f"{name}.norm1")
+            self.self_attn, self.norm2 = attention(f"{name}.self_attn"), Norm(f"{name}.norm2")
+            self.ca_text, self.catext_norm = attention(f"{name}.ca_text"), Norm(f"{name}.catext_norm")
+            self.cross_attn, self.norm1 = attention(f"{name}.cross_attn"), Norm(f"{name}.norm1")
             self.linear1, self.linear2 = linear(f"{name}.linear1"), linear(f"{name}.linear2")
             self.norm3 = Norm(f"{name}.norm3")
 
@@ -619,7 +661,7 @@ def build_graph(weights):
         def __init__(self, name):
             super().__init__()
             decoder = f"{name}.pixel_decoder"
-            self.norm, self.attn = Norm(f"{name}.cross_attn_norm"), Attention(f"{name}.cross_attend_prompt")
+            self.norm, self.attn = Norm(f"{name}.cross_attn_norm"), attention(f"{name}.cross_attend_prompt")
             self.conv = nn.ModuleList(plain_conv(f"{decoder}.conv_layers.{index}") for index in range(2))
             self.group = nn.ModuleList(GroupNorm(f"{decoder}.norms.{index}") for index in range(2))
             # (W p + b) . m = p . (W^T m) + b . m: the instance head's 1x1 conv moves from the 36,864 pixels to the

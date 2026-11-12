@@ -15,6 +15,88 @@ from model_registry.model import load_model as load_metadata
 MODEL_ID = "efficientsam3_repvit_m"
 
 
+@pytest.mark.parametrize(
+    ("case", "fuse_qkv"),
+    [
+        ("text", True),
+        ("image", False),
+        ("decoder", False),
+        ("broadcast", False),
+        ("geometry", False),
+    ],
+)
+def test_attention_preserves_heads_positions_and_masks(
+    tmp_path: Path, load_script: Callable[[str], ModuleType], case: str, fuse_qkv: bool
+) -> None:
+    from onnx.reference import ReferenceEvaluator
+
+    torch = pytest.importorskip("torch")
+    surgery = load_script("surgery")
+    generator = torch.Generator().manual_seed(232)
+    width, heads = 32, 4
+    queries, keys = (
+        (16, 16) if case == "text" else (9, 9) if case == "image" else (1, 9) if case == "geometry" else (5, 9)
+    )
+
+    def random(*shape):
+        return torch.randn(*shape, generator=generator) * 0.2
+
+    weight, bias = random(3 * width, width), random(3 * width)
+    output_weight, output_bias = random(width, width), random(width)
+    query = random(1, 1, queries, width)
+    key, value = random(1, 1, keys, width), random(1, 1, keys, width)
+    mask = random(1, heads, queries, keys)
+    if case == "text":
+        key = value = query
+        mask = torch.full((1, 1, queries, keys), -1e4).triu(1)
+    elif case == "image":
+        value = query
+        query = key = query + random(1, 1, queries, width)
+        mask = None
+    elif case == "broadcast":
+        mask = torch.zeros(1, 1, 1, keys)
+        mask[..., -3:] = -1e4
+
+    projected = [
+        torch.nn.functional.linear(x, w, b).reshape(1, -1, heads, width // heads).transpose(1, 2)
+        for x, w, b in zip((query, key, value), weight.chunk(3), bias.chunk(3), strict=True)
+    ]
+    context = torch.nn.functional.scaled_dot_product_attention(*projected, attn_mask=mask)
+    expected = torch.nn.functional.linear(
+        context.transpose(1, 2).reshape(1, 1, queries, width), output_weight, output_bias
+    )
+    module = surgery.build_attention(weight, bias, output_weight, output_bias, heads, fuse_qkv=fuse_qkv)
+    arguments = (query,) if fuse_qkv else (query, key, value)
+    with torch.no_grad():
+        actual = module(*arguments, bias=mask)
+    np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=2e-5, atol=3e-6)
+    assert actual.shape == (1, 1, queries, width)
+    if fuse_qkv:
+        with pytest.raises(ValueError, match="one shared Q/K/V input"):
+            module(query, key, value)
+
+    path = tmp_path / "attention.onnx"
+    inputs = {"query": query}
+    if not fuse_qkv:
+        inputs.update(key=key, value=value)
+    if mask is not None:
+        inputs["bias"] = mask
+    torch.onnx.export(
+        module,
+        arguments,
+        str(path),
+        kwargs={"bias": mask},
+        input_names=list(inputs),
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
+    )
+    model = onnx.shape_inference.infer_shapes(onnx.load(path), strict_mode=True)
+    onnx.checker.check_model(model, full_check=True)
+    (result,) = ReferenceEvaluator(model).run(None, {name: tensor.numpy() for name, tensor in inputs.items()})
+    np.testing.assert_allclose(result, expected.numpy(), rtol=3e-5, atol=5e-6)
+
+
 @pytest.mark.parametrize(("op", "reference"), [("Sin", np.sin), ("Cos", np.cos), ("Log", np.log)])
 def test_polynomial_replacements_stay_within_their_bound_over_the_whole_domain(
     load_script: Callable[[str], ModuleType], op: str, reference: Callable[[np.ndarray], np.ndarray]
