@@ -197,10 +197,12 @@ architectures:
     allowed_model_types: [vision]
   nemotron_asr:
     display_name: Nemotron ASR
+    description: Transcribes multilingual speech continuously with a streaming speech encoder.
     paradigm: transformer
     allowed_model_types: [audio]
   parakeet:
     display_name: Parakeet
+    description: Transcribes multilingual speech using a token-and-duration transducer.
     paradigm: transformer
     allowed_model_types: [audio]
   supertonic:
