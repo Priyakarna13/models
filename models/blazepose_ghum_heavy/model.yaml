@@ -57,8 +57,9 @@ build_profiles:
 
 accuracy:
   # MediaPipe scores single-person Yoga, Dance and HIIT sets it has not released. accuracy.py crops each labelled
-  # COCO val2017 person from the ground-truth box as MediaPipe crops a detected person, without the rotation a
-  # detector gives and without the heatmap refinement the package leaves out.
+  # COCO val2017 person as a square 1.25 times the longer side of the ground-truth box. MediaPipe builds its square
+  # from two keypoints of its person detector and rotates it upright; the box crop is not rotated, and the package
+  # leaves out the heatmap refinement.
   datasets:
   - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
 

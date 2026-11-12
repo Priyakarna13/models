@@ -1,9 +1,11 @@
 """Measure BlazePose GHUM Heavy 3D's COCO keypoint AP and AR with its MPK on a Modalix board.
 
 The model is MediaPipe's landmark stage: it finds one person's landmarks in a crop around that person. Each
-non-crowd val2017 person with labelled keypoints is cropped from its ground-truth box as MediaPipe crops a
-detected person (mediapipe/modules/pose_landmark/pose_detection_to_roi.pbtxt and pose_landmark_by_roi_cpu.pbtxt,
-tag v0.10.26): a square centred on the box, its side 1.25 times the box's longer side, pixels outside the image
+non-crowd val2017 person with labelled keypoints is cropped from its ground-truth box. MediaPipe builds its
+square from two keypoints of its person detector and rotates it upright
+(mediapipe/modules/pose_landmark/pose_detection_to_roi.pbtxt and pose_landmark_by_roi_cpu.pbtxt, tag v0.10.26);
+this crop keeps its 1.25 scale and border but is not rotated: a square centred on the box, its side 1.25 times
+the box's longer side, pixels outside the image
 repeating the image's edge (ImageToTensorCalculator's default BORDER_REPLICATE), resized bilinearly to 256x256
 and scaled to [0, 1]. The 17 COCO keypoints are BlazePose landmarks COCO_LANDMARKS (PoseLandmark in
 mediapipe/python/solutions/pose.py), mapped from the crop back to the image. Each keypoint carries

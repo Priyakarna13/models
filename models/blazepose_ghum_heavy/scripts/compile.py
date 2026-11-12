@@ -42,7 +42,7 @@ COMPONENT_ID = "model"
 INPUT_BYTES = {INPUT: math.prod(INPUT_SHAPE) * 4}
 OUTPUT_BYTES = [math.prod(OUTPUT_SHAPES[name]) * 4 for name in OUTPUTS]
 # Mean absolute error each precision's graph may have from the converted ONNX on any seeded input. BF16 measured
-# 5.7 px, 1.6e-5 and 0.034 m, about half its limits; a broken build misses by tens of pixels. INT8 keeps the BF16
+# 5.7 px, 1.6e-5 and 0.034 m, inside its limits; a broken build misses by tens of pixels. INT8 keeps the BF16
 # limits: the measured W8A8 graph missed them by 28.6 px, 0.99 and 0.17 m and scored 0.000 keypoint AP.
 MAX_MEAN_ERROR = {
     "w16a16": {"Identity": 12.0, "Identity_1": 1e-3, "Identity_4": 0.07},

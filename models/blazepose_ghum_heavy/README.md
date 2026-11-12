@@ -26,9 +26,9 @@ tensor.
 1. Keep the crop when `Identity_1` is at least 0.5; it needs no sigmoid.
 2. Use the first 33 records of `Identity` and `Identity_4`; the rest only help place the next frame's crop.
 3. Apply a sigmoid to the visibility and presence logits.
-4. For a square crop of side s at (left, top), a landmark is at left + x × s / 256 and top + y × s / 256; undo any padding and rotation.
+4. For a square crop of side s at (left, top), a landmark is at left + x × s / 256 and top + y × s / 256; if the application rotated the crop, undo it.
 5. z is depth relative to the hip midpoint, on roughly the scale of x.
-6. Rotate the world landmarks by the crop's rotation to return to camera orientation.
+6. Rotate the world landmarks back by the same angle.
 
 The landmarks, with the person's left side first in each pair, are: 0 nose;
 1–3 left eye inner, center, outer; 4–6 right eye inner, center, outer; 7–8

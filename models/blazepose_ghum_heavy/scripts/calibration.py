@@ -1,8 +1,9 @@
-"""Crop a person as MediaPipe crops a detected one for BlazePose, and select the INT8 calibration people.
+"""Crop a person from a labelled box for BlazePose, and select the INT8 calibration people.
 
-MediaPipe's pose_detection_to_roi.pbtxt and pose_landmark_by_roi_cpu.pbtxt (tag v0.10.26) crop a square centred
-on the person, its side 1.25 times the person's longer side, repeat the image's edge outside it
-(ImageToTensorCalculator's default BORDER_REPLICATE), and resize it bilinearly to 256x256 in [0, 1].
+MediaPipe's pose_detection_to_roi.pbtxt and pose_landmark_by_roi_cpu.pbtxt (tag v0.10.26) build a square from two
+keypoints of the person detector, rotate it upright, scale it by 1.25, repeat the image's edge outside it
+(ImageToTensorCalculator's default BORDER_REPLICATE), and resize it bilinearly to 256x256 in [0, 1]. A labelled
+dataset gives a box instead: this crop centres on the box, takes 1.25 times its longer side and does not rotate.
 """
 
 from __future__ import annotations
