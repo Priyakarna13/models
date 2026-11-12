@@ -153,6 +153,10 @@ architectures:
     display_name: RF-DETR
     paradigm: transformer
     allowed_model_types: [vision]
+  sesr:
+    display_name: SESR
+    paradigm: cnn
+    allowed_model_types: [vision]
   siglip:
     display_name: SigLIP
     paradigm: transformer
