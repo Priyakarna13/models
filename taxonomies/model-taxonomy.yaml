@@ -47,6 +47,7 @@ architecture_paradigms:
 architectures:
   blaze_pose:
     display_name: BlazePose
+    description: Finds one person's body landmarks in 3D from a crop around that person.
     paradigm: cnn
     allowed_model_types: [vision]
   yolo_world:
