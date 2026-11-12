@@ -17,7 +17,7 @@ from pathlib import Path
 
 import accuracy
 import numpy as np
-from surgery import INPUT_NAME, OUTPUTS
+from surgery import INPUT, OUTPUTS
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,11 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     import onnxruntime
 
     session = onnxruntime.InferenceSession(str(args.onnx), providers=["CPUExecutionProvider"])
-    names = [name for name, _ in OUTPUTS]
 
     def infer(pixels: np.ndarray) -> list[np.ndarray]:
         # The ONNX takes the crop channels-last, as the MPK does, with a batch axis.
-        return session.run(names, {INPUT_NAME: pixels[None]})
+        return session.run(OUTPUTS, {INPUT: pixels[None]})
 
     metrics, detections = accuracy.evaluate(dataset, ground_truth, image_ids, infer)
     rounded = {name: round(value, 4) for name, value in metrics.items()}
