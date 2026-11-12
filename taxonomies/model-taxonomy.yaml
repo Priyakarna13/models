@@ -82,6 +82,7 @@ architectures:
     allowed_model_types: [vision]
   dfine:
     display_name: D-FINE
+    description: Detects objects in images by refining box edges as distributions with a transformer decoder.
     paradigm: transformer
     allowed_model_types: [vision]
   dla:
