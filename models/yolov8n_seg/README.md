@@ -6,7 +6,7 @@
 
 YOLOv8n-seg is the Nano size of the Ultralytics YOLOv8 instance segmentation
 model, trained on the 80 COCO classes. For each object in a 640×640 RGB image,
-it returns a box, a class, and a pixel mask mixed from 32 shared mask patterns
+it returns a box, a class, and a pixel mask mixed from 32 shared patterns
 (prototypes). The application removes duplicate boxes with non-maximum suppression.
 
 ## Inputs and outputs
@@ -20,10 +20,10 @@ does these steps.
 **Outputs.** Each tensor is in height, width, channel order, at stride 8, 16, or
 32 (grids of 80, 40, and 20 cells):
 
-- `bbox_0` to `bbox_2`: 16 bins for each of the left, top, right, and bottom edge distances.
+- `bbox_0` to `bbox_2`: 16 bins per left, top, right, and bottom edge distance.
 - `class_logit_0` to `class_logit_2`: 80 class logits.
 - `mask_coeff_0` to `mask_coeff_2`: 32 mask coefficients.
-- `mask_proto`: 32 prototypes on a 160×160 grid.
+- `mask_proto`: 32 prototypes on a 160×160 grid, at stride 4.
 
 1. The cell in column c and row r has its center at (c + 0.5, r + 0.5).
 2. Each edge distance in cells is the softmax-weighted mean of its 16 bin indices.

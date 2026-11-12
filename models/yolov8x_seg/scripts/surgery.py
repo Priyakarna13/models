@@ -1,4 +1,4 @@
-"""Cut YOLOv8x-seg at its raw Segment heads and mask prototypes, before the in-graph DFL, box decode and class sigmoid."""
+"""Cut YOLOv8x-seg at its raw Segment heads and prototypes, before the in-graph DFL, box decode and class sigmoid."""
 
 from __future__ import annotations
 
