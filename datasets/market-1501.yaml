@@ -1,0 +1,3 @@
+# What every model evaluating its accuracy on Market-1501 must report, by the model's task.
+required_metrics:
+  re_identification: [reid_map, cmc_rank1]
