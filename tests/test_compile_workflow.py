@@ -1319,3 +1319,29 @@ def test_only_mla_candidates_with_declared_stages_are_benchmarked_after_finaliza
             "cancelled()": False, "needs.publish-candidates.result": result,
             "needs.plan.outputs.candidate_benchmark_count": "1",
         }) is (result in {"success", "failure"})
+
+
+@pytest.mark.parametrize("missing_receipt", [False, True])
+def test_candidate_benchmark_receipt_staging(tmp_path, missing_receipt):
+    workdir = tmp_path / "workdir with spaces"
+    workdir.mkdir()
+    candidate = workdir / "_candidate"
+    receipt = Path("asr/w8a16/packages/default/registry-publication.json")
+    source = candidate / "packages" / receipt
+    target = candidate / "compiled" / receipt
+    payload = b'{"packages": [{"run_id": "published-package"}]}\n'
+    if not missing_receipt:
+        source.parent.mkdir(parents=True)
+        source.write_bytes(payload)
+    result = subprocess.run(
+        ["bash", "-c", step(load(WORKFLOW)["jobs"]["publish-candidates"],
+                            "Stage the finalized package receipt for benchmarking")["run"]],
+        cwd=workdir, env={**os.environ, "MODEL_ID": "asr", "BUILD_PROFILE_ID": "w8a16"},
+        capture_output=True, text=True,
+    )
+    if missing_receipt:
+        assert result.returncode != 0
+        assert not target.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert target.read_bytes() == payload

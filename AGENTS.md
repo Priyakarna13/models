@@ -191,7 +191,7 @@ Any expensive model may set top-level `build-on-demand: true` (default `false`).
 Pushes still validate it and publish catalog metadata, but never compile or
 benchmark it. A manual **Vulcan Model Orchestrator** dispatch must select its
 `models` and `profiles`; the planner also requires `--include-on-demand`.
-A manually selected on-demand build runs its declared benchmarks after candidate
+A manually selected on-demand Model Compiler build runs declared benchmarks after candidate
 finalization, or runs missing benchmarks when the compiled build is reused.
 The flag changes scheduling and catalog metadata only, never fingerprints.
 Publication in the selected `VULCAN_ENV` uses `publish-candidate` once per complete model/profile;
@@ -320,7 +320,8 @@ in the same commit.
   and accuracy (`model_accuracy` runs) separately with `model-registry
   publish-report`, each under the profile's `model_package` run with its test
   outcome. A failed test fails its check job after publication; the completed
-  run is not benchmarked again. On-demand builds are not benchmarked.
+  run is not benchmarked again. Manually selected on-demand Model Compiler
+  builds run their declared stages after candidate finalization; pushes skip them.
   A manual dispatch of the same workflow resolves its own config and runner.
 - Benchmark setup uses `neat-core.install_target` from the measured source's
   `deps/manifest.json`. `ensure-neat-core` resolves floating targets once and

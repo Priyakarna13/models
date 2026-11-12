@@ -307,8 +307,8 @@ branch, a base branch's catalog records a build with its current compile
 fingerprint. It runs a benchmark (the performance or accuracy stage) only when
 no completed registry run carries its current benchmark fingerprint. Models
 with `build-on-demand: true` compile only when a manual dispatch selects them,
-and their builds are not benchmarked; see [on-demand
-builds](#on-demand-builds).
+and selected Model Compiler builds run missing declared benchmarks;
+see [on-demand builds](#on-demand-builds).
 
 | Stage | Fingerprint inputs |
 | --- | --- |

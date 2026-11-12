@@ -872,7 +872,7 @@ def test_asr_decoder_change_only_invalidates_performance(model_repository: Path,
     before_compile, before_performance = fingerprints()
     script = target / "scripts/performance.py"
     original = script.read_text()
-    changed = original.replace("            advance = 1\n", "            advance = 2\n", 1)
+    changed = original.replace("token = int(values[0].argmax())", "token = int(values[0].argmin())", 1)
     assert changed != original  # Change the real decoder implementation, not just the benchmark wrapper.
     script.write_text(changed)
     after_compile, after_performance = fingerprints()

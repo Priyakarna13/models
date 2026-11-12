@@ -532,11 +532,10 @@ jobs:
           retention-days: 14
 
       - name: Stage the finalized package receipt for benchmarking
-        run: |
-          set -euo pipefail
-          receipt="$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"
-          mkdir -p "$(dirname "_candidate/compiled/$receipt")"
-          cp "_candidate/packages/$receipt" "_candidate/compiled/$receipt"
+        run: >-
+          install -D -m 0644
+          "_candidate/packages/$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"
+          "_candidate/compiled/$MODEL_ID/$BUILD_PROFILE_ID/packages/default/registry-publication.json"
 
       - name: Retain the finalized model output for benchmarking
         uses: actions/upload-artifact@v7
