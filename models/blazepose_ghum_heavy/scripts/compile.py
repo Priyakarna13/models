@@ -16,11 +16,23 @@ from typing import Any
 
 import numpy as np
 import onnxruntime as ort
-from afe.apis.defines import InputName, QuantizationParams, SkipCalibration, bfloat16_scheme, gen2_target
+from afe.apis.defines import (
+    BiasCorrectionType,
+    HistogramMSEMethod,
+    InputName,
+    QuantizationParams,
+    SkipCalibration,
+    bfloat16_scheme,
+    gen2_target,
+    quantization_scheme,
+)
 from afe.apis.loaded_net import load_model
 from afe.apis.model import L2CachingMode
+from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
+from calibration import calibration_images
 from model_registry.model import load_model as load_metadata
+from sima_utils.data.data_generator import DataGenerator
 from surgery import INPUT, INPUT_SHAPE, OUTPUT_SHAPES, OUTPUTS, SEEDS, prepare_model
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
@@ -29,9 +41,13 @@ COMPONENT_ID = "model"
 # MPK manifests record each public tensor's size in bytes; the MPK keeps the ONNX float32 interface.
 INPUT_BYTES = {INPUT: math.prod(INPUT_SHAPE) * 4}
 OUTPUT_BYTES = [math.prod(OUTPUT_SHAPES[name]) * 4 for name in OUTPUTS]
-# Mean absolute error the BF16 graph may have from the converted ONNX on any seeded input, about twice the
-# worst measured: 5.7 px, 1.6e-5 and 0.034 m. A broken build misses by tens of pixels.
-MAX_MEAN_ERROR = {"Identity": 12.0, "Identity_1": 1e-3, "Identity_4": 0.07}
+# Mean absolute error each precision's graph may have from the converted ONNX on any seeded input. BF16 measured
+# 5.7 px, 1.6e-5 and 0.034 m, about half its limits; a broken build misses by tens of pixels. INT8 keeps the BF16
+# limits: the measured W8A8 graph missed them by 28.6 px, 0.99 and 0.17 m and scored 0.000 keypoint AP.
+MAX_MEAN_ERROR = {
+    "w16a16": {"Identity": 12.0, "Identity_1": 1e-3, "Identity_4": 0.07},
+    "w8a8": {"Identity": 12.0, "Identity_1": 1e-3, "Identity_4": 0.07},
+}
 
 
 def _parameters(profile_id: str) -> dict[str, Any]:
@@ -42,8 +58,16 @@ def _parameters(profile_id: str) -> dict[str, Any]:
     return next(item["parameters"] for item in profiles[0]["components"] if item["id"] == COMPONENT_ID)
 
 
-def _quantization(precision: str) -> QuantizationParams:
-    """The compiler's activation and weight formats for a precision. BF16 activations need no calibration."""
+def _quantization(precision: str, calibration_bins: int | None) -> QuantizationParams:
+    """The compiler's activation and weight formats for a precision. Only INT8 activations need calibration."""
+    if precision == "w8a8":
+        return QuantizationParams(
+            # Histogram MSE picks each activation range from the calibration people.
+            calibration_method=HistogramMSEMethod(calibration_bins),
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            biascorr_type=BiasCorrectionType.REGULAR,
+        )
     if precision == "w16a16":
         return QuantizationParams(
             calibration_method=SkipCalibration(),
@@ -53,8 +77,8 @@ def _quantization(precision: str) -> QuantizationParams:
     raise ValueError(f"unsupported precision: {precision}")
 
 
-def check_quantized_outputs(source: Path, quantized: Any) -> dict[str, float]:
-    """Require each quantized output to stay within MAX_MEAN_ERROR of the converted ONNX on every seeded input."""
+def check_quantized_outputs(source: Path, quantized: Any, limits: dict[str, float]) -> dict[str, float]:
+    """Require each quantized output to stay within its limit of the converted ONNX on every seeded input."""
     reference = ort.InferenceSession(str(source), providers=["CPUExecutionProvider"])
     errors = dict.fromkeys(OUTPUTS, 0.0)
     for seed in SEEDS:
@@ -67,9 +91,9 @@ def check_quantized_outputs(source: Path, quantized: Any) -> dict[str, float]:
                 raise RuntimeError(f"quantized output {name} holds non-finite values (seed {seed})")
             errors[name] = max(errors[name], float(np.mean(np.abs(actual_value - expected_value))))
     logging.info("Largest mean absolute error of the quantized outputs against the converted ONNX: %s", errors)
-    exceeded = {name: error for name, error in errors.items() if error > MAX_MEAN_ERROR[name]}
+    exceeded = {name: error for name, error in errors.items() if error > limits[name]}
     if exceeded:
-        raise RuntimeError(f"quantized outputs exceed {MAX_MEAN_ERROR}: {exceeded}")
+        raise RuntimeError(f"quantized outputs exceed {limits}: {exceeded}")
     return errors
 
 
@@ -113,8 +137,18 @@ def audit_mpk(archive: Path) -> None:
         raise RuntimeError(f"MPK output interface mismatch: {outputs}")
 
 
-def compile_model(source: Path, output_dir: Path, profile_id: str) -> Path:
-    quantization = _quantization(str(_parameters(profile_id)["precision"]))
+def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path | None) -> Path:
+    parameters = _parameters(profile_id)
+    precision = str(parameters["precision"])
+    calibration_bins = int(parameters["calibration_bins"]) if precision == "w8a8" else None
+    quantization = _quantization(precision, calibration_bins)
+    calibration_data = None
+    if precision == "w8a8":
+        if dataset is None:
+            raise ValueError("the INT8 build requires --dataset from dataset-registry")
+        samples = calibration_images(dataset, int(parameters["calibration_samples"]))
+        logging.info("Calibrating %s with %d person crop(s)", precision, len(samples))
+        calibration_data = convert_data_generator_to_iterable(DataGenerator({InputName(INPUT): samples}))
     component_dir = output_dir / COMPONENT_ID
     component_dir.mkdir(parents=True, exist_ok=False)
 
@@ -126,12 +160,12 @@ def compile_model(source: Path, output_dir: Path, profile_id: str) -> Path:
         )
         loaded = load_model(importer, target=gen2_target)
         quantized = loaded.quantize(
-            calibration_data=None,
+            calibration_data=calibration_data,
             quantization_config=quantization,
             model_name=f"{MODEL_ID}_{profile_id}",
             log_level=logging.INFO,
         )
-        check_quantized_outputs(source, quantized)
+        check_quantized_outputs(source, quantized, MAX_MEAN_ERROR[precision])
         quantized.compile(
             output_path=str(build_dir / "mpk"),
             batch_size=1,
@@ -156,6 +190,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-profile", required=True)
     parser.add_argument("--compile-invocation", required=True)
+    parser.add_argument("--dataset", type=Path, help="dataset-registry calibration archive")
     args = parser.parse_args()
     if args.compile_invocation != args.build_profile:
         parser.error("a build profile compiles in one invocation named after it")
@@ -164,9 +199,12 @@ def main() -> int:
         parser.error("--model must be the verified ONNX from the conversion workflow")
     if not source.is_file():
         parser.error(f"model does not exist: {source}")
+    dataset = args.dataset.expanduser().resolve() if args.dataset else None
+    if dataset is not None and not dataset.exists():
+        parser.error(f"dataset does not exist: {dataset}")
     # Importing the Model Compiler configures the root logger, so the recipe's INFO lines need force.
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s", force=True)
-    archive = compile_model(source, args.output_dir.expanduser().resolve(), args.build_profile)
+    archive = compile_model(source, args.output_dir.expanduser().resolve(), args.build_profile, dataset)
     logging.info("Compiled MPK: %s", archive)
     return 0
 

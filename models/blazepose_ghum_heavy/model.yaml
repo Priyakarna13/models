@@ -34,11 +34,26 @@ compilation:
   format: onnx
   source: conversion
 
+calibrations:
+- id: coco-2017-cal
+  dataset: {id: coco-2017, variant: cal, sha256: 54c64d84122eba371ac014d7b43849a461551c2e6c5c430b5ead90ec1dec12b1, size_bytes: 187510866}
+
 build_profiles:
   w16a16:
     components:
       model:
         parameters: {precision: w16a16}
+
+  # No w8a8: it compiles to one MLA segment, but its landmarks are not usable. Calibrated locally on 50 val2017
+  # people standing in for cal2017 (Model Compiler 3.0.0.1), its 17 COCO landmarks sat a mean 36.6 px (median
+  # 34.4) from the FP32 ONNX's in the 256 px crop on 411 other val2017 people, and it scored 0.000 keypoint AP
+  # where FP32 scored 0.181. On 97 of those people w16a16 sat 4.7 px away (median 2.0) and scored 0.244 to
+  # FP32's 0.226. compile.py keeps its recipe.
+  # w8a8:
+  #   calibration_dataset: coco-2017-cal
+  #   components:
+  #     model:
+  #       parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 50}
 
 accuracy:
   # MediaPipe scores single-person Yoga, Dance and HIIT sets it has not released. accuracy.py crops each labelled

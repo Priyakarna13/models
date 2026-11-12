@@ -29,9 +29,9 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import cv2
 import model_report
 import numpy as np
+from calibration import INPUT_SIZE, crop, crop_square, decode_image
 from faster_coco_eval import COCO, COCOeval_faster
 
 DATASET = "coco-2017-val"
@@ -39,8 +39,6 @@ ANNOTATIONS = "annotations/person_keypoints_val2017.json"
 IMAGES = "val2017"
 # Ultralytics' COCO-pose validation set: the val2017 images with at least one person whose keypoints are labelled.
 SCORED_IMAGES = 2346
-INPUT_SIZE = 256
-ROI_SCALE = 1.25
 # Identity holds 39 records of x, y, z, visibility logit and presence logit; Identity_1 one probability;
 # Identity_4 39 world x, y, z records.
 RECORDS = 39
@@ -99,25 +97,6 @@ def sampled(image_ids: list[int], limit: int | None) -> list[int]:
     return sorted(random.Random(0).sample(image_ids, limit)) if limit else image_ids
 
 
-def crop_square(box: Sequence[float]) -> tuple[float, float, float]:
-    """The left, top and side of the square MediaPipe crops around a person's x, y, width, height box."""
-    x, y, width, height = box
-    side = ROI_SCALE * max(width, height)
-    if side <= 0:
-        raise ValueError(f"empty person box {list(box)}")
-    return x + (width - side) / 2, y + (height - side) / 2, side
-
-
-def crop(image: np.ndarray, left: float, top: float, side: float) -> np.ndarray:
-    """The model input for one square of an RGB image: 256x256 HWC float32 in [0, 1], its corners on the square's."""
-    scale = INPUT_SIZE / side
-    matrix = np.array([[scale, 0, -left * scale], [0, scale, -top * scale]])
-    pixels = cv2.warpAffine(
-        image, matrix, (INPUT_SIZE, INPUT_SIZE), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
-    )
-    return pixels.astype(np.float32) / np.float32(255)
-
-
 def sigmoid(logits: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(logits, -80, 80)))
 
@@ -144,10 +123,7 @@ def people(annotations: list[dict], image_ids: list[int]) -> dict[int, list[dict
 
 def read_crops(path: Path, persons: list[dict]) -> list[tuple[float, float, float, np.ndarray]]:
     """Each person's square and its model input, from one image read as RGB without EXIF rotation, as COCO is."""
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
-    if image is None:
-        raise SystemExit(f"could not read {path}")
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = decode_image(path.read_bytes())
     return [(*square, crop(image, *square)) for square in (crop_square(person["bbox"]) for person in persons)]
 
 

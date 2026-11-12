@@ -40,41 +40,6 @@ def test_coco_keypoints_are_the_same_named_mediapipe_landmarks(load_script: Call
     assert accuracy.COCO_LANDMARKS == [MEDIAPIPE_LANDMARKS.index(name) for name in COCO_KEYPOINTS]
 
 
-def test_crop_square_scales_the_longer_box_side_by_1_25_around_its_centre(
-    load_script: Callable[[str], ModuleType],
-) -> None:
-    accuracy = load_script("accuracy")
-
-    # A 40x80 box at (100, 50) centres on (120, 90); its square is 100 px, from (70, 40).
-    assert accuracy.crop_square([100.0, 50.0, 40.0, 80.0]) == (70.0, 40.0, 100.0)
-    assert accuracy.crop_square([0.0, 0.0, 200.0, 20.0]) == (-25.0, -115.0, 250.0)
-    with pytest.raises(ValueError, match="empty person box"):
-        accuracy.crop_square([5.0, 5.0, 0.0, 0.0])
-
-
-def test_crop_puts_the_square_corners_on_the_input_corners(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
-    rng = np.random.default_rng(0)
-    image = rng.integers(0, 256, (300, 400, 3), dtype=np.uint8)
-
-    pixels = accuracy.crop(image, 10.0, 20.0, 256.0)
-
-    assert (pixels.shape, pixels.dtype) == ((256, 256, 3), np.float32)
-    np.testing.assert_allclose(pixels, image[20:276, 10:266] / np.float32(255), atol=1e-6)
-
-
-def test_crop_scales_bilinearly_and_repeats_the_image_edge_outside_it(load_script: Callable[[str], ModuleType]) -> None:
-    accuracy = load_script("accuracy")
-    # Each pixel's value is its column.
-    image = np.repeat(np.arange(200, dtype=np.uint8)[None, :, None], 3, axis=2).repeat(300, axis=0)
-
-    # A 512 px square halves the image: input column u reads image column 2u, and columns past 199 repeat it.
-    pixels = accuracy.crop(image, 0.0, 0.0, 512.0) * 255
-
-    np.testing.assert_allclose(pixels[0, [0, 50, 99], 0], [0, 100, 198], atol=1e-3)
-    np.testing.assert_allclose(pixels[:, 100:, :], 199, atol=1e-3)
-
-
 def test_keypoints_map_the_coco_landmarks_from_the_crop_to_the_image(load_script: Callable[[str], ModuleType]) -> None:
     accuracy = load_script("accuracy")
     records = np.zeros((39, 5), np.float32)
