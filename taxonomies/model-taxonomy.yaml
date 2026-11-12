@@ -132,6 +132,7 @@ architectures:
     allowed_model_types: [vlm]
   midas:
     display_name: MiDaS
+    description: Estimates relative depth from a single image.
     paradigm: cnn
     allowed_model_types: [vision]
   mistral:
