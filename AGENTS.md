@@ -50,7 +50,7 @@ See [Ship supporting files](docs/adding-a-model.md#ship-supporting-files).
 A tooling change reruns a stage only when the changed file is in that stage's
 tooling list in `fingerprints.py`. No shared file is a conversion input: a
 conversion reruns only when the model's checkpoint, `convert.py` and the
-modules it imports, `requirements-convert.txt`, or `conversion.outputs`
+modules it imports, conversion requirements, or `conversion.outputs`
 change. Raise `FINGERPRINT_VERSION` in `conversion.py` in the change that
 makes shared tooling convert the same inputs to a different model. Planning
 then fails until Vulcan Model Convert reruns for every conversion-backed model.
@@ -377,6 +377,14 @@ Conventions the code relies on:
 
 ## Model browser
 
+The default Cards overview groups available models by their existing architecture
+ID. Each architecture in `taxonomies/model-taxonomy.yaml` requires a short
+`description` that covers the whole family, without size-specific claims. Keep
+family text there; derive membership, tasks and hero selection from filtered
+models. Family cards select the existing Model family filter; search and Table
+continue to show individual models. This is catalog metadata: do not add taxonomy
+or browser files to conversion, compile or benchmark fingerprints.
+
 Before changing `artifact-browser/`, read its
 [design context](artifact-browser/DESIGN.md) and
 [README](artifact-browser/README.md#how-the-page-is-built). What users see is in
@@ -441,7 +449,8 @@ outputs. Start from the template in
    numbered list, give the class-index mapping, and name the Neat decoder that
    handles the outputs when one exists.
 5. `## Building applications`: the `BUILDING_APPLICATIONS` text from
-   `tools/model_registry/documentation.py`, unchanged.
+   `tools/model_registry/documentation.py`, unchanged. LLiMa deployments
+   (`interface.format: huggingface`) use `GENAI_BUILDING_APPLICATIONS` instead.
 
 Write the README for an application developer:
 
