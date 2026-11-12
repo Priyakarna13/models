@@ -1,4 +1,4 @@
-# Published registry runs of revision 7850b296 (orchestrator 43139889090), CPU float decode.
+# Published registry runs of revision 74b36629 (orchestrator 43248379467), CPU float decode.
 conversion:
   run_tests: true
 compile:
@@ -52,8 +52,8 @@ performance:
   run_tests: true
   expected:
     w16a16:
-      throughput_fps: 173.03521194969645
+      throughput_fps: 173.95288294753567
     w8a8_w16a16:
-      throughput_fps: 202.95891725884994
+      throughput_fps: 203.3314177412128
     w8a8_mixed_w16a16:
-      throughput_fps: 173.50095728562357
+      throughput_fps: 173.08666937241495
