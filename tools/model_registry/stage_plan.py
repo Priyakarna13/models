@@ -341,7 +341,6 @@ def plan_stages(
                 stages.append(stage)
         if stages:
             benchmark_entries.append({**entry, "stages": stages})
-    benchmark_entries = [item for item in benchmark_entries if not item.get("build_on_demand", False)]
     return {
         "compile": {"include": compile_entries},
         "benchmark": {"include": benchmark_entries},
