@@ -127,7 +127,9 @@ selection, top-k, score threshold, sample count, duration and MLA layer and stag
 in each model's `scripts/performance.py`. Every benchmarked model must include that standalone
 script so customers can copy it and reproduce CI in the PyNeat environment,
 with `tools/model_report` on `PYTHONPATH` and without `model_registry` imports
-or YAML configuration. Keep its `--mpk` and `--output` CLI. A model with accuracy datasets
+or YAML configuration. Keep its `--mpk` and `--output` CLI. A model that declares `resources`
+also takes `--resources <directory>`, which the runner always passes, even when the script reads
+none of them, as with a license. A model with accuracy datasets
 also takes `--dataset <source id>=<directory>`, as `accuracy.py` does, and benchmarks one
 `random.Random(0)` image from it, letterboxed into a 1280x720 RGB frame by code inside the
 script and passed in `BenchmarkOptions.inputs` on the image route, so Neat preprocessing is
@@ -288,6 +290,7 @@ in the same commit.
 | a field of the model report | `schemas/model-report.schema.json`, `tools/model_report/__init__.py`, the checks in `report_publication.py`, and the browser code that reads the report |
 | a model's category: `model_type`, `tasks`, `modalities`, or the family in `architecture.id` | pick existing IDs from `taxonomies/model-taxonomy.yaml`; when none fits, add the entry there and follow [Model categorization taxonomy](docs/model-taxonomy.md) |
 | a model's `license` | set `spdx` to an ID in `artifact-browser/licenses.json`. When the upstream license is not listed, add it there, with `downloadable: false` if it forbids redistribution. No fingerprint includes the license, so the change reruns nothing ([license](docs/metadata-schema.md#license)) |
+| a downloadable ONNX model, its `upstream` pin, or its license | its `license` resource: the upstream license file pinned by commit and installed under `licenses/`, one resource per license the weights carry, and `--resources` in its `performance.py`. A resource is a compile input, so the pin recompiles the model ([license files in the package](docs/metadata-schema.md#license-files-in-the-package)) |
 | the model folder layout | `MODEL_FOLDER_ENTRIES` in `model.py` and [the directory step](docs/adding-a-model.md#2-create-the-directory) |
 | a model script | the model's test of that behavior under `tests/build/` or `tests/benchmark/` |
 | what a model converts, compiles, or measures on a DevKit | its `tests/tests.yaml` entries, their `expected` values, and the stage test files they run |

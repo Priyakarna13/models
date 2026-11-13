@@ -324,7 +324,7 @@ def test_validation_rejects_a_resource_outside_the_source_policy(command: str, m
 
 
 def test_fetch_resources_prints_nothing_for_a_model_without_resources(capsys, tmp_path: Path) -> None:
-    assert main(["fetch-resources", str(ROOT / "models" / "resnet_50"), "--output-dir", str(tmp_path / "out")]) == 0
+    assert main(["fetch-resources", str(ROOT / "models" / "whisper_small"), "--output-dir", str(tmp_path / "out")]) == 0
     assert capsys.readouterr().out == ""
 
 

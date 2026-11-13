@@ -220,7 +220,10 @@ non-blank frame.
 
 A model whose application also reads files beyond its MPKs, such as Supertonic's
 text models and voices, declares them as `resources` in `model.yaml`, and its
-script takes `--resources <directory>`. For a standalone run, fetch them in the
+script takes `--resources <directory>`. The runner passes the directory to
+every model that declares resources, so a model whose only resource is its
+[license](metadata-schema.md#license-files-in-the-package) takes the argument
+and reads nothing from it. For a standalone run, fetch them in the
 layout the package installs, or extract the package ZIP to the same effect, and
 install the model's `scripts/requirements-performance.txt` beside PyNeat's
 environment, as the stage does:
