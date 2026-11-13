@@ -16,6 +16,34 @@ from model_registry.model import load_model as load_metadata
 MODEL_ID = "efficientsam3_repvit_m"
 
 
+def test_position_encoding_preserves_normalized_coordinates(load_script: Callable[[str], ModuleType]) -> None:
+    pytest.importorskip("torch")
+    surgery = load_script("surgery")
+    small, original = (surgery.position_encoding(grid).numpy() for grid in (48, 72))
+    assert small.shape == (1, 256, 48, 48)
+    assert original.shape == (1, 256, 72, 72)
+    # Every second position at grid 48 and third position at grid 72 share the same normalized coordinates.
+    np.testing.assert_allclose(small[:, :, 1::2, 1::2], original[:, :, 2::3, 2::3], rtol=1e-6, atol=1e-6)
+    angle = np.arange(1, 49) / 48 * (2 * np.pi)
+    np.testing.assert_allclose(small[0, 0, :, 0], np.sin(angle), rtol=1e-5, atol=5e-7)
+    np.testing.assert_allclose(small[0, 128, 0, :], np.sin(angle), rtol=1e-5, atol=5e-7)
+
+
+def test_export_rejects_a_reduced_conversion_reference(
+    tmp_path: Path, load_script: Callable[[str], ModuleType]
+) -> None:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("onnxsim")
+    surgery = load_script("surgery")
+    source = tmp_path / "weights.pth"
+    torch.save(
+        {"settings": {"grid": 48}, "assets": dict.fromkeys(surgery.RUNTIME_FILES, b"fixture"), "cases": []}, source
+    )
+
+    with pytest.raises(ValueError, match="conversion must preserve the upstream 72x72 token grid"):
+        surgery.export_model(source, tmp_path / "model.onnx")
+
+
 @pytest.mark.parametrize(
     ("case", "fuse_qkv"),
     [

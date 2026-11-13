@@ -4,19 +4,18 @@ The sam3 package builds SAM 3's text encoder, neck, encoder, decoder and heads; 
 trunk. The Stage 1 checkpoint supplies SAM 3's weights; the fine-tuned student supplies the trunk and neck.
 The student image encoder around the trunk is written here after SimonZeng7108/efficientsam3 at
 bd0936c788fed8d51fa799437f05abd97b401b06, which publishes no package. That student resamples the trunk's
-features to a 72x72 grid of image tokens (embed_size=72 in sam3/sam3/model_builder.py); this model resamples
-them to 48x48 instead, so it returns 192x192 mask logits where the upstream model returns 288x288.
+features to a 72x72 grid of image tokens (embed_size=72 in sam3/sam3/model_builder.py), returning 288x288 masks.
 
 No graph is changed or exported here. The bundle holds the assembled model's state dict, its tokenizer assets,
 its position encoding at the token grid, the settings surgery.py needs to rebuild it, and the PyTorch model's
-outputs on four synthetic cases. surgery.py builds the graph to compile from the weights, without sam3 or timm,
-and must reproduce those outputs. The upstream model is built at the same 48x48 grid, so that check proves the
-compiled graph faithful at grid 48, not equal to the upstream grid-72 model.
+outputs on four synthetic cases at that upstream grid. surgery.py checks its reconstruction against these outputs
+before applying the deployment grid reduction. Compiler-side grid changes do not require reconversion.
 """
 
 import argparse
 import gzip
 import json
+import math
 import tempfile
 from pathlib import Path
 
@@ -35,9 +34,8 @@ BACKBONE = "efficientsam3_repvit.pt"
 BACKBONE_MODULES = ("backbone.vision_backbone.trunk.", "backbone.vision_backbone.convs.")
 TRUNK_PREFIX = "backbone.vision_backbone.trunk.model.backbone.model."
 SOURCE = ("file_set", CHECKPOINT, [CHECKPOINT, BACKBONE, "vocab.json", "merges.txt"])
-# The student encoder resamples the trunk's 32x downsampled features to this grid of image tokens. The
-# upstream student uses 72; 48 makes the mask logits 4 * 48 = 192 pixels square instead of 288.
-GRID = 48
+# Preserve the upstream student's token grid in the weights and reference cases.
+GRID = 72
 # CLIP's Hugging Face vocabulary names the special tokens differently from sam3's tokenizer.
 SPECIAL_TOKENS = {"<|startoftext|>": "<start_of_text>", "<|endoftext|>": "<end_of_text>"}
 # Synthetic images with single-token, two-token and three-token prompts.
@@ -211,6 +209,11 @@ def stock_settings(stock):
 
     encoder, decoder, scoring = stock.transformer.encoder, stock.transformer.decoder, stock.dot_prod_scoring
     head, language = stock.segmentation_head, stock.backbone.language_backbone.encoder
+    position = stock.backbone.vision_backbone.position_encoding
+    if (position.num_pos_feats, position.temperature, position.normalize, position.scale) != (
+        128, 10000, True, 2 * math.pi
+    ):
+        raise ValueError("Unexpected image position encoding")
     layers = [(layer, False) for layer in encoder.layers] + [(layer, True) for layer in stock.geometry_encoder.encode]
     for layer, geometry in layers:
         expected = (True, not geometry, geometry, False, "relu")

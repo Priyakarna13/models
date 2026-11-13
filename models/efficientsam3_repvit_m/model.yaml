@@ -27,8 +27,8 @@ upstream:
 # Its MobileCLIP-S0 text encoder is not loaded. requirements-convert-nodeps.txt installs sam3 without its
 # dependencies; requirements-convert.txt pins those the converter uses, including the available iopath 0.1.9 wheel.
 conversion:
-  # The assembled upstream weights with the PyTorch model's outputs on four cases. surgery.py builds the graph to
-  # compile from them and exports the ONNX, so compiler adaptations do not rerun the conversion.
+  # The assembled upstream weights with grid-72 PyTorch reference cases. surgery.py validates the reconstruction,
+  # reduces the token grid to 48 and exports ONNX, so compiler adaptations do not rerun the conversion.
   outputs: [weights.pth]
   source:
     repository: Simon7108528/EfficientSAM3

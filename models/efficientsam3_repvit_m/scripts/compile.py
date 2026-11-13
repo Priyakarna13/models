@@ -2,10 +2,11 @@
 """Export EfficientSAM3 from its converted weights, split it, and compile its text encoder and image model into BF16
 MPKs.
 
-surgery.py builds the graph from the weights, exports it to ONNX and accepts it only if it reproduces the upstream
-PyTorch model's recorded outputs. The text encoder compiles first. The image model calibrates on the quantized
-encoder's features packed with each prompt's token mask, as the board runs them, and numerical fidelity compares
-the whole pipeline with the exported ONNX. Calibration takes the first images of the coco-2017 cal archive's seeded
+surgery.py checks its reconstruction against the upstream grid-72 PyTorch reference, then reduces the token grid
+to 48 and checks the ONNX export against PyTorch at that grid. The text encoder compiles first. The image model
+calibrates on the quantized encoder's features packed with each prompt's token mask, as the board runs them,
+and numerical fidelity compares the whole pipeline with the exported ONNX. Calibration takes the first images
+of the coco-2017 cal archive's seeded
 order and fidelity a later span; each image gets one COCO category prompt, spread over the 80 names.
 """
 

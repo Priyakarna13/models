@@ -4,8 +4,10 @@ build_graph re-expresses the upstream computation with four-dimensional token te
 constants. The token lookup runs as a one-hot MatMul in vocabulary chunks, because the MLA cannot gather from a
 49,408-row table. The neck's leading 1x1 and 2x2 transposed convs run on the trunk's 32x32 map before the resize, as
 1x1 convs and PixelShuffle; the instance head's 1x1 conv is folded into the mask queries; group norms are computed
-with 1x1 convs; BatchNorm and RepViT's branches are fused into their convs. export_model accepts the ONNX only if it
-reproduces the outputs convert.py recorded from the upstream PyTorch model.
+with 1x1 convs; BatchNorm and RepViT's branches are fused into their convs. Before reducing the upstream 72x72 token
+grid to 48x48, export_model checks the reconstructed graph against the upstream PyTorch reference cases. It then
+checks the exported ONNX against the reconstructed PyTorch model at the deployment grid. The grid change's accuracy
+impact is measured separately from numerical fidelity at a fixed grid.
 
 The compiler lowers Sin, Cos and Log through BF16 lookup tables. They occur only in the decoder:
 Sin and Cos build the sine query embedding from reference boxes (angles in [0, 2*pi]); Log builds the box
@@ -25,7 +27,8 @@ from calibration import CONTEXT, FEATURES, IMAGE_SIZE, VOCABULARY, one_hot, pack
 from onnx import helper, numpy_helper
 
 QUERIES = 200
-MASK_SIZE = 192
+GRID = 48
+MASK_SIZE = 4 * GRID
 RUNTIME_FILES = ("vocab.json", "merges.txt")
 
 TEXT_INPUT, TEXT_OUTPUT = "token_one_hot", "text_features"
@@ -240,15 +243,35 @@ def build_attention(weight, bias, output_weight, output_bias, heads, *, fuse_qkv
     return Attention().eval()
 
 
-def build_graph(weights):
-    """Return the computation to compile, built from the upstream weights convert.py bundled."""
+def position_encoding(grid):
+    """Recompute SAM 3's normalized sine encoding at the deployment grid, without resampling its values.
+
+    convert.py checks the upstream encoding's width, temperature, normalization and scale before bundling it.
+    """
+    import torch
+
+    coordinates = torch.arange(1, grid + 1, dtype=torch.float32)
+    coordinates = coordinates / (coordinates[-1] + 1e-6) * (2 * math.pi)
+    dimension = torch.arange(128, dtype=torch.float32)
+    frequency = 10000 ** (2 * (dimension // 2) / 128)
+    phase = coordinates[:, None] / frequency
+    encoded = torch.stack((phase[:, 0::2].sin(), phase[:, 1::2].cos()), dim=2).flatten(1)
+    y = encoded[:, None, :].expand(grid, grid, 128)
+    x = encoded[None, :, :].expand(grid, grid, 128)
+    return torch.cat((y, x), dim=2).permute(2, 0, 1)[None].contiguous()
+
+
+def build_graph(weights, *, grid=None):
+    """Reconstruct the model at its upstream grid, or at an explicit deployment grid."""
     import torch
     from torch import nn
     from torch.nn import functional as F
 
     state, settings = weights["state_dict"], weights["settings"]
-    eps, grid = settings["norm_eps"], settings["grid"]
-    _require(4 * grid == MASK_SIZE, f"token grid {grid}")
+    eps, source_grid = settings["norm_eps"], settings["grid"]
+    grid = source_grid if grid is None else grid
+    _require(grid > 0, f"token grid {grid}")
+    _require(tuple(weights["position_encoding"].shape) == (1, 256, source_grid, source_grid), "position encoding shape")
     grid_tokens = grid * grid
 
     def constant(value):
@@ -691,7 +714,7 @@ def build_graph(weights):
             vision, geometry = "backbone.vision_backbone", "geometry_encoder"
             self.text = TextEncoder("backbone.language_backbone")
             self.trunk, self.neck = ImageTrunk(f"{vision}.trunk.model"), Neck(vision)
-            pos = weights["position_encoding"]
+            pos = weights["position_encoding"] if grid == source_grid else position_encoding(grid)
             self.register_buffer("pos", pos.permute(0, 2, 3, 1).reshape(1, 1, grid_tokens, 256).clone())
             cls = F.linear(
                 state[f"{geometry}.cls_embed.weight"],
@@ -797,7 +820,7 @@ def validate_export(path: Path) -> None:
 
 
 def compare_outputs(expected, actual, valid) -> dict[str, float]:
-    """Return one case's largest errors against the upstream model, failing beyond UPSTREAM_TOLERANCE.
+    """Return one case's largest errors against its FP32 reference, failing beyond UPSTREAM_TOLERANCE.
 
     Text features are compared at the prompt's tokens only; the image model masks the padding positions.
     """
@@ -815,12 +838,37 @@ def compare_outputs(expected, actual, valid) -> dict[str, float]:
     errors = {"text_features": float(text), **image_differences(batched(expected), batched(actual))}
     failed = {name: value for name, value in errors.items() if not value <= UPSTREAM_TOLERANCE[name]}
     if failed:
-        raise ValueError(f"ONNX differs from the upstream model beyond tolerance: {failed}")
+        raise ValueError(f"Model differs from its FP32 reference beyond tolerance: {failed}")
     return errors
 
 
-def check_against_upstream(cases, path: Path) -> list[dict[str, float]]:
-    """Run the export on the cases convert.py recorded and compare it with the upstream model's outputs."""
+def pytorch_outputs(graph, case):
+    """Run one recorded image and prompt through the reconstructed FP32 model."""
+    import torch
+
+    prompt_tokens = tokens(case["prompt"])
+    with torch.no_grad():
+        features = graph.text(torch.from_numpy(one_hot(prompt_tokens)))
+        detections, masks = graph.image(case["pixel_values"], torch.from_numpy(packed(features.numpy(), prompt_tokens)))
+    return {
+        "text_features": features[0].numpy(),
+        "scores": detections[0, :, 4].numpy(),
+        "boxes_px": detections[0, :, :4].numpy(),
+        "mask_logits": masks[0].numpy(),
+    }
+
+
+def check_against_upstream(cases, graph) -> list[dict[str, float]]:
+    """Check the reconstruction at the untouched upstream grid before deployment adaptations."""
+    errors = []
+    for case in cases:
+        expected = {name: case[name].numpy() for name in ("text_features", "scores", "boxes_px", "mask_logits")}
+        errors.append(compare_outputs(expected, pytorch_outputs(graph, case), len(tokens(case["prompt"]))))
+    return errors
+
+
+def check_export(cases, path: Path) -> list[dict[str, float]]:
+    """Check ONNX against the reconstructed PyTorch model at the same deployment grid."""
     import onnxruntime as ort
 
     options = ort.SessionOptions()
@@ -855,7 +903,7 @@ def write_runtime_files(assets: dict[str, bytes], directory: Path) -> None:
 
 
 def export_model(weights_path: Path, output: Path) -> Path:
-    """Export the graph built from the converted weights to one folded ONNX that matches the upstream model."""
+    """Check the upstream reconstruction, reduce the token grid, and export the deployment ONNX."""
     import torch
     from onnxsim import simplify
 
@@ -863,8 +911,17 @@ def export_model(weights_path: Path, output: Path) -> Path:
     weights = torch.load(weights_path, map_location="cpu", weights_only=True)
     write_runtime_files(weights.pop("assets"), output.parent / "tokenizer")
     cases = weights.pop("cases")
-    graph = build_graph(weights)
+    _require(weights["settings"]["grid"] == 72, "conversion must preserve the upstream 72x72 token grid")
+    upstream = build_graph(weights)
+    for case, errors in zip(cases, check_against_upstream(cases, upstream), strict=True):
+        print(f"Upstream grid 72, prompt {case['prompt']!r}: {errors}")
+    del upstream
+    graph = build_graph(weights, grid=GRID)
     del weights
+    deployment_cases = [
+        {**case, **{name: torch.from_numpy(value) for name, value in pytorch_outputs(graph, case).items()}}
+        for case in cases
+    ]
     prompt_tokens = tokens(cases[0]["prompt"])
     example = (
         torch.from_numpy(one_hot(prompt_tokens)),
@@ -893,8 +950,11 @@ def export_model(weights_path: Path, output: Path) -> Path:
     onnx.save(fold_resize_sizes(model), output)
     del model
     validate_export(output)
-    for case, errors in zip(cases, check_against_upstream(cases, output), strict=True):
-        print(f"Prompt {case['prompt']!r}: " + ", ".join(f"{name} {value:.2e}" for name, value in errors.items()))
+    for case, errors in zip(deployment_cases, check_export(deployment_cases, output), strict=True):
+        print(
+            f"Deployment grid {GRID}, prompt {case['prompt']!r}: "
+            + ", ".join(f"{name} {value:.2e}" for name, value in errors.items())
+        )
     return output
 
 
