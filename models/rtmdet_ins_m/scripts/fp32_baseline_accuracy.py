@@ -45,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     detections = accuracy.evaluate(dataset, records, categories, infer)
     metrics = accuracy.score(ground_truth, detections, image_ids)
     rounded = {name: round(value, 4) for name, value in metrics.items()}
-    args.output.write_text(json.dumps({"images": len(image_ids), "metrics": rounded}, indent=2) + "\n", encoding="utf-8")
+    report = {"images": len(image_ids), "metrics": rounded}
+    args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(rounded))
     return 0
 

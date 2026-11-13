@@ -84,7 +84,8 @@ def validate_export(path):
         raise ValueError(f"Expected the input and outputs {list(INTERFACE)}, found {[value.name for value in values]}")
     for value in values:
         tensor = value.type.tensor_type
-        if tensor.elem_type != onnx.TensorProto.FLOAT or [d.dim_value for d in tensor.shape.dim] != INTERFACE[value.name]:
+        shape = [d.dim_value for d in tensor.shape.dim]
+        if tensor.elem_type != onnx.TensorProto.FLOAT or shape != INTERFACE[value.name]:
             raise ValueError(f"Unexpected dtype or shape for {value.name}")
     if any(tensor.data_location == onnx.TensorProto.EXTERNAL for tensor in model.graph.initializer):
         raise ValueError("This conversion workflow requires one self-contained ONNX file")
@@ -121,9 +122,9 @@ def build_upstream(checkpoint):
     sys.meta_path.insert(0, _CompiledOpsStub())
     import mmdet
     import torch
-    from mmengine.config import Config
     from mmdet.registry import MODELS
     from mmdet.utils import register_all_modules
+    from mmengine.config import Config
 
     if mmdet.__version__ != MMDET:
         raise RuntimeError(f"Expected MMDetection {MMDET}, found {mmdet.__version__}")

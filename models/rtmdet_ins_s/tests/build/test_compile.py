@@ -84,11 +84,17 @@ def _image_graph(surgery: ModuleType, shared_weight: bool = False) -> onnx.Model
             continue
         initializers.append(onnx.numpy_helper.from_array(np.asarray(shape, np.int64), f"{name}_shape"))
         nodes.append(helper.make_node(
-            "ConstantOfShape", [f"{name}_shape"], [name], value=helper.make_tensor("zero", onnx.TensorProto.FLOAT, [1], [0.0])
+            "ConstantOfShape",
+            [f"{name}_shape"],
+            [name],
+            value=helper.make_tensor("zero", onnx.TensorProto.FLOAT, [1], [0.0]),
         ))
     if shared_weight:
         nodes.append(helper.make_node("Identity", ["weight"], ["weight_copy"]))
-    outputs = [helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, shape) for name, shape in surgery.OUTPUT_SHAPES.items()]
+    outputs = [
+        helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, shape)
+        for name, shape in surgery.OUTPUT_SHAPES.items()
+    ]
     if shared_weight:
         outputs.append(helper.make_tensor_value_info("weight_copy", onnx.TensorProto.FLOAT, [80, 3, 8, 8]))
     inputs = [helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, surgery.INPUT_SHAPE)]

@@ -69,7 +69,8 @@ def test_mask_logits_match_the_dynamic_convolutions(accuracy_script: ModuleType)
     for index in range(2):
         w0, w1, w2, b0, b1, b2 = np.split(kernels[index], np.cumsum(accuracy_script.KERNEL_SPLITS)[:-1])
         ys, xs = np.mgrid[0:80, 0:80] * 8.0
-        coords = np.stack([(priors[index, 0] - xs) / (priors[index, 2] * 8), (priors[index, 1] - ys) / (priors[index, 2] * 8)])
+        scale = priors[index, 2] * 8
+        coords = np.stack([(priors[index, 0] - xs) / scale, (priors[index, 1] - ys) / scale])
         x = np.concatenate([coords, features[0].transpose(2, 0, 1)]).reshape(10, -1)
         x = np.maximum(w0.reshape(8, 10) @ x + b0[:, None], 0)
         x = np.maximum(w1.reshape(8, 8) @ x + b1[:, None], 0)
