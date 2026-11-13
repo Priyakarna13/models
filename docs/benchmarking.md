@@ -220,7 +220,10 @@ non-blank frame.
 
 A model whose application also reads files beyond its MPKs, such as Supertonic's
 text models and voices, declares them as `resources` in `model.yaml`, and its
-script takes `--resources <directory>`. For a standalone run, fetch them in the
+script takes `--resources <directory>`. The runner passes the directory to
+every model that declares resources, so a model whose only resource is its
+[license](metadata-schema.md#license-files-in-the-package) takes the argument
+and reads nothing from it. For a standalone run, fetch them in the
 layout the package installs, or extract the package ZIP to the same effect, and
 install the model's `scripts/requirements-performance.txt` beside PyNeat's
 environment, as the stage does:
@@ -268,6 +271,15 @@ model's; component numbers are never added together.
 Throughput cannot exceed `1 / (1 / backbone_fps + 1 / decoder_fps)` for
 component rates measured on the same board, because the MLA runs one MPK at a
 time. A result well below that rate points at the pipeline, not the model.
+
+A model that carries state from one input to the next cannot give every stage
+a different input. EdgeTAM tracks an object through a video, and a frame's
+memory attention reads the memory the previous frame wrote. Its script clicks
+an annotated object on the first frame of one DAVIS 2017 val sequence, then
+measures tracked frames on repeats of that frame. In the
+throughput pass only the image encoder works ahead, on the next frames, while
+one thread runs the memory attention, the mask decoder, the CPU steps and the
+memory encoder in order.
 
 ### Independent components
 

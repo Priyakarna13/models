@@ -45,6 +45,9 @@ export const ACCURACY_METRIC_LABELS = {
   dota_obb_map: "DOTA mAP 50–95",
   keypoint_repeatability: "Repeatability",
   homography_accuracy: "Homography accuracy",
+  jf_mean: "J&F",
+  j_mean: "J (region overlap)",
+  f_mean: "F (boundary)",
   pose_auc_5: "Pose AUC@5°",
   pose_auc_10: "Pose AUC@10°",
   pose_auc_20: "Pose AUC@20°",
@@ -57,6 +60,7 @@ export const ACCURACY_METRIC_LABELS = {
   d1_all: "D1-all",
   abs_rel: "AbsRel",
   delta1: "δ1",
+  miou: "mIoU",
 };
 
 // Accuracy metrics with non-default units, directions or display settings; matches metrics.json.
