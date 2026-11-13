@@ -2,19 +2,28 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import yaml
 from jsonschema import Draft202012Validator
 
-from .errors import ValidationError
+from .artifact import deployment_files, verify_artifact
+from .errors import SourcePolicyError, ValidationError
 from .fetch import Fetcher, sha256_file
-from .model import composition_document, load_and_validate_model
-from .source import source_identity
+from .mla_stage_simulation import SIMULATION_FILE
+from .model import _expand_source, load_and_validate_model, mpk_filename, source_members
+from .runner_approval import runner_provenance
+from .runtime_files import read_runtime_files
+from .source import SourceSpec, source_identity
 
+# scripts/compile.py writes the profile's numerical fidelity here; the package run publishes it.
+FIDELITY_FILE = "fidelity.json"
+# What the compile writes about the whole profile beside its components; each package carries them to publication.
+PROFILE_RESULT_FILES = (FIDELITY_FILE, SIMULATION_FILE)
 
 def _load_json(path: Path, description: str) -> dict[str, Any]:
     try:
@@ -35,13 +44,111 @@ def _zip_info(name: str) -> zipfile.ZipInfo:
     return info
 
 
-def _add_bytes(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
-    archive.writestr(_zip_info(name), payload)
-
-
 def _add_file(archive: zipfile.ZipFile, name: str, path: Path) -> None:
-    with path.open("rb") as stream:
-        archive.writestr(_zip_info(name), stream.read())
+    info = _zip_info(name)
+    info.file_size = path.stat().st_size
+    with path.open("rb") as source, archive.open(info, "w") as target:
+        shutil.copyfileobj(source, target)
+
+
+def _link_or_copy(source: str, destination: str) -> str:
+    """Reuse local payloads without copying multi-gigabyte weights when possible."""
+    try:
+        os.link(source, destination)
+        return destination
+    except OSError:
+        return shutil.copyfile(source, destination)
+
+
+def package_resources(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """model.yaml's resources, each with its expanded source; every package of the model installs all of them."""
+    return [
+        {"id": resource_id, "source": _resource_source(resource["source"]), "install_path": resource["install_path"]}
+        for resource_id, resource in sorted(model.get("resources", {}).items())
+    ]
+
+
+def _resource_source(source: dict[str, Any]) -> dict[str, Any]:
+    """Expand a resource's source like a compile source. Nothing opens a resource file, so its file set names no
+    main file: the expansion gets an empty one and drops it."""
+    if "files" not in source:
+        return _expand_source(source)
+    expanded = _expand_source({**source, "main_file": ""})
+    del expanded["entrypoint"]
+    return expanded
+
+
+def _reject_overlapping_paths(paths: list[str]) -> None:
+    """A package path may appear once and may not sit below another packaged file."""
+    occupied: set[str] = set()
+    for path in paths:
+        if path in occupied:
+            raise ValidationError(f"package path is declared more than once: {path}")
+        occupied.add(path)
+    for path in sorted(occupied):
+        if any(parent.as_posix() in occupied for parent in PurePosixPath(path).parents):
+            raise ValidationError(f"package paths overlap: {path}")
+
+
+def _resource_paths(resource: dict[str, Any]) -> list[str]:
+    """Where a resource's files land in the package, from its declaration alone."""
+    install_path = PurePosixPath(resource["install_path"])
+    if resource["source"]["type"] == "file":
+        return [install_path.as_posix()]
+    return [(install_path / member["path"]).as_posix() for member in resource["source"]["files"]]
+
+
+def validate_package_resources(model: dict[str, Any]) -> None:
+    """Hold each resource's source to the compile source's rules, and their package paths to the package's,
+    so a bad one fails before the compile."""
+    resources = package_resources(model)
+    for resource in resources:
+        source = resource["source"]
+        try:
+            source_members(source)
+        except (KeyError, TypeError, ValueError, SourcePolicyError) as exc:
+            raise ValidationError(f"{model['id']}: resource {resource['id']}: source policy: {exc}") from exc
+    if not resources:
+        return
+    resource_paths = [path for resource in resources for path in _resource_paths(resource)]
+    # Every package of the model installs all resources beside its components' archives.
+    archives_by_profile = [
+        [mpk_filename(model, profile["id"], item["id"]) for item in profile["components"]]
+        for profile in model.get("build_profiles", [])
+    ]
+    for archives in archives_by_profile or [[]]:
+        try:
+            _reject_overlapping_paths([*archives, *resource_paths])
+        except ValidationError as exc:
+            raise ValidationError(f"{model['id']}: resources: {exc}") from exc
+
+
+def fetch_package_resources(model: dict[str, Any], output_dir: Path, cache_dir: Path | None = None) -> Path | None:
+    """Lay out the model's resources as its package installs them; None for a model without resources."""
+    resources = package_resources(model)
+    if not resources:
+        return None
+    fetcher = Fetcher(cache_dir)
+    for resource in resources:
+        for name, path in _resource_files(fetcher, resource)[1]:
+            destination = output_dir / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+    return output_dir
+
+
+def _resource_files(fetcher: Fetcher, resource: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, Path]]]:
+    """Fetch one pinned resource and place its files under install_path."""
+    source = resource["source"]
+    mappings = [source] if source["type"] == "file" else source["files"]
+    members = [SourceSpec.from_mapping(mapping) for mapping in mappings]
+    local = [fetcher.fetch(member)[0] for member in members]
+    files = list(zip(_resource_paths(resource), local, strict=True))
+    entry = {
+        "id": resource["id"], "paths": [name for name, _ in files], "source_sha256": source_identity(source),
+        "size_bytes": sum(member.size_bytes for member in members),
+    }
+    return entry, files
 
 
 def assemble_package(
@@ -59,9 +166,11 @@ def assemble_package(
     output_root = Path(output_dir).expanduser().resolve()
     model_dir = root / "models" / model_id
     model = load_and_validate_model(model_dir, root / "schemas" / "model.schema.json")
+    from .conversion import apply_selection
+
+    apply_selection(model, root=root)
     profiles = {item["id"]: item for item in model["build_profiles"]}
     packages = {item["id"]: item for item in model["packages"]}
-    resources = {item["id"]: item for item in model["resources"]}
     components = {item["id"]: item for item in model["components"]}
     compositions = {item["id"]: item for item in model["compositions"]}
     if build_profile_id not in profiles:
@@ -72,6 +181,8 @@ def assemble_package(
     if build_profile_id not in package["build_profiles"]:
         raise ValidationError(f"package {model_id}/{package_id} does not support build profile {build_profile_id}")
 
+    native_deployment = None
+    native_files: list[dict[str, Any]] = []
     component_entries: list[dict[str, Any]] = []
     component_files: list[tuple[str, Path]] = []
     provenance_identity: dict[str, str] | None = None
@@ -95,21 +206,37 @@ def assemble_package(
             field: str(provenance.get(field) or "")
             for field in ("git_sha", "environment", "compiler_version", "compiler_label", "target")
         }
+        current_identity.update(runner_provenance(provenance))
+        if provenance.get("llima_version"):
+            current_identity["llima_version"] = str(provenance["llima_version"])
         if provenance_identity is None:
             provenance_identity = current_identity
         elif current_identity != provenance_identity:
             raise ValidationError(f"{result_dir}: component provenance is incompatible with its package siblings")
 
-        archive_name = result.get("archive")
+        native = components[component_id]["interface"]["format"] == "huggingface"
+        archive_name = result.get("manifest" if native else "archive")
         if not isinstance(archive_name, str) or not archive_name:
             raise ValidationError(f"{result_dir}: compile result archive must be a non-empty string")
         component_archive = result_dir / archive_name
         if component_archive.parent != result_dir or not component_archive.is_file():
             raise ValidationError(f"{result_dir}: component archive is missing")
         digest, size = sha256_file(component_archive)
+        if native:
+            verified = verify_artifact(result_dir)
+            size = verified["size_bytes"]
+            native_files = deployment_files(_load_json(component_archive, "deployment manifest"))
         if digest != result.get("sha256") or size != result.get("size_bytes"):
             raise ValidationError(f"{result_dir}: component archive does not match compile-result.json")
-        package_path = f"components/{component_id}/{archive_name}"
+        if native:
+            if package["composition"] not in compositions or compositions[package["composition"]]["type"] != "single":
+                raise ValidationError("A LLiMa package uses a single deployment composition")
+            if len(package["components"]) != 1 or model.get("resources"):
+                raise ValidationError("A LLiMa package contains one complete deployment and no extra resources")
+            if result.get("format") != "llima":
+                raise ValidationError("Hugging Face compile result must declare format llima")
+            native_deployment = result_dir / "deployment"
+        package_path = "." if native else archive_name
         component_files.append((package_path, component_archive))
         publication_path = result_dir / "registry-publication.json"
         compile_run_id = None
@@ -122,6 +249,7 @@ def assemble_package(
             {
                 "id": component_id,
                 "role": components[component_id]["role"],
+                **({"format": "llima"} if native else {}),
                 "path": package_path,
                 "sha256": digest,
                 "size_bytes": size,
@@ -131,69 +259,31 @@ def assemble_package(
         )
 
     composition = compositions[package["composition"]]
-    composition_files: list[tuple[str, bytes]] = []
     if composition["type"] == "single":
         packaged_composition = composition
     else:
-        composition_path = "composition/composition.yaml"
-        composition_bytes = yaml.safe_dump(composition_document(composition), sort_keys=False).encode()
-        composition_files.append((composition_path, composition_bytes))
-        packaged_composition = {
-            "id": composition["id"],
-            "type": composition["type"],
-            "path": composition_path,
-        }
+        packaged_composition = {"id": composition["id"], "type": composition["type"]}
 
-    fetcher = Fetcher(resource_cache_dir)
+    profile_dir = compiled / model_id / build_profile_id
+    extra_files = [(item["path"], profile_dir / item["path"]) for item in read_runtime_files(profile_dir)]
     resource_entries: list[dict[str, Any]] = []
-    resource_files: list[tuple[str, Path]] = []
-    occupied_paths = {name for name, _ in (*component_files, *composition_files)} | {"manifest.json"}
-    for resource_id in sorted(package["resources"]):
-        resource = resources[resource_id]
-        source = resource["source"]
-        path, _, digest, size = fetcher.fetch_source(source)
-        install_path = PurePosixPath(resource["install_path"]).as_posix()
-        paths: list[str] = []
-        if source["type"] == "file":
-            paths.append(install_path)
-            files = [(install_path, path)]
-        else:
-            source_root = path
-            for _ in PurePosixPath(source["entrypoint"]).parts:
-                source_root = source_root.parent
-            files = []
-            for member in source["files"]:
-                package_path = (PurePosixPath(install_path) / member["path"]).as_posix()
-                paths.append(package_path)
-                files.append((package_path, source_root / member["path"]))
-        for package_path, resource_path in files:
-            if package_path in occupied_paths:
-                raise ValidationError(f"package path is declared more than once: {package_path}")
-            occupied_paths.add(package_path)
-            resource_files.append((package_path, resource_path))
-        resource_entry = {
-            "id": resource_id,
-            "paths": paths,
-            "source_sha256": digest,
-            "size_bytes": size,
-        }
-        if "license" in resource:
-            resource_entry["license"] = resource["license"]
-        resource_entries.append(resource_entry)
-
-    installed_files = sorted(
-        [
-            *(
-                {"path": name, "sha256": sha256_file(path)[0], "size_bytes": path.stat().st_size}
-                for name, path in (*component_files, *resource_files)
-            ),
-            *(
-                {"path": name, "sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
-                for name, payload in composition_files
-            ),
-        ],
-        key=lambda item: item["path"],
-    )
+    resources = package_resources(model)
+    if resources:
+        fetcher = Fetcher(resource_cache_dir)
+        for resource in resources:
+            entry, files = _resource_files(fetcher, resource)
+            resource_entries.append(entry)
+            extra_files.extend(files)
+    _reject_overlapping_paths([name for name, _ in (*component_files, *extra_files)])
+    packaged_files = sorted((*component_files, *extra_files))
+    installed_files = [
+        {"path": name, "sha256": sha256_file(path)[0], "size_bytes": path.stat().st_size}
+        for name, path in packaged_files
+    ]
+    if native_deployment is not None:
+        if extra_files:
+            raise ValidationError("A LLiMa package ships its deployment folder and no runtime files")
+        installed_files = native_files
     manifest = {
         "model_id": model_id,
         "display_name": model["display_name"],
@@ -219,17 +309,38 @@ def assemble_package(
     manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
     package_dir = output_root / model_id / build_profile_id / "packages" / package_id
     package_dir.mkdir(parents=True, exist_ok=True)
+    for name in PROFILE_RESULT_FILES:
+        result_file = compiled / model_id / build_profile_id / name
+        if result_file.is_file():
+            shutil.copyfile(result_file, package_dir / name)
+    if native_deployment is not None:
+        deployment = package_dir / "deployment"
+        if deployment.resolve().is_relative_to(native_deployment.resolve()):
+            raise ValidationError("package output must be outside the compiled deployment")
+        if deployment.exists():
+            shutil.rmtree(deployment)
+        shutil.copytree(native_deployment, deployment, copy_function=_link_or_copy)
+        (deployment / "manifest.json").write_bytes(manifest_bytes)
+        result = {
+            "status": "success", "model_id": model_id, "package_id": package_id,
+            "build_profile_id": build_profile_id, "layout": "directory",
+            "manifest_path": "deployment/manifest.json",
+            "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "size_bytes": sum(item["size_bytes"] for item in installed_files),
+            "built_at": datetime.now(timezone.utc).isoformat(), "manifest": manifest,
+        }
+        (package_dir / "package-result.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return result
+    # Every archive package is a flat ZIP of the installed files; Vulcan rejects any other archive at promotion.
     bundle_name = f"{model_id}_{build_profile_id}_{package_id}.zip"
     bundle_path = package_dir / bundle_name
     temporary = package_dir / f".{bundle_name}.partial"
-    prefix = f"{model_id}/"
     try:
         with zipfile.ZipFile(temporary, "w", allowZip64=True, compression=zipfile.ZIP_STORED) as archive:
-            _add_bytes(archive, f"{prefix}manifest.json", manifest_bytes)
-            for name, path in sorted((*component_files, *resource_files)):
-                _add_file(archive, f"{prefix}{name}", path)
-            for name, payload in composition_files:
-                _add_bytes(archive, f"{prefix}{name}", payload)
+            for name, path in packaged_files:
+                _add_file(archive, name, path)
         temporary.replace(bundle_path)
     finally:
         temporary.unlink(missing_ok=True)

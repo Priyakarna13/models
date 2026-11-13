@@ -11,11 +11,11 @@ from typing import Any
 
 import numpy as np
 import onnxruntime as ort
-import yaml
 from afe.apis.defines import (
     CalibrationMethod,
     InputName,
     QuantizationParams,
+    SkipCalibration,
     bfloat16_scheme,
     gen2_target,
     quantization_scheme,
@@ -26,6 +26,7 @@ from afe.core.utils import convert_data_generator_to_iterable
 from afe.ir.tensor_type import ScalarType
 from afe.load.importers.general_importer import onnx_source
 from calibration import calibration_samples, fidelity_names, preprocess_image, read_images
+from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
 
 LOG = logging.getLogger("resnet_50.compile")
@@ -34,29 +35,45 @@ MODEL_ID = "resnet_50"
 COMPONENT_ID = "model"
 
 
-def _metadata() -> dict[str, Any]:
-    return yaml.safe_load((MODEL_DIR / "model.yaml").read_text(encoding="utf-8"))
+def _parameters(profile_id: str) -> dict[str, Any]:
+    model = load_metadata(MODEL_DIR)
+    profiles = [item for item in model["build_profiles"] if item["id"] == profile_id]
+    if len(profiles) != 1:
+        raise ValueError(f"expected exactly one build profile named {profile_id!r}")
+    return next(item["parameters"] for item in profiles[0]["components"] if item["id"] == COMPONENT_ID)
 
 
-def _variant(metadata: dict[str, Any], variant_id: str) -> dict[str, Any]:
-    matches = [item for item in metadata["build_profiles"] if item["id"] == variant_id]
-    if len(matches) != 1:
-        raise ValueError(f"expected exactly one build profile named {variant_id!r}")
-    profile = matches[0]
-    binding = next(item for item in profile["components"] if item["id"] == COMPONENT_ID)
-    return {**profile, "parameters": binding["parameters"]}
+def _quantization(precision: str) -> QuantizationParams:
+    """The compiler's activation and weight formats for a precision. Only INT8 activations need calibration."""
+    if precision == "w8a8":
+        return QuantizationParams(
+            # MSE picks each activation range from the calibration images.
+            calibration_method=CalibrationMethod.from_str("mse"),
+            activation_quantization_scheme=quantization_scheme(asymmetric=True, per_channel=False, bits=8),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+        )
+    if precision == "w8a16":
+        return QuantizationParams(
+            calibration_method=SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=quantization_scheme(asymmetric=False, per_channel=True, bits=8),
+            # Each token's activations get their own INT8 scale before an INT8-weight operation.
+            per_token_quant=True,
+        )
+    if precision == "w16a16":
+        return QuantizationParams(
+            calibration_method=SkipCalibration(),
+            activation_quantization_scheme=bfloat16_scheme(),
+            weight_quantization_scheme=bfloat16_scheme(),
+        )
+    raise ValueError(f"unsupported precision {precision!r}")
 
 
-def _fidelity_config(metadata: dict[str, Any], variant_id: str) -> dict[str, Any] | None:
-    return next((item for item in metadata["fidelity"] if variant_id in item["build_profiles"]), None)
-
-
-def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: Path | None) -> AfeModel:
-    variant = _variant(_metadata(), variant_id)
-    parameters = variant["parameters"]
+def compile_model(source: Path, component_dir: Path, profile_id: str, dataset: Path | None) -> AfeModel:
+    parameters = _parameters(profile_id)
     precision = str(parameters.get("precision"))
-    if variant["target"] != "modalix" or precision not in {"bf16", "int8"}:
-        raise ValueError("this recipe supports only the declared Modalix BF16 and INT8 variants")
+    if precision not in {"w16a16", "w8a8", "w8a16"}:
+        raise ValueError("this recipe supports only the declared BF16 and INT8 build profiles")
 
     input_name = str(parameters["input_name"])
     input_shape = tuple(int(value) for value in parameters["input_shape"])
@@ -67,31 +84,18 @@ def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: P
     importer = onnx_source(str(source), {input_name: input_shape}, {input_name: ScalarType.float32})
     loaded = load_model(importer, target=gen2_target)
 
-    if precision == "int8":
+    data = None
+    if precision == "w8a8":
         if dataset is None:
-            raise ValueError("the INT8 variant requires --dataset from dataset-registry")
+            raise ValueError("the INT8 build requires --dataset from dataset-registry")
         sample_count = int(parameters["calibration_samples"])
         LOG.info("Loading %d representative calibration samples", sample_count)
-        samples = calibration_samples(dataset, sample_count)
-        activation_scheme = quantization_scheme(asymmetric=True, per_channel=False, bits=8)
-        weight_scheme = quantization_scheme(asymmetric=False, per_channel=True, bits=8)
-    else:
-        # BF16 does not derive quantization ranges from representative data.
-        # The API still requires an iterable, so provide one deterministic sample.
-        samples = np.zeros((1, 224, 224, 3), dtype=np.float32)
-        activation_scheme = weight_scheme = bfloat16_scheme()
+        data = convert_data_generator_to_iterable(
+            DataGenerator({input_name: calibration_samples(dataset, sample_count)})
+        )
 
-    data = convert_data_generator_to_iterable(DataGenerator({input_name: samples}))
-    model_name = f"{MODEL_ID}_{variant_id}"
-    quantized = loaded.quantize(
-        data,
-        QuantizationParams(
-            calibration_method=CalibrationMethod.from_str("mse"),
-            activation_quantization_scheme=activation_scheme,
-            weight_quantization_scheme=weight_scheme,
-        ),
-        model_name=model_name,
-    )
+    model_name = f"{MODEL_ID}_{profile_id}"
+    quantized = loaded.quantize(data, _quantization(precision), model_name=model_name)
     quantized.save(model_name=model_name, output_directory=str(component_dir))
     saved = AfeModel.load(model_name=f"{model_name}.sima", network_directory=str(component_dir))
     saved.compile(output_path=str(component_dir))
@@ -104,10 +108,10 @@ def compile_model(source: Path, component_dir: Path, variant_id: str, dataset: P
 
 
 def measure_fidelity(
-    source: Path, candidate: AfeModel, dataset: Path, config: dict[str, Any], variant_id: str
+    source: Path, candidate: AfeModel, dataset: Path, config: dict[str, Any], profile_id: str
 ) -> dict[str, Any]:
-    """Compare the quantized graph's logits with the ONNX source on the declared validation images."""
-    input_name = str(_variant(_metadata(), variant_id)["parameters"]["input_name"])
+    """Compare the quantized graph's logits with the ONNX source on the declared calibration images."""
+    input_name = str(_parameters(profile_id)["input_name"])
     selection = config["selection"]
     names = fidelity_names(dataset, int(selection["seed"]), int(selection["offset"]), int(selection["samples"]))
     images = read_images(dataset, names)
@@ -134,9 +138,7 @@ def measure_fidelity(
     return {
         "schema_version": 1,
         "model_id": MODEL_ID,
-        "build_profile_id": variant_id,
-        "component_id": config["result_component"],
-        "scope": "component",
+        "build_profile_id": profile_id,
         "status": config["status"],
         "reference": "ONNX source (ONNX Runtime)",
         "candidate": "Quantized AFE graph (JAX execute)",
@@ -164,24 +166,25 @@ def main() -> int:
     parser.add_argument("--dataset", type=Path, help="dataset-registry calibration archive")
     parser.add_argument("--fidelity-dataset", type=Path, help="dataset-registry fidelity archive")
     args = parser.parse_args()
-    if args.compile_invocation != COMPONENT_ID:
-        parser.error(f"unsupported compile invocation: {args.compile_invocation}")
+    if args.compile_invocation != args.build_profile:
+        parser.error("a build profile compiles in one invocation named after it")
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     source = args.model.expanduser().resolve()
     if not source.is_file():
         parser.error(f"model does not exist: {source}")
-    fidelity = _fidelity_config(_metadata(), args.build_profile)
+    fidelity = load_metadata(MODEL_DIR).get("numerical_fidelity")
     if fidelity is not None and args.fidelity_dataset is None:
-        parser.error(f"{args.build_profile} declares fidelity {fidelity['id']!r}; pass --fidelity-dataset")
-    component_dir = args.output_dir.expanduser().resolve() / COMPONENT_ID
+        parser.error("model.yaml declares numerical_fidelity; pass --fidelity-dataset")
+    output_dir = args.output_dir.expanduser().resolve()
+    component_dir = output_dir / COMPONENT_ID
     dataset = args.dataset.expanduser().resolve() if args.dataset else None
     candidate = compile_model(source, component_dir, args.build_profile, dataset)
     if fidelity is not None:
-        LOG.info("Measuring %s on %d images", fidelity["id"], fidelity["selection"]["samples"])
+        LOG.info("Measuring numerical fidelity on %d images", fidelity["selection"]["samples"])
         fidelity_dataset = args.fidelity_dataset.expanduser().resolve()
         report = measure_fidelity(source, candidate, fidelity_dataset, fidelity, args.build_profile)
-        (component_dir / "fidelity.json").write_text(
+        (output_dir / "fidelity.json").write_text(
             json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         LOG.info("Fidelity: %s", report["metrics"][0])

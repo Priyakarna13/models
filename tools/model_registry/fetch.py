@@ -29,6 +29,10 @@ class _SizeMismatch(FetchError):
     """A transfer ended before the declared payload size was received."""
 
 
+class _OversizedPayload(FetchError):
+    """A response carried more bytes than the declared payload size."""
+
+
 class _ChecksumMismatch(FetchError):
     """A complete payload did not match its immutable digest."""
 
@@ -96,18 +100,12 @@ class Fetcher:
         return isinstance(exc, (URLError, _TransferError))
 
     @staticmethod
-    def _request(url: str, hostname: str, hf_token: str, github_token: str) -> Request:
+    def _request(url: str, hostname: str, hf_token: str) -> Request:
         request = Request(url, headers={"User-Agent": "sima-neat-model-registry/0.1"})
         if hf_token and hostname == "huggingface.co":
             # urllib does not copy unredirected headers to Hugging Face's signed
             # CDN redirect, so the bearer token remains scoped to huggingface.co.
             request.add_unredirected_header("Authorization", f"Bearer {hf_token}")
-        if github_token and hostname in {"api.github.com", "github.com"}:
-            # Private release downloads redirect to a signed object URL. Keep
-            # repository credentials scoped to GitHub; the redirect itself is
-            # authorized by its short-lived signature.
-            request.add_unredirected_header("Authorization", f"Bearer {github_token}")
-            request.add_header("Accept", "application/octet-stream")
         return request
 
     def _download_once(self, request: Request, source: SourceSpec, destination: Path) -> None:
@@ -124,6 +122,7 @@ class Fetcher:
                 except (OSError, TimeoutError, HTTPException) as exc:
                     raise _TransferError(str(exc)) from exc
                 with response:
+                    received = 0
                     while True:
                         try:
                             chunk = response.read(1024 * 1024)
@@ -131,6 +130,11 @@ class Fetcher:
                             raise _TransferError(str(exc)) from exc
                         if not chunk:
                             break
+                        received += len(chunk)
+                        if received > source.size_bytes:
+                            raise _OversizedPayload(
+                                f"size mismatch for {source.filename}: expected {source.size_bytes}, got more"
+                            )
                         output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
@@ -154,12 +158,11 @@ class Fetcher:
         url = source.resolve_url(self.allowed_https_hosts)
         hostname = urlsplit_hostname(url)
         hf_token = os.environ.get("HF_TOKEN", "").strip()
-        github_token = os.environ.get("GITHUB_TOKEN", "").strip()
 
         failures: list[str] = []
         for attempt in range(1, self.max_attempts + 1):
             try:
-                request = self._request(url, hostname, hf_token, github_token)
+                request = self._request(url, hostname, hf_token)
                 self._download_once(request, source, destination)
                 return destination, False
             except (HTTPError, URLError, OSError, TimeoutError, HTTPException, FetchError) as exc:
@@ -210,7 +213,6 @@ class Fetcher:
                 except OSError:
                     shutil.copyfile(cached, destination)
             manifest = {
-                "schema_version": 1,
                 "identity": identity,
                 "entrypoint": source["entrypoint"],
                 "files": sorted(members, key=lambda item: str(item["path"])),
@@ -249,7 +251,22 @@ def _verify_dataset(path: Path, dataset: dict[str, Any]) -> Path:
 
 
 def resolve_dataset(dataset: dict[str, Any], cache_dir: Path | None = None) -> Path:
-    """Resolve a declared dataset archive through dataset-registry and verify its size and digest."""
+    """Resolve a declared dataset archive through dataset-registry and verify its size and digest.
+
+    dataset-registry trusts its cache by registry path, so an archive republished at the same path
+    leaves a stale cached copy. A cached archive that differs from the declaration is removed and
+    resolved once more, which downloads the current archive.
+    """
+    path = _resolve_with_dataset_registry(dataset, cache_dir)
+    try:
+        return _verify_dataset(path, dataset)
+    except FetchError as exc:
+        print(f"{exc}; removing {path} and resolving again", file=sys.stderr)
+        path.unlink(missing_ok=True)
+    return _verify_dataset(_resolve_with_dataset_registry(dataset, cache_dir), dataset)
+
+
+def _resolve_with_dataset_registry(dataset: dict[str, Any], cache_dir: Path | None) -> Path:
     executable = shutil.which("dataset-registry")
     installed_script = Path(sys.executable).resolve().with_name("dataset-registry")
     if executable is not None:
@@ -269,4 +286,29 @@ def resolve_dataset(dataset: dict[str, Any], cache_dir: Path | None = None) -> P
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError) as exc:
         detail = getattr(exc, "stderr", "") or str(exc)
         raise FetchError(f"dataset-registry resolution failed: {detail.strip()}") from exc
-    return _verify_dataset(path, dataset)
+    return path
+
+
+def read_registry_json(url: str) -> dict[str, Any]:
+    try:
+        with urlopen(Request(url, headers={"User-Agent": "sima-neat-model-registry/0.1"}), timeout=30) as response:
+            value = json.load(response)
+    except HTTPError as exc:
+        code = "unknown_error"
+        message = str(exc)
+        try:
+            payload = json.loads(exc.read())
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            if isinstance(error, dict):
+                code = str(error.get("code", code))
+                message = str(error.get("message", message))
+        except (OSError, json.JSONDecodeError):
+            pass
+        raise FetchError(
+            f"public artifact registry HTTP {exc.code} {code}: {message}"
+        ) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FetchError(f"could not read public artifact registry endpoint {url}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise FetchError(f"artifact registry endpoint did not return an object: {url}")
+    return value

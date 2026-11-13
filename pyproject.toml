@@ -8,19 +8,28 @@ version = "0.1.0"
 description = "Shared lifecycle tooling for the SiMa Neat Model Registry"
 requires-python = ">=3.10"
 dependencies = [
+  "boto3>=1.36,<2",
   "certifi>=2025.1.31",
   "jsonschema>=4.18.4,<5",
   "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]
+# What a stage runner needs to run a model's tests on that stage's output.
+tests = [
+  "numpy>=1.26,<3",
+  "pytest>=8,<9",
+]
 dev = [
   "build>=1.2,<2",
   "numpy>=1.26,<3",
   "onnx>=1.16,<2",
+  "onnxruntime==1.21.1",
+  "onnxsim==0.7.3",
+  "opencv-python-headless>=4.10,<5",
   "Pillow>=10,<13",
   "pytest>=8,<9",
-  "ruff>=0.12,<1",
+  "ruff==0.17.4",
 ]
 
 [project.scripts]
@@ -34,10 +43,14 @@ where = ["tools"]
 
 [tool.setuptools.package-data]
 model_registry = ["py.typed"]
+model_report = ["metrics.json"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
-testpaths = ["tests"]
+addopts = "-ra --import-mode=importlib"
+testpaths = ["tests", "models/*/tests"]
+# pytest's default list without "build", which would skip every model's tests/build/, and with fixtures/,
+# whose model folders hold test files that are data.
+norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}", "fixtures"]
 
 [tool.ruff]
 line-length = 120
@@ -45,3 +58,7 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Compile and benchmark inputs: reformatting them reruns those stages. Clean them up with the model's next change.
+"models/yolo_world_*/scripts/{accuracy,calibration,clip,compile,performance,precision,surgery}.py" = ["E501", "I001"]
