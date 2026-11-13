@@ -210,6 +210,11 @@ architectures:
     description: Detects objects and their bounding boxes in images with transformer-based detectors.
     paradigm: transformer
     allowed_model_types: [vision]
+  rf_detr_seg:
+    display_name: RF-DETR-Seg
+    description: Detects objects and outlines each instance with a segmentation mask using transformer-based detectors.
+    paradigm: transformer
+    allowed_model_types: [vision]
   segformer:
     display_name: SegFormer
     description: Labels every pixel of an image with hierarchical transformer encoders and lightweight decoders.
