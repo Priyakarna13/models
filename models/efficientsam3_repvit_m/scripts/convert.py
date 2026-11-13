@@ -7,11 +7,11 @@ bd0936c788fed8d51fa799437f05abd97b401b06, which publishes no package. That stude
 features to a 72x72 grid of image tokens (embed_size=72 in sam3/sam3/model_builder.py); this model resamples
 them to 48x48 instead, so it returns 192x192 mask logits where the upstream model returns 288x288.
 
-No graph is changed or exported here. The bundle holds the assembled model's state dict, its position encoding at
-the token grid, the settings surgery.py needs to rebuild it, and the PyTorch model's outputs on four synthetic
-cases. surgery.py builds the graph to compile from the weights, without sam3 or timm, and must reproduce those
-outputs. The upstream model is built at the same 48x48 grid, so that check proves the compiled graph faithful at
-grid 48, not equal to the upstream grid-72 model.
+No graph is changed or exported here. The bundle holds the assembled model's state dict, its tokenizer assets,
+its position encoding at the token grid, the settings surgery.py needs to rebuild it, and the PyTorch model's
+outputs on four synthetic cases. surgery.py builds the graph to compile from the weights, without sam3 or timm,
+and must reproduce those outputs. The upstream model is built at the same 48x48 grid, so that check proves the
+compiled graph faithful at grid 48, not equal to the upstream grid-72 model.
 """
 
 import argparse
@@ -332,6 +332,7 @@ def convert(source, output_dir):
         position = stock.backbone.vision_backbone.position_encoding(torch.zeros(1, 256, GRID, GRID))
         bundle = {
             "state_dict": stock.state_dict(),
+            "assets": {name: (source.parent / name).read_bytes() for name in ("vocab.json", "merges.txt")},
             "position_encoding": position.clone(),
             "settings": stock_settings(stock),
             "cases": cases,

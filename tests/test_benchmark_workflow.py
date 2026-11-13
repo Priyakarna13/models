@@ -353,14 +353,35 @@ def test_performance_runs_the_model_owned_script() -> None:
 
 
 @pytest.mark.parametrize("extra_wheels", [True, False])
-def test_performance_dependencies_are_isolated_and_cleaned(tmp_path: Path, extra_wheels: bool) -> None:
+@pytest.mark.parametrize("supporting_files", ["none", "runtime", "pinned", "both"])
+def test_performance_dependencies_are_isolated_and_cleaned(
+    tmp_path: Path, extra_wheels: bool, supporting_files: str
+) -> None:
+    import hashlib
+
     scripts = tmp_path / "repository/models/fixture/scripts"
     scripts.mkdir(parents=True)
+    compiled = tmp_path / "compiled with spaces"
+    profile = compiled / "fixture/profile"
+    profile.mkdir(parents=True)
+    runtime = supporting_files in {"runtime", "both"}
+    manifest = {}
+    if runtime:
+        asset = profile / "tokenizer.bin"
+        asset.write_bytes(b"\x00\xff\n")
+        manifest["runtime_files"] = [{"path": asset.name, "sha256": hashlib.sha256(asset.read_bytes()).hexdigest()}]
+    (profile / "compile-outputs.json").write_text(json.dumps(manifest))
     if extra_wheels:
         (scripts / "requirements-performance.txt").write_text("benchmark_wheel==1.0\n")
     (scripts / "performance.py").write_text(
         "import argparse, json, os\nfrom pathlib import Path\n"
-        "p=argparse.ArgumentParser(); p.add_argument('--mpk'); p.add_argument('--output'); a=p.parse_args()\n"
+        "p=argparse.ArgumentParser(); p.add_argument('--mpk'); p.add_argument('--output'); "
+        "p.add_argument('--resources'); a=p.parse_args()\n"
+        "assert bool(a.resources)==(os.environ['SUPPORTING_FILES']!='none')\n"
+        "if os.environ['SUPPORTING_FILES'] in ('runtime','both'):\n"
+        "    assert (Path(a.resources)/'tokenizer.bin').read_bytes()==bytes([0,255,10])\n"
+        "if os.environ['SUPPORTING_FILES'] in ('pinned','both'):\n"
+        "    assert (Path(a.resources)/'LICENSE').read_text()=='pinned license'\n"
         "if os.environ['EXTRA_WHEELS']=='true':\n"
         "    from benchmark_wheel import value\n"
         "else: value=0\n"
@@ -373,6 +394,11 @@ def test_performance_dependencies_are_isolated_and_cleaned(tmp_path: Path, extra
         f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
         "if sys.argv[1:3]==['-m','model_registry']:\n"
         "    if sys.argv[3]=='model-component-artifacts': print('model=fixture_mpk.tar.gz')\n"
+        "    elif sys.argv[3]=='model-runtime-directory':\n"
+        "        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+        "    elif sys.argv[3]=='fetch-resources' and os.environ['SUPPORTING_FILES'] in ('pinned','both'):\n"
+        "        root=Path(sys.argv[sys.argv.index('--output-dir')+1]); root.mkdir(parents=True, exist_ok=True)\n"
+        "        (root/'LICENSE').write_text('pinned license'); print(root)\n"
         "elif sys.argv[1:2]==['-c'] and 'from model_registry.model import load_model' in sys.argv[2]:\n"
         "    print('core')\n"
         "elif sys.argv[1:3]==['-m','pip']:\n"
@@ -390,12 +416,13 @@ def test_performance_dependencies_are_isolated_and_cleaned(tmp_path: Path, extra
     cat.chmod(0o755)
     work, output, pip_call = (tmp_path / name for name in ("scratch", "report", "pip.json"))
     env = {**os.environ, "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
+           "PYTHONPATH": str(ROOT / "tools"), "SUPPORTING_FILES": supporting_files,
            "REGISTRY_PYTHON": str(python), "PYNEAT_PYTHON": str(python),
            "WORK_DIR": str(work), "DATASET_CACHE": str(tmp_path / "cache"),
            "DATASET_LOCK": str(tmp_path / "prepare.lock"), "PIP_CALL": str(pip_call),
            "EXTRA_WHEELS": str(extra_wheels).lower()}
     subprocess.run(
-        [ROOT / "scripts/run_model_performance.sh", scripts.parent, "profile", tmp_path / "compiled", output],
+        [ROOT / "scripts/run_model_performance.sh", scripts.parent, "profile", compiled, output],
         env=env, check=True, capture_output=True, text=True,
     )
     assert json.loads((output / "model-report.json").read_text())["value"] == (42 if extra_wheels else 0)

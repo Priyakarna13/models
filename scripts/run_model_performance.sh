@@ -78,10 +78,13 @@ if [[ -n "$resolutions" ]]; then
   dataset=(--dataset "$name=$directory")
 fi
 
-# The model's pinned resources, laid out as its package installs them. A model without resources gets none.
+# The compiled supporting files and pinned resources share the package's directory layout.
 resources=()
+runtime_dir="$("$REGISTRY_PYTHON" -m model_registry model-runtime-directory "$COMPILED_DIR" \
+  --model "$MODEL_ID" --build-profile "$BUILD_PROFILE_ID")"
 resource_dir="$("$REGISTRY_PYTHON" -m model_registry fetch-resources "$MODEL_DIR" \
-  --output-dir "$WORK_DIR/resources" --cache-dir "$WORK_DIR/sources")"
+  --output-dir "${runtime_dir:-$WORK_DIR/resources}" --cache-dir "$WORK_DIR/sources")"
+resource_dir="${runtime_dir:-$resource_dir}"
 if [[ -n "$resource_dir" ]]; then
   resources=(--resources "$resource_dir")
 fi

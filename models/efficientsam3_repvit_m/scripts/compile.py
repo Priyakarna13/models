@@ -50,6 +50,7 @@ from surgery import (
     INTERFACE,
     MASK_SIZE,
     QUERIES,
+    RUNTIME_FILES,
     TEXT_INPUT,
     TEXT_OUTPUT,
     export_model,
@@ -434,6 +435,10 @@ def _write_compile_outputs(
             }
             for component_id in COMPONENT_IDS
         ],
+        "runtime_files": [
+            {"path": f"tokenizer/{name}", "sha256": sha256_file(output_dir / "tokenizer" / name)[0]}
+            for name in RUNTIME_FILES
+        ],
         "derived_graphs": [
             {"component_id": component_id, "sha256": graph_hashes[component_id]} for component_id in COMPONENT_IDS
         ],
@@ -495,6 +500,7 @@ def compile_model(
 
         output_dir.mkdir(parents=True)
         archives = _copy_component_archives(temporary_dir, profile_id, output_dir)
+        shutil.copytree(temporary_dir / "graphs" / "tokenizer", output_dir / "tokenizer")
         shutil.copyfile(temporary_dir / FIDELITY_REPORT, output_dir / FIDELITY_REPORT)
         _write_compile_outputs(output_dir, profile_id, archives, graph_hashes)
         return archives

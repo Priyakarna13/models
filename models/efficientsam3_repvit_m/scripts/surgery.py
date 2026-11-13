@@ -26,6 +26,7 @@ from onnx import helper, numpy_helper
 
 QUERIES = 200
 MASK_SIZE = 192
+RUNTIME_FILES = ("vocab.json", "merges.txt")
 
 TEXT_INPUT, TEXT_OUTPUT = "token_one_hot", "text_features"
 IMAGE_INPUTS, IMAGE_OUTPUTS = ["pixel_values", "text"], ["detections", "mask_logits"]
@@ -846,6 +847,13 @@ def check_against_upstream(cases, path: Path) -> list[dict[str, float]]:
     return errors
 
 
+def write_runtime_files(assets: dict[str, bytes], directory: Path) -> None:
+    """Preserve the conversion's tokenizer beside the graphs for the compiled package."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in RUNTIME_FILES:
+        (directory / name).write_bytes(assets[name])
+
+
 def export_model(weights_path: Path, output: Path) -> Path:
     """Export the graph built from the converted weights to one folded ONNX that matches the upstream model."""
     import torch
@@ -853,6 +861,7 @@ def export_model(weights_path: Path, output: Path) -> Path:
 
     torch.set_grad_enabled(False)
     weights = torch.load(weights_path, map_location="cpu", weights_only=True)
+    write_runtime_files(weights.pop("assets"), output.parent / "tokenizer")
     cases = weights.pop("cases")
     graph = build_graph(weights)
     del weights

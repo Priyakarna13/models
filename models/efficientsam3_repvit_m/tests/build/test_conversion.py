@@ -1,5 +1,6 @@
 """Checks of the conversion's checkpoint handling and of the weights bundle it publishes."""
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -69,7 +70,12 @@ def test_bundle_holds_the_weights_settings_and_upstream_cases(converted: Path, c
     torch = pytest.importorskip("torch")
     bundle = torch.load(converted, map_location="cpu", weights_only=True)
 
-    assert sorted(bundle) == ["cases", "position_encoding", "settings", "state_dict"]
+    assert sorted(bundle) == ["assets", "cases", "position_encoding", "settings", "state_dict"]
+    assert sorted(bundle["assets"]) == ["merges.txt", "vocab.json"]
+    source = load_metadata(MODEL_DIR)["conversion"]["default"]["source"]
+    pins = {item["path"]: item["sha256"] for item in source["files"]}
+    for name, content in bundle["assets"].items():
+        assert hashlib.sha256(content).hexdigest() == pins[name]
     assert bundle["settings"] == {
         "grid": 48,
         "text_heads": 16,

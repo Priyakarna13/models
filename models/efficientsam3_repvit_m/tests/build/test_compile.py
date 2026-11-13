@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -169,6 +170,38 @@ def test_benchmarks_require_the_packaged_tokenizer(
     pytest.importorskip("tokenizers")
     with pytest.raises(Exception, match="No such file|os error 2"):
         load_script(script_name).load_tokenizer(tmp_path)
+
+
+def test_tokenizer_survives_surgery_and_compile_manifest(
+    tmp_path: Path, load_script: Callable[[str], ModuleType], model_dir: Path
+) -> None:
+    from model_registry.errors import ValidationError
+    from model_registry.runtime_files import read_runtime_files, restore_runtime_files
+
+    surgery = load_script("surgery")
+    recipe = load_script("compile")
+    assets = {name: (model_dir / "tests/fixtures/tokenizer" / name).read_bytes() for name in surgery.RUNTIME_FILES}
+    surgery.write_runtime_files(assets, tmp_path / "tokenizer")
+    archives = {name: tmp_path / f"{name}.tar.gz" for name in recipe.COMPONENT_IDS}
+    for path in archives.values():
+        path.write_bytes(b"component fixture")
+    recipe._write_compile_outputs(tmp_path, "w16a16", archives, dict.fromkeys(archives, "a" * 64))
+    files = read_runtime_files(tmp_path)
+    assert [item["path"] for item in files] == ["tokenizer/vocab.json", "tokenizer/merges.txt"]
+
+    archive = tmp_path / "package.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        for item in files:
+            package.write(tmp_path / item["path"], item["path"])
+    restored = tmp_path / "restored"
+    restored.mkdir()
+    restore_runtime_files(archive, files, restored)
+    for name, content in assets.items():
+        assert (restored / "tokenizer" / name).read_bytes() == content
+    (restored / "tokenizer/vocab.json").write_bytes(b"corrupted")
+    (restored / "compile-outputs.json").write_text(json.dumps({"runtime_files": files}))
+    with pytest.raises(ValidationError, match="SHA-256"):
+        read_runtime_files(restored)
 
 
 def _upstream_outputs(surgery: ModuleType) -> dict[str, np.ndarray]:
@@ -412,6 +445,11 @@ def test_build_holds_both_components_and_the_pipeline_fidelity(
     outputs = json.loads((compiled / "compile-outputs.json").read_text(encoding="utf-8"))
 
     assert [item["component_id"] for item in outputs["outputs"]] == ["text_encoder", "image_model"]
+    from model_registry.runtime_files import read_runtime_files
+
+    assert [item["path"] for item in read_runtime_files(compiled)] == [
+        "tokenizer/vocab.json", "tokenizer/merges.txt",
+    ]
     for item in outputs["outputs"]:
         archive = compiled / item["mpk_path"]
         assert archive.name == f"{MODEL_ID}_{build_profile}_{item['component_id']}_mpk.tar.gz"

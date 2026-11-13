@@ -456,8 +456,9 @@ the performance stage does not run when that step fails.
    `model-registry resolve-devkit-accuracy` and extracts it under
    `/media/nvme/neat-tests/`, which it removes when it exits; a build profile
    that accuracy does not measure gets no `--dataset`;
-3. fetches the model's pinned `resources` with `model-registry fetch-resources`
-   and passes them as `--resources`, laid out as the package installs them, and
+3. verifies compiled `runtime_files`, fetches the model's pinned `resources`
+   with `model-registry fetch-resources` into the same directory, and passes
+   that directory as `--resources`, laid out as the package installs them, and
    installs `scripts/requirements-performance.txt`, when the model has it, in a
    folder beside PyNeat's environment;
 4. sets the MLA and CPU clocks;
