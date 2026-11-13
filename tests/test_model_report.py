@@ -1,5 +1,6 @@
 import json
 import runpy
+import shutil
 import subprocess
 import sys
 import types
@@ -215,7 +216,7 @@ def test_every_metric_names_its_stage_unit_direction_and_measurement():
 
 def test_the_package_needs_only_the_standard_library():
     probe = (
-        "import sys, model_report; "
+        "import sys, model_report, model_report.generation_benchmark, model_report.board_telemetry; "
         "third_party = {name.partition('.')[0] for name in sys.modules} - set(sys.stdlib_module_names); "
         "print(sorted(third_party - {'model_report', '__main__'}))"
     )
@@ -227,6 +228,17 @@ def test_the_package_needs_only_the_standard_library():
     assert result.stdout.strip() == "[]"
 
 
+def test_native_performance_script_runs_without_registry_package(tmp_path):
+    shutil.copytree(REPOSITORY / "tools/model_report", tmp_path / "model_report")
+    script = REPOSITORY / "models/qwen3_0_6b/scripts/performance.py"
+    probe = (
+        f"import sys, runpy; sys.path.insert(0, {str(tmp_path)!r}); "
+        f"sys.argv = [{str(script)!r}, '--help']; runpy.run_path({str(script)!r}, run_name='__main__')"
+    )
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", probe], capture_output=True, text=True, check=True)
+    assert "--deployment" in result.stdout and "--output" in result.stdout
+
+
 class BenchmarkOptions:
     """PyNeat's BenchmarkOptions, which rejects a field Core does not have."""
 
@@ -236,12 +248,13 @@ class BenchmarkOptions:
 
 
 class ModelOptions:
-    """PyNeat's ModelOptions, with the preprocessing fields the scripts set."""
+    """PyNeat's ModelOptions, with the preprocessing and execution fields the scripts set."""
 
     def __init__(self):
         self.preprocess = types.SimpleNamespace(
             resize=types.SimpleNamespace(), normalize=types.SimpleNamespace(), color_convert=types.SimpleNamespace()
         )
+        self.advanced_execution = types.SimpleNamespace()
         self.superpoint = types.SimpleNamespace()
 
 
@@ -265,7 +278,7 @@ PYNEAT_ENUMS = {
     "PixelFormat": ("RGB",),
     "TensorMemory": ("EV74",),
     "BoxDecodeType": (
-        "YoloV8", "YoloV26", "YoloV26Pose", "YoloV26Seg", "YoloV8Obb", "YoloV26Obb", "SuperPoint", "YoloX"
+        "YoloV8", "YoloV26", "YoloV26Pose", "YoloV26Seg", "YoloV8Obb", "YoloV26Obb", "SuperPoint", "YoloX", "Detr"
     ),
     "BoxDecodeTypeOption": ("Split3Interleaved",),
     "SuperPointProfile": ("MagicLeapDemoV1", "LightGlueV1"),
@@ -296,8 +309,8 @@ def write_image(path, value, size=SOURCE_SIZE):
 
 def benchmark_dataset(root):
     """A dataset with the files each script samples from: COCO val2017, ImageNet's val2012 and ImageNet mini's val
-    split, an HPatches val sequence, DOTA's val images, a DIV2K low-resolution image, and the Scene Flow test list. Only
-    the second COCO image labels a person, so a pose script must pick it."""
+    split, an HPatches val sequence, DOTA's val images, Pittsburgh 30k, a DIV2K low-resolution image, and the Scene
+    Flow test list. Only the second COCO image labels a person, so a pose script must pick it."""
     write_image(root / STEREO_PAIR.format(view="left"), STEREO_LEFT, STEREO_VIEW)
     write_image(root / STEREO_PAIR.format(view="right"), STEREO_RIGHT, STEREO_VIEW)
     disparity = STEREO_PAIR.replace("frames_finalpass", "disparity").format(view="left").replace(".png", ".pfm")
@@ -311,6 +324,8 @@ def benchmark_dataset(root):
     write_image(root / "val/v_scene/1.ppm", 200)
     write_image(root / "val/rgb_0001.jpg", 200)
     write_image(root / "DIV2K_valid_LR_bicubic/X2/0801x2.png", 200)
+    write_image(root / "test/rgb_0001.jpg", 200)
+    write_image(root / "images/000/000000_pitch1_yaw1.jpg", 200)
     keypoints = {
         "images": [{"id": 1, "file_name": "000000000001.jpg"}, {"id": 2, "file_name": "000000000002.jpg"}],
         "annotations": [{"image_id": 1, "num_keypoints": 0}, {"image_id": 2, "num_keypoints": 17}],
@@ -351,7 +366,8 @@ def performance_scripts(*, components: bool, accuracy: bool | None = None) -> li
         model = yaml.safe_load(path.read_text(encoding="utf-8"))
         if accuracy is not None and ("accuracy" in model) != accuracy:
             continue
-        if "performance" in model and ("components" in model["compilation"]) == components:
+        if ("performance" in model and model["compilation"]["format"] == "onnx"
+                and ("components" in model["compilation"]) == components):
             scripts.append(path.parent / "scripts/performance.py")
     assert scripts
     return scripts
@@ -366,7 +382,7 @@ def takes_images(script: Path) -> bool:
 # A model whose inputs are not images, such as a keypoint matcher, benchmarks tensors its own tests cover.
 @pytest.mark.parametrize(
     "script",
-    [path for path in performance_scripts(components=False) if takes_images(path)],
+    [path for path in performance_scripts(components=False) if takes_images(path) and first_accuracy_dataset(path)],
     ids=lambda path: path.parents[1].name,
 )
 def test_every_single_component_script_benchmarks_a_dataset_image(script, monkeypatch, tmp_path):
@@ -419,8 +435,11 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         assert STEREO_PAIR.format(view="left") in report["workload"]
     elif first_accuracy_dataset(script) == "nyu-depth-v2":
         assert_letterboxed_frame(frame)
-        assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Letterbox", "ImageNet")
-        assert "val/rgb_0001.jpg" in report["workload"]
+        test_split = declaration["variant"] == "val"
+        assert (options.preprocess.resize.mode, options.preprocess.preset) == (
+            "Stretch" if test_split else "Letterbox", "ImageNet"
+        )
+        assert "rgb_0001.jpg" in report["workload"]
     elif first_accuracy_dataset(script) == "div2k":
         # A super-resolution model takes the frame letterboxed to its tile, scaled to [0, 1] without a preset.
         assert_letterboxed_frame(frame)
@@ -450,6 +469,15 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
             "YoloV26Pose": "000000000002.jpg", "YoloV8Obb": "P0003.jpg", "YoloV26Obb": "P0003.jpg",
         }.get(options.decode_type, ".jpg")
         assert expected in report["workload"]
+    elif getattr(options, "decode_type", "") == "Detr":
+        # DETR stretches the frame to its input with the ImageNet preset and decodes it with Neat's DETR decoder,
+        # which keeps the top 10 above 0.25 and runs no NMS.
+        assert_letterboxed_frame(frame)
+        assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Stretch", "ImageNet")
+        assert (options.top_k, options.score_threshold) == (10, 0.25)
+        assert not hasattr(options, "nms_iou_threshold")
+        assert "DETR box decoder, top 10 above 0.25" in report["workload"]
+        assert any(f"{name} in a 1280x720" in report["workload"] for name in ("000000000001.jpg", "000000000002.jpg"))
     elif getattr(options, "decode_type", "") == "SuperPoint":
         # SuperPoint takes the frame stretched to its input, converted to GRAY8, scaled to [0, 1] without a preset,
         # and decodes it with Magic Leap's demo settings, as the accuracy stage does.
@@ -461,6 +489,11 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
         assert not hasattr(options.preprocess, "preset")
         assert (options.superpoint.profile, options.top_k) == ("MagicLeapDemoV1", 1000)
         assert "v_scene/1.ppm" in report["workload"]
+    elif first_accuracy_dataset(script) == "pitts30k":
+        # A place-recognition model benchmarks a Pittsburgh 30k image, stretched to its input with the ImageNet preset.
+        assert_letterboxed_frame(frame)
+        assert (options.preprocess.resize.mode, options.preprocess.preset) == ("Stretch", "ImageNet")
+        assert "_pitch1_yaw1.jpg" in report["workload"]
     else:
         assert_letterboxed_frame(frame)
         assert options.preprocess.resize.mode == "Stretch"
@@ -474,6 +507,58 @@ def test_every_single_component_script_benchmarks_a_dataset_image(script, monkey
             assert options.preprocess.preset == "ImageNet"
         metadata = yaml.safe_load((script.parents[1] / "model.yaml").read_text(encoding="utf-8"))
         assert IMAGENET_SAMPLES[metadata["accuracy"]["datasets"][0]["variant"]] in report["workload"]
+    assert list(report["components"]) == ["model"]
+    assert report["components"]["model"]["mla_layer_stats"] == CORE_REPORT["mla_layer_stats"]
+    assert report["components"]["model"]["mla_stage_stats"] == CORE_REPORT["mla_stage_stats"]
+
+
+# A model without an accuracy dataset takes no --dataset and builds its own frame.
+@pytest.mark.parametrize(
+    "script",
+    [path for path in performance_scripts(components=False) if takes_images(path) and not first_accuracy_dataset(path)],
+    ids=lambda path: path.parents[1].name,
+)
+def test_every_single_component_script_without_a_dataset_benchmarks_a_fixed_frame(script, monkeypatch, tmp_path):
+    import numpy as np
+
+    loaded, requests = [], []
+
+    class ScriptModel(Model):
+        def __init__(self, *args):
+            super().__init__("model")
+            loaded.append(args)
+
+        def benchmark(self, options):
+            requests.append(options)
+            return Saved(CORE_REPORT)
+
+    monkeypatch.setitem(sys.modules, "pyneat", types.SimpleNamespace(
+        __version__="3.0.0", build_info=lambda: {"version": "3.0.0"}, Model=ScriptModel,
+        ModelOptions=ModelOptions, BenchmarkOptions=BenchmarkOptions, Tensor=Tensor, **SCRIPT_PYNEAT,
+    ))
+    for run in ("first", "second"):
+        monkeypatch.setattr(sys, "argv", [str(script), "--mpk", "model.tar.gz", "--output", str(tmp_path / run)])
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert [args[0] for args in loaded] == ["model.tar.gz"] * 2
+    assert [(r.num_samples, r.min_duration_ms, r.include_mla_layer_stats, r.include_mla_stage_stats)
+            for r in requests] == [(1000, 60000, True, True)] * 2
+    # Neat preprocesses the frame inside the measured pipeline.
+    options = loaded[0][1]
+    assert options.preprocess.kind == "Image"
+    assert (options.preprocess.enable, options.preprocess.resize.enable, options.preprocess.normalize.enable) == (
+        "On", "On", "On"
+    )
+    # Every run measures the same 720p frame, and not a blank one.
+    (first,), (second,) = (request.inputs for request in requests)
+    assert (first.array.shape, str(first.array.dtype), first.options["image_format"]) == (
+        (720, 1280, 3), "uint8", "RGB"
+    )
+    assert np.array_equal(first.array, second.array) and first.array.std() > 10
+    # Neat sizes its input buffers, which the execution plan shows as its input, for the benchmark frame.
+    assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (1280, 720)
+    report = saved_report(tmp_path / "first")
+    assert report["workload"]
     assert list(report["components"]) == ["model"]
     assert report["components"]["model"]["mla_layer_stats"] == CORE_REPORT["mla_layer_stats"]
     assert report["components"]["model"]["mla_stage_stats"] == CORE_REPORT["mla_stage_stats"]
