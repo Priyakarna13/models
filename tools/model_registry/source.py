@@ -22,6 +22,10 @@ VULCAN_ONNX_RE = re.compile(r"^/models-onnx/[a-z][a-z0-9_]*/[a-f0-9]{64}/[0-9]+-
 GITHUB_RELEASE_RE = re.compile(
     r"^/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/releases/download/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
 )
+# OpenMMLab's model zoo names each checkpoint with the first eight hexadecimal digits of its SHA-256.
+OPENMMLAB_CHECKPOINT_RE = re.compile(
+    r"^/mm[a-z0-9]+/v[0-9]+(?:\.[0-9]+)*(?:/[A-Za-z0-9._-]+)+/[A-Za-z0-9._-]+-[0-9a-f]{8}\.pth$"
+)
 
 
 def _require_hugging_face_commit(path: str) -> None:
@@ -39,9 +43,15 @@ def _require_github_release_file(path: str) -> None:
         raise SourcePolicyError("GitHub sources must be a release file addressed by its tag")
 
 
+def _require_openmmlab_checkpoint(path: str) -> None:
+    if not OPENMMLAB_CHECKPOINT_RE.fullmatch(path):
+        raise SourcePolicyError("OpenMMLab sources must be a versioned model zoo checkpoint named by its checksum")
+
+
 # Every approved HTTPS host and the check its URL path must pass. Approving a host is one entry here.
 HTTPS_HOST_CHECKS: dict[str, Callable[[str], None]] = {
     "artifacts.stg.neat.sima.ai": _require_vulcan_onnx,
+    "download.openmmlab.com": _require_openmmlab_checkpoint,
     "github.com": _require_github_release_file,
     "huggingface.co": _require_hugging_face_commit,
 }
@@ -138,4 +148,7 @@ class SourceSpec:
         require_path = HTTPS_HOST_CHECKS.get(hostname)
         if require_path:
             require_path(parts.path)
+        # An OpenMMLab checkpoint's name carries the start of its SHA-256, so the pin must agree with it.
+        if hostname == "download.openmmlab.com" and not parts.path.endswith(f"-{self.sha256[:8]}.pth"):
+            raise SourcePolicyError("OpenMMLab sources must be named by the first eight digits of their pinned sha256")
         return self.uri

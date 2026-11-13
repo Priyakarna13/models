@@ -83,7 +83,8 @@ Registry sources resolve during planning; only resolved content enters the compi
 fingerprint. See [conversion artifacts](docs/conversion-artifacts.md).
 
 Prefer Hugging Face whenever the required checkpoint is available there, pinned
-to a full repository commit. Use an official upstream GitHub release asset only
+to a full repository commit. Use an official upstream GitHub release asset, or an
+OpenMMLab model zoo checkpoint named by its SHA-256 prefix, only
 as a fallback, declared in `conversion.source` with its SHA-256 and byte count.
 Explain the fallback in a source comment in `model.yaml`.
 
