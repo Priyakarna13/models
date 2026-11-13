@@ -127,9 +127,7 @@ selection, top-k, score threshold, sample count, duration and MLA layer and stag
 in each model's `scripts/performance.py`. Every benchmarked model must include that standalone
 script so customers can copy it and reproduce CI in the PyNeat environment,
 with `tools/model_report` on `PYTHONPATH` and without `model_registry` imports
-or YAML configuration. Keep its `--mpk` and `--output` CLI. A model that declares `resources`
-also takes `--resources <directory>`, which the runner always passes, even when the script reads
-none of them, as with a license. A model with accuracy datasets
+or YAML configuration. Keep its `--mpk` and `--output` CLI. A model with accuracy datasets
 also takes `--dataset <source id>=<directory>`, as `accuracy.py` does, and benchmarks one
 `random.Random(0)` image from it, letterboxed into a 1280x720 RGB frame by code inside the
 script and passed in `BenchmarkOptions.inputs` on the image route, so Neat preprocessing is
@@ -140,7 +138,7 @@ inputs are not images benchmarks one `random.Random(0)` validation sample as ten
 tensor route, and each timed sample runs the CPU steps that produce the model's result.
 `run_model_performance.sh` passes only the first dataset, and only for a profile
 accuracy measures. A model with `resources` also takes `--resources <directory>`,
-laid out as its package installs them. A model without an accuracy dataset builds a fixed input in its script;
+laid out as its package installs them, even when it reads none of them, as with a license. A model without an accuracy dataset builds a fixed input in its script;
 do not benchmark Core's synthetic inputs ([Benchmark
 input](docs/benchmarking.md#benchmark-input)). `performance.py`
 and `accuracy.py` write `model-report.json` with `model_report.from_performance()`
