@@ -16,6 +16,43 @@ from model_registry.model import load_model as load_metadata
 MODEL_ID = "efficientsam3_repvit_m"
 
 
+@pytest.mark.parametrize("component", ["text_encoder", "image_model"])
+def test_calibration_is_only_supplied_to_the_image_model(
+    component: str, load_script: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch, model_dir: Path
+) -> None:
+    from types import SimpleNamespace
+
+    recipe = load_script("compile")
+    parameters = recipe._component_parameters(load_metadata(model_dir), "w16a16")[component]
+    monkeypatch.setattr(recipe, "QuantizationParams", lambda **values: SimpleNamespace(**values))
+    monkeypatch.setattr(recipe, "SkipCalibration", lambda: "skip")
+    monkeypatch.setattr(recipe, "HistogramMSEMethod", lambda bins: ("mse", bins))
+    captured = {}
+
+    def quantize(**values):
+        captured.update(values)
+
+    monkeypatch.setattr(recipe, "load_model", lambda *args, **kwargs: SimpleNamespace(quantize=quantize))
+    monkeypatch.setattr(recipe, "DataGenerator", lambda values: values)
+    monkeypatch.setattr(recipe, "convert_data_generator_to_iterable", lambda values: values)
+    monkeypatch.setattr(recipe, "InputName", str)
+    inputs = {name: np.zeros((1, 1, 1, 1), np.float32) for name in recipe.IMAGE_INPUTS}
+    recipe._quantize_component(
+        Path("model.onnx"), "fixture", parameters, inputs if component == "image_model" else None
+    )
+
+    config = captured["quantization_config"]
+    if component == "text_encoder":
+        assert captured["calibration_data"] is None
+        assert config.calibration_method == "skip"
+        assert parameters == {"precision": "w16a16"}
+    else:
+        assert captured["calibration_data"] == inputs
+        assert config.calibration_method == ("mse", 2048)
+    assert config.per_token_quant is False
+    assert config.channel_equalization is False and config.smooth_quant is False
+
+
 def test_position_encoding_preserves_normalized_coordinates(load_script: Callable[[str], ModuleType]) -> None:
     pytest.importorskip("torch")
     surgery = load_script("surgery")

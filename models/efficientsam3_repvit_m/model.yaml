@@ -86,8 +86,9 @@ build_profiles:
     runner_market: on-demand
     components:
       text_encoder:
-        parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 16}
+        parameters: {precision: w16a16}
       image_model:
+        # The two mask-head GroupNorm rsqrt UDFs run in INT8 and require calibration ranges.
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 16}
 
 pipeline:

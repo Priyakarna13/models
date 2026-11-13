@@ -3,11 +3,11 @@
 MPKs.
 
 surgery.py checks its reconstruction against the upstream grid-72 PyTorch reference, then reduces the token grid
-to 48 and checks the ONNX export against PyTorch at that grid. The text encoder compiles first. The image model
-calibrates on the quantized encoder's features packed with each prompt's token mask, as the board runs them,
-and numerical fidelity compares the whole pipeline with the exported ONNX. Calibration takes the first images
-of the coco-2017 cal archive's seeded
-order and fidelity a later span; each image gets one COCO category prompt, spread over the 80 names.
+to 48 and checks the ONNX export against PyTorch at that grid. The BF16 text encoder skips calibration. The image
+model calibrates its two INT8 GroupNorm rsqrt UDFs on real images and quantized text features, as the board runs
+them. Numerical fidelity compares the whole pipeline with the exported ONNX. Calibration takes the first images
+of the coco-2017 cal archive's seeded order and fidelity a later span; each image gets one COCO category prompt,
+spread over the 80 names.
 """
 
 from __future__ import annotations
@@ -32,9 +32,10 @@ from afe.apis.defines import (
     BiasCorrectionType,
     HistogramMSEMethod,
     InputName,
+    QuantizationParams,
     RequantizationMode,
+    SkipCalibration,
     bfloat16_scheme,
-    default_quantization,
     gen2_target,
 )
 from afe.apis.loaded_net import load_model
@@ -101,25 +102,30 @@ def _quantization(parameters: dict[str, Any]) -> Any:
     precision = parameters["precision"]
     if precision != "w16a16":
         raise ValueError(f"unsupported precision: {precision}")
-    return (
-        default_quantization.with_activation_quantization(bfloat16_scheme())
-        .with_weight_quantization(bfloat16_scheme())
-        .with_requantization_mode(RequantizationMode.sima)
-        .with_calibration(HistogramMSEMethod(int(parameters["calibration_bins"])))
-        .with_bias_correction(BiasCorrectionType.NONE)
-        .with_channel_equalization(False)
-        .with_smooth_quant(False)
-        .with_prefer_int8_udf(True)
-        # with_activation_quantization turns per-token quantization on for BF16; this recipe keeps it off.
-        .with_per_token_quant(False)
+    bins = parameters.get("calibration_bins")
+    return QuantizationParams(
+        activation_quantization_scheme=bfloat16_scheme(),
+        weight_quantization_scheme=bfloat16_scheme(),
+        requantization_mode=RequantizationMode.sima,
+        # Only the image model needs ranges: its mask-head GroupNorm has two INT8 rsqrt UDFs.
+        calibration_method=SkipCalibration() if bins is None else HistogramMSEMethod(int(bins)),
+        biascorr_type=BiasCorrectionType.NONE,
+        channel_equalization=False,
+        smooth_quant=False,
+        prefer_int8_udf=True,
+        per_token_quant=False,
     )
 
 
-def _quantize_component(graph: Path, name: str, parameters: dict[str, Any], inputs: dict[str, np.ndarray]) -> Any:
-    shapes = {key: tuple(INTERFACE[key]) for key in inputs}
+def _quantize_component(
+    graph: Path, name: str, parameters: dict[str, Any], inputs: dict[str, np.ndarray] | None = None
+) -> Any:
+    shapes = {key: tuple(INTERFACE[key]) for key in (inputs if inputs is not None else [TEXT_INPUT])}
     importer = onnx_source(str(graph), shape_dict=shapes, layout="NCHW", flexible_batch_size=False)
     loaded = load_model(importer, target=gen2_target)
-    data = convert_data_generator_to_iterable(DataGenerator({InputName(key): value for key, value in inputs.items()}))
+    data = None if inputs is None else convert_data_generator_to_iterable(
+        DataGenerator({InputName(key): value for key, value in inputs.items()})
+    )
     return loaded.quantize(
         calibration_data=data,
         quantization_config=_quantization(parameters),
@@ -265,10 +271,7 @@ def _image_selections(
     selection: dict[str, Any],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Select the calibration images, the first of the seeded order, and the later span fidelity measures."""
-    counts = {int(parameters["calibration_samples"]) for parameters in component_parameters.values()}
-    if len(counts) != 1:
-        raise ValueError("the text encoder and image model must calibrate on the same samples")
-    (count,) = counts
+    count = int(component_parameters["image_model"]["calibration_samples"])
     if calibration_dataset != fidelity_dataset:
         raise ValueError("EfficientSAM3 calibration and fidelity must use the same verified dataset")
     seed, offset = int(selection["seed"]), int(selection["offset"])
@@ -334,10 +337,9 @@ def _text_encoder_phase(
     calibration_prompts: list[str],
     fidelity_prompts: list[str],
 ) -> None:
-    """Compile the text encoder and save its packed features of every prompt for the image model phase."""
-    calibration = np.concatenate([one_hot(tokens(prompt)) for prompt in calibration_prompts])
+    """Compile the BF16 text encoder without calibration, then prepare image calibration and fidelity features."""
     name = _component_name(profile_id, "text_encoder")
-    encoder = _quantize_component(graph, name, parameters, {TEXT_INPUT: calibration})
+    encoder = _quantize_component(graph, name, parameters)
     _compile_component(encoder, temporary_dir / name, "text_encoder")
 
     # The image model calibrates and is checked on the quantized encoder's features, as the board runs.
