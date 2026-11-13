@@ -27,6 +27,33 @@ def test_component_arguments_are_complete_and_unique(load_script, script_name):
             script.parse_mpks(values)
 
 
+def test_license_only_resources_leave_prompt_assets_beside_the_mpks(tmp_path, load_script, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    script = load_script("performance")
+    assets = tmp_path / "compiled/prompt_assets"
+    assets.mkdir(parents=True)
+    table = np.lib.format.open_memmap(assets / "token_embedding_table.npy", mode="w+", dtype=np.float32,
+                                    shape=(49408, 512))
+    del table
+    (assets / "tokenizer.json").write_text("{}")
+    tokenizer = SimpleNamespace(no_truncation=lambda: None, enable_padding=lambda **kwargs: None)
+    loaded = []
+    monkeypatch.setitem(sys.modules, "tokenizers", SimpleNamespace(Tokenizer=SimpleNamespace(
+        from_file=lambda path: loaded.append(Path(path)) or tokenizer)))
+    archive = tmp_path / "compiled/text_encoder/encoder_mpk.tar.gz"
+    archive.parent.mkdir()
+    archive.write_bytes(b"not opened")
+    # What fetch-resources lays out for the benchmark runner: the pinned licenses and nothing else.
+    (tmp_path / "resources/licenses").mkdir(parents=True)
+
+    assert script.prompt_assets(archive, tmp_path / "resources")[0] is tokenizer
+    assert loaded == [assets / "tokenizer.json"]
+
+
 @pytest.mark.parametrize("script_name", ["performance", "accuracy"])
 @pytest.mark.parametrize("layout", ["compiled", "installed", "explicit"])
 def test_prompt_assets_load_from_files_beside_unchanged_components(
