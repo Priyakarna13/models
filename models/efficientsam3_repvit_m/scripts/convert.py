@@ -1,6 +1,6 @@
 """Bundle EfficientSAM3 RepViT-M's upstream weights with the upstream model's outputs on four cases.
 
-The sam3 wheel builds SAM 3's text encoder, neck, encoder, decoder and heads; timm builds the RepViT-M1.1
+The sam3 package builds SAM 3's text encoder, neck, encoder, decoder and heads; timm builds the RepViT-M1.1
 trunk. The Stage 1 checkpoint supplies SAM 3's weights; the fine-tuned student supplies the trunk and neck.
 The student image encoder around the trunk is written here after SimonZeng7108/efficientsam3 at
 bd0936c788fed8d51fa799437f05abd97b401b06, which publishes no package. That student resamples the trunk's
@@ -17,9 +17,7 @@ grid 48, not equal to the upstream grid-72 model.
 import argparse
 import gzip
 import json
-import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -36,9 +34,7 @@ CHECKPOINT = "efficient_sam3_repvit_m.pt"
 BACKBONE = "efficientsam3_repvit.pt"
 BACKBONE_MODULES = ("backbone.vision_backbone.trunk.", "backbone.vision_backbone.convs.")
 TRUNK_PREFIX = "backbone.vision_backbone.trunk.model.backbone.model."
-WHEEL = "sam3-0.1.4-py3-none-any.whl"
-PACKAGE = "sam3"
-SOURCE = ("file_set", CHECKPOINT, [CHECKPOINT, BACKBONE, WHEEL, "vocab.json", "merges.txt"])
+SOURCE = ("file_set", CHECKPOINT, [CHECKPOINT, BACKBONE, "vocab.json", "merges.txt"])
 # The student encoder resamples the trunk's 32x downsampled features to this grid of image tokens. The
 # upstream student uses 72; 48 makes the mask logits 4 * 48 = 192 pixels square instead of 288.
 GRID = 48
@@ -52,18 +48,8 @@ def validate_source(source):
     declared = (source.get("type"), source.get("entrypoint"), [item.get("path") for item in source.get("files", [])])
     if declared != SOURCE:
         raise ValueError(
-            f"Expected the checkpoints, sam3 wheel and CLIP tokenizer {SOURCE}, model.yaml declares {declared}"
+            f"Expected the checkpoints and CLIP tokenizer {SOURCE}, model.yaml declares {declared}"
         )
-
-
-def unpack_package(wheel, directory):
-    """Unpack only the pure-Python package tree; it is installed without its declared dependencies."""
-    with zipfile.ZipFile(wheel) as archive:
-        members = [name for name in archive.namelist() if name.startswith(f"{PACKAGE}/")]
-        if not members or any(".." in Path(name).parts for name in members):
-            raise ValueError(f"Unexpected contents in {wheel.name}")
-        archive.extractall(directory, members)
-    sys.path.insert(0, str(directory))
 
 
 def check_tokenizer(source_dir, work_dir):
@@ -329,7 +315,6 @@ def convert(source, output_dir):
     torch.set_num_threads(4)
     torch.set_grad_enabled(False)
     with tempfile.TemporaryDirectory() as work_dir:
-        unpack_package(source.parent / WHEEL, Path(work_dir))
         stock = build_stock(source, source.parent / BACKBONE, check_tokenizer(source.parent, Path(work_dir)))
         cases = []
         for seed, prompt in CASES:

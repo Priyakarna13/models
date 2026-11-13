@@ -74,31 +74,6 @@ def test_approved_hosts_reject_sources_outside_bounded_paths(uri: str) -> None:
         SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url()
 
 
-PYPI_WHEEL = (
-    "https://files.pythonhosted.org/packages/f3/73/"
-    "16864549e382f23b9c0bc738b8bca5270770bbc88552e9fdaf9a95cee867/sam3-0.1.4-py3-none-any.whl"
-)
-
-
-def test_pypi_wheel_addressed_by_its_hash_is_a_source() -> None:
-    source = SourceSpec(uri=PYPI_WHEEL, sha256=DIGEST, size_bytes=10)
-    assert source.resolve_url() == PYPI_WHEEL
-    assert source.filename == "sam3-0.1.4-py3-none-any.whl"
-
-
-@pytest.mark.parametrize(
-    "uri",
-    [
-        "https://files.pythonhosted.org/packages/sam3-0.1.4-py3-none-any.whl",
-        "https://files.pythonhosted.org/unrelated/package.whl",
-        PYPI_WHEEL.replace(".whl", ".tar.gz"),
-    ],
-)
-def test_other_pypi_urls_are_not_sources(uri: str) -> None:
-    with pytest.raises(SourcePolicyError, match="wheel addressed by its content hash"):
-        SourceSpec(uri=uri, sha256=DIGEST, size_bytes=10).resolve_url()
-
-
 def test_github_release_file_addressed_by_tag_is_a_source() -> None:
     source = SourceSpec(uri=GITHUB_RELEASE_FILE, sha256=DIGEST, size_bytes=10)
     assert source.resolve_url() == GITHUB_RELEASE_FILE

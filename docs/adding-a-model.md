@@ -85,7 +85,6 @@ A source comes from an approved host, in this form:
 | --- | --- |
 | Hugging Face | `hf://models/<owner>/<repository>@<commit>/<file>`, with the full 40-character commit |
 | GitHub | `https://github.com/<owner>/<repository>/releases/download/<tag>/<file>`, a release file of a public repository |
-| PyPI | `https://files.pythonhosted.org/packages/<hash path>/<wheel>`, a wheel whose dependencies cannot be installed from wheels |
 | the registry | the ONNX files the registry converts |
 
 The owner of a repository can replace or delete a GitHub release file, so only

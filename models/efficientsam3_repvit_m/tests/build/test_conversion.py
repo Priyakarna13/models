@@ -1,7 +1,5 @@
 """Checks of the conversion's checkpoint handling and of the weights bundle it publishes."""
 
-import sys
-import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -20,7 +18,7 @@ def converter(load_script: Callable[[str], ModuleType]) -> ModuleType:
 def test_source_must_be_the_pinned_file_set(converter):
     source = load_metadata(MODEL_DIR)["conversion"]["default"]["source"]
     converter.validate_source(source)
-    with pytest.raises(ValueError, match="sam3 wheel"):
+    with pytest.raises(ValueError, match="checkpoints and CLIP tokenizer"):
         converter.validate_source({**source, "files": source["files"][:1]})
 
 
@@ -65,19 +63,6 @@ def test_fine_tuned_checkpoint_supplies_only_the_trunk_and_neck(tmp_path, conver
 def test_trunk_key_rejects_unknown_layers(converter):
     with pytest.raises(KeyError, match="Unmapped"):
         converter.trunk_key("trunk.features.1.unknown.weight")
-
-
-def test_package_unpacking_keeps_only_sam3(tmp_path, monkeypatch, converter):
-    monkeypatch.setattr(sys, "path", list(sys.path))
-    wheel = tmp_path / "sam3.whl"
-    with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("sam3/__init__.py", "")
-        archive.writestr("sam3-0.1.4.dist-info/METADATA", "")
-    converter.unpack_package(wheel, tmp_path / "out")
-
-    assert (tmp_path / "out/sam3/__init__.py").is_file()
-    assert not (tmp_path / "out/sam3-0.1.4.dist-info").exists()
-    assert sys.path[0] == str(tmp_path / "out")
 
 
 def test_bundle_holds_the_weights_settings_and_upstream_cases(converted: Path, converter):
