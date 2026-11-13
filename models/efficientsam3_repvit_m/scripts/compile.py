@@ -13,7 +13,6 @@ spread over the 80 names.
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import logging
 import math
@@ -181,24 +180,8 @@ def _find_mpk(build_dir: Path, component_id: str) -> Path:
     return archives[0]
 
 
-def _skip_simulator_check() -> None:
-    """Compile without AFE's check that replays the generated MLA code in the MLA simulator.
-
-    The check only verifies the generated code and does not change it. On the image model it takes 38 of the
-    compile's ~2 h 20 min and holds the compile's peak memory; the DevKit accuracy stage checks the compiled models
-    instead, as for EfficientSAM ViT-T and ViT-S.
-    """
-    from afe.backends.mla.afe_to_n2a_compiler.n2a_compiler_operations import MLACompilerConfig
-    from afe.core import compile_networks
-
-    if getattr(compile_networks, "MLACompilerConfig", None) is not MLACompilerConfig:
-        raise RuntimeError("this Model Compiler configures the MLA compile differently; revisit the simulator check")
-    compile_networks.MLACompilerConfig = functools.partial(MLACompilerConfig, verify_mlc_files=False)
-
-
 def _compile_component(quantized: Any, build_dir: Path, component_id: str) -> Path:
     build_dir.mkdir(parents=True, exist_ok=False)
-    _skip_simulator_check()
     quantized.compile(
         output_path=str(build_dir),
         log_level=logging.INFO,
