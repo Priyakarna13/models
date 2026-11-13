@@ -66,7 +66,7 @@ def test_trunk_key_rejects_unknown_layers(converter):
         converter.trunk_key("trunk.features.1.unknown.weight")
 
 
-def test_bundle_holds_the_weights_settings_and_upstream_cases(converted: Path, converter, load_script):
+def test_bundle_holds_the_weights_settings_and_upstream_cases(converted: Path, converter):
     torch = pytest.importorskip("torch")
     bundle = torch.load(converted, map_location="cpu", weights_only=True)
 
@@ -86,9 +86,6 @@ def test_bundle_holds_the_weights_settings_and_upstream_cases(converted: Path, c
         "score_limit": 12.0,
     }
     assert bundle["position_encoding"].shape == (1, 256, 72, 72)
-    torch.testing.assert_close(
-        bundle["position_encoding"], load_script("surgery").position_encoding(72), rtol=0, atol=0
-    )
     weights = bundle["state_dict"]
     assert weights["backbone.language_backbone.encoder.token_embedding.weight"].shape == (49408, 1024)
     assert weights["backbone.vision_backbone.trunk.model.backbone.model.stem.conv1.c.weight"].shape == (32, 3, 3, 3)

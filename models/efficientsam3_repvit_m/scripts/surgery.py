@@ -912,6 +912,7 @@ def export_model(weights_path: Path, output: Path) -> Path:
     write_runtime_files(weights.pop("assets"), output.parent / "tokenizer")
     cases = weights.pop("cases")
     _require(weights["settings"]["grid"] == 72, "conversion must preserve the upstream 72x72 token grid")
+    torch.testing.assert_close(weights["position_encoding"], position_encoding(72), rtol=0, atol=0)
     upstream = build_graph(weights)
     for case, errors in zip(cases, check_against_upstream(cases, upstream), strict=True):
         print(f"Upstream grid 72, prompt {case['prompt']!r}: {errors}")

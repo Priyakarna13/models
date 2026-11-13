@@ -38,7 +38,6 @@ from afe.apis.defines import (
     gen2_target,
 )
 from afe.apis.loaded_net import load_model
-from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import load_images, one_hot, packed, prompts, select_images, tokens
@@ -196,20 +195,9 @@ def _compile_component(quantized: Any, build_dir: Path, component_id: str) -> Pa
     _skip_simulator_check()
     quantized.compile(
         output_path=str(build_dir),
-        batch_size=1,
-        compress=True,
         log_level=logging.INFO,
-        tessellate_parameters=None,
-        l2_caching_mode=L2CachingMode.NONE,
         preserve=True,
-        deployable=True,
-        retained_temporary_directory_name=None,
-        use_power_limits=False,
-        max_mla_power=None,
         layer_norm_use_fp32_intermediates=True,
-        rms_norm_use_fp32_intermediates=False,
-        enable_filter_sharing=False,
-        layout_search_effort_level=0,
     )
     archive = _find_mpk(build_dir, component_id)
     audit_mpk(archive, component_id)

@@ -19,11 +19,10 @@ def script(load_script: Callable[[str], ModuleType]) -> ModuleType:
     return load_script("accuracy")
 
 
-def test_the_image_model_text_holds_the_features_and_the_token_mask(script: ModuleType, model_dir: Path) -> None:
+def test_the_image_model_text_holds_the_features_and_the_token_mask(script: ModuleType) -> None:
     features = np.arange(16 * 256, dtype=np.float32).reshape(1, 16, 256)
 
-    tokenizer = script.load_tokenizer(model_dir / "tests" / "fixtures")
-    text = script.packed(features, script.tokens("traffic light", tokenizer))
+    text = script.packed(features, [script.START, 3399, 1395, script.END])
 
     assert text.shape == (1, 17, 256)
     np.testing.assert_array_equal(text[0, :16], features[0])

@@ -28,7 +28,7 @@ import io
 import json
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -243,6 +243,26 @@ def encode_prompts(mpk: Path, names: list[str], tokenizer: Any) -> list[pyneat.T
     return texts
 
 
+def board_pipeline(mpks: dict[str, Path], names: list[str], tokenizer: Any) -> Callable:
+    """Encode the prompts once, then return inference yielding each prompt's detections and masks for an image."""
+    import pyneat
+
+    texts = encode_prompts(mpks["text_encoder"], names, tokenizer)
+    model = pyneat.Model(str(mpks["image_model"]), tensor_options())
+    runner = None
+
+    def infer(image):
+        nonlocal runner
+        pixels = tensor(image)
+        for text in texts:
+            if runner is None:
+                runner = model.build([pixels, text])
+            detections, mask_logits = runner.run([pixels, text], timeout_ms=TIMEOUT_MS)
+            yield detections.to_numpy(), query_masks(mask_logits.to_numpy(copy=False))
+
+    return infer
+
+
 def parse_mpks(values: list[str]) -> dict[str, Path]:
     mpks = dict(value.split("=", 1) for value in values if "=" in value)
     if len(mpks) != len(values) or set(mpks) != {"text_encoder", "image_model"}:
@@ -254,45 +274,25 @@ def log(*values: object) -> None:
     print(*values, file=sys.stderr, flush=True)
 
 
-def main(argv: list[str] | None = None) -> int:
-    import pyneat
-
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mpk", action="append", required=True, help="text_encoder=<path> and image_model=<path>")
-    parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
-    parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
-    parser.add_argument("--resources", type=Path, required=True, help="package root containing tokenizer/")
-    parser.add_argument("--limit", type=int, default=EVALUATED_IMAGES, help="measure the lowest N image IDs")
-    args = parser.parse_args(argv)
-    dataset_id, dataset_dir = args.dataset.split("=", 1)
-    dataset = Path(dataset_dir)
-    mpks = parse_mpks(args.mpk)
-    tokenizer = load_tokenizer(args.resources)
-
+def evaluate(pipeline: Callable, dataset: Path, limit: int) -> dict:
+    """Score the lowest image IDs; pipeline(names) returns inference yielding one result per category prompt."""
     with contextlib.redirect_stdout(io.StringIO()):
         ground_truth = COCO(str(dataset / ANNOTATIONS))
     available = sorted(ground_truth.getImgIds())
-    image_ids = available[: args.limit]
+    image_ids = available[:limit]
     category_ids = sorted(ground_truth.getCatIds())
     names = [category["name"] for category in ground_truth.loadCats(category_ids)]
     if len(names) != 80:
         raise SystemExit("expected the 80 COCO category names")
 
-    # Encode every prompt first, so the text encoder is released before the image model loads.
-    texts = encode_prompts(mpks["text_encoder"], names, tokenizer)
-    model = pyneat.Model(str(mpks["image_model"]), tensor_options())
-    runner = None
+    infer = pipeline(names)
     results: dict[str, list[dict]] = {"bbox": [], "segm": []}
     started = time.monotonic()
     for count, record in enumerate(ground_truth.loadImgs(image_ids), start=1):
-        pixels = tensor(preprocess_image(dataset / IMAGES / record["file_name"]))
+        pixels = preprocess_image(dataset / IMAGES / record["file_name"])
         kept = (np.zeros((0, 6), np.float32), np.zeros(0, np.int64), np.zeros((0, MASK_SIZE, MASK_SIZE), np.float32))
-        for category, text in zip(category_ids, texts, strict=True):
-            if runner is None:
-                runner = model.build([pixels, text])
-            detections, mask_logits = runner.run([pixels, text], timeout_ms=TIMEOUT_MS)
-            rows = detection_rows(detections.to_numpy())
-            kept = best_queries(kept, rows, query_masks(mask_logits.to_numpy(copy=False)), category)
+        for category, (detections, masks) in zip(category_ids, infer(pixels), strict=True):
+            kept = best_queries(kept, detection_rows(detections), masks, category)
         boxes, masks = coco_results(record["id"], record["width"], record["height"], kept)
         results["bbox"] += boxes
         results["segm"] += masks
@@ -303,22 +303,33 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.monotonic()
     stats = coco_stats(ground_truth, image_ids, results)
-    report = model_report.from_accuracy(
-        {
-            dataset_id: {
-                "metrics": stats,
-                "split": IMAGES,
-                "evaluated_samples": len(image_ids),
-                "available_samples": len(available),
-                "details": {
-                    "detections": len(results["bbox"]),
-                    "prompts_per_image": len(names),
-                    "inference_seconds": round(inference_seconds, 1),
-                    "scoring_seconds": round(time.monotonic() - started, 1),
-                },
-            },
-        }
-    )
+    return {
+        "metrics": stats,
+        "split": IMAGES,
+        "evaluated_samples": len(image_ids),
+        "available_samples": len(available),
+        "details": {
+            "detections": len(results["bbox"]),
+            "prompts_per_image": len(names),
+            "inference_seconds": round(inference_seconds, 1),
+            "scoring_seconds": round(time.monotonic() - started, 1),
+        },
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mpk", action="append", required=True, help="text_encoder=<path> and image_model=<path>")
+    parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
+    parser.add_argument("--output", type=Path, required=True, help="directory for model-report.json")
+    parser.add_argument("--resources", type=Path, required=True, help="package root containing tokenizer/")
+    parser.add_argument("--limit", type=int, default=EVALUATED_IMAGES, help="measure the lowest N image IDs")
+    args = parser.parse_args(argv)
+    dataset_id, dataset_dir = args.dataset.split("=", 1)
+    mpks = parse_mpks(args.mpk)
+    tokenizer = load_tokenizer(args.resources)
+    result = evaluate(lambda names: board_pipeline(mpks, names, tokenizer), Path(dataset_dir), args.limit)
+    report = model_report.from_accuracy({dataset_id: result})
     report.save(args.output)
     measured = report.document["datasets"][dataset_id]["metrics"]
     print(json.dumps({name: round(value, 4) for name, value in measured.items()}))
