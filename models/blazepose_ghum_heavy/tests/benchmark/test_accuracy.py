@@ -8,7 +8,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-import cv2
 import numpy as np
 import pytest
 from model_registry.model_tests import measured_shortfalls
@@ -135,6 +134,9 @@ PEOPLE = [
 
 
 def _coco(directory: Path) -> types.SimpleNamespace:
+    # Imported here because the DevKit's test environment has no OpenCV, and the stage test below needs none.
+    import cv2
+
     (directory / "val2017").mkdir(parents=True)
     cv2.imwrite(str(directory / "val2017/000000000001.png"), np.full((480, 640, 3), 51, np.uint8))
     return types.SimpleNamespace(dataset={
