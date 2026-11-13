@@ -30,14 +30,16 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import model_report
 import numpy as np
-import pyneat
 from faster_coco_eval import COCO, COCOeval_faster
 from faster_coco_eval.core import mask as mask_util
+
+if TYPE_CHECKING:
+    import pyneat
 
 ANNOTATIONS = "annotations/instances_val2017.json"
 IMAGES = "val2017"
@@ -207,6 +209,8 @@ def coco_stats(ground_truth: COCO, image_ids: list[int], results: dict[str, list
 
 def tensor_options() -> pyneat.ModelOptions:
     """The script prepares every input; Neat only quantizes and tessellates."""
+    import pyneat
+
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Tensor
     options.preprocess.resize.enable = pyneat.AutoFlag.Off
@@ -217,11 +221,15 @@ def tensor_options() -> pyneat.ModelOptions:
 
 def tensor(array: np.ndarray) -> pyneat.Tensor:
     # from_numpy guesses CHW when the first dimension is 1, 3 or 4; every input here is HWC.
+    import pyneat
+
     return pyneat.Tensor.from_numpy(np.ascontiguousarray(array), copy=True, layout=pyneat.TensorLayout.HWC)
 
 
 def encode_prompts(mpk: Path, names: list[str], tokenizer: Any) -> list[pyneat.Tensor]:
     """Each prompt's text encoder features packed for the image model. The text encoder is released on return."""
+    import pyneat
+
     model = pyneat.Model(str(mpk), tensor_options())
     runner, texts = None, []
     for name in names:
@@ -247,6 +255,8 @@ def log(*values: object) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import pyneat
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mpk", action="append", required=True, help="text_encoder=<path> and image_model=<path>")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")

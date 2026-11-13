@@ -102,10 +102,44 @@ numerical_fidelity:
   selection: {method: seeded_random_without_replacement, seed: 0, offset: 16, samples: 4}
   outputs: [detections, mask_logits]
 
-# Published SAM 3 and EfficientSAM3 scores use other protocols, such as box-prompted mask mIoU, so no reference score
-# is declared. accuracy.py prompts each of the 100 lowest-ID val2017 images with all 80 category names.
+# accuracy.py prompts each of the 100 lowest-ID val2017 images with all 80 category names.
 accuracy:
   datasets:
   - {id: coco-2017, variant: val, sha256: a40de1caf42b47c5a8976eb97efe3c83f3a41337c4d16d318eb15d65c293f2da, size_bytes: 898368520}
 
 performance: {}
+
+reference_metrics:
+- origin: fp32_baseline
+  script: scripts/fp32_baseline_accuracy.py
+  dataset:
+    id: coco-2017
+    split: val
+  conditions: FP32 PyTorch CUDA, TF32 disabled; 100 lowest-ID val2017 images, all 80 prompts; stretch 1008x1008, 48x48
+    token grid, 192x192 masks; same preprocessing and scoring as DevKit. The supplied runner evaluates the equivalent
+    FP32 ONNX export.
+  metrics:
+    coco_map: 0.1861565190535409
+    coco_ap50: 0.25731022978438
+    coco_ap75: 0.20137157517063975
+    coco_ap_small: 0.06266564039265046
+    coco_ap_medium: 0.2314821351148375
+    coco_ap_large: 0.39372364335283333
+    coco_ar1: 0.24306390422130866
+    coco_ar10: 0.3706143432410676
+    coco_ar100: 0.37821175604469187
+    coco_ar_small: 0.0848155625806583
+    coco_ar_medium: 0.39564383329089214
+    coco_ar_large: 0.6605396303258145
+    coco_mask_map: 0.16472505319135092
+    coco_mask_ap50: 0.2399492358591196
+    coco_mask_ap75: 0.17122256151368967
+    coco_mask_ap_small: 0.049613146987689975
+    coco_mask_ap_medium: 0.18333234277003824
+    coco_mask_ap_large: 0.383857887191225
+    coco_mask_ar1: 0.22613349744374295
+    coco_mask_ar10: 0.3388232706999413
+    coco_mask_ar100: 0.34438670623971146
+    coco_mask_ar_small: 0.08083897079847005
+    coco_mask_ar_medium: 0.3448187759952466
+    coco_mask_ar_large: 0.6117123538011697
