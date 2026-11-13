@@ -55,14 +55,13 @@ def test_mla_stats_collected(performance: dict[str, Any]) -> None:
 
 
 def test_the_cpu_step_packs_the_prompt_as_calibration_does(
-    load_script: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch, model_dir: Path
+    load_script: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script, calibration = load_script("performance"), load_script("calibration")
     monkeypatch.setattr(script.pyneat.Tensor, "from_numpy", lambda array, **options: array)
     features = np.random.default_rng(0).random((1, 16, 256), dtype=np.float32)
-    tokenizer = script.load_tokenizer(model_dir / "tests" / "fixtures")
-    prompt = script.tokens(script.PROMPT, tokenizer)
-    assert prompt == calibration.tokens(script.PROMPT)
+    prompt = script.PROMPT_TOKENS
+    assert list(prompt) == calibration.tokens(script.PROMPT)
 
     np.testing.assert_array_equal(script.prompt_tensor(prompt), calibration.one_hot(prompt))
     packed = script.pack_text(SimpleNamespace(to_numpy=lambda copy: features), prompt)

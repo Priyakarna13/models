@@ -143,15 +143,17 @@ def test_prompts_pack_into_the_image_models_text_input(load_script: Callable[[st
     assert calibration.prompts(4) == ["person", "elephant", "wine glass", "dining table"]
 
 
-@pytest.mark.parametrize("script_name", ["accuracy", "performance"])
 def test_packaged_tokenizer_prepares_free_text_prompts(
-    load_script: Callable[[str], ModuleType], model_dir: Path, script_name: str
+    load_script: Callable[[str], ModuleType], model_dir: Path
 ) -> None:
     pytest.importorskip("tokenizers")
     pytest.importorskip("ftfy")
-    script = load_script(script_name)
+    script = load_script("accuracy")
     tokenizer = script.load_tokenizer(model_dir / "tests" / "fixtures")
     calibration = load_script("calibration")
+    performance = load_script("performance")
+
+    assert list(performance.PROMPT_TOKENS) == script.tokens(performance.PROMPT, tokenizer)
 
     for name in ("person", "traffic light", "dog"):
         assert script.tokens(name, tokenizer) == calibration.tokens(name)
@@ -163,13 +165,12 @@ def test_packaged_tokenizer_prepares_free_text_prompts(
         script.tokens("dog " * 15, tokenizer)
 
 
-@pytest.mark.parametrize("script_name", ["accuracy", "performance"])
-def test_benchmarks_require_the_packaged_tokenizer(
-    load_script: Callable[[str], ModuleType], tmp_path: Path, script_name: str
+def test_accuracy_requires_the_packaged_tokenizer(
+    load_script: Callable[[str], ModuleType], tmp_path: Path
 ) -> None:
     pytest.importorskip("tokenizers")
     with pytest.raises(Exception, match="No such file|os error 2"):
-        load_script(script_name).load_tokenizer(tmp_path)
+        load_script("accuracy").load_tokenizer(tmp_path)
 
 
 def test_tokenizer_survives_surgery_and_compile_manifest(

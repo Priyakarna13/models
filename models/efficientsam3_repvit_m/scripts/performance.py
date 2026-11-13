@@ -8,6 +8,9 @@ frame at the same time. Running the text encoder for every frame measures an app
 with each image; one with a fixed prompt runs it once. The script also records each MPK's MLA layer and stage stats
 and its execution plan.
 
+The fixed prompt's token IDs are prepared before timing, as in CLIP's benchmark. Accuracy and applications use
+the tokenizer shipped with the package.
+
 The image model runs on the tensor route, as in accuracy.py: Neat builds its image route only in front of an MPK
 with one input, and the image model also takes the packed text.
 """
@@ -21,7 +24,6 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import cv2
 import model_report
@@ -30,8 +32,8 @@ import pyneat
 
 IMAGE_SIZE = 1008
 CONTEXT, VOCABULARY, FEATURES = 16, 49408, 256
-START, END = 49406, 49407
 PROMPT = "person"
+PROMPT_TOKENS = (49406, 2533, 49407)  # CLIP start token, "person", end token.
 WARMUP_FRAMES = 100
 MEASURED_FRAMES = 1000
 MIN_DURATION_S = 60
@@ -41,41 +43,6 @@ QUEUE_DEPTH = 4
 IMAGES = "val2017"
 # The benchmark input is a 720p camera frame, letterboxed with grey padding.
 FRAME_WIDTH, FRAME_HEIGHT, FILL = 1280, 720, 114
-
-
-def load_tokenizer(resources: Path) -> Any:
-    """Build SAM 3's CLIP BPE tokenizer from the package's verified vocabulary and merges."""
-    from tokenizers import Regex, Tokenizer, models, pre_tokenizers
-
-    assets = resources / "tokenizer"
-    vocabulary, merges = models.BPE.read_file(str(assets / "vocab.json"), str(assets / "merges.txt"))
-    if (vocabulary.get("<|startoftext|>"), vocabulary.get("<|endoftext|>")) != (START, END):
-        raise ValueError("the packaged tokenizer must use CLIP's start/end token IDs")
-    aliases = {"<|startoftext|>": "<start_of_text>", "<|endoftext|>": "<end_of_text>"}
-    vocabulary = {aliases.get(name, name): index for name, index in vocabulary.items()}
-    tokenizer = Tokenizer(models.BPE(vocabulary, merges, end_of_word_suffix="</w>", unk_token="<end_of_text>"))
-    tokenizer.add_special_tokens(["<start_of_text>", "<end_of_text>"])
-    pattern = r"<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"
-    tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
-        [
-            pre_tokenizers.Split(Regex(pattern), behavior="removed", invert=True),
-            pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
-        ]
-    )
-    return tokenizer
-
-
-def tokens(prompt: str, tokenizer: Any) -> list[int]:
-    """Clean and tokenize a prompt without silently truncating the exported 16-token context."""
-    import html
-
-    from ftfy import fix_text
-
-    text = " ".join(html.unescape(html.unescape(fix_text(prompt))).split()).lower()
-    result = [START, *tokenizer.encode(text, add_special_tokens=False).ids, END]
-    if len(result) > CONTEXT:
-        raise ValueError(f"prompt exceeds the {CONTEXT}-token context including start and end tokens")
-    return result
 
 
 def tensor_options() -> pyneat.ModelOptions:
@@ -368,8 +335,8 @@ def write_report(
     )
 
 
-def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, output: Path, resources: Path) -> None:
-    prompt_tokens = tokens(PROMPT, load_tokenizer(resources))
+def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, output: Path) -> None:
+    prompt_tokens = PROMPT_TOKENS
     mla_layer_stats, mla_stage_stats = {}, {}
     for name, mpk in mpks.items():
         mla_layer_stats[name], mla_stage_stats[name] = mla_stats(mpk)
@@ -400,10 +367,10 @@ def main() -> None:
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
-    parser.add_argument("--resources", type=Path, required=True, help="package root containing tokenizer/")
+    parser.add_argument("--resources", type=Path, help="optional package resources; the benchmark prompt is prepared")
     args = parser.parse_args()
     dataset_id, dataset_dir = args.dataset.split("=", 1)
-    benchmark_pipeline(parse_mpks(args.mpk), dataset_id, Path(dataset_dir), Path(args.output), args.resources)
+    benchmark_pipeline(parse_mpks(args.mpk), dataset_id, Path(dataset_dir), Path(args.output))
 
 
 if __name__ == "__main__":
