@@ -43,7 +43,6 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--mpk", required=True, help="compiled model archive")
 parser.add_argument("--dataset", required=True, help="imagenet-2012-val=<extracted directory>")
 parser.add_argument("--output", required=True, help="directory for model-report.json")
-# The benchmark runner passes the package's resources, here only the license. The benchmark reads none of them.
 parser.add_argument("--resources", help="directory holding the package's licenses folder (unused)")
 args = parser.parse_args()
 dataset_id, dataset_dir = args.dataset.split("=", 1)

@@ -30,12 +30,16 @@ def _resnet_50_without_its_license_resource(monkeypatch: pytest.MonkeyPatch) -> 
     """Package resnet_50 as its components alone: its license resource would be fetched from the network."""
     load = package_module.load_and_validate_model
 
-    def load_without_resources(*args: object) -> dict:
+    def load_without_license(*args: object) -> dict:
         model = load(*args)
-        model.pop("resources", None)
+        if model["id"] == "resnet_50":
+            resources = {name: item for name, item in model.get("resources", {}).items() if name != "license"}
+            model.pop("resources", None)
+            if resources:
+                model["resources"] = resources
         return model
 
-    monkeypatch.setattr(package_module, "load_and_validate_model", load_without_resources)
+    monkeypatch.setattr(package_module, "load_and_validate_model", load_without_license)
 
 
 def _compiled_component(tmp_path: Path, component_id: str = "model", archive_name: str = MPK_NAME) -> Path:

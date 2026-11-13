@@ -115,8 +115,10 @@ resources:
 - Pin the license file of the source model itself, at the commit `upstream`
   names: the checkpoint's Hugging Face repository when it holds the file, or
   the authors' code repository as a GitHub raw file.
-- When neither holds the file, pin the same license text from another
-  repository and say so in a comment, as `resnet_50` does.
+- When neither holds the file and the license is standard text with no
+  authors' copyright line, such as Apache-2.0, pin that text from another
+  repository and say so in a comment, as `resnet_50` does. Never borrow
+  another project's MIT or BSD file: it names that project's authors.
 - When the weights carry a second license, add one resource per license. The
   torchvision weights that timm republishes under Apache-2.0 ship
   `licenses/LICENSE` and `licenses/LICENSE-torchvision`.
