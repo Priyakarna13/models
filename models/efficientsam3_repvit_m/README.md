@@ -5,12 +5,14 @@
 ## Overview
 
 EfficientSAM3 RepViT-M finds and segments the objects that a short text prompt
-names, such as "dog" or "traffic light". It is the fine-tuned EfficientSAM3
-student: a RepViT-M1.1 image encoder distilled from SAM 3, with SAM 3's text
-encoder, fusion encoder, and decoder. It runs as two components: a text encoder,
-run once per prompt, and an image model, run once per image and prompt. Your
-application packs the text features on the CPU between them. Each image-model
-run returns 200 scored boxes, each with a 192×192 mask.
+names, such as "dog" or "traffic light". This package combines the fine-tuned
+student's RepViT-M1.1 image trunk and neck with the Stage 1 SAM 3 text encoder,
+fusion encoder, decoder and heads. It replaces the fine-tuned release's
+MobileCLIP-S0 text encoder and reduces its 72×72 image token grid to 48×48.
+It runs as two components: a text encoder, run once per prompt, and an image
+model, run once per image and prompt. Your application packs the text features
+on the CPU between them. Each image-model run returns 200 scored boxes, each
+with a 192×192 mask.
 
 ## Inputs and outputs
 

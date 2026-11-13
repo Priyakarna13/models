@@ -19,6 +19,42 @@ def script(load_script: Callable[[str], ModuleType]) -> ModuleType:
     return load_script("accuracy")
 
 
+def test_onnx_baseline_maps_pixels_prompt_features_and_masks(
+    load_script: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("onnxruntime")
+    baseline = load_script("fp32_baseline_accuracy")
+    names = ["person", "traffic light"]
+    prompt_tokens = [[49406, 2533, 49407], [49406, 3399, 1395, 49407]]
+    monkeypatch.setattr(baseline.accuracy, "tokens", lambda name, tokenizer: prompt_tokens[names.index(name)])
+    pixels = np.arange(2 * 5 * 3, dtype=np.float32).reshape(2, 5, 3)
+    calls = []
+
+    class Session:
+        def run(self, outputs, feeds, options):
+            assert set(feeds) == {"token_one_hot", "pixel_values", "text"}
+            assert options.only_execute_path_to_fetches
+            index = len(calls) % len(names)
+            calls.append(outputs)
+            features = np.full((1, 16, 256), index + 1, np.float32)
+            if outputs == ["text_features"]:
+                np.testing.assert_array_equal(feeds["token_one_hot"], baseline.accuracy.one_hot(prompt_tokens[index]))
+                return [features]
+            assert outputs == ["detections", "mask_logits"]
+            np.testing.assert_array_equal(feeds["pixel_values"], pixels.transpose(2, 0, 1)[None])
+            assert feeds["pixel_values"].flags.c_contiguous
+            np.testing.assert_array_equal(feeds["text"], baseline.accuracy.packed(features, prompt_tokens[index]))
+            return [np.full((1, 200, 6), index, np.float32), np.full((1, 200, 2, 3), index, np.float32)]
+
+    infer = baseline.onnx_pipeline(Session(), names, tokenizer=None)
+    assert calls == [["text_features"], ["text_features"]]
+    for index, (detections, masks) in enumerate(infer(pixels)):
+        assert detections.shape == (1, 200, 6)
+        assert masks.shape == (200, 2, 3)
+        assert np.all(detections == index) and np.all(masks == index)
+    assert calls == [["text_features"], ["text_features"], ["detections", "mask_logits"], ["detections", "mask_logits"]]
+
+
 def test_the_image_model_text_holds_the_features_and_the_token_mask(script: ModuleType) -> None:
     features = np.arange(16 * 256, dtype=np.float32).reshape(1, 16, 256)
 

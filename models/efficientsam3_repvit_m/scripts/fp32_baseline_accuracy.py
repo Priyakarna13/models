@@ -1,9 +1,9 @@
 """Score the FP32 ONNX from surgery.export_model, before prepare_model replaces decoder functions.
 
-Use requirements-accuracy.txt and onnxruntime (or onnxruntime-gpu). The model's accuracy.py supplies all
+Use requirements-accuracy.txt and onnxruntime (or onnxruntime-gpu >= 1.21 for CUDA). The model's accuracy.py supplies
 preprocessing, prompt tokenization, query selection, mask resizing and COCO scoring. Default: the same 100
-lowest-ID images and all 80 prompts as DevKit accuracy. The registered reference was measured with FP32
-PyTorch CUDA at this same grid and protocol; this runner evaluates the exported ONNX counterpart.
+lowest-ID images and all 80 prompts as DevKit accuracy. The registered FP32 reference is the measured output
+of this runner at the deployment grid, using CUDA with TF32 disabled.
 
     PYTHONPATH=tools python models/efficientsam3_repvit_m/scripts/fp32_baseline_accuracy.py \\
         --onnx model.onnx --resources <package-root> --dataset coco-2017-val=<directory> \\
@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     provider = "CUDAExecutionProvider" if args.device == "cuda" else "CPUExecutionProvider"
     if provider not in ort.get_available_providers():
         parser.error(f"{provider} is unavailable in this ONNX Runtime installation")
+    if args.device == "cuda":
+        ort.preload_dlls()
     providers = [(provider, {"use_tf32": "0"})] if args.device == "cuda" else [provider]
     session = ort.InferenceSession(str(args.onnx), providers=providers)
     if session.get_providers()[0] != provider:

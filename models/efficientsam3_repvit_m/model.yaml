@@ -116,9 +116,10 @@ reference_metrics:
   dataset:
     id: coco-2017
     split: val
-  conditions: FP32 PyTorch CUDA, TF32 disabled; 100 lowest-ID val2017 images, all 80 prompts; stretch 1008x1008, 48x48
-    token grid, 192x192 masks; same preprocessing and scoring as DevKit. The supplied runner evaluates the equivalent
-    FP32 ONNX export.
+  conditions: FP32 ONNX Runtime 1.21.1 CUDA, TF32 disabled; 100 lowest-ID val2017 images, all 80 prompts;
+    16-token context, stretch 1008x1008, 48x48 token grid and 192x192 masks; same preprocessing and scoring
+    as DevKit. Uses SAM 3's text encoder instead of the fine-tuned release's MobileCLIP-S0 and reduces its
+    upstream 72x72 token grid.
   metrics:
     coco_map: 0.1861565190535409
     coco_ap50: 0.25731022978438
@@ -132,12 +133,12 @@ reference_metrics:
     coco_ar_small: 0.0848155625806583
     coco_ar_medium: 0.39564383329089214
     coco_ar_large: 0.6605396303258145
-    coco_mask_map: 0.16472505319135092
+    coco_mask_map: 0.16472478698203186
     coco_mask_ap50: 0.2399492358591196
     coco_mask_ap75: 0.17122256151368967
     coco_mask_ap_small: 0.049613146987689975
     coco_mask_ap_medium: 0.18333234277003824
-    coco_mask_ap_large: 0.383857887191225
+    coco_mask_ap_large: 0.3838569331180193
     coco_mask_ar1: 0.22613349744374295
     coco_mask_ar10: 0.3388232706999413
     coco_mask_ar100: 0.34438670623971146
