@@ -402,6 +402,8 @@ say so beside the commit. Production builds omit the staging notice.
 
 Run **Deploy Model Browser & Docs** from the protected `develop` or `main`
 branch. Select `staging` or `production` and the developer or customer audience.
+Production accepts only the customer audience. To read production data in the
+developer view, open staging with `?env=prod`.
 The selected workflow commit is the frontend source revision. This workflow
 builds and tests the browser and bundled docs, then publishes only `models/`
 using that environment's Terraform-managed bucket, KMS key, identity and CDN.

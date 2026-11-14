@@ -170,7 +170,7 @@ no-store`. CDN configuration must honor that cache policy.
 
 Manual **Deploy Model Browser & Docs** is independent of model builds and tooling
 publication. From `main` or `develop`, select `staging` or `production` and the
-`developer` or `customer` audience. The `authorize` job waits on the
+`developer` or `customer` audience; `production` accepts only `customer`. The `authorize` job waits on the
 `model-browser-deploy` environment's sole reviewer team, `owners-models`, with
 administrator bypass disabled. The dispatching owner must approve their own run;
 reruns must be replaced by a new dispatch. Every downstream job independently
