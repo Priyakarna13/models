@@ -107,3 +107,13 @@ you resolve an unfinished request.
 
 For workflow setup, approval permissions, CLI commands and acceptance
 records, see [Promotion operations](model-promotion-operations.md).
+
+### Staging withdrawal verification
+
+The **Promote model** workflow's `staging-withdrawal-smoke` operation verifies
+the Vulcan withdrawal API after deployment to staging. Dispatch from trusted
+`develop` with target Develop and an exact pending disposable approval ID,
+model ID and profile ID. The approval request reason must start with
+`PR #487 staging withdrawal fixture:`. The protected job approves the fixture,
+checks that it is selected, withdraws it, and verifies the replay, catalog
+and stale request response. Review the fixture in `staging-promote-develop`.

@@ -12,20 +12,20 @@ on:
       operation:
         description: Promotion operation in VULCAN_ENV
         type: choice
-        options: [promote, status, cancel, reject]
+        options: [promote, status, cancel, reject, staging-withdrawal-smoke]
         default: promote
         required: true
       model_id:
-        description: "Promote only. Model folder under models/ (e.g. qwen3_5_0_8b); also the top-level id in model.yaml."
+        description: "Promote or staging withdrawal smoke test. Model folder under models/ (e.g. qwen3_5_0_8b); also the top-level id in model.yaml."
         type: string
       build_profile:
-        description: "Promote only. ID under build_profiles in models/<model_id>/model.yaml (e.g. w4a16). Selects the newest candidate receipt."
+        description: "Promote or staging withdrawal smoke test. ID under build_profiles in models/<model_id>/model.yaml (e.g. w4a16). Selects the newest candidate receipt."
         type: string
       deployment_id:
         description: "Exact finalized candidate UUID in VULCAN_ENV. Required for production; optional override in staging. Find it in that environment's build candidate.json."
         type: string
       promotion_id:
-        description: Existing promotion UUID (status, cancel, reject)
+        description: Existing promotion UUID (status, cancel, reject, staging-withdrawal-smoke)
         type: string
       reason:
         description: Reason and validation evidence links for the request or decision
@@ -41,8 +41,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  staging-withdrawal-smoke:
+    if: github.repository == 'sima-neat/models' && github.ref == 'refs/heads/develop' && inputs.operation == 'staging-withdrawal-smoke' && inputs.target_branch == 'develop'
+    runs-on: ubuntu-latest
+    environment: staging-promote-develop
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-west-2
+          role-session-name: withdrawal-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          role-to-assume: ${{ vars.VULCAN_ARTIFACT_REGISTRY_PROMOTION_ROLE_ARN }}
+      - name: Approve and withdraw a disposable staging profile
+        env:
+          PROMOTION_ID: ${{ inputs.promotion_id }}
+          MODEL_ID: ${{ inputs.model_id }}
+          PROFILE_ID: ${{ inputs.build_profile }}
+        run: scripts/test-staging-withdrawal.sh
+
   configure:
-    if: github.repository == 'sima-neat/models' && github.ref == 'refs/heads/develop'
+    if: github.repository == 'sima-neat/models' && github.ref == 'refs/heads/develop' && inputs.operation != 'staging-withdrawal-smoke'
     runs-on: ubuntu-latest
     environment: ${{ vars.VULCAN_ENV }}
     outputs:
