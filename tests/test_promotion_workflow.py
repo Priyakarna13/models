@@ -42,6 +42,12 @@ def test_request_plan_is_durable_before_mutation_and_gate_waits_for_summary():
     assert jobs['report']['if'] == "always() && needs.request.result == 'success'"
 
 
+def test_withdrawal_runs_behind_the_approval_gate():
+    config = workflow()
+    assert 'withdraw' in config.get('on', config.get(True))['workflow_dispatch']['inputs']['operation']['options']
+    assert "operation == 'withdraw'" in config['jobs']['approve']['if']
+
+
 def test_workflow_inputs_are_environment_data_not_shell_code():
     for job in workflow()['jobs'].values():
         for step in job['steps']:

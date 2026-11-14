@@ -177,14 +177,17 @@ def main():
     elif phase == 'approve':
         plan, record = p.read(PLAN), p.read(RECORD)
         operation = 'approve' if plan['operation'] == 'promote' else 'reject'
-        if plan['operation'] not in {'promote', 'reject'}:
+        if plan['operation'] not in {'promote', 'reject', 'withdraw'}:
             raise p.ValidationError('This operation does not use approval credentials')
         if operation == 'approve':
             p.check_request(record, plan['body'])
         else:
             p.check_request(record, plan['record'])
-        result = p.decide(client, record, operation=operation,
-                          reason=plan['decision_reason'], identity=plan['identity'])
+        if plan['operation'] == 'withdraw':
+            result = p.withdraw(client, record, reason=plan['decision_reason'], identity=plan['identity'])
+        else:
+            result = p.decide(client, record, operation=operation,
+                              reason=plan['decision_reason'], identity=plan['identity'])
         p.save(DIRECTORY / 'decision.json', result)
         show(result)
     elif phase == 'benchmark-source':
@@ -202,7 +205,7 @@ def main():
                 p.refresh_benchmarks(client, current, repository=Path('_benchmark-source'), revision=revision,
                                      read_api_url=config['read_api_url'])
         finally:
-            if plan['operation'] != 'status':
+            if plan['operation'] not in {'status', 'withdraw'}:
                 completion_notice(plan, current or record, verified=current is not None)
             if current is not None:
                 update_issue(plan, current)

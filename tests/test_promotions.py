@@ -202,6 +202,23 @@ def test_cancellation_cannot_undo_promotion():
         p.decide(backend, record, operation='cancel', reason='Stop', identity='124')
 
 
+def test_withdrawal_posts_the_reason_once_per_identity_and_needs_a_snapshot():
+    calls = []
+
+    class Client:
+        def request(self, method, path, body, key):
+            calls.append((method, path, body, key))
+            return {'promotion_id': PROMOTION, 'result_snapshot': 'e' * 64 if body['reason'] == 'Broken' else None}
+
+    receipt = p.withdraw(Client(), {'promotion_id': PROMOTION}, reason='Broken', identity='200')
+    assert receipt['result_snapshot'] == 'e' * 64
+    assert calls[0][:3] == ('POST', f'{p.ROOT}/promotions/{PROMOTION}/withdraw', {'reason': 'Broken'})
+    p.withdraw(Client(), {'promotion_id': PROMOTION}, reason='Broken', identity='200')
+    assert calls[0][3] == calls[1][3]
+    with pytest.raises(ValidationError, match='did not confirm'):
+        p.withdraw(Client(), {'promotion_id': PROMOTION}, reason='Other', identity='200')
+
+
 def test_request_checks_current_state_not_historical_receipt():
     backend = Backend()
     saved = plan(backend)

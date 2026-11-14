@@ -166,6 +166,18 @@ def decide(client, record: dict, *, operation: str, reason: str, identity: str,
     return receipt
 
 
+def withdraw(client, record: dict, *, reason: str, identity: str) -> dict:
+    """Take a promoted build out of its target catalog. Vulcan keeps the request `promoted`."""
+    promotion_id = identifier(record["promotion_id"])
+    body = {"reason": reason}
+    # A retry sends the same key and body, so Vulcan replays the first receipt.
+    key = "promotion-withdrawal-" + canonical_sha256([identity, promotion_id, body])
+    receipt = client.request("POST", f"{ROOT}/promotions/{promotion_id}/withdraw", body, key)
+    if not receipt.get("result_snapshot"):
+        raise ValidationError("Vulcan did not confirm the withdrawal")
+    return receipt
+
+
 def benchmark_catalog(record: dict, *, read_api_url: str, read_request: ReadRequest | None = None) -> dict | None:
     """Return the target source revision only while this deployment is still selected."""
     if record.get("state") != "promoted" or not record.get("result_snapshot"):

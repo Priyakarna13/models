@@ -110,5 +110,16 @@ Run **Promote model** from `develop` with `operation=status`, the existing
 Cancellation cannot undo a completed promotion. Keep the feature branch while
 you resolve an unfinished request.
 
+## Withdraw a promoted build
+
+To stop offering a promoted build, for example because it fails to load on a
+DevKit, run **Promote model** from `develop` with `operation=withdraw`, the
+`promotion_id` of the run that promoted it, that run's environment and
+`target_branch`, and a reason. A maintainer approves it at the same gate as a
+promotion. The approval job's summary shows the new catalog snapshot.
+
+The profile stays in the catalog without a download. To offer it again, promote
+a working build.
+
 For workflow setup, approval permissions, CLI commands and acceptance
 records, see [Promotion operations](model-promotion-operations.md).
