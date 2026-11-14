@@ -1685,7 +1685,7 @@ def test_catalog_and_model_page_are_full_page_views() -> None:
     assert 'elements[navigation[0]].setAttribute("aria-current", "page");' in script
     assert '<h2 id="result-title" tabindex="-1">Models</h2>' in html
     assert 'history.scrollRestoration = "manual";' in script
-    assert 'if (!elements["result-list"].querySelector(".model-card, .run-entry")) {' in script
+    assert 'if (!elements["result-list"].querySelector(".model-card, .run-entry")) renderCatalogLoading();' in script
     assert 'event.key === "/" && elements.workspace.dataset.view === "catalog"' in script
     assert ".run-row { width: 100%; min-width: 0;" in styles
     assert "width: calc(100% + 30px)" not in styles

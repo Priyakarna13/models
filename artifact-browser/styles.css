@@ -612,8 +612,7 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .overview-section .model-documentation-body { margin-bottom: 4px; }
 .disclosure-body .model-documentation-body { padding-top: 4px; }
 
-.row-skeleton { height: 86px; display: grid; grid-template-columns: 1.4fr .8fr .5fr; align-items: center; gap: 30px; border-bottom: 1px solid var(--line); }
-.row-skeleton span, .detail-loading span { height: 10px; background: linear-gradient(90deg, var(--line) 25%, var(--surface) 50%, var(--line) 75%); background-size: 200% 100%; animation: shimmer 1.3s infinite linear; }
+.detail-loading span { height: 10px; background: linear-gradient(90deg, var(--line) 25%, var(--surface) 50%, var(--line) 75%); background-size: 200% 100%; animation: shimmer 1.3s infinite linear; }
 .detail-loading { display: grid; gap: 28px; padding-top: 30px; }
 .detail-loading span:nth-child(1) { width: 25%; }
 .detail-loading span:nth-child(2) { width: 75%; height: 46px; }
@@ -629,6 +628,8 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 :root[data-theme="dark"] .toast { color: var(--canvas); }
 .toast.error { color: #fff; background: var(--red); }
 .spinner { width: 13px; height: 13px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+.catalog-loading { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 70px 10px; color: var(--ink-soft); font-size: 16px; }
+.catalog-loading .spinner { width: 22px; height: 22px; border-width: 2px; color: var(--blue); }
 
 @keyframes shimmer { to { background-position: -200% 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
