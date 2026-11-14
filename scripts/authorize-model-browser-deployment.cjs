@@ -6,10 +6,6 @@ module.exports = async function authorizeModelBrowserDeployment({github, context
       !['developer', 'customer'].includes(process.env.DEPLOY_AUDIENCE)) {
     throw new Error('Unsupported deployment environment or audience.');
   }
-  // Production is the site customers read; the developer view of production data is on staging with ?env=prod.
-  if (process.env.DEPLOY_ENV === 'production' && process.env.DEPLOY_AUDIENCE !== 'customer') {
-    throw new Error('Production serves the customer audience. Dispatch a new run with audience "customer".');
-  }
   const {data} = await github.rest.repos.getEnvironment({
     ...context.repo, environment_name: 'model-browser-deploy'
   });

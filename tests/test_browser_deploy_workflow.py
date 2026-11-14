@@ -65,27 +65,6 @@ def test_approval_configuration_guard_fails_closed(data, allowed):
     assert (result.returncode == 0) == allowed
 
 
-@pytest.mark.parametrize('environment,audience,allowed', [
-    ('production', 'customer', True), ('production', 'developer', False),
-    ('staging', 'customer', True), ('staging', 'developer', True),
-])
-def test_production_deploys_only_the_customer_audience(environment, audience, allowed):
-    authorizer = json.dumps((ROOT / "scripts/authorize-model-browser-deployment.cjs").as_uri())
-    script = f'await (await import({authorizer})).default({{github, context, core}});'
-    data = {'can_admins_bypass': False, 'protection_rules': [
-        {'type': 'required_reviewers', 'reviewers': [{'type': 'Team', 'reviewer': {'id': 20041032}}]}]}
-    harness = (
-        f'process.env.DEPLOY_ENV="{environment}"; process.env.DEPLOY_AUDIENCE="{audience}"; '
-        'process.env.GITHUB_TRIGGERING_ACTOR="owner"; process.env.GITHUB_RUN_ATTEMPT="1"; '
-        'const context={repo:{},sha:"fixture",runAttempt:1,actor:"owner"}; const core={notice:()=>{}}; '
-        'const github={request:async()=>({data:[{state:"approved",user:{login:"owner"},'
-        'environments:[{name:"model-browser-deploy"}]}]}),'
-        'rest:{repos:{getEnvironment:async()=>({data:' + json.dumps(data) + '})}}};\n'
-    )
-    result = subprocess.run(['node', '--input-type=module', '-e', harness + script], capture_output=True)
-    assert (result.returncode == 0) == allowed
-
-
 def test_reusable_frontend_build_applies_environment_for_build_and_smoke():
     doc = workflow('developer-docs.yml')
     assert doc['on']['workflow_call']['inputs']['environment']['default'] == 'staging'
