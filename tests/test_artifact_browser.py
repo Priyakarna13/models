@@ -1207,7 +1207,7 @@ def test_performance_and_accuracy_name_the_commit_and_workflow_that_measured_the
     assert "${measurementSource(run, modelId)}</p>" in script
     assert "performanceSummary(result.value, run, modelId)" in script
     assert "measurementSource(variant.accuracy.run, modelId)" in script
-    assert "${escapeHtml(dataset.split || \"\")}${sourceMarkup}</p>" in script
+    assert "${escapeHtml(datasetName(dataset) || \"Dataset unavailable\")}${sourceMarkup}</p>" in script
     assert ".measurement-link {" in styles
 
 
@@ -1435,7 +1435,7 @@ def test_accuracy_result_is_rendered_with_coverage_and_reference_comparison() ->
     for removed in ("Qualification", "Provisional", "Candidate top-1", "validation?.status"):
         assert removed not in script
     # A build without an accuracy run still shows what the model's authors published.
-    assert 'if (result.kind === "missing") return referenceAccuracySection(reference);' in script
+    assert 'if (result.kind === "missing") return referenceAccuracySection(reference, variant);' in script
     assert ".accuracy-summary" in styles
     assert ".status-badge.provisional" in styles
     assert ".status-badge.qualification" in styles
@@ -1466,7 +1466,7 @@ def test_benchmark_runs_are_resolved_from_catalog_fingerprints_and_accuracy_is_r
     assert '<th scope="col">${escapeHtml(REFERENCE_ORIGINS[origin].label)}</th>' in script
     # Reference scores sit beside a measurement of the same dataset only, each origin apart; the headline is the
     # first dataset's published score.
-    assert "scoresByOrigin(reference, entry.dataset.id)" in script
+    assert "datasetReferences(reference, entry.dataset.id)" in script
     assert "referenceScores(reference, datasetId, origin)" in script
     assert "const { metrics, dataset } = result.value.datasets[0];" in script
     assert "metric.reference" not in script
@@ -1696,7 +1696,7 @@ def test_model_metadata_tags_use_semantic_icons() -> None:
     script = _browser_source("ui.js", "model-view.js")
     styles = (BROWSER / "styles.css").read_text(encoding="utf-8")
 
-    for icon in ("branch", "precision", "compiler", "license", "modelType", "architecture", "task"):
+    for icon in ("branch", "compiler", "license", "modelType", "architecture", "task"):
         assert f"{icon}: `<svg" in script
     assert "detailTag(icons.branch, branchName(run.git_ref), \"branch\")" in script
     assert 'class="detail-tag detail-tag-${kind}"' in script
@@ -1835,9 +1835,9 @@ def test_variant_page_shows_build_facts_once_and_one_row_per_component() -> None
 
     # Build-level sections render once per variant, in the page order.
     order = [
-        "detailBuildSwitcher(variant)", "${overviewMarkup}", 'id="components-section"', "${accuracyMarkup}",
-        "packageCard(fullPackage,", 'disclosure("provenance", "Build provenance"', "sourceInputPanel(inputs)",
-        "licensePanel(license,",
+        "detailBuildSwitcher(variant, downloadAction)", "${overviewMarkup}", 'id="components-section"',
+        "${accuracyMarkup}", "packageCard(fullPackage,", 'disclosure("provenance", "Build provenance"',
+        "sourceInputPanel(inputs)", "licensePanel(license,",
     ]
     positions = [render_detail.index(marker) for marker in order]
     assert positions == sorted(positions)
