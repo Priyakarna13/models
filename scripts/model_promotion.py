@@ -204,8 +204,9 @@ def main():
         finally:
             if plan['operation'] != 'status':
                 completion_notice(plan, current or record, verified=current is not None)
+            if current is not None:
+                update_issue(plan, current)
         show(current)
-        update_issue(plan, current)
     else:
         raise p.ValidationError('Unknown workflow phase')
 
@@ -277,13 +278,20 @@ def slack_payload(filename, text):
 
 
 def update_issue(plan, record):
-    if not plan['issue_url']:
+    workflow = record.get('workflow', {})
+    issue_url = plan['issue_url'] or workflow.get('issue_url')
+    if not issue_url:
         return
-    number = int(plan['issue_url'].rsplit('/', 1)[1])
-    marker = f"<!-- models-promotion-run:{plan['identity']} -->"
-    gh('api', '--method', 'PATCH', f'repos/sima-neat/models/issues/{number}', body={
+    number = int(issue_url.rsplit('/', 1)[1])
+    marker = f"<!-- models-promotion-run:{workflow.get('run_id', plan['identity'])} -->"
+    body = {
         'body': marker + '\n\n' + p.summary({**record, **p.configuration()}),
-    })
+    }
+    if record.get('state') == 'promoted' and record.get('result_snapshot'):
+        body.update(state='closed', state_reason='completed')
+    elif record.get('state') in {'rejected', 'cancelled', 'expired'}:
+        body.update(state='closed', state_reason='not_planned')
+    gh('api', '--method', 'PATCH', f'repos/sima-neat/models/issues/{number}', body=body)
 
 
 if __name__ == '__main__':

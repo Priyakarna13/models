@@ -58,6 +58,10 @@ summary. A different eligible maintainer reviews and approves the request.
 Wait for the final report to show **`promoted`**. Submitting a request or
 approving a GitHub job is not proof that promotion finished.
 
+The review issue closes automatically when Vulcan confirms promotion, rejection,
+cancellation or expiry. Pending or unconfirmed requests stay open; a status check
+or recovery action updates the original issue.
+
 The report job refreshes benchmark references for the selected build without
 starting measurements. Existing matching results appear on the model page;
 otherwise, run **Vulcan Model Benchmarking** manually for that model/profile
