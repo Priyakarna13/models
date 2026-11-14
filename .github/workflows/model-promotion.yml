@@ -51,6 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v6
         with:

@@ -25,6 +25,14 @@ def test_workflow_is_manual_and_uses_trusted_code_with_separate_credentials():
         if name == 'configure':
             assert not any('configure-aws-credentials' in s.get('uses', '') for s in job['steps'])
             continue
+        if name == 'staging-withdrawal-smoke':
+            assert "github.ref == 'refs/heads/develop'" in job['if']
+            assert "inputs.target_branch == 'develop'" in job['if']
+            assert job['environment'] == 'staging-promote-develop'
+            assert job['permissions'] == {'contents': 'read', 'id-token': 'write'}
+            credentials = next(s for s in job['steps'] if 'configure-aws-credentials' in s.get('uses', ''))
+            assert credentials['with']['role-to-assume'] == '${{ vars.VULCAN_ARTIFACT_REGISTRY_PROMOTION_ROLE_ARN }}'
+            continue
         assert job['env']['VULCAN_ENV'] == '${{ needs.configure.outputs.vulcan_environment }}'
         assert job['env']['VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL'] == '${{ needs.configure.outputs.read_api_url }}'
         credentials = next(s for s in job['steps'] if 'configure-aws-credentials' in s.get('uses', ''))
@@ -197,7 +205,8 @@ def test_acceptance_branch_is_no_longer_allowed(monkeypatch, tmp_path):
     with pytest.raises(module.p.ValidationError, match='Develop'):
         module.main()
     assert workflow()['jobs']['configure']['if'] == (
-        "github.repository == 'sima-neat/models' && github.ref == 'refs/heads/develop'")
+        "github.repository == 'sima-neat/models' && github.ref == 'refs/heads/develop'"
+        " && inputs.operation != 'staging-withdrawal-smoke'")
 
 
 def test_production_lookup_never_searches_staging_receipts(monkeypatch, tmp_path):
@@ -342,7 +351,7 @@ def test_target_is_validated_before_gate_and_propagated_to_every_job():
         "${{ format('{0}-promote-{1}', needs.configure.outputs.vulcan_environment, "
         "needs.configure.outputs.target_branch) }}")
     for name, job in jobs.items():
-        if name != 'configure':
+        if name not in {'configure', 'staging-withdrawal-smoke'}:
             assert job['env']['PROMOTION_TARGET_BRANCH'] == '${{ needs.configure.outputs.target_branch }}'
 
 
