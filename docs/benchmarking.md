@@ -46,7 +46,7 @@ metadata takes the normal `sima-cli neat install --env production --type minimal
 path with the resolved target. An unresolved floating target fails the job.
 Both paths run the PyNeat import/version check and Debian package reporting.
 
-Core artifacts come from production independently of the Model Registry and
+Core artifacts come from production independently of the model registry and
 dataset environment. For a non-production Core setup, supply that environment's
 index with `--artifacts-base-url` or `NEAT_ARTIFACTS_BASE_URL`; production metadata
 cannot justify skipping an install from another environment.

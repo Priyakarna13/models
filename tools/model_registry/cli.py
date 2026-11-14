@@ -57,7 +57,7 @@ def tool_version() -> str:
 
 
 def _parser(*, author_safe: bool = False) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="model-registry", description="SiMa Neat Model Registry lifecycle tooling")
+    parser = argparse.ArgumentParser(prog="model-registry", description="SiMa Neat Model Browser lifecycle tooling")
     parser.add_argument("--version", action="version", version=f"%(prog)s {tool_version()}")
     subcommands = parser.add_subparsers(dest="command", required=True)
 

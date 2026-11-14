@@ -531,7 +531,7 @@ def test_tooling_supports_python_module_entrypoint() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "Model Registry lifecycle tooling" in result.stdout
+    assert "Model Browser lifecycle tooling" in result.stdout
 
 
 def publish_report(monkeypatch, stage: str, *extra: str) -> list[dict]:
