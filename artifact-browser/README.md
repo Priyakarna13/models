@@ -111,9 +111,11 @@ and CloudFront distribution from the shared staging Vulcan configuration.
 Production frontend deployment remains a manual, owner-gated
 **Deploy Model Browser & Docs** dispatch.
 
-`website/scripts/portal-config.mjs` selects the UI at build time from `GITHUB_REF`:
-Main builds the customer view of the main catalog; Develop, feature branches and
-pull requests build the developer view. Both use the same staging API and
+`website/scripts/portal-config.mjs` selects the UI at build time from
+`MODEL_BROWSER_UI_MODE`. Every push and pull request builds the developer view,
+so staging always shows it after a push to Main or Develop. Only a manual
+**Deploy Model Browser & Docs** dispatch with the `customer` audience builds the
+customer view of the main catalog. Both use the same staging API and
 publication URL. The last publication wins; the catalog branch selector does not
 change the site's UI. Customer view hides contributor navigation, branch/compiler
 filters, build history and the Details section while retaining browsing, comparison,

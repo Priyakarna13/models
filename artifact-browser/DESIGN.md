@@ -23,9 +23,9 @@ The section row follows Software documentation: full-width and left-aligned,
 with bold links and a blue active label.
 Standalone previews keep a local header when the shared shell is unavailable.
 
-The build selects the audience: Main uses a customer view of its catalog;
-Develop and feature branches keep the developer view, with branch/compiler filters,
-build history and contributor navigation. Both default to the staging registry
+The build selects the audience. Every push builds the developer view, with
+branch/compiler filters, build history and contributor navigation; a manual
+deployment chooses the customer view of the Main catalog. Both default to the staging registry
 and publish to the same staging site; `?env=prod` explicitly previews production
 data with the same staged UI and a Production registry label. Selecting a catalog branch changes data,
 never the audience of the built site. `?branches=0` hides only the branch selector
