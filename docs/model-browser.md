@@ -1,6 +1,6 @@
 # Model browser
 
-The model browser is the public catalog of the Model Registry. People use it to
+The Model Browser is the public catalog of SiMa Neat models. People use it to
 find a model, check how its builds perform, compare builds, and download a
 package. This page explains where each part of the browser gets its content, so
 you can check how your model will appear before you submit it.

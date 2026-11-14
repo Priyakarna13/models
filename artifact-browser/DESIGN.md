@@ -2,7 +2,7 @@
 
 ## Users
 
-Model engineers and application developers use the Model Registry to find a
+Model engineers and application developers use the Model Browser to find a
 suitable verified model quickly, compare completed builds, inspect provenance,
 and download deployable artifacts. Search and model compatibility are the
 primary browsing tasks; operational publication state is not part of the

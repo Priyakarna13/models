@@ -1048,7 +1048,7 @@ def test_browser_uses_refined_search_first_layout() -> None:
 
     assert "Roboto:wght@400;500;600;700" in html
     assert "IBM+Plex+Mono" in html
-    assert '<h1 class="sr-only">Model Registry</h1>' in html
+    assert '<h1 class="sr-only">Model Browser</h1>' in html
     assert "Search models, tasks, or families" in html
     assert 'class="page-header"' not in html
     assert "Trace every" not in html

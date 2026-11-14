@@ -172,7 +172,7 @@ browser publication targets staging on `main`/`develop` independently of
 `VULCAN_ENV`. For an explicit
 frontend release, a Models owner runs **Deploy Model Browser & Docs** from `main` or `develop`, chooses the destination (`staging` or
 `production`) and audience (`developer` for branch selection, `customer` for Main
-only), and approves their own run at the `model-browser-deploy` environment gate.
+only; `production` accepts only `customer`), and approves their own run at the `model-browser-deploy` environment gate.
 Only `owners-models` can approve; administrator bypass is disabled. Dispatch a new
 run to retry because previous approvals cannot authorize reruns. Configuration
 resolution, build, and publication each reject later attempts independently,

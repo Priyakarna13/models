@@ -1,6 +1,6 @@
-# Model Artifact Browser
+# Model Browser
 
-A client-only web interface for the public SiMa.ai Model Registry read APIs.
+A client-only web interface for the public read APIs of the SiMa.ai model registry.
 The browser calls the registry directly; there is no application backend,
 credential handling, or proxy middleware. Archive downloads use the temporary URL
 returned by the registry directly. Folder deployments show CLI retrieval
