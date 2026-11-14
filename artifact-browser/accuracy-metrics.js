@@ -128,3 +128,8 @@ export function referenceNotes(name, scoresByOrigin) {
     return score ? [`${label} ${score}`] : [];
   });
 }
+
+// A Dataset Registry archive as readers know it: its ID and variant, such as "coco-2017 val".
+export function datasetName(dataset) {
+  return [dataset.id, dataset.variant].filter(Boolean).join(" ");
+}

@@ -340,7 +340,7 @@ in the same commit.
   Runner/Scheduler versions match
   `neat --json`. Unverifiable state installs;
   an unresolved floating target fails. Both paths report PyNeat and packages.
-  Core's production artifact source is independent of the Model Registry environment.
+  Core's production artifact source is independent of the model registry environment.
 - Workflow YAML only orchestrates: triggers, jobs, permissions, inputs, and
   the order of steps. A step that needs more than one command calls a named,
   executable script with a usage header: under `scripts/`, or beside the code

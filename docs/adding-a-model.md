@@ -1,6 +1,6 @@
 # Define the model contract
 
-A Model Registry contribution describes a product that developers can find,
+A Model Browser contribution describes a product that developers can find,
 build, test, and download reproducibly. For a simple model, that product is one
 ONNX input and one compiled MPK. A larger product compiles its source into
 several components, which one download package holds. `model.yaml` declares
