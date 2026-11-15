@@ -409,6 +409,9 @@ change.
 
 - Make every expandable area a `disclosure()` row from `ui.js`. Raw
   `<details>` elements fail `tests/test_artifact_browser.py`.
+- Put a difference between the customer and the developer view in
+  `audienceFacts` in `audience.js`, and test that fact (`shows.<fact>`) where
+  the markup is built. Page code never tests `uiMode` itself.
 - The browser lists INT8 build profiles first and opens a model on INT8;
   `profileGroups` in `api.js` sets this, not the `model.yaml` profile order.
 - Keep the glance-first page: key facts in the section, the rest in one row.
