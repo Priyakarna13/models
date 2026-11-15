@@ -1,8 +1,8 @@
 """Benchmark MobileSAM from a real 720p RGB frame to one final binary mask.
 
-The timed path includes exact SAM CPU preprocessing, the whole image encoder, the centre-click prompt,
-its decoder and selection/resizing/thresholding of the highest-IoU mask among masks 1-3. Core's current
-letterbox cannot express SAM's right/bottom padding after normalization; using it would change the model.
+The timed path includes Neat's preprocessing of the frame (SAM's resize of the longer side to 1024, normalization
+and right/bottom padding), the whole image encoder, the centre-click prompt, its decoder and Neat's MobileSAM decoder,
+which selects the highest-IoU mask among masks 1-3, resizes it to the frame and thresholds it.
 Image-file decoding and creation of the fixed camera frame are outside timing, as in the other image benchmarks.
 """
 
@@ -21,7 +21,7 @@ import cv2
 import model_report
 import numpy as np
 import pyneat
-from pipeline import COMPONENTS, PromptEncoding, preprocess, prompt_inputs, selected_mask
+from pipeline import COMPONENTS, PIXEL_MEAN, PIXEL_STD, PromptEncoding, prompt_inputs
 
 WARMUP_FRAMES = 100
 MEASURED_FRAMES = 1000
@@ -32,6 +32,8 @@ QUEUE_DEPTH = 4
 # The image source is deterministic; every frame still performs the full SAM image-to-mask work.
 FRAME_WIDTH, FRAME_HEIGHT, FILL = 1280, 720, 114
 DATASET = "coco-2017-val"
+# SAM pads with zeros after normalizing, which is the mean pixel (124, 116, 104); Neat pads one byte for all channels.
+PAD_VALUE = 116
 
 
 def sample_image(dataset: Path) -> Path:
@@ -55,13 +57,48 @@ def read_frame(path: Path) -> np.ndarray:
     return frame
 
 
+def image_options(width: int = FRAME_WIDTH, height: int = FRAME_HEIGHT) -> pyneat.ModelOptions:
+    """The image encoder's: Neat prepares the RGB image as SAM does, inside the pipeline.
+
+    The longer side becomes 1024 with antialiased bilinear resampling of the unscaled pixels, the image sits in
+    the top-left corner of the 1024 x 1024 input, and SAM's mean and standard deviation normalize it in
+    float32, rounded to the encoder's bfloat16 to nearest even as the package's own cast does. Images up to width x
+    height fit Neat's input buffers.
+    """
+    options = pyneat.ModelOptions()
+    preprocess = options.preprocess
+    preprocess.kind = pyneat.InputKind.Image
+    preprocess.input_max_width, preprocess.input_max_height = width, height
+    preprocess.enable = pyneat.AutoFlag.On
+    preprocess.resize.enable = pyneat.AutoFlag.On
+    preprocess.resize.mode = pyneat.ResizeMode.Letterbox
+    preprocess.resize.placement = pyneat.LetterboxPlacement.TopLeft
+    preprocess.resize.pad_value = PAD_VALUE
+    preprocess.resize.interpolation = pyneat.ResizeInterpolation.BilinearAntialiased
+    preprocess.rescale_factor = 1.0
+    preprocess.normalize.enable = pyneat.AutoFlag.On
+    preprocess.normalize.mean = [float(value) for value in PIXEL_MEAN]
+    preprocess.normalize.stddev = [float(value) for value in PIXEL_STD]
+    preprocess.normalize.has_explicit_stats = True
+    preprocess.floating_conversion = pyneat.PreprocFloatingConversion.NearestEven
+    return options
+
+
 def tensor_options() -> pyneat.ModelOptions:
-    """The exact SAM image preparation runs on CPU per frame; Core quantizes/tessellates its tensors."""
+    """The prompt decoder's inputs are the image embedding and the prompt's tensors; Core casts them."""
     options = pyneat.ModelOptions()
     options.preprocess.kind = pyneat.InputKind.Tensor
     options.preprocess.resize.enable = pyneat.AutoFlag.Off
     options.preprocess.color_convert.enable = pyneat.AutoFlag.Off
     options.preprocess.normalize.enable = pyneat.AutoFlag.Off
+    return options
+
+
+def decoder_options() -> pyneat.ModelOptions:
+    """The prompt decoder's, with Neat's MobileSAM decoder: the highest-IoU mask among masks 1-3, for one click."""
+    options = tensor_options()
+    options.decode_type = pyneat.BoxDecodeType.MobileSam
+    options.multimask_output = True
     return options
 
 
@@ -72,8 +109,11 @@ def hwc(value: np.ndarray) -> pyneat.Tensor:
     return pyneat.Tensor.from_numpy(np.ascontiguousarray(value), copy=True, layout=pyneat.TensorLayout.HWC)
 
 
-def prepare_image(frame: np.ndarray) -> pyneat.Tensor:
-    return hwc(preprocess(frame))
+def image_tensor(frame: np.ndarray) -> pyneat.Tensor:
+    """The camera frame as the encoder's RGB input, in the memory Neat's preprocessing reads; made once."""
+    return pyneat.Tensor.from_numpy(
+        frame, copy=True, image_format=pyneat.PixelFormat.RGB, memory=pyneat.TensorMemory.EV74
+    )
 
 
 def prepare_prompt(frame: np.ndarray, encoding: PromptEncoding) -> list[pyneat.Tensor]:
@@ -83,12 +123,14 @@ def prepare_prompt(frame: np.ndarray, encoding: PromptEncoding) -> list[pyneat.T
 
 
 def finish(tensors: list[pyneat.Tensor], frame: np.ndarray) -> np.ndarray:
-    """Consume read-only outputs while their tensors are retained; return an independently owned mask."""
-    if len(tensors) != 2:
-        raise ValueError(f"expected masks and IoU predictions, got {len(tensors)} outputs")
-    return selected_mask(
-        tensors[0].to_numpy(copy=False), tensors[1].to_numpy(copy=False), frame.shape[:2], multimask=True
-    )
+    """Read Neat's decoded mask while its tensor is retained; return an independently owned frame-sized mask."""
+    if len(tensors) != 1:
+        raise ValueError(f"expected one decoded mask, got {len(tensors)} outputs")
+    (result,) = pyneat.decode_segmentation(list(tensors))
+    masks = result.masks.to_numpy(copy=False)
+    if masks.shape != (1, *frame.shape[:2]):
+        raise ValueError(f"expected one {frame.shape[:2]} mask, got {masks.shape}")
+    return masks[0] > 0
 
 
 def close_runners(runners: list[pyneat.ModelRunner]) -> None:
@@ -106,19 +148,11 @@ def close_runners(runners: list[pyneat.ModelRunner]) -> None:
 
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
-    """Snapshot each output into an explicitly HWC input, removing only the singleton batch axis.
+    """The encoder's outputs, copied to EV74 memory for the decoder's first stage.
 
-    Retain the admitted owned-copy route until direct transfers are qualified on the current Core. Output
-    NumPy views are read-only and cannot be re-exported through DLPack. Default tensor placement may also stage
-    to EV74, so changing copy=True alone does not establish a zero-copy inter-component handoff.
+    The copy keeps the image geometry Neat's preprocessing recorded, which the decoder's mask resize reads.
     """
-    arrays = [tensor.to_numpy(copy=True) for tensor in tensors]
-    return [
-        pyneat.Tensor.from_numpy(
-            np.ascontiguousarray(array[0] if array.ndim == 4 else array), copy=True, layout=pyneat.TensorLayout.HWC
-        )
-        for array in arrays
-    ]
+    return [tensor.cvu() for tensor in tensors]
 
 
 def percentile_ms(seconds: list[float], percentile: float) -> float:
@@ -171,8 +205,10 @@ def build_runners(
         raise
 
 
-def infer_one(runners: list[pyneat.ModelRunner], frame: np.ndarray, encoding: PromptEncoding) -> np.ndarray:
-    tensors = [prepare_image(frame)]
+def infer_one(
+    runners: list[pyneat.ModelRunner], image: pyneat.Tensor, frame: np.ndarray, encoding: PromptEncoding
+) -> np.ndarray:
+    tensors = [image]
     prompt = prepare_prompt(frame, encoding)
     for index, (component, runner) in enumerate(zip(COMPONENTS, runners)):
         outputs = runner.run(stage_inputs(component, tensors, prompt), timeout_ms=TIMEOUT_MS)
@@ -181,15 +217,17 @@ def infer_one(runners: list[pyneat.ModelRunner], frame: np.ndarray, encoding: Pr
     return finish(outputs, frame)
 
 
-def measure_latency(runners: list[pyneat.ModelRunner], frame: np.ndarray, encoding: PromptEncoding) -> list[float]:
+def measure_latency(
+    runners: list[pyneat.ModelRunner], image: pyneat.Tensor, frame: np.ndarray, encoding: PromptEncoding
+) -> list[float]:
     """Seconds from RGB input through final mask, with one frame in flight, after warmup."""
     for _ in range(WARMUP_FRAMES):
-        infer_one(runners, frame, encoding)
+        infer_one(runners, image, frame, encoding)
     seconds: list[float] = []
     ends = time.perf_counter() + MIN_DURATION_S
     while len(seconds) < MEASURED_FRAMES or time.perf_counter() < ends:
         started = time.perf_counter()
-        infer_one(runners, frame, encoding)
+        infer_one(runners, image, frame, encoding)
         seconds.append(time.perf_counter() - started)
     return seconds
 
@@ -276,7 +314,9 @@ def run_together(
             raise join_error
 
 
-def measure_throughput(runners: list[pyneat.ModelRunner], frame: np.ndarray, encoding: PromptEncoding) -> Throughput:
+def measure_throughput(
+    runners: list[pyneat.ModelRunner], image: pyneat.Tensor, frame: np.ndarray, encoding: PromptEncoding
+) -> Throughput:
     """Frames per second and board telemetry with every component busy, each on a different frame. The measured
     span starts after WARMUP_FRAMES outputs and lasts at least MEASURED_FRAMES frames and MIN_DURATION_S seconds."""
     monitor = pyneat.TelemetryMonitor()
@@ -287,7 +327,7 @@ def measure_throughput(runners: list[pyneat.ModelRunner], frame: np.ndarray, enc
     def push_images() -> None:
         try:
             while not measured.is_set():
-                push(runners[0], [prepare_image(frame)], COMPONENTS[0])
+                push(runners[0], [image], COMPONENTS[0])
                 pushed[COMPONENTS[0]] += 1
         finally:
             # End of stream follows the last frame through every component.
@@ -361,10 +401,10 @@ def write_report(
         models,
         workload=(
             f"{DATASET} val2017/{source.name} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame; "
-            "SAM CPU resize/normalize/right-bottom pad on every frame, the whole image encoder, "
-            "centre foreground click, "
-            "CPU FP32 prompt Fourier encoding, prompt decoder and best-IoU candidate mask 1-3 "
-            "resized to the image and thresholded at zero; "
+            "Neat preprocessing (top-left letterbox to 1024x1024, antialiased bilinear, SAM normalization), "
+            "the whole image encoder, centre foreground click, "
+            "CPU FP32 prompt Fourier encoding, prompt decoder and Neat's MobileSAM decoder (best-IoU candidate "
+            "mask 1-3 resized to the frame and thresholded at zero); "
             f"pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
@@ -383,17 +423,21 @@ def benchmark_pipeline(
 ) -> None:
     # Load package-bound CPU weights before constructing any model, profiling or building a native runner.
     encoding = PromptEncoding.from_package(mpks["prompt_decoder"], resources)
-    models = {name: pyneat.Model(str(mpks[name]), tensor_options()) for name in COMPONENTS}
+    models = {
+        "image_encoder": pyneat.Model(str(mpks["image_encoder"]), image_options()),
+        "prompt_decoder": pyneat.Model(str(mpks["prompt_decoder"]), decoder_options()),
+    }
     mla_layer_stats, mla_stage_stats = {}, {}
     # Separate idle diagnostic runs; their layer times are not a loaded-pipeline stage decomposition.
     for name, mpk in mpks.items():
         mla_layer_stats[name], mla_stage_stats[name] = mla_stats(mpk)
     source = sample_image(dataset)
     frame = read_frame(source)
-    runners = build_runners(models, prepare_image(frame), prepare_prompt(frame, encoding))
+    image = image_tensor(frame)
+    runners = build_runners(models, image, prepare_prompt(frame, encoding))
     try:
-        latencies = measure_latency(runners, frame, encoding)
-        throughput = measure_throughput(runners, frame, encoding)
+        latencies = measure_latency(runners, image, frame, encoding)
+        throughput = measure_throughput(runners, image, frame, encoding)
         write_report(output, latencies, throughput, models, mla_layer_stats, mla_stage_stats, source)
     finally:
         close_runners(runners)

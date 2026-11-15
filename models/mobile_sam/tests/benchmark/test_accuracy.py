@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import weakref
 from collections.abc import Callable
 from pathlib import Path
@@ -29,46 +30,43 @@ def test_a_box_prompt_has_only_two_active_corners(accuracy_script: ModuleType) -
 
 
 @pytest.mark.parametrize("layout", ["nchw", "nhwc"])
-def test_mask_layout_reads_both_layouts(accuracy_script: ModuleType, layout: str) -> None:
+def test_mask_layout_reads_both_layouts(load_script: Callable[[str], ModuleType], layout: str) -> None:
     masks = np.random.default_rng(0).normal(size=(4, 256, 256)).astype(np.float32)
     board = masks[None] if layout == "nchw" else masks.transpose(1, 2, 0)[None]
 
-    read, scores = accuracy_script.mask_layout(board, np.arange(4, dtype=np.float32)[None])
+    read, scores = load_script("pipeline").mask_layout(board, np.arange(4, dtype=np.float32)[None])
 
     np.testing.assert_array_equal(read, masks)
     assert scores.tolist() == [0, 1, 2, 3]
 
 
-def test_image_mask_drops_the_padding_and_fits_the_image(accuracy_script: ModuleType) -> None:
+def test_image_mask_drops_the_padding_and_fits_the_image(load_script: Callable[[str], ModuleType]) -> None:
     # A 1024x512 resized image fills the top half of the padded input; its mask covers that half.
     logits = np.full((256, 256), -5.0, np.float32)
     logits[:128] = 5.0
 
-    mask = accuracy_script.image_mask(logits, (300, 600))
+    mask = load_script("pipeline").image_mask(logits, (300, 600))
 
     assert mask.shape == (300, 600)
     assert mask.all()
 
 
-def test_a_result_scores_the_first_mask_by_its_predicted_iou(
+def test_a_result_scores_the_decoded_mask_by_its_predicted_iou(
     accuracy_script: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    masks = np.full((4, 256, 256), -5.0, np.float32)
-    masks[0, 64:128, 64:128] = 5.0
+    mask = np.zeros((480, 640), bool)
+    mask[256:512, 300:400] = True
     encoded = []
     monkeypatch.setattr(accuracy_script.mask_util, "encode", lambda array: encoded.append(array) or [{"counts": b"x"}])
 
-    item = accuracy_script.result(
-        {"image_id": 7, "category_id": 3}, masks, np.array([0.9, 0.1, 0.2, 0.3], np.float32), (1024, 1024)
-    )
+    item = accuracy_script.result({"image_id": 7, "category_id": 3}, mask, np.float32(0.9))
 
     (array,) = encoded
-    # The 64x64 square upsamples 4x to rows and columns 256-511; bilinear leaves its four corner pixels at exactly 0.
-    rows, columns = np.nonzero(array[:, :, 0])
-    assert array.shape == (1024, 1024, 1) and array.sum() == 256 * 256 - 4
-    assert (rows.min(), rows.max(), columns.min(), columns.max()) == (256, 511, 256, 511)
+    assert array.shape == (480, 640, 1) and array.dtype == np.uint8 and array.flags.f_contiguous
+    np.testing.assert_array_equal(array[:, :, 0], mask)
     assert item["segmentation"] == {"counts": "x"}
     assert (item["image_id"], item["category_id"], item["score"]) == (7, 3, pytest.approx(0.9))
+    assert type(item["score"]) is float
 
 
 def test_accuracy_meets_its_expected_values(accuracy: dict[str, Any], model_dir: Path, build_profile: str) -> None:
@@ -103,11 +101,39 @@ def test_mask_geometry_matches_independent_sam_pixel_centres(size, load_script):
     np.testing.assert_array_equal((actual > 0)[away_from_zero], (expected > 0)[away_from_zero])
 
 
-def test_application_accuracy_and_performance_share_one_mask_policy(load_script):
-    pipeline, accuracy = load_script("pipeline"), load_script("accuracy")
+class _Options:
+    """A stand-in for pyneat.ModelOptions whose nested fields come into being when read, like the bound ones."""
+
+    def __getattr__(self, name: str) -> _Options:
+        value = _Options()
+        setattr(self, name, value)
+        return value
+
+
+def test_accuracy_and_performance_share_neats_preparation_and_mask_decoder(load_script, monkeypatch):
+    performance, accuracy = load_script("performance"), load_script("accuracy")
+    pyneat = performance.pyneat
+    monkeypatch.setattr(pyneat, "ModelOptions", _Options)
+    encoders = performance.image_options(), accuracy.image_options()
+    for name in ("mode", "placement", "pad_value", "interpolation"):
+        assert getattr(encoders[0].preprocess.resize, name) == getattr(encoders[1].preprocess.resize, name), name
+    for name in ("rescale_factor", "floating_conversion"):
+        assert getattr(encoders[0].preprocess, name) == getattr(encoders[1].preprocess, name), name
+    for name in ("mean", "stddev", "has_explicit_stats"):
+        assert getattr(encoders[0].preprocess.normalize, name) == getattr(encoders[1].preprocess.normalize, name)
+    # COCO val2017 images are at most 640 pixels on a side; the benchmark frame is 1280x720.
+    assert encoders[1].preprocess.input_max_width == encoders[1].preprocess.input_max_height == 640
+    click, box = performance.decoder_options(), accuracy.decoder_options()
+    assert click.decode_type == box.decode_type == pyneat.BoxDecodeType.MobileSam
+    # segment_anything's multimask_output: True for one click, False for a box prompt (mask 0).
+    assert (click.multimask_output, box.multimask_output) == (True, False)
+
+
+def test_application_helpers_share_one_mask_policy(load_script):
+    pipeline = load_script("pipeline")
     masks = np.random.default_rng(10).normal(size=(4, 256, 256)).astype(np.float32)
     size = (300, 600)
-    np.testing.assert_array_equal(pipeline.postprocess_masks(masks, size)[0] > 0, accuracy.image_mask(masks[0], size))
+    np.testing.assert_array_equal(pipeline.postprocess_masks(masks, size)[0] > 0, pipeline.image_mask(masks[0], size))
     # The single-mask token is not a candidate in multimask click mode, even with its highest score.
     scores = np.array([99, 0.2, 0.8, 0.4], np.float32)
     np.testing.assert_array_equal(
@@ -150,24 +176,30 @@ def test_accuracy_closes_all_runners_without_masking_inference_error(load_script
 
 def test_fp32_runner_feeds_the_real_component_chain(load_script):
     script = load_script("fp32_baseline_accuracy")
+    pipeline = load_script("pipeline")
     feeds = []
     runners = script.FloatRunners.__new__(script.FloatRunners)
     embedding = object()
+    masks = np.full((1, 4, 256, 256), -5.0, np.float32)
+    masks[0, 0, :96] = 5.0  # mask 0 covers the image's top half: a 480x640 image fills rows 0-191 of 256
+    scores = np.array([[0.75, 0.9, 0.9, 0.9]], np.float32)
 
     def run(component, values):
         feeds.append((component, values))
-        return {"image_encoder": [embedding], "prompt_decoder": ["masks", "scores"]}[
-            component
-        ]
+        return {"image_encoder": [embedding], "prompt_decoder": [masks, scores]}[component]
 
     runners.run = run
-    image = np.zeros((1024, 1024, 3), np.float32)
+    image = np.random.default_rng(0).integers(0, 256, (480, 640, 3), np.uint8)
     actual = runners.encode(image)
-    assert actual is embedding
-    assert feeds[0][1]["image"].shape == (1, 3, 1024, 1024)
+    assert actual == (embedding, (480, 640))
+    # segment_anything's CPU preparation, as an NCHW batch of one.
+    np.testing.assert_array_equal(feeds[0][1]["image"], pipeline.preprocess(image).transpose(2, 0, 1)[None])
     assert len(feeds) == 1  # One whole encoder invocation, no intermediate feature component.
-    assert runners.decode(actual, {"point_coords": "coordinates", "point_types": "types"}) == ("masks", "scores")
+    mask, score = runners.decode(actual, {"point_coords": "coordinates", "point_types": "types"})
     assert feeds[-1][1] == {"image_embeddings": embedding, "point_coords": "coordinates", "point_types": "types"}
+    np.testing.assert_array_equal(mask, pipeline.image_mask(masks[0, 0], (480, 640)))
+    assert mask.shape == (480, 640) and mask[:240].all() and not mask[240:].any()
+    assert score == pytest.approx(0.75)
 
 
 @pytest.fixture
@@ -334,26 +366,111 @@ def test_fp32_failed_serialization_does_not_publish_a_partial_file(load_script, 
     assert list(tmp_path.iterdir()) == []
 
 
-def test_native_runner_reuses_one_whole_encoder_for_repeated_prompts(load_script, monkeypatch):
+def _decoded(size: tuple[int, int], score: float = 0.5):
     from types import SimpleNamespace
 
+    masks = np.zeros((1, *size), np.uint8)
+    masks[0, : size[0] // 2] = 255
+    boxes = np.array([[0, 0, size[1], size[0] // 2, score, 0]], np.float32)
+    return [SimpleNamespace(boxes=SimpleNamespace(to_numpy=lambda copy: boxes.copy()),
+                            masks=SimpleNamespace(to_numpy=lambda copy: masks.copy()))]
+
+
+def test_native_runner_reuses_one_whole_encoder_for_repeated_prompts(load_script, monkeypatch):
     script = load_script("accuracy")
     runners = script.Runners.__new__(script.Runners)
+    runners.runners, runners.size = {}, None
     calls = []
     embedding = object()
     runners.prompt_encoding = lambda coords: "encoding"
     monkeypatch.setattr(script, "hwc", lambda value: value)
+    monkeypatch.setattr(script, "rgb", lambda image: "rgb image")
     monkeypatch.setattr(script, "handoff", lambda tensors: tensors)
+    monkeypatch.setattr(sys.modules["pyneat"], "decode_segmentation", lambda outputs: _decoded((10, 20), 0.875))
 
     def run(component, inputs):
         calls.append(component)
         if component == "image_encoder":
+            assert inputs == ["rgb image"]
             return [embedding]
-        assert inputs[0] is embedding
-        return [SimpleNamespace(to_numpy=lambda copy: np.zeros((1, 4), np.float32)) for _ in range(2)]
+        assert inputs == [embedding, "encoding", "types"]
+        return ["boxdecode"]
 
     runners.run = run
-    encoded = runners.encode(np.zeros((10, 20, 3), np.float32))
+    encoded = runners.encode(np.zeros((10, 20, 3), np.uint8))
     for _ in range(3):
-        runners.decode(encoded, {"point_coords": "coords", "point_types": "types"})
+        mask, score = runners.decode(encoded, {"point_coords": "coords", "point_types": "types"})
+        assert mask.dtype == bool and mask.shape == (10, 20) and mask[:5].all() and not mask[5:].any()
+        assert score == 0.875
     assert calls == ["image_encoder", "prompt_decoder", "prompt_decoder", "prompt_decoder"]
+
+
+def test_a_new_image_size_gets_a_new_decoder_runner(load_script, monkeypatch):
+    from types import SimpleNamespace
+
+    script = load_script("accuracy")
+    runners = script.Runners.__new__(script.Runners)
+    runners.runners, runners.size = {}, None
+    built, closed = [], []
+    runners.prompt_encoding = lambda coords: "encoding"
+    monkeypatch.setattr(script, "hwc", lambda value: value)
+    monkeypatch.setattr(script, "rgb", lambda image: image.shape)
+    monkeypatch.setattr(script, "handoff", lambda tensors: tensors)
+
+    def model(component):
+        def build(inputs):
+            built.append((component, runners.size))
+            return SimpleNamespace(run=lambda inputs, timeout_ms: ["output"],
+                                   close=lambda: closed.append((component, runners.size)))
+        return SimpleNamespace(build=build)
+
+    runners.models = {name: model(name) for name in script.COMPONENTS}
+    for size in ((480, 640), (480, 640), (427, 640)):
+        monkeypatch.setattr(sys.modules["pyneat"], "decode_segmentation", lambda outputs, size=size: _decoded(size))
+        embedding = runners.encode(np.zeros((*size, 3), np.uint8))
+        for _ in range(2):
+            assert runners.decode(embedding, {"point_coords": "coords", "point_types": "types"})[0].shape == size
+    # One encoder runner for every size; one decoder runner per size, the previous one closed first.
+    assert built == [("image_encoder", (480, 640)), ("prompt_decoder", (480, 640)), ("prompt_decoder", (427, 640))]
+    assert closed == [("prompt_decoder", (480, 640))]
+    with pytest.raises(ValueError, match="expected one"):
+        monkeypatch.setattr(sys.modules["pyneat"], "decode_segmentation", lambda outputs: _decoded((480, 640)))
+        runners.decode(embedding, {"point_coords": "coords", "point_types": "types"})
+
+
+def test_images_run_grouped_by_size_and_keep_every_result(load_script, monkeypatch, tmp_path):
+    script = load_script("accuracy")
+    records = {
+        1: {"id": 1, "file_name": "1.jpg", "height": 480, "width": 640},
+        2: {"id": 2, "file_name": "2.jpg", "height": 427, "width": 640},
+        3: {"id": 3, "file_name": "3.jpg", "height": 480, "width": 640},
+        4: {"id": 4, "file_name": "4.jpg", "height": 427, "width": 640},
+    }
+    annotations = {image_id: [{"image_id": image_id, "category_id": 1, "bbox": [1, 2, 30, 40]}] for image_id in records}
+
+    class GroundTruth:
+        def loadImgs(self, ids):
+            return [records[image_id] for image_id in ids]
+
+        def getAnnIds(self, imgIds, iscrowd):
+            assert iscrowd is False
+            return imgIds
+
+        def loadAnns(self, ids):
+            return annotations[ids]
+
+    monkeypatch.setattr(script, "read_rgb", lambda path: path.stem)
+    monkeypatch.setattr(script, "box_prompt", lambda bbox, size: size)
+    monkeypatch.setattr(script, "result", lambda annotation, mask, score: (annotation["image_id"], mask, score))
+    encoded = []
+
+    def encode(image):
+        encoded.append(int(image))
+        return int(image)
+
+    results, prompts = script.evaluate(
+        GroundTruth(), [1, 2, 3, 4], tmp_path, encode, lambda image_id, size: (size, float(image_id))
+    )
+    assert encoded == [2, 4, 1, 3]  # smallest size first; ids in order within a size
+    assert prompts == 4
+    assert sorted(results) == [(1, (480, 640), 1.0), (2, (427, 640), 2.0), (3, (480, 640), 3.0), (4, (427, 640), 4.0)]

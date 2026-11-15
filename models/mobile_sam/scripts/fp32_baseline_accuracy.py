@@ -1,5 +1,8 @@
 """Score MobileSAM's FP32 ONNX chain with the same COCO box prompts and mask scoring as accuracy.py.
 
+The chain prepares each image and resizes each mask on the CPU, as segment_anything does (pipeline.preprocess and
+pipeline.image_mask), where accuracy.py has Neat do both on the board.
+
 Run on a host with the accuracy dependencies, onnx and onnxruntime; no PyNeat, registry credentials or YAML are
 needed. --onnx is the verified side-by-side ONNX consumed by compile.py. This is the masked six-slot exported
 reference, not an independent upstream SamPredictor oracle. No score is published until measured.
@@ -26,12 +29,13 @@ from pathlib import Path
 
 import accuracy
 import numpy as np
-from pipeline import COMPONENTS, INPUT_SHAPES, tensor_name
+from pipeline import COMPONENTS, INPUT_SHAPES, image_mask, mask_layout, preprocess, tensor_name
 from surgery import split_components
 
 CONDITIONS = (
     "FP32 ONNX Runtime CPU; each non-crowd object's ground-truth box, mask 0, "
-    "six-slot prompts with inactive-key masking; identical preprocessing and COCO scoring to accuracy.py"
+    "six-slot prompts with inactive-key masking; segment_anything's CPU preprocessing and mask resizing; "
+    "the same prompts and COCO scoring as accuracy.py"
 )
 
 
@@ -100,13 +104,19 @@ class FloatRunners:
     def run(self, component: str, values: dict[str, np.ndarray]) -> list[np.ndarray]:
         return self.sessions[component].run(None, {tensor_name(component, key): value for key, value in values.items()})
 
-    def encode(self, image: np.ndarray) -> np.ndarray:
-        (embedding,) = self.run("image_encoder", {"image": np.ascontiguousarray(image.transpose(2, 0, 1)[None])})
-        return embedding
+    def encode(self, image: np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
+        """An RGB image's embedding, and the image size its masks are resized to."""
+        pixels = preprocess(image)
+        (embedding,) = self.run("image_encoder", {"image": np.ascontiguousarray(pixels.transpose(2, 0, 1)[None])})
+        return embedding, image.shape[:2]
 
-    def decode(self, embedding: np.ndarray, prompt: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-        masks, scores = self.run("prompt_decoder", {"image_embeddings": embedding, **prompt})
-        return masks, scores
+    def decode(
+        self, embedding: tuple[np.ndarray, tuple[int, int]], prompt: dict[str, np.ndarray]
+    ) -> tuple[np.ndarray, float]:
+        """The first mask, resized to the image and thresholded, and its predicted IoU."""
+        features, size = embedding
+        masks, scores = mask_layout(*self.run("prompt_decoder", {"image_embeddings": features, **prompt}))
+        return image_mask(masks[0], size), float(scores[0])
 
 
 def main(argv: list[str] | None = None) -> int:

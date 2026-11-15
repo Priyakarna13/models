@@ -49,12 +49,12 @@ build_profiles:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
   # A genuine INC mixed-precision build remains disabled until full native quality and performance pass.
 
+# Display only: Neat letterboxes the image top-left into the encoder's 1024x1024 input and normalizes it, and Neat's
+# MobileSAM decoder resizes the chosen mask to the image and thresholds it.
 pipeline:
-- {cpu: "Resize the longer side to 1024, normalize, pad to 1024x1024"}
 - {component: image_encoder}
 - {cpu: "CPU FP32 prompt Fourier encoding and one-hot point types"}
 - {component: prompt_decoder}
-- {cpu: "Upsample the chosen mask's logits to the image and threshold at 0"}
 
 # Scored against the float32 ONNX encoder and decoder, on fixed prompts, since COCO has no prompt annotations.
 numerical_fidelity:
@@ -74,7 +74,7 @@ reference_metrics:
 - origin: fp32_baseline
   script: scripts/fp32_baseline_accuracy.py
   dataset: {id: coco-2017, split: val2017}
-  conditions: FP32 ONNX on ONNX Runtime 1.21.1 CPU; all 5000 COCO val2017 images and 36335 non-crowd ground-truth box prompts; mask 0; six prompt slots with inactive-key masking; identical preprocessing and COCO mask scoring to accuracy.py.
+  conditions: FP32 ONNX on ONNX Runtime 1.21.1 CPU; all 5000 COCO val2017 images and 36335 non-crowd ground-truth box prompts; mask 0; six prompt slots with inactive-key masking; segment_anything's CPU preprocessing and mask resizing; the same prompts and COCO mask scoring as accuracy.py.
   note: Exported-source reference, not a paper score, detection benchmark, native result or independent upstream task score. ONNX SHA256 851318a1de33b9b6cea8dfbcf8d0d9644cc3434915f4653da49959c0289359d6.
   metrics:
     coco_mask_map: 0.5528711608445899

@@ -52,21 +52,28 @@ def test_serial_path_prepares_each_frame_and_handoffs_only_between_components(lo
 
     script = load_script("performance")
     events = []
-    monkeypatch.setattr(script, "prepare_image", lambda frame: events.append("image") or "pixels")
     monkeypatch.setattr(script, "prepare_prompt", lambda frame, encoding: events.append("prompt") or ["prompt"])
     monkeypatch.setattr(script, "handoff", lambda tensors: events.append("handoff") or tensors)
     monkeypatch.setattr(script, "finish", lambda tensors, frame: events.append("mask") or "final-mask")
-    runners = [SimpleNamespace(run=lambda inputs, **kw: ["output"]) for _ in script.COMPONENTS]
+
+    def run(name):
+        return lambda inputs, **kw: events.append((name, inputs)) or ["output"]
+
+    runners = [SimpleNamespace(run=run(name)) for name in script.COMPONENTS]
     for _ in range(2):
-        assert script.infer_one(runners, np.zeros((720, 1280, 3), np.uint8), "encoding") == "final-mask"
-    assert events == ["image", "prompt", "handoff", "mask"] * 2
+        assert script.infer_one(runners, "image", np.zeros((720, 1280, 3), np.uint8), "encoding") == "final-mask"
+    # Neat prepares the same camera image inside the encoder's pipeline on every frame.
+    step = ["prompt", ("image_encoder", ["image"]), "handoff", ("prompt_decoder", ["output", "prompt"]), "mask"]
+    assert events == step * 2
 
 
-def test_finish_reads_owned_outputs_without_payload_copy(load_script):
+def test_finish_reads_neats_decoded_mask_without_payload_copy(load_script, monkeypatch):
+    from types import SimpleNamespace
+
     import numpy as np
 
     script = load_script("performance")
-    reads = []
+    reads, decoded = [], []
 
     class Tensor:
         def __init__(self, array):
@@ -77,12 +84,57 @@ def test_finish_reads_owned_outputs_without_payload_copy(load_script):
             self.array.flags.writeable = False
             return self.array
 
-    masks = np.full((1, 256, 256, 4), -1, np.float32)
-    masks[..., 2] = 1
-    outputs = [Tensor(masks), Tensor(np.array([[99, 0.1, 0.9, 0.2]], np.float32))]
-    result = script.finish(outputs, np.zeros((300, 600, 3), np.uint8))
-    assert reads == [False, False]
-    assert result.shape == (300, 600) and result.all() and result.flags.owndata
+    masks = np.zeros((1, 300, 600), np.uint8)
+    masks[0, 100:200] = 255
+
+    def decode_segmentation(tensors):
+        decoded.append(tensors)
+        return [SimpleNamespace(masks=Tensor(masks))]
+
+    monkeypatch.setattr(script.pyneat, "decode_segmentation", decode_segmentation)
+    result = script.finish(["boxdecode"], np.zeros((300, 600, 3), np.uint8))
+    assert decoded == [["boxdecode"]] and reads == [False]
+    assert result.shape == (300, 600) and result.flags.owndata
+    assert result[100:200].all() and not result[:100].any() and not result[200:].any()
+    with pytest.raises(ValueError, match="one decoded mask"):
+        script.finish(["masks", "iou_predictions"], np.zeros((300, 600, 3), np.uint8))
+    with pytest.raises(ValueError, match="expected one"):
+        script.finish(["boxdecode"], np.zeros((720, 1280, 3), np.uint8))
+
+
+def test_neat_prepares_the_frame_and_decodes_the_mask_as_sam_does(load_script):
+    import numpy as np
+
+    script = load_script("performance")
+    pyneat = script.pyneat
+
+    encoder = script.image_options()
+    preprocess = encoder.preprocess
+    assert preprocess.kind == pyneat.InputKind.Image
+    assert (preprocess.input_max_width, preprocess.input_max_height) == (1280, 720)
+    assert preprocess.resize.mode == pyneat.ResizeMode.Letterbox
+    assert preprocess.resize.placement == pyneat.LetterboxPlacement.TopLeft
+    assert preprocess.resize.pad_value == 116
+    assert preprocess.resize.interpolation == pyneat.ResizeInterpolation.BilinearAntialiased
+    assert preprocess.rescale_factor == 1.0
+    # segment_anything's float32 statistics on 0-255 pixels, which Core keeps as float32.
+    assert np.float32(preprocess.normalize.mean).tolist() == np.float32([123.675, 116.28, 103.53]).tolist()
+    assert np.float32(preprocess.normalize.stddev).tolist() == np.float32([58.395, 57.12, 57.375]).tolist()
+    assert preprocess.normalize.has_explicit_stats
+    assert preprocess.floating_conversion == pyneat.PreprocFloatingConversion.NearestEven
+
+    decoder = script.decoder_options()
+    assert decoder.decode_type == pyneat.BoxDecodeType.MobileSam
+    assert decoder.multimask_output is True  # one click: the best of masks 1-3
+    assert decoder.preprocess.kind == pyneat.InputKind.Tensor
+
+
+def test_handoff_copies_the_embedding_with_its_geometry(load_script):
+    from types import SimpleNamespace
+
+    script = load_script("performance")
+    outputs = [SimpleNamespace(cvu=lambda: "embedding in EV74 memory")]
+    assert script.handoff(outputs) == ["embedding in EV74 memory"]
 
 
 @pytest.mark.parametrize("failure_index", [0, 1])
@@ -120,7 +172,7 @@ def test_latency_failure_closes_runners(load_script, monkeypatch, tmp_path):
     monkeypatch.setattr(script.PromptEncoding, "from_package", lambda *args: "encoding")
     monkeypatch.setattr(script, "sample_image", lambda dataset: dataset / "image.jpg")
     monkeypatch.setattr(script, "read_frame", lambda source: "frame")
-    monkeypatch.setattr(script, "prepare_image", lambda frame: "image")
+    monkeypatch.setattr(script, "image_tensor", lambda frame: "image")
     monkeypatch.setattr(script, "prepare_prompt", lambda frame, encoding: ["prompt"])
     monkeypatch.setattr(script, "build_runners", lambda *args: runners)
 
@@ -145,13 +197,12 @@ def test_threaded_path_counts_final_masks_and_stops_monitor_on_failure(load_scri
     monkeypatch.setattr(script, "WARMUP_FRAMES", 2)
     monkeypatch.setattr(script, "MEASURED_FRAMES", 3)
     monkeypatch.setattr(script, "MIN_DURATION_S", 0)
-    events = {"images": 0, "prompts": 0, "masks": 0, "handoffs": 0}
+    events = {"prompts": 0, "masks": 0, "handoffs": 0}
 
     def count(name, value):
         events[name] += 1
         return value
 
-    monkeypatch.setattr(script, "prepare_image", lambda frame: count("images", "image"))
     monkeypatch.setattr(script, "prepare_prompt", lambda frame, encoding: count("prompts", ["prompt"]))
     monkeypatch.setattr(script, "handoff", lambda tensors: count("handoffs", tensors))
 
@@ -214,12 +265,12 @@ def test_threaded_path_counts_final_masks_and_stops_monitor_on_failure(load_scri
     runners = [Runner(name) for name in script.COMPONENTS]
     if fail_finish:
         with pytest.raises(ValueError, match="final-mask-failure"):
-            script.measure_throughput(runners, np.zeros((2, 2, 3), np.uint8), "encoding")
+            script.measure_throughput(runners, "image", np.zeros((2, 2, 3), np.uint8), "encoding")
     else:
-        result = script.measure_throughput(runners, np.zeros((2, 2, 3), np.uint8), "encoding")
+        result = script.measure_throughput(runners, "image", np.zeros((2, 2, 3), np.uint8), "encoding")
         assert result.frames == 3 and result.telemetry == "telemetry" and result.seconds > 0
         assert events["masks"] == runners[-1].accepted
-        assert events["images"] == events["masks"]
+        assert runners[0].accepted == events["masks"]
         assert events["prompts"] == events["masks"]
         assert events["handoffs"] == events["masks"]
     assert monitor.starts == monitor.stops == 1 and not monitor.running()

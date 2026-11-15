@@ -1,11 +1,12 @@
 """Measure MobileSAM's COCO mask AP and AR with box prompts, with its MPKs on a Modalix board.
 
 Given one --mpk <component>=<path> per component and --dataset coco-2017-val=<extracted directory>, the script
-encodes each val2017 image once, then prompts the decoder with the ground-truth box of each object that is not a
-crowd, as segment_anything's predictor does with multimask_output=False: the box's two corners, and the first of
-the decoder's masks. Each mask is upsampled to the image as segment_anything does, thresholded at 0, and scored
-with COCO's mask AP and AR under the object's own category, with the decoder's predicted IoU as its score. The
-boxes come from the annotations, so the scores measure the masks alone, not detection.
+encodes each val2017 image once, with Neat preparing it as performance.py does, then prompts the decoder with the
+ground-truth box of each object that is not a crowd, as segment_anything's predictor does with
+multimask_output=False: the box's two corners, and the first of the decoder's masks. Neat's MobileSAM decoder
+upsamples that mask to the image as segment_anything does and thresholds it at 0; the mask is scored with COCO's mask
+AP and AR under the object's own category, with the decoder's predicted IoU as its score. The boxes come from the
+annotations, so the scores measure the masks alone, not detection.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import model_report
 import numpy as np
 from faster_coco_eval import COCO, COCOeval_faster
 from faster_coco_eval.core import mask as mask_util
-from pipeline import COMPONENTS, PromptEncoding, image_mask, mask_layout, preprocess, prompt_inputs
+from pipeline import COMPONENTS, PIXEL_MEAN, PIXEL_STD, PromptEncoding, prompt_inputs
 
 if TYPE_CHECKING:
     import pyneat
@@ -38,6 +39,10 @@ IMAGES = "val2017"
 # The published metrics are over the full val2017 split.
 VAL2017_IMAGES = 5000
 TIMEOUT_MS = 120000
+# The largest val2017 image side; Neat sizes the encoder's input buffers for it.
+MAX_IMAGE_SIDE = 640
+# SAM pads with zeros after normalizing, which is the mean pixel (124, 116, 104); Neat pads one byte for all channels.
+PAD_VALUE = 116
 # Metric name in model.yaml -> COCOeval_faster.stats_as_dict label. With maxDets [1, 10, 100], AR_all, AR_second
 # and AR_third are the recall at 1, 10 and 100 masks per image.
 METRICS = {
@@ -55,7 +60,7 @@ METRICS = {
     "coco_mask_ar_large": "AR_large",
 }
 MAX_DETECTIONS = [1, 10, 100]
-# Images decode and masks encode on worker threads while the MPKs run; OpenCV and Pillow release the GIL.
+# Images decode and masks encode on worker threads while the MPKs run; OpenCV releases the GIL.
 WORKERS = 4
 PREFETCH = 8
 
@@ -66,16 +71,15 @@ def box_prompt(bbox: Sequence[float], original_size: tuple[int, int]) -> dict[st
     return prompt_inputs([(x, y), (x + width, y + height)], ["box_top_left", "box_bottom_right"], original_size)
 
 
-def result(annotation: dict[str, Any], masks: np.ndarray, scores: np.ndarray, original_size: tuple[int, int]) -> dict:
-    """The COCO result for one object: the decoder's first mask, scored by its predicted IoU."""
-    mask = image_mask(masks[0], original_size)
+def result(annotation: dict[str, Any], mask: np.ndarray, score: float) -> dict:
+    """The COCO result for one object: the decoder's first mask on the image, scored by its predicted IoU."""
     rle = mask_util.encode(np.asfortranarray(mask[:, :, None].astype(np.uint8)))[0]
     rle["counts"] = rle["counts"].decode("ascii") if isinstance(rle["counts"], bytes) else rle["counts"]
     return {
         "image_id": annotation["image_id"],
         "category_id": annotation["category_id"],
         "segmentation": rle,
-        "score": float(scores[0]),
+        "score": float(score),
     }
 
 
@@ -102,22 +106,26 @@ def evaluate(
     image_ids: list[int],
     image_dir: Path,
     encode: Callable[[np.ndarray], Any],
-    decode: Callable[[Any, dict[str, np.ndarray]], tuple[np.ndarray, np.ndarray]],
+    decode: Callable[[Any, dict[str, np.ndarray]], tuple[np.ndarray, float]],
 ) -> tuple[list[dict], int]:
-    """Every object's COCO result, and the number of decoder runs. encode takes the encoder's HWC input and
-    returns the image's embedding in any form decode takes; decode returns the masks and IoU predictions."""
-    records = ground_truth.loadImgs(image_ids)
+    """Every object's COCO result, and the number of decoder runs. encode takes the image's RGB pixels and
+    returns its embedding in any form decode takes; decode returns the first mask, as the image's binary pixels,
+    and its predicted IoU.
+
+    Images run grouped by size, because the decoder's masks have the image's size and Neat builds a decoder runner
+    for each size. The order changes no score."""
+    records = sorted(ground_truth.loadImgs(image_ids), key=lambda record: (record["height"], record["width"]))
     results: list[dict] = []
     started, prompts = time.monotonic(), 0
-    load = lambda record: preprocess(read_rgb(image_dir / record["file_name"]))  # noqa: E731
+    load = lambda record: read_rgb(image_dir / record["file_name"])  # noqa: E731
     with ThreadPoolExecutor(WORKERS) as encoders:
         pending: deque = deque()
         for count, (record, image) in enumerate(zip(records, prefetched(load, records)), start=1):
             size = (record["height"], record["width"])
             embedding = encode(image)
             for annotation in ground_truth.loadAnns(ground_truth.getAnnIds(imgIds=record["id"], iscrowd=False)):
-                masks, scores = mask_layout(*decode(embedding, box_prompt(annotation["bbox"], size)))
-                pending.append(encoders.submit(result, annotation, masks, scores, size))
+                mask, score = decode(embedding, box_prompt(annotation["bbox"], size))
+                pending.append(encoders.submit(result, annotation, mask, score))
                 prompts += 1
             while len(pending) > 4 * WORKERS:
                 results.append(pending.popleft().result())
@@ -153,8 +161,32 @@ def score(ground_truth: COCO, results: list[dict], image_ids: list[int]) -> dict
     return coco_stats(scorer)
 
 
+def image_options() -> pyneat.ModelOptions:
+    """The image encoder's, as performance.image_options explains: Neat resizes the longer side to 1024 with
+    antialiased bilinear resampling, places the image top-left, pads and normalizes it as SAM does."""
+    import pyneat
+
+    options = pyneat.ModelOptions()
+    preprocess = options.preprocess
+    preprocess.kind = pyneat.InputKind.Image
+    preprocess.input_max_width = preprocess.input_max_height = MAX_IMAGE_SIDE
+    preprocess.enable = pyneat.AutoFlag.On
+    preprocess.resize.enable = pyneat.AutoFlag.On
+    preprocess.resize.mode = pyneat.ResizeMode.Letterbox
+    preprocess.resize.placement = pyneat.LetterboxPlacement.TopLeft
+    preprocess.resize.pad_value = PAD_VALUE
+    preprocess.resize.interpolation = pyneat.ResizeInterpolation.BilinearAntialiased
+    preprocess.rescale_factor = 1.0
+    preprocess.normalize.enable = pyneat.AutoFlag.On
+    preprocess.normalize.mean = [float(value) for value in PIXEL_MEAN]
+    preprocess.normalize.stddev = [float(value) for value in PIXEL_STD]
+    preprocess.normalize.has_explicit_stats = True
+    preprocess.floating_conversion = pyneat.PreprocFloatingConversion.NearestEven
+    return options
+
+
 def tensor_options() -> pyneat.ModelOptions:
-    """Every component's: the script prepares the inputs; Neat still quantizes and tessellates them."""
+    """The prompt decoder's: the script prepares the prompt's tensors; Neat still casts them."""
     import pyneat
 
     options = pyneat.ModelOptions()
@@ -163,6 +195,25 @@ def tensor_options() -> pyneat.ModelOptions:
     options.preprocess.color_convert.enable = pyneat.AutoFlag.Off
     options.preprocess.normalize.enable = pyneat.AutoFlag.Off
     return options
+
+
+def decoder_options() -> pyneat.ModelOptions:
+    """The prompt decoder's, with Neat's MobileSAM decoder returning mask 0, as for a box prompt."""
+    import pyneat
+
+    options = tensor_options()
+    options.decode_type = pyneat.BoxDecodeType.MobileSam
+    options.multimask_output = False
+    return options
+
+
+def rgb(image: np.ndarray) -> pyneat.Tensor:
+    """An RGB image as the encoder's input, in the memory Neat's preprocessing reads."""
+    import pyneat
+
+    return pyneat.Tensor.from_numpy(
+        image, copy=True, image_format=pyneat.PixelFormat.RGB, memory=pyneat.TensorMemory.EV74
+    )
 
 
 def hwc(value: np.ndarray) -> pyneat.Tensor:
@@ -175,31 +226,25 @@ def hwc(value: np.ndarray) -> pyneat.Tensor:
 
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:
-    """Owned, explicitly HWC inputs of the next component, as performance.handoff explains.
-
-    The admitted outputs have a singleton batch axis. Their read-only NumPy views cannot be re-exported through
-    DLPack, so retain this copy route until a checked direct transfer is qualified on the current Core.
-    """
-    import pyneat
-
-    arrays = [tensor.to_numpy(copy=True) for tensor in tensors]
-    return [
-        pyneat.Tensor.from_numpy(
-            np.ascontiguousarray(array[0] if array.ndim == 4 else array), copy=True, layout=pyneat.TensorLayout.HWC
-        )
-        for array in arrays
-    ]
+    """The encoder's outputs copied to EV74 memory for the decoder, as performance.handoff explains; the copy
+    keeps the image geometry the decoder's mask resize reads, and outlives the encoder's next run."""
+    return [tensor.cvu() for tensor in tensors]
 
 
 class Runners:
-    """The encoder and reusable decoder, each runner built from its first real input."""
+    """The encoder and reusable decoder, each runner built from its first real input. The encoder's runner takes
+    every image size; the decoder's masks have the image's size, so a new size gets a new decoder runner."""
 
     def __init__(self, mpks: dict[str, Path], resources: Path | None = None) -> None:
         import pyneat
 
         self.prompt_encoding = PromptEncoding.from_package(mpks["prompt_decoder"], resources)
-        self.models = {name: pyneat.Model(str(mpks[name]), tensor_options()) for name in COMPONENTS}
+        self.models = {
+            "image_encoder": pyneat.Model(str(mpks["image_encoder"]), image_options()),
+            "prompt_decoder": pyneat.Model(str(mpks["prompt_decoder"]), decoder_options()),
+        }
         self.runners: dict[str, pyneat.ModelRunner] = {}
+        self.size: tuple[int, int] | None = None
 
     def __enter__(self):
         return self
@@ -221,13 +266,21 @@ class Runners:
         return self.runners[component].run(inputs, timeout_ms=TIMEOUT_MS)
 
     def encode(self, image: np.ndarray) -> list[pyneat.Tensor]:
-        return handoff(self.run("image_encoder", [hwc(image)]))
+        if image.shape[:2] != self.size and "prompt_decoder" in self.runners:
+            self.runners.pop("prompt_decoder").close()
+        self.size = image.shape[:2]
+        return handoff(self.run("image_encoder", [rgb(image)]))
 
-    def decode(self, embedding: list[pyneat.Tensor], prompt: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    def decode(self, embedding: list[pyneat.Tensor], prompt: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
+        import pyneat
+
         inputs = [*embedding, hwc(self.prompt_encoding(prompt["point_coords"])), hwc(prompt["point_types"])]
-        masks, scores = self.run("prompt_decoder", inputs)
+        (decoded,) = pyneat.decode_segmentation(self.run("prompt_decoder", inputs))
         # Copies, because the runner reuses its output buffers while a worker may still read them.
-        return masks.to_numpy(copy=True), scores.to_numpy(copy=True)
+        boxes, masks = decoded.boxes.to_numpy(copy=True), decoded.masks.to_numpy(copy=True)
+        if masks.shape != (1, *self.size):
+            raise ValueError(f"expected one {self.size} mask, got {masks.shape}")
+        return masks[0] > 0, float(boxes[0, 4])
 
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:
