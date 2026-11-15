@@ -6,7 +6,7 @@ import {
 import { icons, escapeHtml, branchName, shortSha, profileLabel, variantLabel } from "./ui.js";
 import { formatDate, metricDefinition, metricDisplay } from "./metrics.js";
 import { readPerformance } from "./model-report.js";
-import { accuracyHeadline } from "./model-view.js";
+import { accuracyHeadline } from "./accuracy-section.js";
 import {
   api, writeBranchPreference, writeCachedBranches, writeCachedCatalog,
   runFromCatalogBuild, profileGroups, activeModelBuild, documentationHeroUrl, documentationHeroFallbackUrl, loadVariant, mapWithConcurrency,

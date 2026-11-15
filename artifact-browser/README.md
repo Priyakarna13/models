@@ -124,6 +124,11 @@ removes the board's Linux memory from each performance report as it is loaded,
 so no view of the customer page shows it. The registry still serves that reading;
 the customer page only leaves it out.
 
+`audienceFacts` in `audience.js` lists everything the customer view leaves out, as
+named facts such as `shows.buildDetails`. Page code tests one of those facts, never
+the audience itself, so a new difference between the views is one line in that list
+and one check where the markup is built.
+
 For a local customer build, use `MODEL_BROWSER_UI_MODE=customer` with
 `npm run build:portal --prefix website`; pass the same variable to
 `npm run smoke:portal --prefix website` or `preview.py`. The default local mode
@@ -263,7 +268,13 @@ delegation.
 | `api.js` | Registry requests, caches, and catalog build selection |
 | `branch-builds.js` | Which builds a branch shows, and grouping by workflow |
 | `catalog-view.js` | Model cards, build history, search, and filters |
-| `model-view.js` | The model page |
+| `audience.js` | What the customer and the developer view each show |
+| `model-view.js` | The model page: header, variants, overview, details, and license |
+| `performance-section.js` | Performance: tiles, detail cards, power rails, and the CSV |
+| `execution-section.js` | Execution Graph, Runtime Layer Analysis, and MLA Utilization |
+| `accuracy-section.js` | Accuracy: measured scores, coverage, and reference scores |
+| `page-parts.js` | Markup and helpers the model page's sections share |
+| `download-dialog.js` | The download dialog |
 | `compare-view.js` | The Compare page: pickers and table |
 | `model-report.js` | Reading performance and accuracy model reports |
 | `mla-layer-stats.js` | Analyzing a component's MLA layer stats |

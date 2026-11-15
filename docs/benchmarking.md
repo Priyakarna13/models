@@ -433,7 +433,7 @@ label, unit, direction, Vulcan measurement name (`registry_name`), and the Core 
 telemetry statistic it comes from. Add a reading by adding a row there and its
 display entry in the browser's `metrics.js`; a test keeps the labels, units,
 and directions of the two in step. It appears under **Other measurements**
-until `DETAIL_CARDS` in `model-view.js` gives it a row in one of the
+until `DETAIL_CARDS` in `performance-section.js` gives it a row in one of the
 Performance Details cards.
 
 Initialization timings and MLA memory before and after the run are not exported

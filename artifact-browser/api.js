@@ -2,7 +2,7 @@ import { heroImageSources } from "./hero-images.js";
 // Registry API requests, local caches, and catalog build selection.
 import { deploymentCatalog, runProfile, variantBuildKey, variantBuildRuns } from "./branch-builds.js";
 import { BENCHMARK_RUN_TYPES, customerPerformanceReport } from "./model-report.js";
-import { config, customerView, DEFAULT_BRANCH, branchSelectionEnabled, state, elements, categoryFilters } from "./state.js";
+import { config, shows, DEFAULT_BRANCH, branchSelectionEnabled, state, elements, categoryFilters } from "./state.js";
 
 // The registry answers 429 while all of its readers are busy, so those requests wait and try again.
 const BUSY_RETRY_DELAYS_MS = [500, 1000, 2000];
@@ -49,7 +49,7 @@ async function loadBenchmarkRun(stage, benchmarkFingerprint) {
   return {
     run: summary?.run || resolved,
     parameters: provenance.parameters?.parameters || {},
-    report: report && customerView && stage === "performance" ? customerPerformanceReport(report) : report,
+    report: report && !shows.boardMemory && stage === "performance" ? customerPerformanceReport(report) : report,
   };
 }
 
