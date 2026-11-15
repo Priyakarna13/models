@@ -2,9 +2,12 @@
 
 Model development is not complete without the data used to calibrate and
 measure the model. A model contribution must resolve the same registered dataset
-identity locally that trusted automation will use later. Do not replace it with
+identity locally that CI will use later. Do not replace it with
 an untracked directory, a convenient download, or a private archive whose
 contents cannot be reproduced.
+
+If you only reproduce a published model and cannot reach the registry, follow
+the dataset step in [Reproduce a model](reproduce-a-model.md) instead.
 
 The responsibilities are split across two repositories:
 
@@ -158,10 +161,10 @@ evaluation. Start unresolved access or license fields as `review-required`.
 
 ### 3. Place the archive through the authorized Artifactory process
 
-An authorized dataset owner or Artifactory operator places the archive in the
-approved SiMa dataset repository. The Models and Dataset Registry tools do not
-grant Artifactory write access and must not receive upload credentials. Record
-the stable HTTPS download URL and choose a lowercase kebab-case variant name.
+Ask an authorized dataset owner to place the archive in the approved SiMa
+dataset repository. You do not upload it yourself, and no Models or Dataset
+Registry tool takes upload credentials. Record the stable HTTPS download URL
+and choose a lowercase kebab-case variant name.
 
 ### 4. Add or update the Dataset Registry entry
 
@@ -201,11 +204,10 @@ and does not download private data.
 
 ### 5. Wait for review, mirroring, and resolution
 
-After the Dataset Registry change is reviewed and merged, protected automation
-mirrors the registered Artifactory archive into private Vulcan storage. That
-mirror is a transport fallback, not governance approval or an immutable
-lifecycle release. Confirm the new identity resolves locally from Artifactory
-before referencing it from a model.
+After the Dataset Registry change is reviewed and merged, the registry mirrors
+the registered archive. The mirror only gives the resolver a fallback when
+Artifactory is unavailable. Confirm the new identity resolves locally from
+Artifactory before you reference it from a model.
 
 ### 6. Bind the reviewed dataset to the model
 

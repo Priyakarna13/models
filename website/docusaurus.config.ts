@@ -25,6 +25,7 @@ const config: Config = {
   // <route>/index.html, so the static artifact must use directory indexes.
   trailingSlash: true,
   onBrokenLinks: 'throw',
+  onBrokenAnchors: 'throw',
   storage: {
     type: 'localStorage',
     namespace: false,
@@ -105,6 +106,7 @@ const config: Config = {
         {
           title: 'Start here',
           items: [
+            {label: 'Reproduce a model', to: '/docs/reproduce-a-model'},
             {label: 'Add a model', to: '/docs/adding-a-model'},
             {label: 'Local testing', to: '/docs/local-development'},
             {label: 'Contribution checklist', to: '/docs/contributing'},

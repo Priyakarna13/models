@@ -11,9 +11,10 @@
 
 <p align="center">
   <a href="https://developer.sima.ai/models/">Model Browser</a> ·
+  <a href="docs/reproduce-a-model.md">Reproduce a Model</a> ·
   <a href="docs/adding-a-model.md">Add a Model</a> ·
-  <a href="docs/README.md">Developer Documentation</a> ·
-  <a href="design-doc/model-registry-architecture.md">Architecture</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="knowledge/architecture.md">Architecture</a> ·
   <a href="https://github.com/sima-neat/models/issues">Issues</a>
 </p>
 
@@ -50,8 +51,8 @@ Each stage has a **fingerprint**: a SHA-256 of every input that decides its
 result. CI runs a stage only when no published result carries its current
 fingerprint, so a change reruns exactly the stages whose inputs it touches.
 [What a change reruns](docs/adding-a-model.md#9-know-what-a-change-reruns)
-lists the inputs of each fingerprint, and the
-[vocabulary](AGENTS.md#vocabulary) defines these terms.
+lists the inputs of each fingerprint, and [concepts](docs/concepts.md)
+defines these terms.
 
 A model can also compile from a converted ONNX file instead of a pinned
 download. See [conversion artifacts](docs/conversion-artifacts.md).
@@ -83,17 +84,18 @@ tools/model_registry/   shared CLI and lifecycle code
 scripts/                stage runner scripts and CI helpers
 schemas/                JSON Schemas for model.yaml, tests, and reports
 artifact-browser/       the Model Browser
-docs/                   contribution guides
-design-doc/             architecture
+docs/                   the public guides: reproduce, add, or update a model
+knowledge/              how the tooling, CI, and publication work
 ```
 
-The [architecture](design-doc/model-registry-architecture.md#directory-contract)
-describes every directory.
+The [architecture](knowledge/architecture.md) describes every directory.
 
 ## Documentation
 
-- [Developer documentation](docs/README.md): the contribution path from
-  `model.yaml` to review.
-- [Model Browser architecture](design-doc/model-registry-architecture.md):
-  components, the CI workflows, and the registry release state.
+- [Reproduce a model](docs/reproduce-a-model.md): rebuild a published model
+  and measure it on your own DevKit.
+- [Documentation](docs/README.md): the contribution path from `model.yaml`
+  to review.
+- [Architecture](knowledge/architecture.md) and [CI flow](knowledge/ci-flow.md):
+  the components, the shared tooling, and what each workflow does.
 - [Model taxonomy](docs/model-taxonomy.md): sanctioned category IDs.

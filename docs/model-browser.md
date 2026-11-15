@@ -14,13 +14,12 @@ links with a blue active label. The catalog and contributor documentation share
 the portal's theme preference.
 Standalone previews retain local navigation when the shared header is unavailable.
 
-CI builds the customer UI from `main` and the developer UI from `develop` and
-feature branches. Both currently use the staging registry and share the staging
-publication URL; the most recently published build determines its UI. The customer
-view uses the main catalog and hides branch/compiler filters, build history,
-the Details section and contributor navigation. It also leaves out the
-board's Linux memory, MLA Utilization, the **Raw result** download, and the
-commit and workflow links of each result. The developer view keeps all of them. Selecting a branch in the developer UI changes the catalog, not the UI.
+The browser has two views. The customer view shows the Main catalog and hides the
+branch and compiler filters, build history, the Details section and contributor
+navigation. It also leaves out the board's Linux memory, MLA Utilization, the
+**Raw result** download, and the commit and workflow links of each result. The
+developer view keeps all of them. Selecting a branch in the developer view changes
+the catalog, not the view.
 
 While the catalog loads, the list shows a spinner. A message that a branch has
 no models appears only after the registry has answered.
@@ -123,7 +122,7 @@ icons in both UI modes; narrow screens stack them. The tags name what holds for 
 tasks, model family, model type and license. The download dialog offers an outlined **Copy CLI command**
 button with a copy icon alongside browser downloads where available. Customer
 package dialogs name the model, summarize the variant and size, and show a quiet
-filename block and license line with a **Download model** action. Developer dialogs
+filename block and license line with a **Download** action. Developer dialogs
 use the same layout with extra fields for package identifiers, component counts,
 format, checksums and attribution. Dialogs and action buttons use softly rounded corners.
 The model's License section retains attribution in both views. Dialog actions
@@ -152,7 +151,7 @@ in this order:
    sections appear inline from the
    rest of the README after its checksum is verified, so the title, hero, and
    overview are never shown twice. The README follows the
-   [README requirements](https://github.com/sima-neat/models/blob/develop/AGENTS.md#model-readme-requirements).
+   [README requirements](model-readme.md).
 2. **Performance.** One whole-model result for the selected build profile,
    read from the profile's [model report](benchmarking.md#workload-and-measurements).
    Core models show four tiles: throughput, average latency, average SoC
@@ -297,25 +296,11 @@ in this order:
 A section that has no data, such as Accuracy for a model with neither an
 accuracy result nor published scores, is left out.
 
-## Preview your model locally
-
-`artifact-browser/preview.py` serves the browser with a local registry API built
-from `models/`, so it shows your model's card, README, hero, build profiles,
-packages, provenance, and accuracy and fidelity declarations as this checkout
-defines them. Run IDs, timestamps, sizes, and measured values are synthetic. It
-needs a Python environment with the repository installed:
-
-```bash
-python -m pip install .
-```
-
-```bash
-python artifact-browser/preview.py
-```
-
-Open the URL the script prints, find your model in the catalog, and open its
-page. The preview is for checking content and layout; the real numbers come
-from CI after merge.
+For models declaring `performance.scope: components`, the Performance section
+shows a component selector. Each selection has its own throughput, latency,
+power, memory, workload and telemetry, with no combined score. The catalog table
+lists the components' measurements separately. Models using the default
+whole-model scope, such as RF-DETR, keep their pipeline-level result.
 
 ### Model folder downloads
 
@@ -336,117 +321,26 @@ When the registry resolves a deployment to Hugging Face, the dialog links to
 its pinned repository revision and optional subdirectory. This location is
 separate from the original source checkpoint linked in the page header.
 
-Branch views honor explicit `branch_deployments` (or `approved_deployments`)
-selections, including inherited compilation runs and their matching package.
-Newer unselected runs do not replace an explicitly selected deployment.
-Feature branches show finalized on-demand candidates before promotion; metadata
-and unselected runs do not create a card. Develop and Main show approved deployments.
+A feature branch shows its finished on-demand builds before they are promoted.
+Develop and Main show only promoted on-demand builds. See
+[Model promotion](model-promotion.md).
 
-## Preview production data from staging
+## Preview your model locally
 
-The staging browser uses staging by default. Open
-[the production preview](https://developer-stg.sima.ai/models?env=prod)
-to run the same staged UI against the public read-only production Models registry.
-The registry label changes to **Production registry**, downloads use production,
-and catalog/branch caches stay separate by API origin. Model navigation retains
-`env=prod`; remove that parameter to return to staging. Select the catalog branch
-you want to inspect; changing backend does not populate or promote a catalog.
-
-The preview uses only the fixed `https://models-registry.neat.sima.ai` reader.
-Other `env` values retain the default backend; query strings cannot set arbitrary
-API origins. Production images use production API reads, never the staging image
-CDN. The preview is enabled only by staging configuration, including customer UI
-builds staged for review. Local custom APIs and production configurations do not
-opt into this override. No AWS credentials are sent by the browser. CORS permits
-cross-origin reads, while registry policy enforces repository and artifact access.
-
-## Hide branch selection
-
-Add `?branches=0` to browse Main with the branch selector hidden. This overrides
-saved branch preferences and any `branch=` parameter, without changing the UI
-audience or the selected backend. Other developer filters remain available.
-Clear filters and in-page navigation keep Main selected and retain `branches=0`.
-The preview does not replace your saved branch preference. Omit the parameter
-(or use `branches=1`) to restore the normal branch behavior; customer UI remains
-Main-only. Combine with `env=prod` as `/models/?env=prod&branches=0` to preview
-production Main. That catalog must be published before it can display models.
-
-## Production frontend
-
-The production browser is hosted at [developer.sima.ai/models](https://developer.sima.ai/models/) and
-uses `https://models-registry.neat.sima.ai`. Build with
-`MODEL_BROWSER_ENVIRONMENT=production` to select both production origins and
-the Production label. Audience selection is independent: developer mode exposes
-branch selection; customer mode shows Main only. Deploying the frontend does
-not publish, promote, or rebuild model catalogs. An unpublished branch remains
-empty; the browser never substitutes staging data.
-
-From a clean committed checkout, with AWS production operator credentials,
-Node dependencies, Chromium and the Python registry dependencies available:
+`artifact-browser/preview.py` serves the browser with a local registry API built
+from `models/`. It shows your model's card, README, hero, build profiles,
+packages, provenance, and accuracy and fidelity declarations as this checkout
+defines them. Run IDs, timestamps, sizes, and measured values are synthetic. It
+needs a Python environment with the repository installed:
 
 ```bash
-AWS_PROFILE=vulcan-prod scripts/deploy-production-model-browser.sh developer
+python -m pip install .
 ```
 
-Use `customer` for Main-only presentation. The script builds and smoke-tests the
-portal, publishes only the production docs bucket's `models/` prefix, and
-invalidates only `/models` paths. It retains old assets and uploads the entry
-point last. The generated configuration filename hashes its contents, so changing
-audience or backend at the same source revision preserves the previous settings
-for cached pages and index rollback. Before deployment, record the prior root index object version and
-source revision. Roll back by restoring that index version and invalidating
-`/models` and `/models/*`; for a first deployment with no prior page, remove only
-the newly created root index to disable the entry point. Restore the previous
-full build from its source revision if documentation routes also need rollback.
-Model registry contents and publisher environment selections are unchanged.
+```bash
+python artifact-browser/preview.py
+```
 
-## Staging release notice
-
-Staging builds show an unofficial-release notice above the browser navigation,
-including the connected backend environment and the frontend's source branch and
-commit. These are the browser build's details, independent of the selected model
-catalog branch. A staging browser previewing production data keeps the notice
-and identifies the production backend. Local builds with uncommitted changes
-say so beside the commit. Production builds omit the staging notice.
-
-## Manual frontend deployment in GitHub Actions
-
-Run **Deploy Model Browser & Docs** from the protected `develop` or `main`
-branch. Select `staging` or `production` and the developer or customer audience.
-The selected workflow commit is the frontend source revision. This workflow
-builds and tests the browser and bundled docs, then publishes only `models/`
-using that environment's Terraform-managed bucket, KMS key, identity and CDN.
-It neither builds models nor publishes the registry tooling package. Existing
-production Basic Auth is infrastructure-managed and stays enabled.
-
-The dispatching user must belong to `owners-models` and approve their own
-`model-browser-deploy` environment gate. GitHub's Run button is visible to other
-writers, but their runs cannot deploy, even if a different owner approves them.
-The gate allows only that team, disables administrator bypass, and restricts
-workflow refs to `develop` and `main`. The authorization job verifies the gate
-and the dispatcher's approval before build/configuration/AWS jobs. Reruns are
-rejected to avoid reusing historical authorization; dispatch a fresh run instead.
-No additional organization-read token is needed.
-
-Automatic staging frontend publication remains as configured in the model
-orchestrator; production frontend publication is manual. Tooling publication
-(**Build and Publish Model Registry**) follows repository `VULCAN_ENV` on both
-push and manual invocation, defaulting to staging only when unset. Its destination
-is independent of this frontend workflow's environment selector.
-
-The environment protection payload is versioned in
-`config/model-browser-deployment-environment.json`. Its two deployment branch
-policies are exact branch names `develop` and `main` (no tags or wildcard refs).
-The workflow must reach the default branch (`main`) before GitHub exposes its
-Run workflow button; merge through the normal reviewed branch promotion. The environment gate is configured
-separately through repository administration and checked again at runtime.
-
-Developer deployments serve model hero illustrations from the matching registry
-environment’s CDN. Existing production illustrations are backfilled before browser
-cutover; image loading retains bounded retries and the registry API fallback.
-
-For models declaring `performance.scope: components`, the Performance section
-shows a component selector. Each selection has its own throughput, latency,
-power, memory, workload and telemetry, with no combined score. The catalog table
-lists the components' measurements separately. Models using the default
-whole-model scope, such as RF-DETR, keep their pipeline-level result.
+Open the URL the script prints, find your model in the catalog, and open its
+page. The preview is for checking content and layout. The real numbers come
+from CI after merge.
