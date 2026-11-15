@@ -208,21 +208,23 @@ def decoder_options() -> pyneat.ModelOptions:
 
 
 def rgb(image: np.ndarray) -> pyneat.Tensor:
-    """An RGB image as the encoder's input, in the memory Neat's preprocessing reads."""
+    """An RGB image as the encoder's input, in the memory Neat's preprocessing reads; from_numpy refuses a
+    read-only array even when it copies."""
     import pyneat
 
     return pyneat.Tensor.from_numpy(
-        image, copy=True, image_format=pyneat.PixelFormat.RGB, memory=pyneat.TensorMemory.EV74
+        np.require(image, requirements="CW"), copy=True, image_format=pyneat.PixelFormat.RGB,
+        memory=pyneat.TensorMemory.EV74,
     )
 
 
 def hwc(value: np.ndarray) -> pyneat.Tensor:
-    """An HWC array, or an NCHW batch of one, as the HWC tensor Neat takes."""
+    """An HWC array, or an NCHW batch of one, as the HWC tensor Neat takes, made writable for from_numpy."""
     import pyneat
 
     if value.ndim == 4:
         value = value[0].transpose(1, 2, 0)
-    return pyneat.Tensor.from_numpy(np.ascontiguousarray(value), copy=True, layout=pyneat.TensorLayout.HWC)
+    return pyneat.Tensor.from_numpy(np.require(value, requirements="CW"), copy=True, layout=pyneat.TensorLayout.HWC)
 
 
 def handoff(tensors: list[pyneat.Tensor]) -> list[pyneat.Tensor]:

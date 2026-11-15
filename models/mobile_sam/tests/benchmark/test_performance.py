@@ -167,13 +167,17 @@ def test_latency_failure_closes_runners(load_script, monkeypatch, tmp_path):
 
     script = load_script("performance")
     closed = []
-    runners = [SimpleNamespace(close=lambda index=index: closed.append(index)) for index in range(3)]
+    runners = [
+        SimpleNamespace(close=lambda index=index: closed.append(index), run=lambda inputs, **kw: ["embedding"])
+        for index in range(3)
+    ]
     monkeypatch.setattr(script, "mla_stats", lambda mpk: ({}, {}))
     monkeypatch.setattr(script.PromptEncoding, "from_package", lambda *args: "encoding")
     monkeypatch.setattr(script, "sample_image", lambda dataset: dataset / "image.jpg")
     monkeypatch.setattr(script, "read_frame", lambda source: "frame")
     monkeypatch.setattr(script, "image_tensor", lambda frame: "image")
     monkeypatch.setattr(script, "prepare_prompt", lambda frame, encoding: ["prompt"])
+    monkeypatch.setattr(script, "handoff", lambda tensors: tensors)
     monkeypatch.setattr(script, "build_runners", lambda *args: runners)
 
     def fail(*args):
@@ -183,6 +187,36 @@ def test_latency_failure_closes_runners(load_script, monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="latency-failure"):
         script.benchmark_pipeline(dict.fromkeys(script.COMPONENTS, tmp_path / "model.tar.gz"), tmp_path, tmp_path)
     assert closed == [2, 1, 0]
+
+
+def test_the_report_plans_the_decoder_from_the_inputs_it_measured(load_script, monkeypatch, tmp_path):
+    # Neat plans a Segment Anything decoder only from inputs: its masks take the image's size from them.
+    from types import SimpleNamespace
+
+    script = load_script("performance")
+    plans, reported = [], {}
+    models = iter([SimpleNamespace(execution_plan=lambda *inputs: plans.append(("encoder", inputs)) or "encoder plan"),
+                   SimpleNamespace(execution_plan=lambda *inputs: plans.append(("decoder", inputs)) or "decoder plan")])
+    monkeypatch.setattr(script.pyneat, "Model", lambda *args: next(models))
+    runners = [SimpleNamespace(close=lambda: None, run=lambda inputs, **kw: ["embedding"]) for _ in range(2)]
+    monkeypatch.setattr(script, "mla_stats", lambda mpk: ({}, {}))
+    monkeypatch.setattr(script.PromptEncoding, "from_package", lambda *args: "encoding")
+    monkeypatch.setattr(script, "sample_image", lambda dataset: dataset / "image.jpg")
+    monkeypatch.setattr(script, "read_frame", lambda source: "frame")
+    monkeypatch.setattr(script, "image_tensor", lambda frame: "image")
+    monkeypatch.setattr(script, "prepare_prompt", lambda frame, encoding: ["coords", "types"])
+    monkeypatch.setattr(script, "handoff", lambda tensors: [f"{tensor} in EV74 memory" for tensor in tensors])
+    monkeypatch.setattr(script, "build_runners", lambda *args: runners)
+    monkeypatch.setattr(script, "measure_latency", lambda *args: [0.1])
+    monkeypatch.setattr(script, "measure_throughput", lambda *args: "throughput")
+    monkeypatch.setattr(script, "write_report", lambda output, latency, speed, models, *args: reported.update(models))
+
+    script.benchmark_pipeline(dict.fromkeys(script.COMPONENTS, tmp_path / "model.tar.gz"), tmp_path, tmp_path)
+
+    assert list(reported) == list(script.COMPONENTS)
+    assert reported["image_encoder"].execution_plan() == "encoder plan"
+    assert reported["prompt_decoder"].execution_plan() == "decoder plan"
+    assert plans == [("encoder", ()), ("decoder", (["embedding in EV74 memory", "coords", "types"],))]
 
 
 @pytest.mark.parametrize("fail_finish", [False, True])
@@ -380,3 +414,21 @@ def test_prompt_encoding_is_per_frame_not_cached(load_script, monkeypatch):
         result = script.prepare_prompt(np.zeros((720, 1280, 3), np.uint8), encode)
         assert [item.shape for item in result] == [(1, 256, 1, 6), (1, 5, 1, 6)]
     assert len(calls) == 2
+
+
+def test_tensors_come_from_writable_arrays(load_script, monkeypatch):
+    # Tensor.from_numpy refuses a read-only array, such as an image NumPy reads from Pillow, even when it copies.
+    import numpy as np
+
+    performance, accuracy = load_script("performance"), load_script("accuracy")
+    given = []
+    monkeypatch.setattr(performance.pyneat.Tensor, "from_numpy", lambda array, **kw: given.append(array) or array)
+    image = np.zeros((48, 64, 3), np.uint8)
+    prompt = np.zeros((1, 5, 1, 6), np.float32)
+    for array in (image, prompt):
+        array.flags.writeable = False
+    for make, value in ((performance.image_tensor, image), (accuracy.rgb, image), (performance.hwc, prompt),
+                        (accuracy.hwc, prompt)):
+        make(value)
+    assert [array.flags.writeable and array.flags.c_contiguous for array in given] == [True] * 4
+    np.testing.assert_array_equal(given[2], prompt[0].transpose(1, 2, 0))

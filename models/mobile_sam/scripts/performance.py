@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import model_report
@@ -103,17 +104,27 @@ def decoder_options() -> pyneat.ModelOptions:
 
 
 def hwc(value: np.ndarray) -> pyneat.Tensor:
-    """A prepared HWC array, or an NCHW batch of one, as an owned tensor for Core."""
+    """A prepared HWC array, or an NCHW batch of one, as an owned tensor for Core.
+
+    Tensor.from_numpy refuses a read-only array even when it copies, so the array is made writable first.
+    """
     if value.ndim == 4:
         value = value[0].transpose(1, 2, 0)
-    return pyneat.Tensor.from_numpy(np.ascontiguousarray(value), copy=True, layout=pyneat.TensorLayout.HWC)
+    return pyneat.Tensor.from_numpy(np.require(value, requirements="CW"), copy=True, layout=pyneat.TensorLayout.HWC)
 
 
 def image_tensor(frame: np.ndarray) -> pyneat.Tensor:
     """The camera frame as the encoder's RGB input, in the memory Neat's preprocessing reads; made once."""
     return pyneat.Tensor.from_numpy(
-        frame, copy=True, image_format=pyneat.PixelFormat.RGB, memory=pyneat.TensorMemory.EV74
+        np.require(frame, requirements="CW"), copy=True, image_format=pyneat.PixelFormat.RGB,
+        memory=pyneat.TensorMemory.EV74,
     )
+
+
+def planned(model: pyneat.Model, inputs: list[pyneat.Tensor]) -> SimpleNamespace:
+    """The model as model_report reads it, its execution plan drawn from real inputs: Neat plans a Segment Anything
+    decoder only from inputs, because its masks take the image's size from them."""
+    return SimpleNamespace(execution_plan=lambda: model.execution_plan(inputs))
 
 
 def prepare_prompt(frame: np.ndarray, encoding: PromptEncoding) -> list[pyneat.Tensor]:
@@ -436,9 +447,13 @@ def benchmark_pipeline(
     image = image_tensor(frame)
     runners = build_runners(models, image, prepare_prompt(frame, encoding))
     try:
+        decoder_inputs = stage_inputs(
+            "prompt_decoder", handoff(runners[0].run([image], timeout_ms=TIMEOUT_MS)), prepare_prompt(frame, encoding)
+        )
         latencies = measure_latency(runners, image, frame, encoding)
         throughput = measure_throughput(runners, image, frame, encoding)
-        write_report(output, latencies, throughput, models, mla_layer_stats, mla_stage_stats, source)
+        reported = {**models, "prompt_decoder": planned(models["prompt_decoder"], decoder_inputs)}
+        write_report(output, latencies, throughput, reported, mla_layer_stats, mla_stage_stats, source)
     finally:
         close_runners(runners)
 
