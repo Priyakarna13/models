@@ -4,37 +4,50 @@
 
 ## Overview
 
-D-FINE Nano detects 80 COCO object classes using a backbone and decoder.
-The backbone extracts features and proposes candidate locations; the decoder
-refines the best 300 into boxes and class scores. Select candidates on the
-CPU, retaining the original feature tensor. Native preprocessing accepts
-original-size RGB images; the decoder's boxes and scores are decoded on the
-CPU into image coordinates.
+D-FINE Nano finds everyday objects in an image, such as people, vehicles, and
+animals, and returns a box, a class, and a score for each one. Use it to count,
+track, or monitor objects in camera streams. It is trained on the 80 COCO
+classes. The model runs in two parts, and your application picks the 300 best
+candidates on the CPU between them. Each object is predicted once, so there are
+no overlapping boxes to remove.
 
-## Inputs and outputs
+## Inputs
 
-**Input.** Stretch RGB images to 640×640 with bilinear resampling. Scale pixels
-to 0–1 without ImageNet normalization; retain original dimensions for decoding.
+One 640×640×3 (height, width, channel) RGB image with values from 0 to 1.
 
-**Between components.** The backbone returns `attention_memory` and
-`query_content`, each shaped (1, 2000, 128), `proposal_scores` (1, 2000), and
-`reference_logits` (1, 2000, 4). Select the 300 highest proposal scores, breaking
-ties by lower proposal index. Gather the corresponding content and raw reference
-rows. Pass these and the original attention tensor to the decoder; retain
-their storage until execution completes.
+Preprocessing:
 
-**Outputs.** The decoder returns `pred_boxes` (1, 300, 4), normalized
-(cx, cy, width, height), and `pred_logits` (1, 300, 80).
+1. Stretch to 640×640 with bilinear resampling, without padding or cropping.
+2. Divide by 255.
 
-Decode them on the CPU, as `scripts/accuracy.py` does:
+## Between the components
 
-1. Apply sigmoid; rank all 300×80 query/class pairs.
-2. Keep 300 pairs, including different classes per box; do not suppress overlaps.
-3. Convert to corners, scale to original dimensions, clip to the image, and drop boxes left empty.
-4. Map class indices through sorted COCO category IDs, including their gaps.
+| Backbone output | Size |
+|---|---|
+| `attention_memory` | 2,000 rows of 128 values |
+| `query_content` | 2,000 rows of 128 values |
+| `proposal_scores` | 2,000 values |
+| `reference_logits` | 2,000 rows of 4 values |
 
-Public tensor boundaries remain FP32. Choose a package that balances accuracy
-and throughput for your application.
+1. Take the 300 highest `proposal_scores`. Break ties by the lower index.
+2. Gather those rows of `query_content` and `reference_logits` in that order, without changing their values.
+3. Run the decoder on both and the whole `attention_memory`.
+
+## Outputs
+
+| Output | Size | Holds |
+|---|---|---|
+| `pred_boxes` | 300 rows of 4 values | boxes as (cx, cy, w, h), fractions of the image |
+| `pred_logits` | 300 rows of 80 values | class logits per box |
+
+Postprocessing:
+
+1. Apply a sigmoid to `pred_logits` to get class scores.
+2. Rank all 300×80 box-class pairs by score and keep the 300 best. One box can appear with several classes.
+3. The box corners are (cx - w/2, cy - h/2) and (cx + w/2, cy + h/2).
+4. Multiply x by the image width and y by the image height, clip to the image, and drop boxes left empty.
+
+Class index i is the i-th COCO category ID in ascending order.
 
 ## Building applications
 
