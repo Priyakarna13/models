@@ -123,6 +123,15 @@ visitor can see.
 - Keep the page glance-first: key facts in the section, the rest in one row.
 - Make each action an icon button. Keep blue text with ↗ for links that leave the
   browser.
+- Put each difference between the customer and the developer view in `audienceFacts`
+  in `audience.js`, as a named fact such as `shows.buildDetails`. Test that fact where
+  the markup is built. Page code never tests the audience itself.
+  Three customer-view rules live outside that list: `styles.css` hides `.developer-only`
+  markup and the branch and compiler tags, and `environment.js` keeps customers on Main.
+- Give each section of the model page its own module: `performance-section.js`,
+  `execution-section.js`, and `accuracy-section.js`. A section module never imports
+  `model-view.js` or another section. Markup that sections share goes in
+  `page-parts.js`, and `model-view.js` assembles the sections.
 
 **Catalog**
 
@@ -186,7 +195,7 @@ delegation.
 
 | Module | Owns |
 | --- | --- |
-| `app.js` | Startup, routing from URL state, event handlers, and the download dialogs |
+| `app.js` | Startup, routing from URL state, and event handlers |
 | `config.js` | The registry, environment, and view settings for a source preview. Assembly writes its own for a deployed build |
 | `environment.js` | The `env=prod` production preview and the `branches=0` branch policy |
 | `portal-shell.js` | Load and mount the shared Developer Portal header |
@@ -195,7 +204,13 @@ delegation.
 | `branch-builds.js` | Which builds a branch shows, and grouping by workflow |
 | `catalog-view.js` | Model and family cards, the table, build history, search, and filters |
 | `hero-images.js` | Hero image URLs, and retries from the CDN to the registry API |
-| `model-view.js` | The model page |
+| `audience.js` | What the customer and the developer view each show |
+| `model-view.js` | The model page: header, variants, overview, details, and license |
+| `performance-section.js` | Performance: tiles, detail cards, power rails, and the CSV |
+| `execution-section.js` | Execution Graph, Runtime Layer Analysis, and MLA Utilization |
+| `accuracy-section.js` | Accuracy: measured scores, coverage, and reference scores |
+| `page-parts.js` | Markup and helpers the model page's sections share |
+| `download-dialog.js` | The download dialog |
 | `compare-view.js` | The Compare page: chart, pickers, and table |
 | `model-report.js` | Reading performance and accuracy model reports |
 | `mla-layer-stats.js` | Analyzing a component's MLA layer stats |

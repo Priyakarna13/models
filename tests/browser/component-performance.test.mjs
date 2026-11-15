@@ -4,6 +4,7 @@ import {test} from 'node:test';
 import {readPerformance} from '../../artifact-browser/model-report.js';
 
 const source = readFileSync(new URL('../../artifact-browser/model-view.js', import.meta.url), 'utf8');
+const performanceSource = readFileSync(new URL('../../artifact-browser/performance-section.js', import.meta.url), 'utf8');
 const start = source.indexOf('function modelPerformance(');
 const end = source.indexOf('\nfunction componentPrecisions(', start);
 const render = new Function('readPerformance', 'pipelineOrder', 'humanize', 'componentPanels', 'performanceSummary',
@@ -69,14 +70,14 @@ test('generation exports keep the deployment identity, workload and decoding rol
     workloads: fixture.preview_speculative_workloads}};
   const performance = readPerformance({run, report}).value;
   const exports = [];
-  const begin = source.indexOf('function generativeBenchmark(');
-  const finish = source.indexOf('\nfunction humanize(', begin);
+  // generativeBenchmark is the last function of the Performance section.
+  const begin = performanceSource.indexOf('function generativeBenchmark(');
   const renderGeneration = new Function('performanceDetails', 'infoMark', 'escapeHtml', 'disclosure',
-    `return (${source.slice(begin, finish)}\n);`)(
+    `return (${performanceSource.slice(begin)}\n);`)(
     reading => {exports.push(reading); return {markup: ''};}, () => '', String, () => '');
-  const fileBegin = source.indexOf('function csvFileName(');
-  const fileEnd = source.indexOf('\nfunction performanceContext(', fileBegin);
-  const filename = new Function(`return (${source.slice(fileBegin, fileEnd)});`)();
+  const fileBegin = performanceSource.indexOf('function csvFileName(');
+  const fileEnd = performanceSource.indexOf('\nfunction performanceContext(', fileBegin);
+  const filename = new Function(`return (${performanceSource.slice(fileBegin, fileEnd)});`)();
   renderGeneration(performance, run, 'gemma4_mtp');
   for (const [index, workload] of performance.workloads.entries()) {
     const [target, ordinary] = exports.slice(index * 2, index * 2 + 2);
