@@ -127,8 +127,10 @@ function metricRow({ label, text, unit }) {
   return `<div class="metric-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(text)}<small>${escapeHtml(unit)}</small></dd></div>`;
 }
 
-// The headline metrics, one number each.
-const KPI_METRICS = ["throughput_fps", "latency_avg_ms", "avg_power_watts", "energy_per_inference_joules"];
+// The headline metrics, one number each. Two more tiles follow them: SoC power and inferences per watt.
+const KPI_METRICS = ["throughput_fps", "latency_avg_ms"];
+// Metrics the page shows in no tile or card and the CSV lists with a card, such as energy with power.
+const CSV_EXTRA_METRICS = { power: ["energy_per_inference_joules"] };
 
 // The SoC draws on two SoM rails: the MLA's own and the one for the rest of the SoC.
 const SOC_RAILS = ["power_rail_mla_watts", "power_rail_soc_ddr_vdd_watts"];
@@ -152,9 +154,9 @@ const DETAIL_CARDS = [
   ["performance", "Performance", "gauge", [], [
     ["Time to first token", ["ttft_ms"], "First token, including vision."],
     ["Prefill", ["prefill_tps"], "Input tokens / TTFT."],
-    ["Decode", ["decode_tps"], "Excludes the first token."],
-    ["Draft contribution", ["draft_contribution_pct"], "Accepted / generated tokens."],
-    ["Decode speedup", ["decode_speedup"], "Speculative TPS / ordinary TPS."],
+    ["Generation", ["decode_tps"], "Generated tokens per second, excluding the first token."],
+    ["Draft contribution", ["draft_contribution_pct"], "Percentage of generated tokens accepted from the draft model."],
+    ["Generation speedup", ["decode_speedup"], "Speculative generation rate / baseline generation rate.\nExcludes prompt processing and the first token."],
     ["Throughput", ["throughput_fps"], "Inferences completed per second, several inputs in flight."],
     ["Latency (mean)", ["latency_avg_ms"], "Mean time for one inference."],
     ["Latency (p50 / p95 / p99)", ["latency_p50_ms", "latency_p95_ms", "latency_p99_ms"], "p50: 50% of inferences are faster.\np95: 95% are faster.\np99: 99% are faster."],
@@ -185,12 +187,17 @@ const RIGHT_COLUMN_CARDS = new Set(["power", "memory", "other"]);
 // The tiles and cards place these metrics; any other measured metric is listed under Other measurements.
 const PLACED_METRICS = new Set([
   ...KPI_METRICS,
+  ...Object.values(CSV_EXTRA_METRICS).flat(),
   ...DETAIL_CARDS.flatMap(([, , , , rows]) => rows.flatMap(([, keys]) => (Array.isArray(keys) ? keys : []))),
 ]);
 
+function tile(label, text, unit, qualifier = "") {
+  return `<div class="kpi"><span>${escapeHtml(label)}${qualifier ? `<span class="qualifier">(${escapeHtml(qualifier)})</span>` : ""}</span><strong>${escapeHtml(text)}<small>${escapeHtml(unit)}</small></strong></div>`;
+}
+
 function kpiTile(key, metric) {
   const value = measuredValue(key, metric);
-  return value ? `<div class="kpi"><span>${escapeHtml(value.label)}</span><strong>${escapeHtml(value.text)}<small>${escapeHtml(value.unit.replace("/inference", ""))}</small></strong></div>` : "";
+  return value ? tile(value.label, value.text, value.unit) : "";
 }
 
 function infoMark(text) {
@@ -220,6 +227,17 @@ function railReadings(measurements, key) {
   const sum = (field) => rails.reduce((total, rail) => total + rail[field], 0);
   const reading = (value) => Number.isFinite(value) && { text: value.toFixed(2), unit: "W" };
   return [reading(sum("mean")), reading(sum("maximum"))];
+}
+
+// Average SoC power, and the inferences per second each watt of it delivers. No metric holds either: both
+// come from the SoC rails, so a report without rail readings shows neither tile.
+function socPowerTiles(measurements) {
+  const watts = powerRails(measurements).filter((rail) => SOC_RAILS.includes(rail.key));
+  if (watts.length !== SOC_RAILS.length) return "";
+  const soc = watts.reduce((total, rail) => total + rail.mean, 0);
+  const throughput = metricDisplay(measurements.throughput_fps, metricDefinition("throughput_fps"))?.value;
+  return tile("SoC power", soc.toFixed(2), "W")
+    + (soc > 0 && Number.isFinite(throughput) ? tile("Inferences/Watt", (throughput / soc).toFixed(1), "", "SoC Power") : "");
 }
 
 function railDot(key) {
@@ -326,7 +344,6 @@ function performanceDetails(performance, run) {
 
 // The CSV download: every reading of the model as one table. Context comes first, then each card's
 // metrics, every SoM rail, every CPU core, the remaining measurements, and the MLA layers of each component.
-const CSV_EXTRA_METRICS = { power: ["energy_per_inference_joules"] };
 
 function performanceCsv(performance) {
   const rows = [["Section", "Metric", "Value", "Unit", "Key", "Note"]];
@@ -336,6 +353,7 @@ function performanceCsv(performance) {
   [
     ["Model", performance.modelId], ["Build", performance.buildProfileId],
     ...(performance.componentId ? [["Component", performance.componentId]] : []), ["Workload", performance.workload],
+    ["Decoding", performance.decodingRole],
     ["CPU cores", performance.cpuCores.length], ["Measured", performance.timestamp], ["Board telemetry", telemetry?.status],
     ["Sentinel", telemetry?.sentinelVersion], ["Telemetry samples", telemetry?.samples],
     ["Telemetry interval", seconds(telemetry?.intervalMs), "s"], ["Runtime", performance.tool],
@@ -375,15 +393,13 @@ function csvDataUrl(csv) {
 }
 
 function csvFileName(performance) {
-  const name = [performance.modelId, performance.buildProfileId, performance.componentId].filter(Boolean).join("-") || "model";
+  const name = [performance.modelId, performance.buildProfileId, performance.componentId,
+    performance.workloadId, performance.decodingRole].filter(Boolean).join("-") || "model";
   return `${name.replace(/[^A-Za-z0-9._-]+/g, "_")}-performance.csv`;
 }
 
 function performanceContext(performance) {
-  return [
-    performance.workload,
-    performance.timestamp && `Measured ${formatDate(performance.timestamp, false)}`,
-  ].filter(Boolean).join(" · ");
+  return performance.timestamp ? `Measured ${formatDate(performance.timestamp, false)}` : "";
 }
 
 const EXECUTION_STAGE_INFO = {
@@ -588,15 +604,18 @@ export function highlightLayerLegend(event) {
 
 // The KPI tiles, the context line, and Performance details of one performance result.
 function performanceSummary(performance, run, modelId, componentId = "") {
-  const tiles = KPI_METRICS.map((key) => kpiTile(key, performance.measurements[key])).join("");
+  const tiles = KPI_METRICS.map((key) => kpiTile(key, performance.measurements[key])).join("") + socPowerTiles(performance.measurements);
   const details = performanceDetails(performance, run);
   return `${tiles ? `<div class="kpis">${tiles}</div>` : ""}
     <p class="performance-context">${escapeHtml(performanceContext(performance))}${measurementSource(run, modelId)}</p>
     ${disclosure(`performance:${run.id}${componentId ? `:${componentId}` : ""}`, "Performance Details", details.markup, details.titles.join(" · "))}`;
 }
 
-function generativeBenchmark(performance, run) {
+function generativeBenchmark(performance, run, method) {
   const benchmark = {...performance.generation, workloads: performance.workloads};
+  const speculative = benchmark.settings?.decoding === "speculative";
+  const methodLabel = {gemma4_mtp: "MTP", dflash: "DFlash", eagle3: "EAGLE3"}[method] || "Speculative";
+  const ttftHeading = `TTFT (ms)${infoMark("Time to first token: language prefill through the first output token. Image timings also include image preprocessing and vision encoding. Text timings exclude tokenization and input preparation.")}`;
   const label = workload => workload.label;
   const cells = (workload, keys) => keys.map(key => {
     const value = workload.metrics?.[key]?.value;
@@ -608,7 +627,7 @@ function generativeBenchmark(performance, run) {
     `<div class="benchmark-measurements image-performance"><h4>Image + text</h4>
       <p class="benchmark-input">One ${escapeHtml(workload.image_size.join(" × "))} image with the prompt “${escapeHtml(workload.prompt)}”</p>
       <div class="benchmark-measurements-wrap"><table aria-label="Image and text performance"><thead><tr>
-        <th scope="col">TTFT (ms)</th><th scope="col">Decode (tokens/s)</th>
+        <th scope="col">${ttftHeading}</th><th scope="col">Generation (tokens/s)</th>
       </tr></thead><tbody><tr>${cells(workload, ["ttft_ms", "decode_tps"])}</tr></tbody></table></div>
     </div>`).join("");
   const datasetTable = (kind, title) => {
@@ -619,28 +638,30 @@ function generativeBenchmark(performance, run) {
       ${cells(workload, ["ttft_ms"])}${cells(workload.baseline, ["decode_tps"])}${cells(workload, ["decode_tps", "draft_contribution_pct", "decode_speedup"])}</tr>`).join("");
     return `<div class="benchmark-measurements"><h4>${title}</h4><div class="benchmark-measurements-wrap">
       <table aria-label="${title}"><thead><tr><th scope="col">Dataset</th><th scope="col">Requests</th>
-      <th scope="col">Ordinary TTFT (ms)</th><th scope="col">Speculative TTFT (ms)</th>
-      <th scope="col">Ordinary (tokens/s)</th><th scope="col">Speculative (tokens/s)</th>
-      <th scope="col">Draft contribution (%)</th><th scope="col">Speedup (×)</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      <th scope="col">Baseline ${ttftHeading}</th><th scope="col">${methodLabel} ${ttftHeading}</th>
+      <th scope="col">Baseline (tokens/s)</th><th scope="col">${methodLabel} (tokens/s)</th>
+      <th scope="col">Draft contribution (%)</th><th scope="col">Generation speedup (×)</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   };
   const options = benchmark.workloads.map(workload =>
     `<option value="${escapeHtml(workload.id)}">${escapeHtml(label(workload))}</option>`).join("");
   const panels = benchmark.workloads.map((workload, index) => {
-    const details = reading => performanceDetails({...performance, ...reading, components: [],
-      workload: label(workload), samples: reading.metrics.decode_tps.sample_count}, run).markup;
-    return `<div data-genai-details="${escapeHtml(workload.id)}"${index ? " hidden" : ""}>${details(workload)}
-      ${workload.baseline ? `<h4>Ordinary baseline</h4>${details(workload.baseline)}` : ""}</div>`;
+    const details = (reading, baseline = false) => performanceDetails({...performance, ...reading, components: [],
+      ...(baseline ? {modelId: benchmark.baseline?.model_id, buildProfileId: benchmark.baseline?.build_profile_id} : {}),
+      workload: label(workload), workloadId: workload.id,
+      decodingRole: baseline ? "baseline" : speculative ? methodLabel.toLowerCase() : "ordinary",
+      samples: reading.metrics.decode_tps.sample_count}, run).markup;
+    return `<div data-genai-details="${escapeHtml(workload.id)}"${index ? " hidden" : ""}>${workload.baseline ? `<h4>${methodLabel}</h4>` : ""}${details(workload)}
+      ${workload.baseline ? `<h4>Baseline</h4>${details(workload.baseline, true)}` : ""}</div>`;
   }).join("");
   const details = `<p>Board telemetry covers measured requests, excluding warmup and model loading.</p>
     <label class="workload-picker">Workload <select data-genai-workload>${options}</select></label>${panels}
-    <p>Decode TPS excludes the first token. Image TTFT includes native image preprocessing and vision encoding.
-    Draft contribution is accepted draft tokens divided by all generated tokens. Speedup compares aggregate decode TPS on the same dataset and output budget.</p>`;
-  const speculative = benchmark.settings?.decoding === "speculative";
+    <p>Generation rates exclude the first token. Image TTFT includes image preprocessing and vision encoding.
+    Draft contribution is the percentage of generated tokens accepted from the draft model. Generation speedup compares aggregate generation rates on the same dataset and output budget, excluding prompt processing and the first token.</p>`;
   return `<div data-generative-benchmark>${benchmark.synthetic ? '<p class="benchmark-context">Synthetic preview data — for visualization only.</p>' : ""}${rows ? `<div class="benchmark-measurements"><h4>Text</h4>
     <div class="benchmark-measurements-wrap"><table aria-label="Text performance"><thead><tr>
-    <th scope="col">Workload</th><th scope="col">TTFT (ms)</th><th scope="col">Prefill (tokens/s)</th><th scope="col">Decode (tokens/s)</th>
+    <th scope="col">Workload</th><th scope="col">${ttftHeading}</th><th scope="col">Prefill (tokens/s)</th><th scope="col">Generation (tokens/s)</th>
     </tr></thead><tbody>${rows}</tbody></table></div></div>` : ""}${images}
-    ${speculative ? `<p>Compared with ${escapeHtml(benchmark.baseline?.display_name || benchmark.baseline?.model_id)} on identical prompts and output budgets.</p>` : ""}
+    ${speculative ? `<p>Baseline: ${escapeHtml(benchmark.baseline?.display_name || benchmark.baseline?.model_id)}, without speculative decoding. Both use identical prompts and output budgets.</p>` : ""}
     ${datasetTable("text_dataset", "Text datasets")}${datasetTable("image_dataset", "Image + text datasets")}
     <p class="benchmark-context">${speculative ? "Full datasets · one measurement per prompt · one excluded warmup per dataset and deployment"
       : `1 warmup · ${escapeHtml(benchmark.settings?.repetitions)} measured runs`} · empty cache · up to 256 output tokens${speculative ? "" : " (text buckets: first token plus 256 decode steps)"}</p>
@@ -728,7 +749,11 @@ function modelPerformance(variant, modelId) {
   if (result.kind === "missing") return `<p class="muted-message">Not measured at this revision.</p>`;
   if (result.kind === "unsupported") return `<p class="muted-message">This result format is not supported by this browser.</p>`;
   const { run } = benchmarkRun;
-  if (result.value.generation) return generativeBenchmark(result.value, run);
+  if (result.value.generation) {
+    const compilation = variant.details[0]?.provenance.parameters?.parameters || {};
+    const method = compilation.compiled_parameters?.speculative_method || compilation.compile_parameters?.speculative_method;
+    return generativeBenchmark(result.value, run, method);
+  }
   const components = result.value.components.map((component) => ({ ...component, label: humanize(component.id) }));
   const summary = result.value.scope === "components"
     ? componentPanels(components.map(({ label }) => label), components.map((component) =>
@@ -1076,8 +1101,7 @@ function catalogModelOfVariant(variant) {
   return model?.builds.some((build) => variant.runs.some((run) => run.id === build.run_id)) ? model : null;
 }
 
-// The selected variant's download sits beside the tabs that select it.
-function detailBuildSwitcher(variant, downloadAction) {
+function detailBuildSwitcher(variant) {
   const model = catalogModelOfVariant(variant);
   const inCatalog = Boolean(model);
   const profiles = inCatalog ? profileGroups({ ...model, builds: compilerFilteredBuilds(model) }) : [];
@@ -1088,7 +1112,6 @@ function detailBuildSwitcher(variant, downloadAction) {
   return `<section class="detail-build-switcher" aria-label="Variant selection">
     <strong>${profiles.length > 1 ? "Variants" : "Variant"}</strong>
     ${profiles.length ? `<div class="detail-variant-tabs" role="tablist" aria-label="${escapeHtml(model.display_name || model.model_id)} variants">${tabs}</div>` : `<span class="detail-variant-single">${escapeHtml(profileLabel(variant.anchor))}</span>`}
-    ${downloadAction}
   </section>`;
 }
 
@@ -1188,12 +1211,13 @@ export function renderDetail(variant) {
         <div class="detail-tags">${(categories.tasks || []).map((task) => detailTag(icons.task, taxonomyLabel("tasks", task), "task")).join("")}${categories.architecture?.id ? detailTag(icons.architecture, taxonomyLabel("architectures", categories.architecture.id), "architecture") : ""}${categories.model_type ? detailTag(icons.modelType, taxonomyLabel("model_types", categories.model_type), "model-type") : ""}${detailTag(icons.compiler, `${run.toolchain_name || "compiler"} ${run.toolchain_version || ""}`.trim(), "compiler")}${detailTag(icons.branch, branchName(run.git_ref), "branch")}${license?.spdx ? detailTag(icons.license, license.spdx, "license") : ""}</div>
         ${catalogModel?.description ? `<p class="lede">${escapeHtml(catalogModel.description)}</p>` : ""}
         <div class="detail-title-actions">
+          ${downloadAction}
           <div class="detail-links">${validated ? artifactValidationMark(allTests) : ""}${originalModel ? `<a class="original-model-link${originalModel.huggingFace ? "" : " external-model-link"}" href="${escapeHtml(originalModel.href)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(originalModel.label)}" data-tooltip="${escapeHtml(originalModel.label)}">${originalModel.huggingFace ? icons.huggingFace : icons.external}</a>` : ""}${sourceUrl ? `<a class="model-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeHtml(sourceLabel)}" data-tooltip="${escapeHtml(sourceLabel)}">${icons.github}</a>` : ""}</div>
         </div>
       </div>
       ${modelHero(catalogModel)}
     </header>
-    ${detailBuildSwitcher(variant, downloadAction)}
+    ${detailBuildSwitcher(variant)}
     ${compiledLimits ? `<dl class="key-grid">${compiledLimits}</dl>` : ""}
     ${sectionNavigation(sections)}
 
