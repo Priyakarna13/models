@@ -223,4 +223,5 @@ the code and workflows do.
 | set `build-on-demand` or publish a candidate | [knowledge/on-demand-builds.md](knowledge/on-demand-builds.md) | scheduling, manual dispatch, candidate publication, approvals and branch deployments |
 | change the LLiMa runner or deployment folder | [knowledge/llima-builds.md](knowledge/llima-builds.md) | what the runner downloads, compiles, and deploys, the deployment manifest, the LLiMa fingerprint |
 | promote or withdraw a build | [knowledge/promotion-operations.md](knowledge/promotion-operations.md) | the maintainer runbook |
+| add a section to the model page, move browser code between modules, or hide something from customers | [knowledge/model-browser.md](knowledge/model-browser.md) | which module draws what, the import rule for page sections, the audience facts in `audience.js`, and the steps to hide a part from the customer view |
 | change `artifact-browser/` or `website/` | [artifact-browser/README.md](artifact-browser/README.md), [artifact-browser/DESIGN.md](artifact-browser/DESIGN.md) | the code map, the rules for changing the browser, checks before a push, deployment, design context |

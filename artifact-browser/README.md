@@ -110,8 +110,8 @@ supported by this browser** instead of guessing at an incompatible structure.
 
 ## Rules for changing the browser
 
-Read [DESIGN.md](DESIGN.md) and [How the page is built](#how-the-page-is-built)
-before you change a file here. Update
+Read [DESIGN.md](DESIGN.md), [How the page is built](#how-the-page-is-built), and
+[model browser code](../knowledge/model-browser.md) before you change a file here. Update
 [docs/model-browser.md](../docs/model-browser.md) in the same change as anything a
 visitor can see.
 
