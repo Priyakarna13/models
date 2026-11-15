@@ -247,6 +247,8 @@ test('CLI commands preserve branch, variant and staging and quote shell argument
     'sima-cli models download --id qwen3_5_0_8b --variant w4a16 --branch feature/llima-models --stg');
   assert.equal(modelDownloadCommand('model', 'int8', 'main'),
     'sima-cli models download --id model --variant int8 --branch main');
+  assert.equal(modelDownloadCommand('model', 'int8', null),
+    'sima-cli models download --id model --variant int8');
   assert.ok(modelDownloadCommand('model', 'int8', 'feat/$(touch bad)').includes("--branch 'feat/$(touch bad)'"));
 });
 
