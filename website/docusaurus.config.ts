@@ -106,7 +106,7 @@ const config: Config = {
         {
           title: 'Start here',
           items: [
-            {label: 'Reproduce a model', to: '/docs/reproduce-a-model'},
+            {label: 'Getting started', to: '/docs/getting-started'},
             {label: 'Add a model', to: '/docs/adding-a-model'},
             {label: 'Local testing', to: '/docs/local-development'},
             {label: 'Contribution checklist', to: '/docs/contributing'},

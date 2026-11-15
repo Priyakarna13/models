@@ -1,18 +1,18 @@
-# Reproduce a model
+# Getting started
 
-This is the starting guide for this repository. It states what the repository is for,
+This is the starting guide for this repository. It says what the repository is for,
 shows the path every model takes, and then walks through that path once with real
 commands.
 
 ## What this repository is for
 
-The repository has two goals:
+This repository hosts the models you find in the
+[Model Browser](https://developer.sima.ai/models/). Each model has a page there with
+its measured performance and accuracy on a Modalix DevKit.
 
-- **Host models in the [Model Browser](https://developer.sima.ai/models/).** Each model
-  has a page there with its measured performance and accuracy on a Modalix DevKit.
-- **Let you reproduce every step on your own machine.** Each model has a folder,
-  `models/<model id>/`, with the scripts that convert, compile, and measure it. The
-  GitHub link in the header of a model page opens that folder.
+You can reproduce every step behind such a page on your own machine. Each model has a
+folder, `models/<model id>/`, with the scripts that convert, compile, and measure it.
+The GitHub link in the header of a model page opens that folder.
 
 Some model pages offer no download, because the model's license forbids redistribution.
 You can still rebuild every model from its scripts.
@@ -46,7 +46,7 @@ You can still rebuild every model from its scripts.
 CI runs the same scripts to produce the numbers on the model page. That is why your
 results can match them.
 
-## The example on this page
+## Reproduce a model: the example
 
 The page uses one model from start to finish, so you can copy every command as written.
 The example is YOLO26n, the smallest YOLO26 object detector. Its folder is

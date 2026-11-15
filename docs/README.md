@@ -4,14 +4,12 @@ import ContributionPath from '@site/src/components/ContributionPath';
 
 The Model Browser lists models that run on SiMa.ai platforms, each with its
 measured performance and accuracy. This repository holds what produces a model:
-its pinned source, its compile recipe, and the scripts that measure it.
+its pinned source, its compile recipe, and the scripts that measure it. You can
+run those scripts yourself and reproduce every step on your own machine.
 
-The repository has two goals: to host models in the Model Browser, and to let you
-reproduce every step on your own machine.
+## Start here
 
-## Start here: reproduce a model
-
-Read [Reproduce a model](reproduce-a-model.md) first. It shows the path every model
+Read [Getting started](getting-started.md) first. It shows the path every model
 takes, from the official model to the measured results, and walks through it once with
 real commands. A contributor follows the same path, so read it before the contribution
 guides below. [Concepts](concepts.md) defines the terms both use, such as build, build

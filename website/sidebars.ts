@@ -8,7 +8,7 @@ const sidebars: SidebarsConfig = {
       label: 'Start here',
       collapsed: false,
       items: [
-        {type: 'doc', id: 'reproduce-a-model', label: 'Reproduce a model'},
+        {type: 'doc', id: 'getting-started', label: 'Getting started'},
         {type: 'doc', id: 'concepts', label: 'Concepts'},
       ],
     },

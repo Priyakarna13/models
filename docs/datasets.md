@@ -7,7 +7,7 @@ an untracked directory, a convenient download, or a private archive whose
 contents cannot be reproduced.
 
 If you only reproduce a published model and cannot reach the registry, follow
-the dataset step in [Reproduce a model](reproduce-a-model.md) instead.
+the dataset step in [Getting started](getting-started.md) instead.
 
 The responsibilities are split across two repositories:
 
