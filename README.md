@@ -11,12 +11,21 @@
 
 <p align="center">
   <a href="https://developer.sima.ai/models/">Model Browser</a> ·
-  <a href="docs/reproduce-a-model.md">Reproduce a Model</a> ·
+  <a href="docs/reproduce-a-model.md"><b>Start Here: Reproduce a Model</b></a> ·
   <a href="docs/adding-a-model.md">Add a Model</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="knowledge/architecture.md">Architecture</a> ·
   <a href="https://github.com/sima-neat/models/issues">Issues</a>
 </p>
+
+This repository has two goals. It hosts models in the
+[Model Browser](https://developer.sima.ai/models/), each with its measured
+performance and accuracy on a Modalix DevKit. And it lets you reproduce every
+step on your own machine, from the official model to those measurements, with
+the scripts in the model's folder.
+
+> **Start here:** [Reproduce a model](docs/reproduce-a-model.md) shows the path
+> every model takes and walks through it once with real commands.
 
 Git holds the declaration and the code of each model, not its files. A
 declaration pins every input it downloads by URI, byte size, and SHA-256.

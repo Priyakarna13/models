@@ -1,23 +1,68 @@
 # Reproduce a model
 
-The [Model Browser](https://developer.sima.ai/models/) lists many models. A model page offers no download when the model's
-license forbids redistribution, but you can rebuild every model from the scripts in its
-folder, `models/<model id>/`. The GitHub link in the header of the model page opens that
-folder.
+This is the starting guide for this repository. It states what the repository is for,
+shows the path every model takes, and then walks through that path once with real
+commands.
 
-This page takes one model from its official checkpoint to your own compiled model. It
-ends with your own performance and accuracy results, which you compare with the model
-page. Read it first as a new developer, because it shows the whole flow.
+## What this repository is for
 
-Every command uses YOLO11m-det, in `models/yolo11m`, and its INT8 build profile `w8a8`.
-A build profile is one named way to compile a model. [Concepts](concepts.md) defines
-this term and the others on this page.
+The repository has two goals:
+
+- **Host models in the [Model Browser](https://developer.sima.ai/models/).** Each model
+  has a page there with its measured performance and accuracy on a Modalix DevKit.
+- **Let you reproduce every step on your own machine.** Each model has a folder,
+  `models/<model id>/`, with the scripts that convert, compile, and measure it. The
+  GitHub link in the header of a model page opens that folder.
+
+Some model pages offer no download, because the model's license forbids redistribution.
+You can still rebuild every model from its scripts.
+
+## The path every model takes
+
+```text
+┌──────────────────┐  convert.py   ┌─────────────┐  compile.py   ┌───────────────┐
+│ Official model   │──────────────►│ ONNX model  │──────────────►│ MPK           │
+│ pinned in        │               │             │               │ runs on the   │
+│ model.yaml       │               │             │               │ DevKit        │
+└──────────────────┘               └─────────────┘               └───────────────┘
+                                                                         │
+                                         performance.py and accuracy.py  │
+                                                                         ▼
+┌──────────────────┐         compare with         ┌─────────────────────────────┐
+│ Model page in    │◄─────────────────────────────│ Your results                │
+│ the Model Browser│                              │ model-report.json           │
+└──────────────────┘                              └─────────────────────────────┘
+```
+
+1. `model.yaml` names the official model and pins its files, so everyone starts from the
+   same bytes.
+2. `convert.py` downloads the official model and exports it to ONNX.
+3. `compile.py` prepares the ONNX for the chip and compiles it into an MPK, the archive
+   a DevKit runs. An 8-bit variant also needs calibration images.
+4. `performance.py` measures speed on the DevKit, and `accuracy.py` scores the model on
+   its dataset.
+5. You compare your results with the model page.
+
+CI runs the same scripts to produce the numbers on the model page. That is why your
+results can match them.
+
+## The example on this page
+
+The page uses one model from start to finish, so you can copy every command as written.
+The example is YOLO26n, the smallest YOLO26 object detector. Its folder is
+`models/yolo26n`.
+
+A model can be compiled in several variants, called build profiles. YOLO26n has three:
+`w16a16`, `w8a8`, and `w8a16`. Each name gives the bit widths of the weights and of the
+activations. The commands build `w8a8`, the 8-bit variant. To reproduce another model or
+variant, replace `yolo26n` and `w8a8` in the commands. [Concepts](concepts.md) defines
+the terms this page uses.
 
 ## Before you start
 
 | You need | Check it |
 | --- | --- |
-| A clone of this repository. Run each command from its root. | `ls models/yolo11m/model.yaml` |
+| A clone of this repository. Run each command from its root. | `ls models/yolo26n/model.yaml` |
 | Python 3.12 and internet access, for the conversion. | `python3.12 --version` |
 | The Model Compiler, at the version [`deps/manifest.json`](../deps/manifest.json) pins under `model-compiler`. Activate its environment in the shell that runs step 4. | `python -c 'import afe; print("Model Compiler Python APIs available")'` prints that sentence. |
 | A Modalix DevKit that your machine reaches over SSH, with PyNeat, the Python package that runs a compiled model. Step 7 also needs internet access on the DevKit. [DevKit performance](benchmarking.md) describes the setup. | `~/pyneat/bin/python -c 'import pyneat; print(pyneat.__version__)'` prints the PyNeat version. |
@@ -27,7 +72,7 @@ Steps 3 to 5 run in one clone, because each step reads what the step before wrot
 
 ## Steps
 
-| Step | Runs on | Script in `models/yolo11m/scripts/` | Result |
+| Step | Runs on | Script in `models/yolo26n/scripts/` | Result |
 | --- | --- | --- | --- |
 | Convert | a machine with Python 3.12 | `convert.py` | `model.onnx` |
 | Compile | the Model Compiler | `compile.py` | one MPK, the archive a DevKit runs |
@@ -36,18 +81,18 @@ Steps 3 to 5 run in one clone, because each step reads what the step before wrot
 
 ### 1. Read `model.yaml`
 
-Open [`models/yolo11m/model.yaml`](../models/yolo11m/model.yaml). It declares everything
+Open [`models/yolo26n/model.yaml`](../models/yolo26n/model.yaml). It declares everything
 the scripts use:
 
-| Field | What it tells you | In `yolo11m` |
+| Field | What it tells you | In `yolo26n` |
 | --- | --- | --- |
-| `upstream` | the official model | the Hugging Face repository `Ultralytics/YOLO11`, at a pinned revision |
-| `conversion.source` | the checkpoint `convert.py` downloads | `yolo11m.pt`, with its SHA-256 and size |
+| `upstream` | the official model | the Hugging Face repository `Ultralytics/YOLO26`, at a pinned revision |
+| `conversion.source` | the checkpoint `convert.py` downloads | `yolo26n.pt`, with its SHA-256 and size |
 | `compilation.source` | where the ONNX to compile comes from | `conversion`, so step 3 produces it |
 | `build_profiles` | what gets compiled | `w16a16`, `w8a8`, and `w8a16` |
 | `calibrations` | the dataset that calibrates a build profile | `coco-2017-cal`, used by `w8a8` |
 | `accuracy.datasets` | the datasets accuracy is measured on | `coco-2017-val` |
-| `reference_metrics` | the scores the official model publishes | `coco_map: 0.515` |
+| `reference_metrics` | the scores the official model publishes | `coco_map: 0.401` |
 
 A dataset goes by its source ID, `<id>-<variant>`. The pin with `id: coco-2017` and
 `variant: val` is `coco-2017-val`.
@@ -67,7 +112,7 @@ describes. Then resolve both archives in the Model Compiler environment. The com
 need `jq`:
 
 ```bash
-calibration="$(model-registry fetch-calibration models/yolo11m \
+calibration="$(model-registry fetch-calibration models/yolo26n \
   --build-profile w8a8 --component model --json | jq -r .path)"
 validation="$(dataset-registry resolve coco-2017 --variant val | jq -r .path)"
 ```
@@ -103,16 +148,16 @@ calibration dataset.
 Run this on the machine with your clone:
 
 ```bash
-scripts/run_model_conversion.sh models/yolo11m default build/yolo11m/onnx
+scripts/run_model_conversion.sh models/yolo26n default build/yolo26n/onnx
 ```
 
-The runner creates a fresh Python environment in `build/yolo11m/onnx-venv`. It installs
-this repository and `models/yolo11m/scripts/requirements-convert.txt` there, then runs
-`convert.py`. `convert.py` downloads `yolo11m.pt`, checks it against the SHA-256 in
+The runner creates a fresh Python environment in `build/yolo26n/onnx-venv`. It installs
+this repository and `models/yolo26n/scripts/requirements-convert.txt` there, then runs
+`convert.py`. `convert.py` downloads `yolo26n.pt`, checks it against the SHA-256 in
 `model.yaml`, and exports it to ONNX. `default` names the model's one conversion.
 
 The last line reads `Synthetic-input PyTorch/ONNX head check passed with seeds 123-132`,
-followed by the full path of `build/yolo11m/onnx/model.onnx`. `build/` is in
+followed by the full path of `build/yolo26n/onnx/model.onnx`. `build/` is in
 `.gitignore`, so the outputs stay out of Git.
 
 Other models differ here:
@@ -125,9 +170,9 @@ Other models differ here:
 Run this in the same clone, with the Model Compiler environment active:
 
 ```bash
-PYTHONPATH=tools python models/yolo11m/scripts/compile.py \
-  --model build/yolo11m/onnx/model.onnx \
-  --output-dir build/yolo11m/w8a8 \
+PYTHONPATH=tools python models/yolo26n/scripts/compile.py \
+  --model build/yolo26n/onnx/model.onnx \
+  --output-dir build/yolo26n/w8a8 \
   --build-profile w8a8 \
   --compile-invocation w8a8 \
   --dataset "$calibration"
@@ -135,7 +180,7 @@ PYTHONPATH=tools python models/yolo11m/scripts/compile.py \
 
 `compile.py` works in three parts:
 
-1. It rewrites the graph with `surgery.py`, which cuts YOLO11m at its raw detection outputs. A model without `surgery.py` compiles the ONNX as it is.
+1. It rewrites the graph with `surgery.py`, which cuts YOLO26n at its raw detection heads, before the box decode. A model without `surgery.py` compiles the ONNX as it is.
 2. It quantizes the graph. The `w8a8` build profile uses 50 calibration images to choose its INT8 ranges.
 3. It writes one MPK per model component. An MPK is the archive a DevKit runs.
 
@@ -144,13 +189,13 @@ which reads `model.yaml`. `--compile-invocation` repeats the build profile name,
 build profile compiles in one invocation named after it.
 
 The compiler ends with a summary whose last line starts with `Compiled model:`. `compile.py`
-then copies the archive to `build/yolo11m/w8a8/model/yolo11m_w8a8_mpk.tar.gz`. Check it:
+then copies the archive to `build/yolo26n/w8a8/model/yolo26n_w8a8_mpk.tar.gz`. Check it:
 
 ```bash
-PYTHONPATH=tools python -m model_registry verify-mpk build/yolo11m/w8a8/model
+PYTHONPATH=tools python -m model_registry verify-mpk build/yolo26n/w8a8/model
 ```
 
-The command prints `Valid artifact: yolo11m_w8a8_mpk.tar.gz`.
+The command prints `Valid artifact: yolo26n_w8a8_mpk.tar.gz`.
 
 Other models differ here:
 
@@ -166,8 +211,8 @@ tooling, and the MPK:
 
 ```bash
 devkit=sima@192.168.1.20
-tar -czf - models/yolo11m tools/model_report build/yolo11m/w8a8/model \
-  | ssh "$devkit" 'mkdir -p /media/nvme/neat-tests/yolo11m && tar -xzf - -C /media/nvme/neat-tests/yolo11m'
+tar -czf - models/yolo26n tools/model_report build/yolo26n/w8a8/model \
+  | ssh "$devkit" 'mkdir -p /media/nvme/neat-tests/yolo26n && tar -xzf - -C /media/nvme/neat-tests/yolo26n'
 ```
 
 Copy the whole model folder, because `accuracy.py` imports `calibration.py` from the same
@@ -210,9 +255,9 @@ page shows.
 Then run the script:
 
 ```bash
-cd /media/nvme/neat-tests/yolo11m
-PYTHONPATH=tools ~/pyneat/bin/python models/yolo11m/scripts/performance.py \
-  --mpk build/yolo11m/w8a8/model/yolo11m_w8a8_mpk.tar.gz \
+cd /media/nvme/neat-tests/yolo26n
+PYTHONPATH=tools ~/pyneat/bin/python models/yolo26n/scripts/performance.py \
+  --mpk build/yolo26n/w8a8/model/yolo26n_w8a8_mpk.tar.gz \
   --dataset coco-2017-val=/media/nvme/datasets/coco-2017-val \
   --output results/performance
 ```
@@ -234,11 +279,11 @@ Other models differ here:
 Run this on the DevKit:
 
 ```bash
-cd /media/nvme/neat-tests/yolo11m
+cd /media/nvme/neat-tests/yolo26n
 ~/pyneat/bin/python -m pip install --no-deps --only-binary=:all: \
-  --target site-packages -r models/yolo11m/scripts/requirements-accuracy.txt
-PYTHONPATH=tools:site-packages ~/pyneat/bin/python models/yolo11m/scripts/accuracy.py \
-  --mpk model=build/yolo11m/w8a8/model/yolo11m_w8a8_mpk.tar.gz \
+  --target site-packages -r models/yolo26n/scripts/requirements-accuracy.txt
+PYTHONPATH=tools:site-packages ~/pyneat/bin/python models/yolo26n/scripts/accuracy.py \
+  --mpk model=build/yolo26n/w8a8/model/yolo26n_w8a8_mpk.tar.gz \
   --dataset coco-2017-val=/media/nvme/datasets/coco-2017-val \
   --output results/accuracy
 ```
@@ -276,10 +321,11 @@ fields of the two reports with the page:
 The page's SoC power tile adds up separate power readings and matches no single field
 of the report, so compare throughput, latency, and accuracy.
 
-The clone also holds the published values. `models/yolo11m/tests/tests.yaml` lists the
-expected values of each build profile, which are `throughput_fps: 378.7` and
-`coco_map: 0.5015` for `w8a8`. The model's tests in CI fail when throughput falls more
-than 10% below its expected value, or an accuracy score more than 5%.
+The clone also holds the published values. `models/yolo26n/tests/tests.yaml` lists the
+expected values of each build profile, which are `throughput_fps: 964.5` and
+`coco_map: 0.3808` for `w8a8`. CI fails a model's accuracy test when a score falls more
+than 5% below its expected value, and its performance test when throughput falls more
+than 10%.
 
 ## Language models
 
@@ -304,16 +350,16 @@ the details.
 
 | What you see | Cause | Fix |
 | --- | --- | --- |
-| `yolo11m: resolve conversion with plan-stages before compilation` | `model-registry fetch` or `scripts/run_model_compilation.sh` looked for the ONNX that CI published. | Pass your own ONNX to `compile.py` with `--model`, as in step 4. |
+| `yolo26n: resolve conversion with plan-stages before compilation` | `model-registry fetch` or `scripts/run_model_compilation.sh` looked for the ONNX that CI published. | Pass your own ONNX to `compile.py` with `--model`, as in step 4. |
 | `python3.12: command not found` | `scripts/run_model_conversion.sh` starts the conversion with `python3.12`. | Install Python 3.12, or set `CONVERSION_PYTHON` to its path. |
 | `FileExistsError` from `convert.py` or `compile.py` | The output directory exists. Both scripts create it themselves. | Delete the directory, or name a new one. |
 | `No module named 'afe'` | The command does not run in the Model Compiler environment. | Activate the Model Compiler environment, then run the command again. |
 | `No module named 'model_registry'` | `PYTHONPATH` lacks `tools`, or the command runs outside the repository root. | Run the command from the repository root with `PYTHONPATH=tools`. |
 | `the INT8 build requires --dataset from dataset-registry` | `compile.py` ran for `w8a8` without `--dataset`. | Pass the calibration archive or directory from step 2. |
 | `cannot select 50 calibration images from 0 cal2017 images` | The calibration input has no folder named `cal2017`, or the folder holds fewer than 50 images. | Put at least 50 images in a folder named `cal2017`. |
-| `--model must be the verified ONNX from the conversion workflow` | The `--model` path does not end in `.onnx`. | Pass `build/yolo11m/onnx/model.onnx`. |
+| `--model must be the verified ONNX from the conversion workflow` | The `--model` path does not end in `.onnx`. | Pass `build/yolo26n/onnx/model.onnx`. |
 | `has no images under val2017/` | The dataset directory does not hold `val2017/` directly. | Pass the folder that contains `val2017/` and `annotations/`. |
-| `No module named 'model_report'` | `PYTHONPATH` lacks `tools`, or the command runs outside the folder that holds `tools/`. | Run from `/media/nvme/neat-tests/yolo11m` with `PYTHONPATH=tools`. |
+| `No module named 'model_report'` | `PYTHONPATH` lacks `tools`, or the command runs outside the folder that holds `tools/`. | Run from `/media/nvme/neat-tests/yolo26n` with `PYTHONPATH=tools`. |
 | `No module named 'faster_coco_eval'` | The accuracy packages are missing, or `PYTHONPATH` lacks `site-packages`. | Run both commands of step 7 from the same folder. |
 | A clock in step 6 prints a lower value | The DevKit runs the MLA or the CPU below the clock CI measures at. | Set both clocks with the commands below, then read them again. |
 | The performance report has no `avg_power_watts` | Sentinel, the DevKit's telemetry service, gave no power readings. | Set up the DevKit as [DevKit performance](benchmarking.md) describes. |

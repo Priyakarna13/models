@@ -6,14 +6,16 @@ The Model Browser lists models that run on SiMa.ai platforms, each with its
 measured performance and accuracy. This repository holds what produces a model:
 its pinned source, its compile recipe, and the scripts that measure it.
 
-Start from the entry that matches your goal. [Concepts](concepts.md) defines the
-terms both entries use, such as build, build profile, stage, and fingerprint.
+The repository has two goals: to host models in the Model Browser, and to let you
+reproduce every step on your own machine.
 
-## Reproduce a model
+## Start here: reproduce a model
 
-Follow [Reproduce a model](reproduce-a-model.md) to rebuild a published model and
-measure it on your own Modalix DevKit. The page covers the whole flow, from the
-official model to the measured results.
+Read [Reproduce a model](reproduce-a-model.md) first. It shows the path every model
+takes, from the official model to the measured results, and walks through it once with
+real commands. A contributor follows the same path, so read it before the contribution
+guides below. [Concepts](concepts.md) defines the terms both use, such as build, build
+profile, stage, and fingerprint.
 
 ## Contribute a model
 
