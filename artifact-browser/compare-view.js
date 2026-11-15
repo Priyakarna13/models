@@ -6,7 +6,7 @@ import { datasetName } from "./accuracy-metrics.js";
 import { metricDefinition, metricDisplay } from "./metrics.js";
 import { anchorBuild, compilerFilteredBuilds, loadRunDetail, loadVariant, profileGroups, mapWithConcurrency } from "./api.js";
 import { compareModels } from "./catalog-view.js";
-import { accuracyHeadline } from "./model-view.js";
+import { accuracyHeadline } from "./accuracy-section.js";
 
 // Three builds fit side by side on a laptop screen and stay readable on a phone.
 export const MAX_COMPARED_BUILDS = 3;
