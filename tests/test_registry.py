@@ -1582,9 +1582,12 @@ def test_progress_publication_does_not_reimport_base_packages(
 def test_deferred_catalog_entry_does_not_publish_server_owned_approvals(monkeypatch):
     prior = {
         "id": "deferred", "build_on_demand": True,
-        "builds": [{"run_id": "existing-build"}], "packages": [{"run_id": "existing-package"}],
+        "builds": [{"run_id": "existing-build", "build_profile_id": "w8a8"}],
+        "packages": [{"run_id": "existing-package"}],
         "build_requirements": {"w8a16": {"compiler_version": "original"}},
         "approved_deployments": {"w8a16": {"candidate_id": "base-branch-selection"}},
+        # The base branch measured both its own build and its approved selection.
+        "benchmark_fingerprints": {"w8a8": {"performance": "b" * 64}, "w8a16": {"performance": "a" * 64}},
     }
     original = json.loads(json.dumps(prior))
     monkeypatch.setattr("model_registry.registry.load_models", lambda _: {"deferred": object()})
@@ -1600,6 +1603,8 @@ def test_deferred_catalog_entry_does_not_publish_server_owned_approvals(monkeypa
     assert entry["builds"] == prior["builds"]
     assert entry["packages"] == prior["packages"]
     assert entry["build_requirements"] == prior["build_requirements"]
+    # The registry rejects fingerprints naming a profile without a build in the snapshot.
+    assert entry["benchmark_fingerprints"] == {"w8a8": {"performance": "b" * 64}}
     assert prior == original
 
 

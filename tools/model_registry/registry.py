@@ -748,6 +748,17 @@ def build_catalog_snapshot(
         # Selections belong to the target branch and are restored by the server;
         # a base catalog's approval metadata must not be submitted as our own.
         entry.pop("approved_deployments", None)
+        # Benchmark fingerprints of approved-only profiles leave with those approvals; the registry rejects
+        # fingerprints for a profile without a build, and _refresh_approved_benchmarks restores them from the
+        # target branch's own selections.
+        built = {build.get("build_profile_id") for build in entry.get("builds", [])}
+        fingerprints = {
+            profile: value for profile, value in (entry.get("benchmark_fingerprints") or {}).items() if profile in built
+        }
+        if fingerprints:
+            entry["benchmark_fingerprints"] = fingerprints
+        else:
+            entry.pop("benchmark_fingerprints", None)
         # Categories follow this checkout's taxonomy, which may have renamed IDs
         # since the carried entry was published.
         entry["categories"] = validate_model_categorization(all_models[model["id"]], taxonomy)
