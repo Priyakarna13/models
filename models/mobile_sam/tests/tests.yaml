@@ -23,6 +23,6 @@ performance:
   run_tests: true
   expected:
     w16a16:
-      # Historical synthetic/tensor-only workload; retain until the revised complete-image benchmark is measured
-      # and a new baseline is reviewed. A new workload is not an apples-to-apples regression comparison.
+      # The complete-image workload: Neat preprocessing, the encoder and decoder on the MLA, and the MobileSam
+      # BoxDecode masks (sima-neat/core#1355). Measured on a Modalix DevKit at 13.90 FPS, 96.9 ms per image.
       throughput_fps: 13.9
