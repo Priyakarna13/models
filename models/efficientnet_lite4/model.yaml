@@ -19,6 +19,15 @@ upstream:
   revision: 9006f1cfa1c536cdfc0a2d7011d075179e69a9ca
   derived_from: https://github.com/tensorflow/tpu/tree/0a56e1e338d9b8022ef32f426643c91a1a5e6521/models/official/efficientnet/lite
 
+resources:
+  license:
+    # timm publishes the checkpoint under Apache-2.0; the weights come from Google's Apache-2.0 TensorFlow release.
+    source:
+      uri: https://raw.githubusercontent.com/huggingface/pytorch-image-models/c709c9a4a26af45d01221caadfdc6b00a9622630/LICENSE
+      sha256: 71b111620fa32c17a80ccd6db2da759d31a591e497d8b5f382174f59d1b59d49
+      size_bytes: 11343
+    install_path: licenses/LICENSE
+
 conversion:
   source:
     repository: timm/tf_efficientnet_lite4.in1k
