@@ -239,8 +239,9 @@ for the deployed portal and fails when a module imports a file missing from its
 `fingerprintedAssets` list, so add a new module there.
 It also writes `component-pipelines.<revision>.json` from the `pipeline` field
 of each `model.yaml`, which draws the component order on a multi-component
-model page, and `reference-metrics.<revision>.json` from each
-`reference_metrics`; `preview.py` serves the same data from `models/`.
+model page, `reference-metrics.<revision>.json` from each
+`reference_metrics`, and `low-accuracy-variants.<revision>.json`, the variants
+the customer view leaves out; `preview.py` serves the same data from `models/`.
 It copies `licenses.json` to `licenses.<revision>.json`. That file names each
 license and decides whether a model page offers downloads, and it sits in this
 directory so that a static file server serves it with the page.

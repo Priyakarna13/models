@@ -467,7 +467,9 @@ def test_assembled_portal_ships_the_model_data_api_fetches(tmp_path: Path) -> No
     licenses = json.loads((portal / "licenses.aaaaaaaaaaaa.json").read_text(encoding="utf-8"))
     assert licenses == json.loads((BROWSER / "licenses.json").read_text(encoding="utf-8"))
     api = (portal / "api.aaaaaaaaaaaa.js").read_text(encoding="utf-8")
-    for name in ("component-pipelines", "reference-metrics", "licenses"):
+    hidden = json.loads((portal / "low-accuracy-variants.aaaaaaaaaaaa.json").read_text(encoding="utf-8"))
+    assert all(isinstance(profiles, list) and profiles for profiles in hidden.values())
+    for name in ("component-pipelines", "reference-metrics", "low-accuracy-variants", "licenses"):
         assert f'"./{name}.aaaaaaaaaaaa.json"' in api
         assert f'"./{name}.json"' not in api
 

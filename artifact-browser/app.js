@@ -9,7 +9,8 @@ import {
 } from "./state.js";
 import { icons, branchName, showToast, variantLabel } from "./ui.js";
 import {
-  api, readBranchPreference, writeBranchPreference, readCachedBranches, readCachedCatalog, writeCachedCatalog,
+  api, audienceCatalog, readBranchPreference, writeBranchPreference, readCachedBranches, readCachedCatalog,
+  writeCachedCatalog,
   runFromCatalogBuild, loadRunDetail, variantPackage, loadVariant, loadPackageRun, loadHistoricalCatalogModel,
   selectedCatalogBuild,
 } from "./api.js";
@@ -176,7 +177,7 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
         allPages(api, `${base}/models`, modelQuery, "models").catch((error) => {
           if (error.status === 404) return [];
           throw error;
-        }),
+        }).then(audienceCatalog),
       ]);
       const gitRef = `refs/heads/${branch}`;
       const ownRuns = branchRuns.filter((run) => run.git_ref === gitRef);

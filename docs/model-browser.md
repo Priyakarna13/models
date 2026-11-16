@@ -21,6 +21,12 @@ navigation. It also leaves out the board's Linux memory, MLA Utilization, the
 developer view keeps all of them. Selecting a branch in the developer view changes
 the catalog, not the view.
 
+The customer view also leaves out a variant whose accuracy falls more than 8% below
+the source model's score. The comparison uses the FP32 baseline when the model has
+one, and otherwise the score its authors published for the same dataset split. A
+variant with neither score stays. A model whose every variant is left out does not
+appear.
+
 While the catalog loads, the list shows a spinner. A message that a branch has
 no models appears only after the registry has answered.
 
