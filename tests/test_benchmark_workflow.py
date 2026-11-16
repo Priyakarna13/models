@@ -975,7 +975,7 @@ if sys.argv[1] == '-c' or sys.argv[3] == 'model-runtime-directory':
 command = sys.argv[3]
 if command == 'resolve-devkit-accuracy':
     print(json.dumps({{"name": "imagenet-2012-val", "path": {str(dataset)!r}}}))
-elif command == 'model-component-mpks':
+elif command in ('model-component-mpks', 'model-component-artifacts'):
     print('image_encoder=image.tar.gz\\ntext_encoder=text.tar.gz')
 elif command != 'check-report':
     raise AssertionError(command)
@@ -1040,7 +1040,7 @@ if sys.argv[1] == '-c' or sys.argv[3] == 'model-runtime-directory':
 command = sys.argv[3]
 if command == 'resolve-devkit-accuracy':
     print(json.dumps({{"name": "imagenet-2012-val", "path": {str(dataset)!r}}}))
-elif command == 'model-component-mpks':
+elif command in ('model-component-mpks', 'model-component-artifacts'):
     print('image_encoder=image.tar.gz\\ntext_encoder=text.tar.gz')
 elif command == 'fetch-resources':
     if {kind!r} in ('pinned', 'both', 'collision'):
