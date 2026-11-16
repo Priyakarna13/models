@@ -208,7 +208,7 @@ def fp32_run(load_script, monkeypatch, tmp_path):
     script = load_script("fp32_baseline_accuracy")
     source = tmp_path / "source.onnx"
     source.write_bytes(b"test source")
-    source.with_name(script.WEIGHTS).write_bytes(b"test weights")
+    source.with_name(script.conversion_outputs(script.MODEL_DIR)[1]).write_bytes(b"test weights")
     dataset = tmp_path / "dataset"
     annotations = dataset / script.accuracy.ANNOTATIONS
     annotations.parent.mkdir(parents=True)

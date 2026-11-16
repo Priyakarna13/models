@@ -3,9 +3,10 @@
 The chain prepares each image and resizes each mask on the CPU, as segment_anything does (pipeline.preprocess and
 pipeline.image_mask), where accuracy.py has Neat do both on the board.
 
-Run on a host with the accuracy dependencies, onnx, onnxruntime, onnxsim, torch and timm; no PyNeat, registry
-credentials or YAML are needed. --onnx is the converted image_encoder.onnx that compile.py receives, with weights.pth
-beside it; surgery.py builds the same FP32 component graphs from them that compile.py quantizes. This is the masked
+Run on a host with the accuracy dependencies, onnx, onnxruntime, onnxsim, torch and timm; no PyNeat or registry
+credentials are needed. --onnx is the converted image_encoder.onnx that compile.py receives, with the weights that
+model.yaml's conversion.outputs names beside it; surgery.py builds the same FP32 component graphs from them that
+compile.py quantizes. This is the masked
 six-slot reference, not an independent upstream SamPredictor oracle. No score is published until measured.
 Complete predictions and their provenance are saved before scoring; --score-only retries scoring without
 running the model. This does not resume interrupted inference or produce partial-dataset reference scores.
@@ -30,11 +31,11 @@ from pathlib import Path
 
 import accuracy
 import numpy as np
+from model_registry.conversion import conversion_outputs
 from pipeline import COMPONENTS, INPUT_SHAPES, image_mask, mask_layout, preprocess, tensor_name
 from surgery import export_components
 
-# The conversion output beside the image encoder that surgery.py builds from (model.yaml conversion.outputs).
-WEIGHTS = "weights.pth"
+MODEL_DIR = Path(__file__).resolve().parents[1]
 CONDITIONS = (
     "FP32 ONNX Runtime CPU; each non-crowd object's ground-truth box, mask 0, "
     "six-slot prompts with inactive-key masking; segment_anything's CPU preprocessing and mask resizing; "
@@ -141,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit is not None and not 0 < args.limit <= accuracy.VAL2017_IMAGES:
         parser.error(f"--limit must be between 1 and {accuracy.VAL2017_IMAGES}")
     dataset = Path(directory)
+    weights = args.onnx.with_name(conversion_outputs(MODEL_DIR)[1])
     predictions_path = args.predictions or args.output.with_suffix(".predictions.json")
     if predictions_path.resolve() == args.output.resolve():
         parser.error("--predictions and --output must be different files")
@@ -154,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     image_ids = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
     provenance = {
         "onnx_sha256": sha256(args.onnx),
-        "weights_sha256": sha256(args.onnx.with_name(WEIGHTS)),
+        "weights_sha256": sha256(weights),
         "dataset": dataset_id,
         "annotations_sha256": sha256(dataset / accuracy.ANNOTATIONS),
         "selected_images_sha256": image_digest(ground_truth, image_ids, dataset / accuracy.IMAGES),
@@ -182,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         results, prompts = saved["predictions"], saved["prompts"]
     else:
         with tempfile.TemporaryDirectory(prefix="mobile-sam-fp32-") as temporary:
-            graphs = export_components(args.onnx, args.onnx.with_name(WEIGHTS), Path(temporary) / "components")
+            graphs = export_components(args.onnx, weights, Path(temporary) / "components")
             runners = FloatRunners(graphs)
             results, prompts = accuracy.evaluate(
                 ground_truth, image_ids, dataset / accuracy.IMAGES, runners.encode, runners.decode
