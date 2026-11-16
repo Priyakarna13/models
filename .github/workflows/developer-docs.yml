@@ -1,6 +1,6 @@
 name: Developer Docs Validation
 
-# The orchestrator calls this before planning compilations and publishes the site it uploads;
+# The orchestrator runs this independently of model processing and publishes the checked site it uploads;
 # Target Branch Checks calls it on every pull request; a manual run checks one ref.
 on:
   workflow_call:
@@ -55,7 +55,7 @@ jobs:
       - name: Install registry tooling for portal assembly and the preview API
         run: python -m pip install .
 
-      - name: Build unified Model Registry portal
+      - name: Build unified Model Browser portal
         working-directory: website
         env:
           DOCS_SITE_URL: ${{ inputs.environment == 'production' && 'https://developer.sima.ai' || 'https://developer-stg.sima.ai' }}
