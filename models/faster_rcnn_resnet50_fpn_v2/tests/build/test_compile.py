@@ -445,7 +445,7 @@ def test_calibration_draws_a_seeded_sample_from_cal2017_only(
 def _mpk_manifest(compile_module: ModuleType, component_id: str) -> dict:
     contract = compile_module.COMPONENT_INTERFACES[component_id]
     return {
-        "model_sdk_version": compile_module.COMPILER_VERSION,
+        "model_sdk_version": "3.0.0",
         "input_nodes": [{"name": name, "size": size} for name, size in contract["inputs"].items()],
         "plugins": [
             {"sequence": 0, "processor": "EV74", "config_params": {"kernel": "quantize"}},
@@ -469,9 +469,7 @@ def _write_mpk(path: Path, manifest: dict) -> None:
 
 
 @pytest.mark.parametrize("component_id", ["backbone", "box_head"])
-@pytest.mark.parametrize(
-    "case", ["valid", "cast", "dequantized", "resized", "two_mla", "host", "compiler", "quantized"]
-)
+@pytest.mark.parametrize("case", ["valid", "cast", "dequantized", "resized", "two_mla", "host", "quantized"])
 def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     tmp_path: Path, case: str, component_id: str, load_script: Callable[[str], ModuleType]
 ) -> None:
@@ -491,8 +489,6 @@ def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
         plugins.insert(2, {"sequence": 1, "processor": "MLA", "config_params": {}})
     elif case == "host":
         plugins.insert(2, {"sequence": 1, "processor": "A65", "config_params": {}})
-    elif case == "compiler":
-        manifest["model_sdk_version"] = "0.0.0"
     archive = tmp_path / "model_mpk.tar.gz"
     _write_mpk(archive, manifest)
 

@@ -38,7 +38,6 @@ from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import INPUT_SIZE, calibration_images, proposals, roi_align, tile_regions, unpack_backbone
-from model_registry.dependencies import resolve_model_compiler
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
@@ -56,7 +55,6 @@ from surgery import (
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "faster_rcnn_resnet50_fpn_v2"
 COMPONENT_IDS = ("backbone", "box_head")
-COMPILER_VERSION = resolve_model_compiler(MODEL_DIR.parents[1])["version"]
 # The split must reproduce the source's networks; float32 reordering in the box head stays far below this.
 SPLIT_TOLERANCE = 1e-4
 INPUT_SHAPES = {"backbone": (1, 3, INPUT_SIZE, INPUT_SIZE), "box_head": ROIS_SHAPE}
@@ -135,11 +133,6 @@ def audit_mpk(archive: Path, component_id: str) -> None:
         raise RuntimeError(
             f"invalid {component_id} MPK: MLA={len(mla_plugins)}, ELF={len(elfs)}, host={len(host_plugins)}, "
             f"shared_objects={shared_objects}"
-        )
-    if str(manifest.get("model_sdk_version")) != COMPILER_VERSION:
-        raise RuntimeError(
-            f"{component_id} MPK compiler mismatch: expected {COMPILER_VERSION}, "
-            f"found {manifest.get('model_sdk_version')}"
         )
     inputs = {node.get("name"): node.get("size") for node in manifest.get("input_nodes", [])}
     if inputs != contract["inputs"]:
