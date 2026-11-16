@@ -99,7 +99,7 @@ def _image_graph(surgery: ModuleType, shared_weight: bool = False) -> onnx.Model
         outputs.append(helper.make_tensor_value_info("weight_copy", onnx.TensorProto.FLOAT, [80, 3, 8, 8]))
     inputs = [helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, surgery.INPUT_SHAPE)]
     graph = helper.make_graph(nodes, "fixture", inputs, outputs, initializers)
-    return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=8)
 
 
 def test_rgb_input_reorders_the_first_convolution_exactly(
