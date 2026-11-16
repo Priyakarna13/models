@@ -22,8 +22,9 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+# A dispatch carries the dispatching ref in github.event.ref, so the requested branch comes first.
 concurrency:
-  group: model-branch-lifecycle-${{ github.event.ref || inputs.branch }}
+  group: model-branch-lifecycle-${{ inputs.branch || github.event.ref }}
   cancel-in-progress: false
 
 jobs:
