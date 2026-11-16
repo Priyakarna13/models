@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 from threading import Lock
 
@@ -26,8 +27,8 @@ from model_registry.artifact import (
 from model_registry.candidates import DEPLOYMENTS, publish_candidate
 from model_registry.dependencies import resolve_model_compiler
 from model_registry.errors import ValidationError
-from model_registry.fingerprints import COMPILE_TOOLING, compile_fingerprint
-from model_registry.model import load_and_validate_model, load_models
+from model_registry.fingerprints import COMPILE_TOOLING, benchmark_fingerprint, compile_fingerprint
+from model_registry.model import load_and_validate_model, load_models, mpk_filename
 from model_registry.registry import (
     RegistryPublicationError,
     S3ArtifactStore,
@@ -35,6 +36,7 @@ from model_registry.registry import (
     _download_registry_file,
     _preflight_compilations,
     canonical_sha256,
+    publish_catalog,
     publish_compilations,
     stage_catalog_build,
 )
@@ -159,11 +161,19 @@ COMPILE_TIMING = json.dumps({
 
 
 @pytest.fixture
-def compiled(tmp_path, request):
+def native_file_count():
+    return None
+
+
+@pytest.fixture
+def compiled(tmp_path, request, native_file_count):
     dist = tmp_path / "compiled"
     profile = dist / MODEL / PROFILE
     component = profile / "model"
-    deployment(component / "deployment")
+    source = deployment(component / "deployment")
+    if native_file_count:
+        for index in range(native_file_count - len(verify_llima(source))):
+            (source / "elf_files" / f"layer-{index}.elf").write_bytes(b"\x7fELFsynthetic-layer")
     model = load_and_validate_model(ROOT / "models" / MODEL)
     compiler = resolve_model_compiler(ROOT)
     provenance = {
@@ -182,9 +192,14 @@ def compiled(tmp_path, request):
     return dist
 
 
-@pytest.mark.parametrize("compiled,environment", [("staging", "staging"), ("production", "production")],
-                         indirect=["compiled"])
-def test_native_deployment_publish_package_and_retrieve_without_archiving(compiled, tmp_path, environment):
+@pytest.mark.parametrize("compiled,environment,native_file_count", [
+    ("staging", "staging", None), ("production", "production", None),
+    ("staging", "staging", 1697), ("staging", "staging", 2046),
+], indirect=["compiled"])
+@pytest.mark.parametrize("selection_field", [None, "approved_deployments", "branch_deployments"])
+def test_native_deployment_publish_package_and_retrieve_without_archiving(
+    compiled, tmp_path, environment, native_file_count, selection_field, monkeypatch,
+):
     component = compiled / MODEL / PROFILE / "model"
     source = component / "deployment"
     manifest = validate_compile_outputs(
@@ -199,6 +214,10 @@ def test_native_deployment_publish_package_and_retrieve_without_archiving(compil
         model_id=MODEL, build_profile_id=PROFILE, **arguments,
     )
     assert candidate["state"] == "finalized"
+    if native_file_count:
+        roles = candidate["contract"]["roles"]
+        assert len(verify_llima(source)) == native_file_count
+        assert sum(len(role["artifacts"]) + len(role["inputs"]) for role in roles.values()) == 2 * native_file_count + 4
     published = json.loads((component / "registry-publication.json").read_text())
     compile_run = published["runs"][0]["run_id"]
     source_input = next(body for _, path, body in registry.calls if path.endswith("/inputs/source-component"))
@@ -232,9 +251,35 @@ def test_native_deployment_publish_package_and_retrieve_without_archiving(compil
         "build_profile_id": PROFILE, "compile_invocation_id": PROFILE, "component_id": "model",
         "run_id": compile_run, "artifact_sha256": published["runs"][0]["artifact_sha256"],
     }]}]}
+    fingerprint = compile_fingerprint(ROOT, MODEL, PROFILE, PROFILE, resolve_model_compiler(ROOT)["identity"])
+    if selection_field:
+        catalog["models"][0] = {"id": MODEL, "builds": [], "packages": [], selection_field: {PROFILE: {
+            "requirements": {
+                "invocations": [{"id": "model", "component_ids": ["model"], "compile_fingerprint": fingerprint}],
+                "packages": [{"id": "default", "component_ids": ["model"]}],
+            },
+            "artifacts": [
+                {"role": "compile-model", "component_id": "model", "run_id": compile_run, "artifact_name": "llima"},
+                {"role": "package-default", "package_id": "default", "run_id": package_run, "artifact_name": "package"},
+            ],
+        }}}
+        if selection_field == "branch_deployments":
+            # A branch selection supersedes an approved deployment for the same profile.
+            catalog["models"][0]["approved_deployments"] = {
+                PROFILE: {"requirements": {}, "artifacts": []},
+            }
+        from model_registry import registry as module
+
+        model = load_and_validate_model(ROOT / "models" / MODEL)
+        monkeypatch.setattr(module, "load_models", lambda root: {MODEL: model})
 
     def read(url):
         if "/catalogs/current?" in url:
+            if "git_ref=refs%2Fheads%2Ffeature%2Ftest-benchmark" in url:
+                return {"catalog": {"catalog_revision": "a" * 40, "document": {
+                    "models": [{"id": MODEL, "builds": [], "packages": []}],
+                }}}
+            assert any(f"git_ref=refs%2Fheads%2F{branch}" in url for branch in ("develop", "main"))
             return {"catalog": {"document": catalog}}
         path = url.removeprefix("https://registry.example.invalid")
         if path in registry.artifacts:
@@ -242,12 +287,48 @@ def test_native_deployment_publish_package_and_retrieve_without_archiving(compil
             return {"artifact": {**record, "download_url": record["s3_key"]}}
         return {"run": {"toolchain_version": resolve_model_compiler(ROOT)["version"]}}
 
+    if selection_field == "approved_deployments":
+        for branch in ("develop", "main", "feature/test-benchmark"):
+            publication = publish_catalog(
+                repository=ROOT, branch=branch, git_sha="b" * 40,
+                api_url="https://registry.example.invalid", read_api_url="https://registry.example.invalid",
+                aws_region="us-west-2", request=registry.request, read_request=read,
+                base_branches=["develop"],
+            )
+            entry = publication["catalog"]["models"][0]
+            # Publishing metadata must not rewrite approval-owned outputs.
+            assert entry["builds"] == entry["packages"] == []
+            assert "approved_deployments" not in entry and "branch_deployments" not in entry
+            if branch == "feature/test-benchmark":
+                assert "benchmark_fingerprints" not in entry
+            else:
+                assert entry["benchmark_fingerprints"][PROFILE]["performance"] == benchmark_fingerprint(
+                    ROOT, model, PROFILE, {"model": published["runs"][0]}, "performance",
+                )
+            assert registry.calls[-1][2]["catalog"] == publication["catalog"]
+
     restore_args = dict(
         repository=ROOT, output_dir=tmp_path / "restored", api_url="https://registry.example.invalid",
         branch="develop", catalog_revision="b" * 40, model_id=MODEL, build_profile_id=PROFILE,
         compile_invocation_id=PROFILE, read_request=read, download_request=registry.objects.__getitem__,
     )
-    stage_catalog_build(**restore_args)
+    if selection_field == "approved_deployments":
+        restore_args.update(branch="feature/test-benchmark", catalog_revision="c" * 40, deployment_branch="develop")
+        stage_catalog_build(**restore_args)
+        invocation = catalog["models"][0][selection_field][PROFILE]["requirements"]["invocations"][0]
+        invocation["compile_fingerprint"] = "f" * 64
+        with pytest.raises(ValidationError, match="current model/compiler"):
+            stage_catalog_build(**restore_args)
+        invocation["compile_fingerprint"] = fingerprint
+    else:
+        stage_catalog_build(**restore_args, expected_compile_fingerprint=fingerprint if selection_field else None)
+    if selection_field:
+        receipt = tmp_path / "restored" / MODEL / PROFILE / "packages/default/registry-publication.json"
+        restored_package = json.loads(receipt.read_text())["packages"][0]
+        assert restored_package["run_id"] == package_run
+        assert restored_package["component_run_ids"] == {"model": compile_run}
+        with pytest.raises(ValidationError, match="current model/compiler"):
+            stage_catalog_build(**restore_args, expected_compile_fingerprint="f" * 64)
     restored = tmp_path / "restored" / MODEL / PROFILE / "model/deployment"
     assert verify_llima(restored) == verify_llima(source)
     assert json.loads((restored / "devkit/vlm_config.json").read_text())["vm_cfg"]["image_size"] == [448, 448]
@@ -263,6 +344,15 @@ def test_native_deployment_publish_package_and_retrieve_without_archiving(compil
     assert not stale.exists()
     assert len(downloads) == 1  # Only the manifest is fetched; verified payload files are reused.
     assert verify_llima(restored) == verify_llima(source)
+
+
+@pytest.mark.parametrize("native_file_count", [2047])
+def test_candidate_rejects_inventory_above_required_name_limit(compiled, tmp_path, native_file_count):
+    registry = Registry()
+    with pytest.raises(ValidationError, match=r"32-role / 4096-required-name limits \(2 roles, 4098 required names\)"):
+        publish_candidate(repository=ROOT, dist_dir=compiled, output_dir=tmp_path / "candidate",
+                          model_id=MODEL, build_profile_id=PROFILE, **registry.args())
+    assert registry.calls == []
 
 
 def test_native_publication_rejects_changed_payload_before_creating_runs(compiled):
@@ -401,7 +491,9 @@ def test_llima_runner_passes_yaml_settings_to_the_recipe(tmp_path, model_id, ima
         draft_name = parameters["draft_model_path"]
         draft = deployment(source / draft_name)
         draft_config = json.loads((draft / "devkit/vlm_config.json").read_text())
-        draft_config["lm_cfg"]["speculative_decoding_cfg"] = {"is_draft": True, "method": parameters["speculative_method"]}
+        draft_config["lm_cfg"]["speculative_decoding_cfg"] = {
+            "is_draft": True, "method": parameters["speculative_method"],
+        }
         (draft / "devkit/vlm_config.json").write_text(json.dumps(draft_config))
         (checkpoint.parent / draft_name).mkdir()
         (checkpoint.parent / draft_name / "config.json").write_text("{}")
@@ -469,7 +561,8 @@ shutil.copytree(os.environ["DEPLOYMENT_SOURCE"], sys.argv[2])
     executable = tools / "llima-compile"
     executable.write_text(f"#!{sys.executable}\nimport json, os, runpy, sys\n"
                           'if "-c" in sys.argv:\n'
-                          '    configure = runpy.run_path(sys.argv[sys.argv.index("-c") + 1])["get_layer_configuration"]\n'
+                          '    configure = runpy.run_path(sys.argv[sys.argv.index("-c") + 1])'
+                          '["get_layer_configuration"]\n'
                           '    assert configure({"is_draft_model": True}, {}) == {"precision": "A_BF16_W_INT8"}\n'
                           'open(os.environ["COMPILE_ARGUMENTS"], "w").write(json.dumps(sys.argv[1:]))\n')
     subprocess.run(["bash", str(replay)], cwd=tmp_path, check=True, env={
@@ -611,8 +704,8 @@ class WhisperModel:
     assert (output / "compile.py").read_bytes() == recipe.with_suffix(".py").read_bytes()
 
 
-@pytest.mark.parametrize("environment", ["staging", "production"])
-def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeypatch, environment):
+def _compiled_candidate(tmp_path, environment, components):
+    """A repository whose on-demand fixture_model compiled components, with their compile output."""
     root = tmp_path / "repository"
     model_dir = root / "models/fixture_model"
     shutil.copytree(ROOT / "tests/fixtures/fixture_model", model_dir)
@@ -625,21 +718,21 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
     path = model_dir / "model.yaml"
     model = yaml.safe_load(path.read_text())
     model["build-on-demand"] = True
-    model["compilation"]["components"] = ["backbone", "decoder"]
-    model["build_profiles"]["fixture"]["components"] = {
-        "backbone": {"parameters": {}}, "decoder": {"parameters": {}},
-    }
+    if components != ("model",):
+        model["compilation"]["components"] = list(components)
+        model["build_profiles"]["fixture"]["components"] = {
+            component: {"parameters": {}} for component in components
+        }
     path.write_text(yaml.safe_dump(model, sort_keys=False))
     compiler = resolve_model_compiler(root)
     key = compile_fingerprint(root, "fixture_model", "fixture", "fixture", compiler["identity"])
-    registry = Registry()
-    # The profile's one compile invocation compiles both components.
+    # The profile's one compile invocation compiles every component.
     invocation = tmp_path / "invocations" / "fixture" / "fixture_model/fixture"
     outputs = []
-    for component in ("backbone", "decoder"):
+    for component in components:
         output = invocation / component
         output.mkdir(parents=True)
-        archive = output / f"fixture_model_fixture_{component}_mpk.tar.gz"
+        archive = output / mpk_filename(load_and_validate_model(model_dir), "fixture", component)
         with tarfile.open(archive, "w:gz") as stream:
             for name, payload in (("layer.elf", b"synthetic-elf"), ("fixture_mpk.json", b"{}")):
                 info = tarfile.TarInfo(name)
@@ -654,11 +747,28 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
         outputs.append({"component_id": component, "mpk_path": f"{component}/{archive.name}",
                         "mpk_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
     (invocation / "compile-timing.json").write_text(COMPILE_TIMING)
+    grouped = {}
+    if len(components) > 1:
+        runtime_files = []
+        for name in ("backbone/tokenizer.json", "vocabulary.txt"):
+            path = invocation / name
+            path.write_bytes(b"supporting-file")
+            runtime_files.append({"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        grouped = {
+            "runtime_files": runtime_files,
+            "derived_graphs": [{"component_id": component, "sha256": "a" * 64} for component in components],
+        }
     (invocation / "compile-outputs.json").write_text(json.dumps({
         "model_id": "fixture_model", "build_profile_id": "fixture", "compile_invocation_id": "fixture",
-        "outputs": outputs,
-        "derived_graphs": [{"component_id": component, "sha256": "a" * 64} for component in ("backbone", "decoder")],
+        "outputs": outputs, **grouped,
     }))
+    return root, compiler, key
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeypatch, environment):
+    root, compiler, key = _compiled_candidate(tmp_path, environment, ("backbone", "decoder"))
+    registry = Registry()
     from model_registry import stage_plan
 
     # A catalog build of one component at the head key cannot join a candidate built from another source.
@@ -678,12 +788,36 @@ def test_mpk_candidate_binds_every_component_before_finalizing(tmp_path, monkeyp
     arguments = {**registry.args(), "environment": environment}
     result = publish_candidate(repository=root, dist_dir=tmp_path / "invocations", output_dir=tmp_path / "candidate",
                                model_id="fixture_model", build_profile_id="fixture", **arguments)
+    from model_registry.runtime_files import read_runtime_files
+
+    compiled = json.loads((tmp_path / "invocations/fixture/fixture_model/fixture/compile-outputs.json").read_text())
+    runtime_files = compiled["runtime_files"]
+    assert read_runtime_files(tmp_path / "candidate/compiled/fixture_model/fixture") == runtime_files
+    package = next((tmp_path / "candidate/packages").rglob("*.zip"))
+    with zipfile.ZipFile(package) as archive:
+        for item in runtime_files:
+            assert archive.read(item["path"]) == b"supporting-file"
     assert result["state"] == "finalized"
     assert set(registry.bindings) == {"compile-backbone", "compile-decoder", "package-default"}
     finalization = next(index for index, (method, path, _) in enumerate(registry.calls)
                         if path.startswith(DEPLOYMENTS) and path.endswith("/finalize"))
     assert all(index < finalization for index, (_, path, _) in enumerate(registry.calls)
                if path.startswith("/v1/runs/") and path.endswith("/finalize"))
+
+
+def test_single_component_candidate_publishes_a_zip_package(tmp_path):
+    """Vulcan opens an archive package as a ZIP at promotion, so one MPK still ships inside one."""
+    root, _, _ = _compiled_candidate(tmp_path, "production", ("model",))
+    registry = Registry()
+    publish_candidate(repository=root, dist_dir=tmp_path / "invocations", output_dir=tmp_path / "candidate",
+                      model_id="fixture_model", build_profile_id="fixture",
+                      **{**registry.args(), "environment": "production"})
+
+    assert registry.candidate["state"] == "finalized"
+    package = registry.artifacts[f"/v1/runs/{registry.bindings['package-default']}/artifacts/package"]
+    assert package["media_type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(registry.objects[package["s3_key"]])) as stream:
+        assert stream.namelist() == ["fixture_model_fixture_mpk.tar.gz"]
 
 
 def test_llima_compile_fingerprint_names_no_compile_invocation():

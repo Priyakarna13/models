@@ -11,17 +11,32 @@ measure on a DevKit.
 
 ```text
 model
-├── conversion ───────────── optional upstream source for scripts/convert.py
+├── display_name ─────────── name on the model card
+├── description ──────────── one-line description on the model card
+├── parameter_count_billion  optional: parameter count in billions
+├── model_type ───────────── taxonomy ID
+├── tasks ────────────────── taxonomy IDs
+├── modalities ───────────── input and output taxonomy IDs
+├── architecture ─────────── model family ID
+├── license ──────────────── license of the source model
+├── upstream ─────────────── where the source model comes from
+├── build-on-demand ──────── optional: build only when selected
+├── conversion ───────────── optional: upstream source for scripts/convert.py
 ├── compilation ──────────── the source the recipe compiles, and its components
-├── datasets ─────────────── immutable dataset pins shared across stages
-├── calibrations ─────────── Dataset Registry archives build profiles calibrate on
+├── resources ────────────── optional: pinned files every package installs
+├── calibrations ─────────── optional: Dataset Registry archives build profiles calibrate on
 ├── build_profiles ───────── each variant's per-component build parameters
-├── pipeline ─────────────── optional run order, for the model browser
-├── numerical_fidelity ───── compiled outputs compared during compilation
-├── accuracy ─────────────── whole-model DevKit accuracy
-├── performance ──────────── whole-model or independent-component DevKit performance
-└── reference_metrics ────── scores the source model's authors published
+├── pipeline ─────────────── optional: run order, for the model browser
+├── numerical_fidelity ───── optional: compiled outputs compared during compilation
+├── accuracy ─────────────── optional: whole-model DevKit accuracy
+├── performance ──────────── optional: whole-model or independent-component DevKit performance
+└── reference_metrics ────── optional: reference scores shown beside the measured accuracy
 ```
+
+The tree lists every top-level field. A field without "optional" is required, except
+`upstream`, which has a [default](#product-identity-and-provenance) for some sources.
+Each stage pins its own datasets under `calibrations`, `numerical_fidelity`, or
+`accuracy`.
 
 `model.yaml` is the model's only configuration file. Every stage reads its own
 section, and model-owned code lives in `scripts/` beside it:
@@ -44,19 +59,33 @@ directory supplies `id`, and `architecture` is a plain ID such as `qwen`.
 Ownership lives in `CODEOWNERS`.
 See [Model taxonomy](model-taxonomy.md) for sanctioned taxonomy values.
 
-`upstream` records human-reviewable provenance. It defaults to the checkpoint's
-Hugging Face repository and revision; `model_card` defaults to its repository
-URL. Keep an explicit `upstream` when it identifies a different original model.
-A model whose source is not on Hugging Face has no default and declares
-`upstream` itself. Its `model_card` is the page the model browser links as the
-original model:
+Optional `parameter_count_billion` gives the unquantized total parameter count,
+including embeddings and all experts, in billions (for example `0.8` or `5.1`).
+Speculative models use the target's count.
+
+`upstream` records where the source model comes from, for people to review:
 
 ```yaml
 upstream:
   repository: https://github.com/owner/repo
   revision: 0123456789abcdef0123456789abcdef01234567
   model_card: https://github.com/owner/repo/releases/tag/v1.0.0
+  derived_from: https://github.com/original-owner/original-repo
 ```
+
+| Field | Meaning |
+| --- | --- |
+| `repository` | Required. URL of the repository that holds the source model. |
+| `revision` | Required. The revision of that repository, such as a commit. |
+| `model_card` | Optional HTTPS URL of the page the model browser links as the original model. Defaults to `repository`. |
+| `derived_from` | Optional URL of the original model or code that `repository` derives from, such as the base model of a requantized checkpoint. The model browser does not show it. |
+
+`upstream` has a default in one case only. When `compilation.source` is a file set
+that names a `repository` and `revision`, `upstream` defaults to that Hugging Face
+repository and revision. Keep an explicit `upstream` there when it identifies a
+different original model. Every other model declares `upstream` itself, including a
+model whose source is one file or `conversion`. Without it, validation fails with
+`upstream is required when the source has no Hugging Face repository`.
 
 Downloadable inputs belong in a `conversion` or `compilation` `source`, where
 exact bytes are pinned.
@@ -91,6 +120,44 @@ is not listed, add an entry, validated by
 when a model declares an unlisted license. No fingerprint includes the license
 or the license list, so a correction reruns nothing.
 
+### License files in the package
+
+A license that allows redistribution asks that its text, and for MIT and BSD
+the authors' copyright line, travel with every copy. A downloadable ONNX model
+therefore ships its upstream license inside every package, as a `license`
+[resource](#packages-and-pipeline) installed under `licenses/`:
+
+```yaml
+resources:
+  license:
+    source:
+      uri: https://raw.githubusercontent.com/ultralytics/ultralytics/f2d3aed634a5b0e4828024718d4a61ab2f83fb19/LICENSE
+      sha256: 0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0
+      size_bytes: 34523
+    install_path: licenses/LICENSE
+```
+
+- Pin the license file of the source model itself, at the commit `upstream`
+  names: the checkpoint's Hugging Face repository when it holds the file, or
+  the authors' code repository as a GitHub raw file.
+- When neither holds the file and the license is standard text with no
+  authors' copyright line, such as Apache-2.0, pin that text from another
+  repository and say so in a comment, as `resnet_50` does. Never borrow
+  another project's MIT or BSD file: it names that project's authors.
+- When the weights carry a second license, add one resource per license. The
+  torchvision weights that timm republishes under Apache-2.0 ship
+  `licenses/LICENSE` and `licenses/LICENSE-torchvision`.
+- When the upstream has a `NOTICE` file, pin it the same way as
+  `licenses/NOTICE`.
+- A model whose license is `downloadable: false` offers no package and
+  declares no license resource.
+- The model's `performance.py` takes `--resources`, because the performance
+  runner passes every model's resources, and reads nothing from it.
+
+A resource is a compile input, so adding or changing a license pin recompiles
+the model and remeasures it. LLiMa packages ship their deployment folder and
+take no resources.
+
 Optional top-level `build-on-demand` is a boolean, default `false`, for any
 model requiring explicit build selection. When `true`, pushes validate the
 model and publish its metadata but never compile or measure it. Manual
@@ -118,10 +185,10 @@ the approved forms.
 A model that declares `conversion` must also provide `scripts/convert.py` and
 `scripts/requirements-convert.txt`, which the **Vulcan Model Convert** workflow
 runs through `scripts/run_model_conversion.sh` in a fresh Python environment.
-The workflow publishes a validated ONNX bundle to Vulcan. Set
-`compilation.source: conversion` to resolve its latest compatible output during
-compile planning. The declaration remains environment independent; see
-[conversion artifacts](conversion-artifacts.md) for rollout and reproduction.
+The workflow publishes the converted files. Set `compilation.source: conversion`
+to compile its latest matching output. See
+[conversion artifacts](conversion-artifacts.md) for how to publish a conversion and
+when to run it again.
 
 `conversion.outputs` is optional and lists the files `convert.py` writes, such as
 several ONNX models or a `.pth` checkpoint. It defaults to `[model.onnx]`, and
@@ -176,6 +243,15 @@ A member's own `uri` overrides the shared repository and revision. Every
 member is verified separately; the tool materializes the declared layout in a
 content-addressed cache and passes the main file to the recipe.
 
+A single file, and each member of a file set, may add `media_type`, the file's content
+type. It defaults to `application/octet-stream`. In a file set it is part of the
+source's identity, so changing it recompiles the model:
+
+```yaml
+files:
+  config.json: {sha256: 1111111111111111111111111111111111111111111111111111111111111111, size_bytes: 1000, media_type: application/json}
+```
+
 ## Datasets and calibration
 
 Each stage pins the Dataset Registry archive it uses. A pin gives the
@@ -227,8 +303,7 @@ recipe maps it to compiler settings. The target is `modalix`.
 A profile may declare `benchmark_baseline: {model_id: gemma_4_e2b_it_textonly,
 build_profile: w4a16}` to link to a normal-decoding build. Both references are
 validated. This changes only its performance fingerprint; it neither compiles
-nor benchmarks the baseline. Future comparison runners must check matching target
-weights and context/image settings.
+nor benchmarks the baseline.
 
 | Runner field | Values | Default | Access requirement |
 | --- | --- | --- | --- |
@@ -243,36 +318,32 @@ separate top-level scheduling flag, not a purchasing market. See [runner access
 and approval](runner-class-requests.md) for eligibility, evidence and usage.
 
 The recipe compiles a profile's components together in one compile
-invocation, named after the profile, and writes a `compile-outputs.json` with
-`model_id`, `build_profile_id`, `compile_invocation_id`, an `outputs` list
-naming each component's MPK and SHA-256, and a `derived_graphs` list with the
-SHA-256 of each component's derived graph. For a single-component model,
-`scripts/run_model_compilation.sh` writes the file with `outputs` only when
-the recipe does not.
+invocation, named after the profile.
+[Define build profiles](adding-a-model.md#6-define-build-profiles) lists what the
+recipe must write.
 
-The repository compiler version remains pinned centrally in
-[`deps/manifest.json`](https://github.com/sima-neat/models/blob/develop/deps/manifest.json).
+`model.yaml` names no compiler version.
+[`deps/manifest.json`](https://github.com/sima-neat/models/blob/develop/deps/manifest.json)
+pins the Model Compiler for every model.
 
 Each compiled MPK is named after its model and variant:
 `<model_id>_<profile_id>_mpk.tar.gz`, or
 `<model_id>_<profile_id>_<component_id>_mpk.tar.gz` when the model has
 several components. `scripts/compile.py` passes the name without
-`_mpk.tar.gz` to the compiler as the model name, and publication rejects an
+`_mpk.tar.gz` to the compiler as the model name, and CI rejects an
 MPK with any other name. For example, RF-DETR's `w8a8_w16a16` profile
 produces `rf_detr_nano_w8a8_w16a16_backbone_mpk.tar.gz` and
-`rf_detr_nano_w8a8_w16a16_decoder_mpk.tar.gz`. The stored MPK, the
-package, and the browser and CLI downloads all use this name.
+`rf_detr_nano_w8a8_w16a16_decoder_mpk.tar.gz`. The package and the browser and
+CLI downloads all use this name.
 
 ## Packages and pipeline
 
 Every build profile publishes one package, `default`, holding all its
-components. A single-component package is that component's MPK,
-`<model_id>_<profile_id>_mpk.tar.gz`. A multi-component package is a
-deterministic `<model_id>_<profile_id>_default.zip` holding the MPKs at its
-top level. Trusted assembly keeps each MPK intact and records the package
-manifest in `package-result.json`, validated against
-[`package-manifest.schema.json`](https://github.com/sima-neat/models/blob/develop/schemas/package-manifest.schema.json);
-the manifest is not shipped inside the package.
+components. An ONNX model's package is a deterministic
+`<model_id>_<profile_id>_default.zip` holding the MPKs at its top level, one
+for a single-component model. A single-component build published before
+packages became ZIPs stays a bare `<model_id>_<profile_id>_mpk.tar.gz` until
+its next compile.
 
 An ONNX model whose application also runs files on the CPU, such as CPU-side
 ONNX graphs, tokenizer tables or voice data, lists them in `resources`. Pin
@@ -306,6 +377,12 @@ it at that path, beside the MPKs it was derived with. A resource is a compile
 input, so changing one recompiles the model; LLiMa packages ship their
 deployment folder and take neither.
 
+CLIP and SigLIP ship `text_encoder/tokenizer.json` and
+`text_encoder/token_embeddings.npy` as `runtime_files`. Surgery extracts both from
+the converted model, and the package carries them beside the encoder MPKs. The
+accuracy runner passes the profile's output directory as `--resources`. Accuracy
+evaluation generates the class embeddings, so the package does not hold them.
+
 A multi-component model can add `pipeline` so the model browser shows the
 order its components run in. List each component once, in run order, and
 name any CPU step between them:
@@ -328,7 +405,7 @@ model, every component of a build profile together.
 ### `numerical_fidelity`
 
 Computed by the compile recipe and written as `fidelity.json` beside the
-profile's MPKs. The package run publishes it.
+profile's MPKs. CI publishes it with the package.
 
 | Field | Meaning |
 | --- | --- |
@@ -383,9 +460,12 @@ performance:
 
 Each component then has separate metrics, workload, telemetry and execution
 statistics in the report's `components` map, with no combined metrics. Both
-scopes publish one performance run per profile. Every measured result must hold the metrics
+scopes write one report per build profile. Core reports must hold the metrics
 [`metrics.json`](../tools/model_report/metrics.json) marks `required`. Decoder selection and measurement settings stay in the script, which
 customers can copy and run with PyNeat; YAML does not duplicate them.
+
+LLMs and VLMs use [MoLE workloads](benchmarking.md#llima-text-and-image-performance)
+with TTFT and token rates.
 
 See [Accuracy and fidelity](local-accuracy-development.md) and [DevKit
 performance](benchmarking.md) for the scripts and reports, and [what a change
@@ -466,33 +546,10 @@ under their existing checkpoint folder names. `main_file` names the target's
 nested `config.json`, and `parameters.draft_model_path` selects the draft folder.
 Each deployed checkpoint retains its own `devkit/` and `elf_files/` folders.
 
-The compiled component contains `deployment/` and a sibling
-`deployment-manifest.json`. `compile-outputs.json` carries `artifact_path`
-(`model/deployment-manifest.json` for the `model` component) and
-`artifact_sha256`, the SHA-256 of that JSON index. `compile-result.json`
-marks `format: llima` and `layout: directory`; its `size_bytes` is the sum
-of deployment file sizes.
-
-A native full package is a deployment folder with `manifest.json` at its
-root. Its component uses `format: llima`, `path: .`, and the compile index's
-checksum. Both manifests list deployment files with exactly these fields:
-
-```text
-files: [{path, artifact, sha256, size_bytes}]
-```
-
-`path` is relative to the deployment root. `artifact` is the stable logical
-name `file-<sha256(relative POSIX path)>`; it does not encode a storage URL.
-In a published package, every reference names a `model-file` artifact on
-that same package run. The root artifact is `package`, type `model-package`,
-media type `application/json`. Native compile runs use root artifact `llima`,
-type `model-pack`, also a JSON index. Their artifact metadata includes
-`layout: directory`, `storage_backend: s3`, `deployment_size_bytes`, and
-`file_count`.
-
-Files use content-addressed S3 storage, reused between compile and package
-publication. Each file must be at most 5 GiB until multipart uploads
-([#292](https://github.com/sima-neat/models/issues/292)); aggregate deployment
-size has no limit. Retrieval uses public resolved artifact URLs to preserve
-the directory and verify each file's size and SHA-256. Existing ONNX/MPK
-metadata and packages retain their format.
+The compiled component is a `deployment/` folder with a sibling
+`deployment-manifest.json`. The manifest lists each deployment file's `path`,
+`artifact` name, `sha256`, and `size_bytes`. The package is that folder, delivered
+as individual files with `manifest.json` at its root. No LLiMa build produces a ZIP.
+CI rejects a deployment file larger than 5 GiB.
+[LLiMa language and vision-language models](adding-a-model.md#llima-language-and-vision-language-models)
+describes the recipe and how to check a deployment folder.

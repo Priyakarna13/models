@@ -1,6 +1,6 @@
 # Define the model contract
 
-A Model Registry contribution describes a product that developers can find,
+A Model Browser contribution describes a product that developers can find,
 build, test, and download reproducibly. For a simple model, that product is one
 ONNX input and one compiled MPK. A larger product compiles its source into
 several components, which one download package holds. `model.yaml` declares
@@ -28,7 +28,9 @@ Do not add a product whose source, ownership, or license is ambiguous. Record
 ownership in `CODEOWNERS`; do not add owner or maturity boilerplate to YAML.
 Declare the source model's [license](metadata-schema.md#license) with an ID
 from `artifact-browser/licenses.json`, which also decides whether the model page offers a
-download.
+download. A downloadable ONNX model also pins its upstream license file as a
+`license` resource, so every package carries it
+([license files in the package](metadata-schema.md#license-files-in-the-package)).
 
 ## 2. Create the directory
 
@@ -85,6 +87,7 @@ A source comes from an approved host, in this form:
 | --- | --- |
 | Hugging Face | `hf://models/<owner>/<repository>@<commit>/<file>`, with the full 40-character commit |
 | GitHub | `https://github.com/<owner>/<repository>/releases/download/<tag>/<file>`, a release file of a public repository |
+| GitHub raw files | `https://raw.githubusercontent.com/<owner>/<repository>/<commit>/<file>`, with the full 40-character commit |
 | the registry | the ONNX files the registry converts |
 
 The owner of a repository can replace or delete a GitHub release file, so only
@@ -95,9 +98,8 @@ itself. Datasets come only from the Dataset Registry.
 Mutable branches, `releases/latest`, credentials, query parameters, fragments,
 and unapproved hosts are rejected.
 
-To approve another host, add its entry to `HTTPS_HOST_CHECKS` in
-`tools/model_registry/source.py` with accept and reject tests. That reruns no
-stage.
+A source on any other host fails validation. Approving a host changes the
+shared tooling, so propose it in its own pull request.
 
 Record hashes from the exact bytes the registry will fetch:
 
@@ -126,10 +128,15 @@ files [`conversion.outputs`](conversion-artifacts.md#publish-other-files) names.
 scripts/run_model_conversion.sh models/<model-id> default /tmp/<model-id>-export
 ```
 
-The **Vulcan Model Convert** workflow runs the same script and publishes
-a validated ONNX bundle. Declare `compilation.source: conversion` after matching
-output is registered. Editing the exporter requires a new conversion; compilation
-reuses a previous build when the resolved output bytes are unchanged. See
+To omit an upstream package's unused dependencies, pin it in the optional
+`requirements-convert-nodeps.txt`. The runner installs
+that file with `pip --no-deps` after the normal requirements. Pin the dependencies
+the exporter uses in `requirements-convert.txt`.
+
+In CI, the **Vulcan Model Convert** workflow runs the same script and
+publishes the converted ONNX. Declare `compilation.source: conversion` once
+that output is published. After you edit `convert.py`, the workflow must run
+again. The model recompiles only when the converted ONNX changes. See
 [conversion artifacts](conversion-artifacts.md).
 
 ## 4. Declare the compilation
@@ -219,19 +226,39 @@ declares `numerical_fidelity`. The recipe:
 - never downloads undeclared data.
 
 For a single-component model, `scripts/run_model_compilation.sh` writes
-`compile-outputs.json` when the recipe does not. It then runs
-`model-registry simulate-mla-stages`, which writes `mla-stage-simulation.json`:
-the Model Compiler simulator's operation counts and latency for each MLA stage. Shared download, checksum, MPK
-validation, and publication code belongs in `tools/`, not in model code.
+`compile-outputs.json` when the recipe does not. It also writes
+`mla-stage-simulation.json`, the Model Compiler simulator's operation counts
+and latency for each MLA stage. Keep download, checksum, MPK validation, and
+publication code out of model code. The shared tooling under `tools/` does
+that work.
 
-Set `runner_class` and `runner_market` at profile level for the shared compile
-runner. They default independently to `default` and `spot`. `expensive` and
-`most-expensive` need a sufficient Vulcan size grant; `on-demand` needs a separate
-market grant even at default size. An approval permits a request but does not
-select it or start a build. Follow [requesting expensive or on-demand
-runners](runner-class-requests.md) for manifest examples, evidence, approval,
-validation and dispatch. Update the owning README when changing the request.
-Do not confuse the market with `build-on-demand`, which controls scheduling.
+A build compiles on the default runner unless its profile sets `runner_class`
+or `runner_market`. They default independently to `default` and `spot`. A
+larger class and the `on-demand` market each need an approval first. Follow
+[requesting expensive or on-demand runners](runner-class-requests.md).
+`runner_market` chooses how the runner is purchased. It is not
+`build-on-demand`, which controls when a model builds.
+
+### Ship supporting files
+
+When surgery extracts or derives CPU files needed by the application, write
+those files under the profile's `<output-dir>`. Declare each relative `path`
+and its actual `sha256` in `compile-outputs.json` alongside `outputs`:
+
+```json
+"runtime_files": [
+  {"path": "text_encoder/tokenizer.json", "sha256": "<SHA-256 of tokenizer.json>"},
+  {"path": "text_encoder/token_embeddings.npy", "sha256": "<SHA-256 of token_embeddings.npy>"}
+]
+```
+
+CI verifies these files and ships them in the package beside the MPKs.
+`accuracy.py` receives
+the verified profile root through `--resources` and reads the declared paths
+relative to it. Keep file loading in the model script independent of registry
+imports and credentials. CLIP and SigLIP use this for their tokenizer and CPU
+lookup weights. Pinned upstream files that a recipe does not derive use the
+model's `resources` declaration instead.
 
 ## 7. Know what the package holds
 
@@ -274,29 +301,28 @@ models](benchmarking.md#multi-component-models).
 
 ## 9. Know what a change reruns
 
-Each stage has a fingerprint, a SHA-256 of every input that decides its result.
-CI compiles a build only when neither the branch's catalog nor, on a feature
-branch, a base branch's catalog records a build with its current compile
-fingerprint. It runs a benchmark (the performance or accuracy stage) only when
-no completed registry run carries its current benchmark fingerprint. Models
-with `build-on-demand: true` compile only when a manual dispatch selects them,
-and their builds are not benchmarked; see [on-demand
-builds](#on-demand-builds).
+Each stage has a fingerprint, a SHA-256 of every input that decides its
+result ([concepts](concepts.md)). CI runs a stage only when no published
+result carries its current fingerprint. A feature branch also reuses the
+results its base branch published. A model with `build-on-demand: true`
+compiles only when someone requests the build, and its benchmarks need a
+separate request. See [on-demand builds](#on-demand-builds).
 
 | Stage | Fingerprint inputs |
 | --- | --- |
 | conversion | the model's own conversion inputs: the upstream checkpoint, `conversion.outputs`, and `convert.py` with its requirements and the files it uses. No shared file is an input. See [when to run Convert again](conversion-artifacts.md#when-to-run-convert-again) |
 | compile (ONNX) | the model and profile IDs, the target, each component's ID and the source identity and layout, each component's `parameters`, the model's pinned `resources`, the profile's calibration pin, the `numerical_fidelity` section, compile/surgery code, the Model Compiler version, `scripts/run_model_compilation.sh`, the shared model loader, and the MLA stage simulation (`tools/model_registry/mla_stage_simulation.py`) |
 | compile (LLiMa) | checkpoint content hashes, the target, component graph `parameters`, and the pinned Model Compiler identity including its build revision |
-| performance | the compile run and MPK digest of every component, the `performance` declaration, the profile's optional `benchmark_baseline`, the model's `performance.py` and `requirements-performance.txt`, the shared benchmark tooling and `scripts/run_model_performance.sh`, and the DevKit runtime pin |
-| accuracy | the compile run and MPK digest of every component, each `accuracy` dataset's name, pin, and the metrics its `datasets/<id>.yaml` requires for the model's tasks, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh` and `scripts/install_dataset_registry.sh`, and the DevKit runtime pin |
+| performance | each component's compile run (plus its MPK digest for ONNX), the `performance` declaration, the optional `benchmark_baseline` and its compile fingerprint, `performance.py` and its requirements, shared benchmark tooling and runner scripts, and the Core/MoLE runtime pins |
+| accuracy | the compile run and MPK digest of every component, each `accuracy` dataset's name, pin, and the metrics its `datasets/<id>.yaml` requires for the model's tasks, `accuracy.py` and `requirements-accuracy.txt`, the shared benchmark tooling, `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, `scripts/install_dataset_registry.sh`, `tools/model_registry/runtime_files.py` (verified supporting-file inputs), and the DevKit runtime pin |
 
 ONNX compile code includes every `.py` and `.sh` under `scripts/` except
 `performance.py`, `accuracy.py`, `fp32_baseline_accuracy.py`, `convert.py` and
 `requirements-convert.txt`.
-The shared model loader is an input to every ONNX compile fingerprint;
-descriptive preprocessing and surgery declarations are not. The shared
-benchmark tooling is `BOARD_STAGE_TOOLING`: the benchmarking workflow,
+The shared model loader, `tools/model_registry/model.py`, is an input to
+every ONNX compile fingerprint. The shared benchmark tooling is
+`BOARD_STAGE_TOOLING`: the benchmarking workflow, Core
+installation/reuse checks in `tools/model_registry/neat_core.py`,
 `tools/model_report/__init__.py`, `schemas/model-report.schema.json`, and
 `tools/model_registry/report_publication.py`.
 
@@ -318,8 +344,9 @@ is always benchmarked again.
 | a task's entry in `datasets/<id>.yaml` | the accuracy stages of models with that task that evaluate the dataset |
 | `accuracy.build_profiles`, a new `datasets/` file, or an entry for a task no such model has | nothing; a newly benchmarked profile runs because it has no run yet |
 | `scripts/run_model_performance.sh` | every performance stage |
-| `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, or `scripts/install_dataset_registry.sh` | every accuracy stage |
-| the DevKit runtime pin, the benchmarking workflow, `tools/model_report/__init__.py`, `schemas/model-report.schema.json`, or `report_publication.py` | every performance and accuracy stage |
+| `scripts/run_model_accuracy.sh`, `scripts/cache_accuracy_dataset.sh`, `scripts/install_dataset_registry.sh`, or `tools/model_registry/runtime_files.py` (verified supporting-file inputs) | every accuracy stage |
+| the Core runtime target, the benchmarking workflow, `tools/model_registry/neat_core.py`, `tools/model_report/__init__.py`, `schemas/model-report.schema.json`, or `report_publication.py` | every performance and accuracy stage |
+| the MoLE revision (`llima.install_target`) or `LLIMA_PERFORMANCE_TOOLING` in `fingerprints.py` | native LLM/VLM performance stages |
 | a source, a component's `parameters`, the profile's calibration, or `numerical_fidelity` | that model's affected builds, then their benchmarks |
 | an ONNX compile script or other ONNX compile input | that model's affected builds, then their benchmarks |
 | the Model Compiler pin | every build, then every benchmark |
@@ -336,8 +363,8 @@ To apply a changed test at once, dispatch **Vulcan Model Orchestrator** with
 `models` set to the model and `force_rebuild_all`: it recompiles the model's
 builds, which runs the compile tests and remeasures every build. To run a changed
 conversion test, dispatch **Vulcan Model Convert**. If a selected package is
-already published in the current catalog revision, use a new Git commit;
-[forced rebuilds cannot replace immutable packages](https://github.com/sima-neat/models/blob/develop/design-doc/model-registry-architecture.md#forced-rebuilds-of-published-packages).
+already published for the current commit, push a new Git commit first,
+because a published package cannot be replaced.
 
 ## 10. Write the model's tests
 
@@ -357,6 +384,12 @@ A test without a stage-output fixture runs in `python -m pytest` on every pull
 request. Import a model script with the `load_script` fixture, as in
 `load_script("compile")`; it stubs Model Compiler and DevKit modules the host
 lacks. `build_profile` names the build profile of the given output.
+
+The tests under `tests/benchmark/` also run on the DevKit, in PyNeat, which has no
+`onnx`, `onnxruntime`, or `torch`. Import such a package inside the test that needs it,
+with `pytest.importorskip("onnx")`. An import at the top of the file stops pytest on the
+DevKit, and the benchmark then publishes no result for that stage. Pull request CI has
+these packages, so it does not catch the mistake.
 
 A failing conversion or compile test stops the ONNX upload or the build's
 publication. A failing measurement test publishes its report with test status
@@ -481,55 +514,15 @@ it.
 
 ## 11. Write the README
 
-The model page shows the README after what it reads from `model.yaml` and the
-registry runs: metrics, benchmarks, variants, components, license, and source
-links. The README adds what an application developer needs to run the model:
-what it finds, how to prepare its input, and how to read its outputs. Write it
-from this template:
+Every model folder has a `README.md` and a `hero.png`. The model page shows the
+metrics, variants, components, license, and source links it reads from
+`model.yaml` and the published results, then the README. The README adds what
+an application developer needs to run the model: what it finds, how to prepare
+its input, and how to read its outputs.
 
-````markdown
-# <display_name>
-
-![<display_name> model hero](hero.png)
-
-## Overview
-
-<50 to 120 words of prose: what the model finds, the input it takes, what it
-returns, and the components it runs as.>
-
-## Inputs and outputs
-
-**Input.** <Each preparation step with its exact values: resize, padding,
-color order, scaling, and normalization.>
-
-**Between the components.** <Only for a model with several components: what
-the application computes on the CPU and which tensors it passes on.>
-
-**Outputs.** <Each actual output tensor by name, and what it holds.>
-
-1. <Each decode step, in order, one line per step.>
-
-<The class-index mapping, and the Neat decoder for these outputs, if one exists.>
-
-## Building applications
-
-Run the package with the [Neat Model API](https://developer.sima.ai/software/develop-apps/development-workflow/model).
-For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples).
-````
-
-Start from a README of the same kind:
-[`yolo26n`](https://github.com/sima-neat/models/blob/develop/models/yolo26n/README.md)
-for a one-component detector,
-[`rf_detr_nano`](https://github.com/sima-neat/models/blob/develop/models/rf_detr_nano/README.md)
-for a CPU step between two components, and
-[`resnet_50`](https://github.com/sima-neat/models/blob/develop/models/resnet_50/README.md)
-for a classifier. `model-registry validate-models` checks the structure, the
-word limits, the Building applications text, and the internal terms a README
-leaves out. The writing rules are in
-[`AGENTS.md`](https://github.com/sima-neat/models/blob/develop/AGENTS.md#model-readme-requirements).
-
-Create the hero using the [geometric comic illustration guide](illustration-guide.md),
-which includes the fixed palette, Roboto typography, reference heroes and reusable prompts.
+[Model README](model-readme.md) has the rules, the template, and the hero
+requirements, and `model-registry validate-models` checks them. Draw the hero
+with the [illustration guide](illustration-guide.md).
 
 ## 12. Validate the contract
 
@@ -545,23 +538,27 @@ full loop for every build before submitting.
 
 ## On-demand builds
 
-Set top-level `build-on-demand: true` for any model whose expensive builds
-should run only on request. The default is `false`; existing automatic ONNX
-builds keep their scheduling. Pushes validate on-demand models and publish
-their metadata, but never compile or measure them, even when inputs change.
-This flag is not part of the compile fingerprint.
+Set top-level `build-on-demand: true` for a model whose builds are too
+expensive to run on every change. The default is `false`. On every push, CI
+still validates an on-demand model and publishes its model page. It compiles
+and benchmarks the model only on request, even when its inputs change. No
+fingerprint includes the flag, so changing it reruns nothing.
 
-To build Qwen3.5-0.8B, dispatch **Vulcan Model Orchestrator** with
-`models=qwen3_5_0_8b` and `profiles=w4a16`. Both selections are
-required for an on-demand build. Use staging; production candidate publication
-is not enabled. Direct `plan-stages` calls must also pass `--include-on-demand`.
-The workflow publishes all invocations and packages as one retained candidate.
-Its summary shows the candidate ID, immutable digest, source and protection;
-on a feature branch it also selects the finalized deployment for that branch's
-website and CLI downloads. This does not approve it for Develop or Main.
-Retry failed jobs within the seven-day assembly deadline; after expiry start a
-new workflow run. See the [architecture contract](https://github.com/sima-neat/models/blob/develop/design-doc/model-registry-architecture.md#on-demand-builds)
-for retention and the separate promotion workflow.
+To request a build, run the **Vulcan Model Orchestrator** workflow on your
+branch with both `models` and `profiles` set, such as `models=qwen3_5_0_8b` and
+`profiles=w4a16`. An on-demand build needs both selections. The run compiles
+the build and publishes it with its package. Its summary shows the build's
+`deployment_id`, which promotion uses. On a feature branch, that branch's
+model page then offers the build for download.
+
+The run does not measure the build. To benchmark it, run the **Vulcan Model
+Benchmarking** workflow for the model and build profile.
+
+If a job fails, rerun the failed jobs within seven days. After that, the run
+reports `candidate assembly expired`, and you start a new workflow run.
+
+A published on-demand build is available from `develop` or `main` only after
+promotion. Follow [Promote a model](model-promotion.md).
 
 ## LLiMa language and vision-language models
 
@@ -609,13 +606,10 @@ the deployment and write `deployment-manifest.json` beside it. The verifier
 checksums every file and rejects folders without ELFs, unsafe paths, and links.
 
 `compile-outputs.json` uses `artifact_path: model/deployment-manifest.json`
-for Qwen's `model` component and `artifact_sha256` for that index file's hash.
-ONNX outputs retain their MPK fields. Publication registers the deployment's
-files individually, with a JSON index named `llima`. A native full package is
-the deployment folder with `manifest.json` at its root; its component uses
-`format: llima`, `path: .`. Retrieval preserves the folder and verifies each
-file. See the [manifest and metadata contract](metadata-schema.md#llima-checkpoint-and-deployment-formats).
-No native stage creates a deployment ZIP.
+for Qwen's `model` component and `artifact_sha256` for that manifest's hash.
+ONNX outputs keep their MPK fields. CI publishes the deployment folder as
+individual files, not as a ZIP, and a download restores the same folder. See
+[LLiMa checkpoint and deployment formats](metadata-schema.md#llima-checkpoint-and-deployment-formats).
 
 Whisper sets `entrypoint: transcribe` and uses a model-specific recipe calling
 `WhisperModel` directly instead of `llima-compile`. Its profile selects A16W8
@@ -628,9 +622,7 @@ and the pinned compiler identity. Declare graph-changing options in component
 Script edits, logging, job counts and runner selection do not invalidate it.
 README and hero changes remain outside compile identities.
 
-Omit `calibrations`, `numerical_fidelity`, `accuracy`, and `performance` when no
-corresponding stage is implemented. A manual Qwen build compiles and publishes only; performance
-and accuracy are separate follow-ups [#294](https://github.com/sima-neat/models/issues/294)
-and [#295](https://github.com/sima-neat/models/issues/295). The default Qwen profile
-requests the expensive runner with twenty compile jobs, 4096 tokens, 448×448 input,
-and language group size 128.
+Enable LLM/VLM performance with `performance: {}` and a `scripts/performance.py`
+entry point. Speculative profiles also declare an ordinary `benchmark_baseline`.
+See [LLiMa performance](benchmarking.md#llima-text-and-image-performance).
+Omit stages that are not implemented.

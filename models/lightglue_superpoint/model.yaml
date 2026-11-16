@@ -1,3 +1,5 @@
+# A build profile of this model compiles for over 20 minutes, so it builds only on request.
+build-on-demand: true
 display_name: LightGlue
 description: Matches keypoints between two images, taking SuperPoint keypoints and descriptors as input.
 model_type: vision
@@ -20,6 +22,14 @@ upstream:
   repository: https://huggingface.co/ETH-CVG/lightglue_superpoint
   revision: 5f5f626efee99f37dbc9eafea879d24d297aeab8
   derived_from: https://github.com/cvg/LightGlue/tree/5a650c444718caffc2669dc0094cde908f42dd73
+
+resources:
+  license:
+    source:
+      uri: https://raw.githubusercontent.com/cvg/LightGlue/5a650c444718caffc2669dc0094cde908f42dd73/LICENSE
+      sha256: 0e6031ed3e62dc91dc8b1c8f240abd200b1083f60773362e64e339fe01d1bf18
+      size_bytes: 11340
+    install_path: licenses/LICENSE
 
 conversion:
   source:
