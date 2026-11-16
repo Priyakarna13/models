@@ -144,7 +144,7 @@ jobs:
 
           job_id="$(jq -er '.job_id' <<< "$response")"
           # The production registry takes longer than five minutes to purge a branch.
-          for attempt in {1..120}; do
+          for attempt in {1..60}; do
             status="$(curl --fail-with-body --retry 3 --retry-connrefused \
               --aws-sigv4 aws:amz:us-west-2:execute-api \
               --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
@@ -176,5 +176,5 @@ jobs:
             sleep 15
           done
 
-          echo "Purge $job_id did not complete within 30 minutes." >&2
+          echo "Purge $job_id did not complete within 15 minutes." >&2
           exit 1
