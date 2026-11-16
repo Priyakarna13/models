@@ -227,3 +227,18 @@ def read_audio(path):
     if not len(audio) or not np.isfinite(audio).all():
         raise ValueError("Expected nonempty finite audio")
     return audio
+
+
+def runtime_directory(mpk, resources=None):
+    """The folder holding runtime_config.json and the CPU models.
+
+    The accuracy runner passes it as --resources. The performance runner passes the model's pinned resources there
+    instead, and the compiled runtime files sit beside the encoder archive.
+    """
+    roots = [Path(resources)] if resources else []
+    roots.append(Path(mpk).parent)
+    for root in roots:
+        for candidate in (root, root / "model"):
+            if (candidate / "runtime_config.json").is_file():
+                return candidate
+    raise FileNotFoundError(f"runtime_config.json is in none of {', '.join(str(root) for root in roots)}")

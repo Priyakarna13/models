@@ -514,6 +514,7 @@ def test_accuracy_scores_each_fleurs_recording_with_the_shared_scorer(load_scrip
                         lambda datasets: reported.update(datasets) or SimpleNamespace(save=lambda _: None))
     mpk = tmp_path / "encoder_mpk.tar.gz"
     mpk.write_bytes(b"encoder")
+    (tmp_path / "runtime_config.json").write_text("{}")
     output = tmp_path / "report"
     monkeypatch.setattr(sys, "argv", [
         "accuracy.py", "--mpk", f"model={mpk}", "--dataset", f"fleurs-en-us-test={tmp_path}", "--output", str(output),
@@ -523,3 +524,21 @@ def test_accuracy_scores_each_fleurs_recording_with_the_shared_scorer(load_scrip
     # One inserted word over four reference words, after both texts lose case and punctuation.
     assert result["metrics"]["wer"] == pytest.approx(0.25)
     assert (result["split"], result["evaluated_samples"], result["available_samples"]) == ("test", 2, 2)
+
+
+def test_runtime_files_are_found_beside_the_encoder_or_under_resources(load_script, tmp_path):
+    runtime = load_script("benchmark_runtime")
+    compiled = tmp_path / "compiled/model"
+    compiled.mkdir(parents=True)
+    (compiled / "runtime_config.json").write_text("{}")
+    mpk = compiled / "encoder_mpk.tar.gz"
+    # The performance runner passes pinned resources, such as the license, which hold no runtime files.
+    licenses = tmp_path / "resources/licenses"
+    licenses.mkdir(parents=True)
+    assert runtime.runtime_directory(mpk, tmp_path / "resources") == compiled
+    # The accuracy runner passes the profile folder, whose model/ folder holds them.
+    assert runtime.runtime_directory(mpk, tmp_path / "compiled") == compiled
+    assert runtime.runtime_directory(mpk) == compiled
+    (compiled / "runtime_config.json").unlink()
+    with pytest.raises(FileNotFoundError, match="runtime_config.json"):
+        runtime.runtime_directory(mpk, tmp_path / "resources")

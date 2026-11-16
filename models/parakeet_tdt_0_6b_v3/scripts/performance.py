@@ -29,7 +29,7 @@ from pathlib import Path
 
 import model_report
 import numpy as np
-from benchmark_runtime import SAMPLE_RATE, Transcriber, read_audio
+from benchmark_runtime import SAMPLE_RATE, Transcriber, read_audio, runtime_directory
 
 WARMUP_RECORDINGS = 2
 MEASURED_RECORDINGS = 10
@@ -184,9 +184,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     mpk = Path(args.mpk.removeprefix("model=")).resolve(strict=True)
-    package = args.resources.resolve(strict=True) if args.resources else mpk.parent
-    if (package / "model/runtime_config.json").is_file():
-        package = package / "model"
+    package = runtime_directory(mpk, args.resources.resolve(strict=True) if args.resources else None)
     if args.dataset:
         name, separator, path = args.dataset.partition('=')
         if name != 'fleurs-en-us-test' or not separator:

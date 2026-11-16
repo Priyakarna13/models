@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 import model_report
-from benchmark_runtime import Transcriber, read_audio
+from benchmark_runtime import Transcriber, read_audio, runtime_directory
 from model_report.speech import char_error_rate, word_error_rate
 
 DATASET = "fleurs-en-us-test"
@@ -51,9 +51,7 @@ def main():
     if name != DATASET or not separator:
         parser.error(f"--dataset must be {DATASET}=directory")
     mpk = Path(args.mpk.removeprefix("model=")).resolve(strict=True)
-    package = args.resources.resolve(strict=True) if args.resources else mpk.parent
-    if (package / "model/runtime_config.json").is_file():
-        package = package / "model"
+    package = runtime_directory(mpk, args.resources.resolve(strict=True) if args.resources else None)
     directory = Path(path)
     rows = recordings(directory)
     selected = rows[: args.limit] if args.limit else rows
