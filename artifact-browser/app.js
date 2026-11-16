@@ -1,29 +1,34 @@
 import { installHeroImageRecovery } from "./hero-images.js";
-import { variantDownloads, prepareDownloads, startDownloads, packageFormat, artifactDelivery, deploymentSize, huggingFaceLocation, modelDownloadCommand } from "./downloads.js";
 import { mountDeveloperPortal } from "./portal-shell.js";
 import {
   allPages, branchModels, catalogBuildRuns, runProfile, variantBuildKey, variantBuilds,
 } from "./branch-builds.js";
 import {
-  config, customerView, branchSelectionEnabled, DEFAULT_BRANCH, CATEGORY_QUERY_FIELDS, state, elements,
-  categoryFilters, catalogMode, branchSnapshotMode, currentVariant, showView,
+  config, shows, branchSelectionEnabled, DEFAULT_BRANCH, CATEGORY_QUERY_FIELDS, state, elements, categoryFilters,
+  catalogMode, branchSnapshotMode, currentVariant, showView,
 } from "./state.js";
-import { icons, escapeHtml, branchName, showToast, profileLabel, variantLabel } from "./ui.js";
-import { formatBytes } from "./metrics.js";
+import { icons, branchName, showToast, variantLabel } from "./ui.js";
 import {
-  api, readBranchPreference, writeBranchPreference, readCachedBranches, readCachedCatalog,
-  writeCachedCatalog, runFromCatalogBuild, loadRunDetail, variantPackage, loadVariant, loadPackageRun,
-  loadHistoricalCatalogModel, selectedCatalogBuild,
+  api, audienceCatalog, readBranchPreference, writeBranchPreference, readCachedBranches, readCachedCatalog,
+  writeCachedCatalog,
+  runFromCatalogBuild, loadRunDetail, variantPackage, loadVariant, loadPackageRun, loadHistoricalCatalogModel,
+  selectedCatalogBuild,
 } from "./api.js";
 import {
-  populateCategoryFilters, setCategoryFiltersDisabled, loadTaxonomy, activeFilterCount,
-  setFilterDrawer, updateFilterIndicators, applyCatalog, loadBranches, renderRuns,
+  populateCategoryFilters, setCategoryFiltersDisabled, loadTaxonomy, activeFilterCount, setFilterDrawer,
+  updateFilterIndicators, applyCatalog, loadBranches, renderRuns, renderCatalogLoading,
 } from "./catalog-view.js";
-import { renderComparison, picksFromUrl, writePicksToUrl, pickKey, toggleComparison, updateComparisonChart, showComparisonTooltip, hideComparisonTooltip } from "./compare-view.js";
 import {
-  detailSkeleton, showEmptyDetail, renderDetail, errorPanel, updateLayerAnalysis, selectComponentPanel, highlightLayerLegend,
-  showExecutionTooltip, hideExecutionTooltip, keepExecutionTooltip, deferHideExecutionTooltip,
-} from "./model-view.js";
+  renderComparison, picksFromUrl, writePicksToUrl, pickKey, toggleComparison, updateComparisonChart,
+  showComparisonTooltip, hideComparisonTooltip,
+} from "./compare-view.js";
+import { detailSkeleton, showEmptyDetail, renderDetail, errorPanel } from "./model-view.js";
+import {
+  updateLayerAnalysis, highlightLayerLegend, showExecutionTooltip, hideExecutionTooltip, keepExecutionTooltip,
+  deferHideExecutionTooltip,
+} from "./execution-section.js";
+import { selectComponentPanel } from "./page-parts.js";
+import { downloadVariant, downloadPackage, downloadArtifact, copyText } from "./download-dialog.js";
 
 installHeroImageRecovery(document);
 
@@ -134,222 +139,6 @@ async function selectRun(runId, { updateUrl = true, expand = false } = {}) {
   }
 }
 
-let pendingDownloads = null;
-let downloadRequest = 0;
-let pendingCommand = null;
-
-function resetDownloadDialog({ title, description, confirmLabel }) {
-  pendingDownloads = null;
-  pendingCommand = null;
-  elements["download-copy-cli"].hidden = true;
-  elements["download-title"].textContent = title;
-  elements["download-description"].textContent = description;
-  elements["download-list"].innerHTML = "";
-  elements["download-list"].hidden = false;
-  elements["download-package-info"].hidden = true;
-  elements["download-package-info"].classList.remove("download-package-summary");
-  elements["download-package-info"].innerHTML = "";
-  elements["download-dialog"].querySelector(".download-note").hidden = true;
-  elements["download-status"].textContent = "";
-  elements["download-confirm"].disabled = true;
-  elements["download-confirm"].hidden = false;
-  elements["download-confirm"].textContent = confirmLabel;
-}
-
-function catalogDownloadCommand(run) {
-  const current = state.models.some((model) => model.model_id === run.metadata?.model_id
-    && (model.builds?.some((build) => build.run_id === run.id)
-      || model.packages?.some((item) => item.run_id === run.id)));
-  return current ? modelDownloadCommand(run.metadata.model_id, runProfile(run),
-    elements["branch-filter"].value || branchName(run.git_ref), config.environment?.toLowerCase() === "staging") : null;
-}
-
-function showFolderDownload(run, downloads) {
-  const dialog = elements["download-dialog"];
-  pendingCommand = catalogDownloadCommand(run);
-  elements["download-title"].textContent = "Download model folder";
-  elements["download-description"].textContent = "This model is provided as a folder of individual files, similar to a Hugging Face repository, rather than a ZIP archive. Use sima-cli 2.1.19 or later to download the files in parallel and assemble the model folder.";
-  elements["download-list"].hidden = true;
-  elements["download-package-info"].hidden = false;
-  elements["download-package-info"].innerHTML = downloads.map((item) => {
-    const location = item.delivery === "huggingface" ? huggingFaceLocation(item.artifact) : null;
-    return `<dt>Deployment</dt><dd>${escapeHtml(item.component)}</dd>
-      <dt>Files</dt><dd>${escapeHtml(item.artifact.metadata?.file_count ?? "Not recorded")}</dd>
-      <dt>Download size</dt><dd>${escapeHtml(formatBytes(item.size))}</dd>
-      <dt>Storage</dt><dd>${item.delivery === "huggingface" ? "Hugging Face" : item.delivery === "archive" ? "Archive" : "Registry folder"}</dd>
-      ${location ? `<dt>Repository</dt><dd><a href="${escapeHtml(location.url)}" target="_blank" rel="noreferrer">${escapeHtml(location.repo_id)} ↗</a></dd><dt>Revision</dt><dd><code>${escapeHtml(location.revision)}</code></dd>${location.subdirectory ? `<dt>Folder</dt><dd>${escapeHtml(location.subdirectory)}</dd>` : ""}` : item.delivery === "huggingface" ? `<dt>Repository</dt><dd>Pinned repository location unavailable. Refresh the catalog to retry.</dd>` : ""}`;
-  }).join("") + (pendingCommand ? `<dt>Command</dt><dd><code>${escapeHtml(pendingCommand)}</code></dd>`
-    : `<dt>Command</dt><dd>Open the current catalog variant for its verified CLI download command.</dd>`);
-  const note = dialog.querySelector(".download-note");
-  note.hidden = false;
-  note.textContent = downloads.some((item) => item.delivery === "huggingface")
-    ? "The repository link opens the compiled deployment at its pinned revision. Use that revision and folder when downloading from Hugging Face."
-    : "The CLI uses the manifest to preserve the folder structure and verify each file’s checksum.";
-  elements["download-confirm"].innerHTML = `${icons.copy}<span>Copy CLI command</span>`;
-  elements["download-confirm"].hidden = !pendingCommand;
-  elements["download-confirm"].disabled = false;
-}
-
-async function downloadVariant(runId) {
-  const request = ++downloadRequest;
-  const catalogModels = elements["history-filter"].checked ? [] : state.models;
-  const dialog = elements["download-dialog"];
-  resetDownloadDialog({
-    title: "Download components",
-    description: "Checking the selected variant’s components…",
-    confirmLabel: "Download all files",
-  });
-  dialog.showModal();
-  try {
-    const summary = await api(`/v1/runs/${encodeURIComponent(runId)}`);
-    const model = catalogModels.find((model) => model.model_id === summary.run.metadata?.model_id);
-    const downloads = await prepareDownloads(await variantDownloads(summary.run, api, model), api);
-    if (request !== downloadRequest || !dialog.open) return;
-    if (downloads.some((item) => item.delivery !== "archive" && item.delivery)) {
-      showFolderDownload(summary.run, downloads);
-      return;
-    }
-    pendingDownloads = downloads;
-    pendingCommand = catalogDownloadCommand(summary.run);
-    elements["download-copy-cli"].hidden = !pendingCommand;
-    const profile = profileLabel(summary.run);
-    const fileLabel = downloads.length === 1 ? "file" : "files";
-    elements["download-description"].textContent = `${profile} contains ${downloads.length} model ${fileLabel}. ${downloads.length === 1 ? "Confirm to download this variant." : "Download all components to use this variant."}`;
-    const note = elements["download-dialog"].querySelector(".download-note");
-    note.hidden = downloads.length === 1;
-    note.textContent = "Files download separately and in parallel. Your browser may ask you to allow multiple downloads.";
-    elements["download-list"].innerHTML = downloads.map((item) => `<li><div><strong>${escapeHtml(item.component)}</strong><span>${escapeHtml(item.filename)}</span></div><span>${formatBytes(item.size)}</span></li>`).join("");
-    elements["download-confirm"].textContent = `Download ${downloads.length} ${fileLabel}`;
-    elements["download-confirm"].disabled = false;
-  } catch (error) {
-    if (request === downloadRequest && dialog.open) elements["download-status"].textContent = error.message;
-  }
-}
-
-async function downloadPackage(runId) {
-  const request = ++downloadRequest;
-  const dialog = elements["download-dialog"];
-  resetDownloadDialog({
-    title: "Download model package",
-    description: "Checking the package manifest and download metadata…",
-    confirmLabel: "Download",
-  });
-  dialog.showModal();
-  try {
-    const summary = await api(`/v1/runs/${encodeURIComponent(runId)}`);
-    const run = summary.run;
-    const artifact = (summary.artifacts || []).find((item) => item.artifact_type === "model-package");
-    if (!run || !artifact) throw new Error("No complete package is available for this build.");
-    const metadata = run.metadata || {};
-    const packageId = metadata.package_id;
-    const profile = variantLabel(metadata.build_profile_id);
-    const components = Object.keys(metadata.component_run_ids);
-    // The registry serves the package under its published filename: a ZIP, or the MPK of a build published before ZIPs.
-    const downloads = await prepareDownloads([{
-      runId: run.id,
-      component: "Full package",
-      name: artifact.name,
-      size: deploymentSize(artifact), artifact, delivery: artifactDelivery(artifact),
-    }], api);
-    const filename = downloads[0].filename;
-    const format = packageFormat(artifact, filename);
-    if (request !== downloadRequest || !dialog.open) return;
-    if (downloads.some((item) => item.delivery !== "archive" && item.delivery)) {
-      showFolderDownload(run, downloads);
-      return;
-    }
-    pendingDownloads = downloads;
-    pendingCommand = catalogDownloadCommand(run);
-    elements["download-copy-cli"].hidden = !pendingCommand;
-    const license = metadata.license || {};
-    const redistribution = license.redistribution
-      ? `${license.spdx || "License"} · redistribution ${license.redistribution}`
-      : license.spdx || "Not recorded";
-    const componentLabel = `${components.length} ${components.length === 1 ? "component" : "components"}`;
-    const modelName = state.models.find((model) => model.model_id === metadata.model_id)?.display_name
-      || metadata.model_id || "model";
-    elements["download-title"].textContent = `Download ${modelName}`;
-    elements["download-description"].textContent = `${profile} · ${formatBytes(deploymentSize(artifact))}`;
-    elements["download-package-info"].hidden = false;
-    elements["download-package-info"].classList.add("download-package-summary");
-    elements["download-package-info"].innerHTML = `
-      <div class="download-filename"><dt>File name</dt><dd><code>${escapeHtml(filename)}</code></dd></div>
-      ${customerView ? "" : `<div class="download-technical-fact"><dt>Package</dt><dd>${escapeHtml(packageId)} · ${escapeHtml(componentLabel)} · ${escapeHtml(format)}</dd></div>
-        <div class="download-technical-fact"><dt>SHA-256</dt><dd><code>${escapeHtml(artifact.sha256 || "Not recorded")}</code></dd></div>`}
-      <div class="download-license"><dt>License</dt><dd>${escapeHtml(redistribution)}</dd></div>
-      ${!customerView && license.attribution ? `<div class="download-technical-fact"><dt>Attribution</dt><dd>${escapeHtml(license.attribution)}</dd></div>` : ""}`;
-    const note = elements["download-dialog"].querySelector(".download-note");
-    note.hidden = true;
-    note.textContent = "";
-    elements["download-list"].hidden = true;
-    elements["download-confirm"].textContent = "Download";
-    elements["download-confirm"].disabled = false;
-  } catch (error) {
-    if (request === downloadRequest && dialog.open) elements["download-status"].textContent = error.message;
-  }
-}
-
-elements["download-copy-cli"].innerHTML = `${icons.copy}<span>Copy CLI command</span>`;
-elements["download-cancel"].addEventListener("click", () => elements["download-dialog"].close());
-elements["download-copy-cli"].addEventListener("click", () => {
-  if (pendingCommand) copyText(pendingCommand);
-});
-elements["download-dialog"].addEventListener("close", () => {
-  downloadRequest += 1;
-  pendingDownloads = null;
-  pendingCommand = null;
-});
-elements["download-confirm"].addEventListener("click", async () => {
-  if (!pendingDownloads && pendingCommand) { await copyText(pendingCommand); return; }
-  if (!pendingDownloads) return;
-  const request = downloadRequest;
-  elements["download-confirm"].disabled = true;
-  elements["download-status"].textContent = "Preparing all downloads…";
-  try {
-    const ready = await prepareDownloads(pendingDownloads, api);
-    if (request !== downloadRequest || !elements["download-dialog"].open) return;
-    startDownloads(ready, document);
-    elements["download-dialog"].close();
-    showToast(ready.length === 1 ? "Download requested." : `${ready.length} downloads requested. If prompted, allow multiple downloads in your browser.`);
-  } catch (error) {
-    if (request === downloadRequest && elements["download-dialog"].open) {
-      elements["download-status"].textContent = error.message;
-      elements["download-confirm"].disabled = false;
-    }
-  }
-});
-
-async function downloadArtifact(runId, name, button) {
-  const prior = button.innerHTML;
-  const priorLabel = button.getAttribute("aria-label");
-  button.disabled = true;
-  button.setAttribute("aria-busy", "true");
-  button.setAttribute("aria-label", "Preparing model artifact download");
-  button.innerHTML = `<span class="spinner"></span>`;
-  try {
-    const payload = await api(`/v1/runs/${runId}/artifacts/${encodeURIComponent(name)}`);
-    if (!payload.artifact?.download_url) throw new Error("The registry did not return a download URL.");
-    showToast(`Download ready for ${name}. The link is valid for ${Math.round((payload.artifact.download_url_expires_in || 300) / 60)} minutes.`);
-    location.href = payload.artifact.download_url;
-  } catch (error) {
-    showToast(error.message, true);
-  } finally {
-    button.disabled = false;
-    button.removeAttribute("aria-busy");
-    if (priorLabel) button.setAttribute("aria-label", priorLabel);
-    button.innerHTML = prior;
-  }
-}
-
-async function copyText(value) {
-  try {
-    await navigator.clipboard.writeText(value);
-    showToast("Copied to clipboard.");
-  } catch {
-    showToast("Clipboard access is unavailable.", true);
-  }
-}
-
 async function loadRuns({ append = false, branch = elements["branch-filter"].value, limit = 50 } = {}) {
   const repo = state.repository;
   if (!repo) return;
@@ -388,7 +177,7 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
         allPages(api, `${base}/models`, modelQuery, "models").catch((error) => {
           if (error.status === 404) return [];
           throw error;
-        }),
+        }).then(audienceCatalog),
       ]);
       const gitRef = `refs/heads/${branch}`;
       const ownRuns = branchRuns.filter((run) => run.git_ref === gitRef);
@@ -401,6 +190,7 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
       };
     }
     if (requestId !== state.runsRequestId) return;
+    state.catalogLoaded = true;
     applyCatalog(payload, { append });
   } catch (error) {
     if (requestId === state.runsRequestId) throw error;
@@ -413,12 +203,13 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
 async function initialize() {
   const navigationId = ++state.navigationId;
   state.runsRequestId += 1;
+  state.catalogLoaded = false;
   setTheme(document.documentElement.dataset.theme || "light");
   const link = new URLSearchParams(location.search);
   elements.search.value = link.get("q") || "";
-  elements["history-filter"].checked = !customerView && link.get("history") === "1";
-  state.selectedId = customerView ? null : link.get("run");
-  if (customerView) elements["compiler-filter"].value = "";
+  elements["history-filter"].checked = shows.buildHistory && link.get("history") === "1";
+  state.selectedId = shows.buildHistory ? link.get("run") : null;
+  if (!shows.compilerFilter) elements["compiler-filter"].value = "";
   const compareLink = link.get("view") === "compare";
   // Other pages keep the picks, so returning to Compare finds them.
   if (compareLink) state.comparePicks = picksFromUrl(link);
@@ -449,9 +240,7 @@ async function initialize() {
   }
   elements["environment-name"].textContent = `${config.environment || "Public"} registry`;
   // Returning to the catalog keeps the cards on screen while they reload, so the restored scroll position holds.
-  if (!elements["result-list"].querySelector(".model-card, .run-entry")) {
-    elements["result-list"].innerHTML = Array.from({ length: 5 }, () => `<div class="row-skeleton"><span></span><span></span><span></span></div>`).join("");
-  }
+  if (!elements["result-list"].querySelector(".model-card, .run-entry")) renderCatalogLoading();
 
   const validApiOrigin = /^https:\/\/[^/]+$/.test(state.apiBase)
     || /^http:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]+)?$/.test(state.apiBase);
@@ -520,8 +309,12 @@ async function initialize() {
       await loadRuns({ branch: "", limit: 200 });
     }
   } catch (error) {
-    if (cached) showToast(error.message, true);
-    else {
+    // The registry did answer, with an error: show the snapshot it could not refresh, or the error itself.
+    state.catalogLoaded = true;
+    if (cached) {
+      renderRuns();
+      showToast(error.message, true);
+    } else {
       elements["result-list"].innerHTML = errorPanel(error.message);
       elements["result-list"].setAttribute("aria-busy", "false");
     }
@@ -610,7 +403,8 @@ elements["branch-filter"].addEventListener("change", async () => {
   state.compileRuns = [];
   state.packageRuns = [];
   state.catalogDefinitions = [];
-  elements["result-list"].innerHTML = Array.from({ length: 5 }, () => `<div class="row-skeleton"><span></span><span></span><span></span></div>`).join("");
+  state.catalogLoaded = false;
+  renderCatalogLoading();
   showEmptyDetail();
   const url = new URL(location.href);
   url.searchParams.set("branch", state.preferredBranch);
@@ -628,7 +422,8 @@ elements["branch-filter"].addEventListener("change", async () => {
   try {
     await loadRuns({ branch: state.preferredBranch });
   } catch (error) {
-    showToast(error.message, true);
+    elements["result-list"].innerHTML = errorPanel(error.message);
+    elements["result-list"].setAttribute("aria-busy", "false");
   }
 });
 elements["compiler-filter"].addEventListener("change", async () => {
@@ -661,6 +456,7 @@ async function selectCategoryFilter(elementId, value) {
   elements[elementId].value = value;
   state.categorySelection[elementId] = value;
   writeCategoryFilterUrl({ push: true });
+  populateCategoryFilters();
   updateFilterIndicators();
   if (branchSnapshotMode()) {
     renderRuns();
@@ -699,6 +495,7 @@ elements["clear-filters"].addEventListener("click", async () => {
     elements[elementId].value = "";
     state.categorySelection[elementId] = "";
   });
+  populateCategoryFilters();
   writeSearchUrl();
   writeCategoryFilterUrl();
   writeHistoryUrl();
