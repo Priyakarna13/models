@@ -23,6 +23,15 @@ upstream:
   revision: 3f400058316e802d9ca602b1e64b35c2ae71b859
   derived_from: https://github.com/pytorch/vision/blob/v0.23.0/torchvision/models/detection/faster_rcnn.py
 
+resources:
+  license:
+    # The ONNX Model Zoo repository holds no LICENSE; the weights' BSD-3-Clause file is torchvision's at v0.23.0.
+    source:
+      uri: https://raw.githubusercontent.com/pytorch/vision/824e8c8726b65fd9d5abdc9702f81c2b0c4c0dc8/LICENSE
+      sha256: 6502f676851cfe25f8af75531dfb32375b7325b73c37e7b43741fa422893e71d
+      size_bytes: 1517
+    install_path: licenses/LICENSE
+
 # The export runs the whole detector at a fixed 224x224 input. surgery.py keeps its two networks: the backbone
 # (ResNet-50, FPN and RPN head) folded to a 1344x1344 input, where torchvision's resize (short side 800, long
 # side at most 1333) fits every image, and the box head rewritten to run all 1,000 regions as one image.
