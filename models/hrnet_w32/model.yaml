@@ -1,3 +1,5 @@
+# A build profile of this model compiles for over 20 minutes, so it builds only on request.
+build-on-demand: true
 display_name: HRNet-W32
 description: Classifies an image into one of the 1,000 ImageNet classes.
 model_type: vision
@@ -18,6 +20,14 @@ upstream:
   repository: https://huggingface.co/timm/hrnet_w32.ms_in1k
   revision: 9093cb96558ecab21907c780034b3ad0a8be72ea
   derived_from: https://github.com/HRNet/HRNet-Image-Classification/tree/f760c988482cdb8a1f69b10b219d669721144582
+
+resources:
+  license:
+    source:
+      uri: https://raw.githubusercontent.com/HRNet/HRNet-Image-Classification/f760c988482cdb8a1f69b10b219d669721144582/LICENSE
+      sha256: 285c174bc9a991f013d2f205c63f1d7ec90bb91e7acb428151f119a76cfd6d00
+      size_bytes: 1078
+    install_path: licenses/LICENSE
 
 conversion:
   source:

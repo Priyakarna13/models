@@ -24,6 +24,7 @@ from .registry import (
     publish_compilations,
     publish_packages,
 )
+from .runtime_files import read_runtime_files
 from .stage_plan import read_current_catalog
 
 DEPLOYMENTS = "/v1/repositories/sima-neat/models/deployments"
@@ -148,8 +149,12 @@ def publish_candidate(
             ]),
             "inputs": sorted(f"component-{component}" for component in package["components"]),
         }
-    if len(roles) > 32 or sum(len(role["artifacts"]) + len(role["inputs"]) for role in roles.values()) > 512:
-        raise ValidationError("candidate exceeds Vulcan's 32-role / 512-required-name limits")
+    required_names = sum(len(role["artifacts"]) + len(role["inputs"]) for role in roles.values())
+    if len(roles) > 32 or required_names > 4096:
+        raise ValidationError(
+            f"candidate exceeds Vulcan's 32-role / 4096-required-name limits "
+            f"({len(roles)} roles, {required_names} required names)"
+        )
     body = {
         "git_ref": f"refs/heads/{branch}", "commit_sha": git_sha,
         "model_id": model_id, "profile_id": build_profile_id,
@@ -195,20 +200,21 @@ def publish_candidate(
             shutil.rmtree(destination)
         shutil.copytree(item["result_path"].parent, destination, copy_function=_link_or_copy)
     for source in sources:
+        source_profile = source / model_id / build_profile_id
+        runtime_files = read_runtime_files(source_profile)
+        if runtime_files:
+            target_profile = compiled / model_id / build_profile_id
+            shutil.copyfile(source_profile / "compile-outputs.json", target_profile / "compile-outputs.json")
+            for item in runtime_files:
+                destination = target_profile / item["path"]
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not destination.exists():
+                    _link_or_copy(str(source_profile / item["path"]), str(destination))
+            read_runtime_files(target_profile)
         for name in PROFILE_RESULT_FILES:
             result_file = source / model_id / build_profile_id / name
             if result_file.is_file():
                 shutil.copyfile(result_file, compiled / model_id / build_profile_id / name)
-        # The runtime files a compile declares travel with its compile outputs into the package.
-        outputs_file = source / model_id / build_profile_id / "compile-outputs.json"
-        runtime_files = json.loads(outputs_file.read_text(encoding="utf-8")).get("runtime_files", []) \
-            if outputs_file.is_file() else []
-        if runtime_files:
-            shutil.copyfile(outputs_file, compiled / model_id / build_profile_id / outputs_file.name)
-        for item in runtime_files:
-            destination = compiled / model_id / build_profile_id / item["path"]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / model_id / build_profile_id / item["path"], destination)
     package_root = output / "packages"
     for package in packages:
         assemble_package(

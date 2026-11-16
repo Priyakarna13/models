@@ -2,6 +2,7 @@
 export const ACCURACY_METRIC_LABELS = {
   top1_accuracy: "Top-1",
   top5_accuracy: "Top-5",
+  knn_top1_accuracy: "k-NN top-1",
   coco_map: "mAP 50–95",
   coco_ap50: "AP50",
   coco_ap75: "AP75",
@@ -44,6 +45,9 @@ export const ACCURACY_METRIC_LABELS = {
   dota_obb_map: "DOTA mAP 50–95",
   keypoint_repeatability: "Repeatability",
   homography_accuracy: "Homography accuracy",
+  jf_mean: "J&F",
+  j_mean: "J (region overlap)",
+  f_mean: "F (boundary)",
   pose_auc_5: "Pose AUC@5°",
   pose_auc_10: "Pose AUC@10°",
   pose_auc_20: "Pose AUC@20°",
@@ -54,30 +58,35 @@ export const ACCURACY_METRIC_LABELS = {
   recall_at_10: "Recall@10",
   epe: "EPE",
   d1_all: "D1-all",
+  abs_rel: "AbsRel",
+  delta1: "δ1",
+  miou: "mIoU",
 };
 
-// The accuracy metrics that are not ratios from 0 to 1 with higher better; metrics.json gives the same units and
-// directions.
+// Accuracy metrics with non-default units, directions or display settings; matches metrics.json.
 export const ACCURACY_METRIC_SCALES = {
   epe: { unit: "px", direction: "lower" },
   d1_all: { unit: "%", direction: "lower" },
+  abs_rel: { unit: "ratio", direction: "lower", display: {unit: "", scale: 1} },
 };
 
 export function accuracyMetricLabel(name) {
   return ACCURACY_METRIC_LABELS[name] || name;
 }
 
-// A score as a number in its display unit: a ratio as a percentage, any other unit as reported.
+// Ratios default to percentages; an explicit display setting overrides that without changing the metric's unit.
 export function accuracyDisplay(name, value) {
-  const { unit, direction } = ACCURACY_METRIC_SCALES[name] || { unit: "ratio", direction: "higher" };
-  return unit === "ratio" ? { number: value * 100, unit: "%", direction } : { number: value, unit, direction };
+  const metric = ACCURACY_METRIC_SCALES[name] || {unit: "ratio", direction: "higher"};
+  const display = metric.display || (metric.unit === "ratio" ? {unit: "%", scale: 100} : {unit: metric.unit, scale: 1});
+  return {number: value * display.scale, unit: display.unit, direction: metric.direction};
 }
 
 // A score as text: "40.10%" for a ratio or a percentage, "0.776 px" for pixels, and "—" (or blank) when missing.
 export function formatAccuracy(name, value, { blank = false } = {}) {
   if (!Number.isFinite(value)) return blank ? "" : "—";
   const { number, unit } = accuracyDisplay(name, value);
-  return unit === "%" ? `${number.toFixed(2)}%` : `${number.toFixed(3)} ${unit}`;
+  if (unit === "%") return `${number.toFixed(2)}%`;
+  return unit ? `${number.toFixed(3)} ${unit}` : number.toFixed(3);
 }
 
 // Known metrics follow the label order and any others follow them in the order given.
@@ -118,4 +127,9 @@ export function referenceNotes(name, scoresByOrigin) {
     const score = formatAccuracy(name, scoresByOrigin[origin]?.[name], { blank: true });
     return score ? [`${label} ${score}`] : [];
   });
+}
+
+// A Dataset Registry archive as readers know it: its ID and variant, such as "coco-2017 val".
+export function datasetName(dataset) {
+  return [dataset.id, dataset.variant].filter(Boolean).join(" ");
 }

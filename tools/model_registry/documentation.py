@@ -15,9 +15,11 @@ MAX_HERO_BYTES = 2 * 1024 * 1024
 HERO_FILENAME = "hero.png"
 HERO_WIDTH = 1200
 HERO_HEIGHT = 480
-REQUIRED_SECTIONS = ("Overview", "Inputs and outputs", "Building applications")
+REQUIRED_SECTIONS = ("Overview", "Inputs", "Outputs", "Building applications")
+# A model with several components describes the CPU step between them in this section, after Inputs.
+OPTIONAL_SECTION = "Between the components"
 # The model page shows the rest: metrics, benchmarks, variants, versions, license, and source links.
-MAX_README_WORDS = 350
+MAX_README_WORDS = 400
 BANNED_TERMS = (
     "MPK", "A65", "MLA", "AFE", "ELF", "tessellation", "mAP", "AP50", "FPS",
     "latency", "benchmark", "sima-cli", "model-registry", "Vulcan",
@@ -25,6 +27,11 @@ BANNED_TERMS = (
 BUILDING_APPLICATIONS = (
     "Run the package with the [Neat Model API]"
     "(https://developer.sima.ai/software/develop-apps/development-workflow/model). "
+    "For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples)."
+)
+GENAI_BUILDING_APPLICATIONS = (
+    "Run the package with the [Neat GenAI Model API]"
+    "(https://developer.sima.ai/software/develop-apps/development-workflow/genai-model). "
     "For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples)."
 )
 _H2_RE = re.compile(r"^## ([^#].*?)\s*$")
@@ -52,6 +59,8 @@ _INLINE_HTML_RE = re.compile(
 )
 _INLINE_HTML_HEADING_RE = re.compile(r"(?<!\\)(?:\\\\)*</?h[1-6](?:[ \t]|/?>)", re.IGNORECASE)
 # A lowercase term also matches its capitalized and inflected forms; an acronym matches only itself or its plural.
+_LAYOUT_RE = re.compile(r"[|:-]+|#+")
+_NEAT_RE = re.compile(r"\bNeat\b")
 _BANNED_TERM_RE = re.compile("|".join(
     rf"(?<![\w-])(?i:{re.escape(term)})" if term.islower() else rf"(?<![\w-]){re.escape(term)}s?(?![\w-])"
     for term in BANNED_TERMS
@@ -503,7 +512,9 @@ def _load_hero(model_dir: Path, display_name: str, repository: Path) -> dict[str
     }
 
 
-def load_model_documentation(model_dir: Path, display_name: str, *, repository: Path) -> dict[str, Any]:
+def load_model_documentation(
+    model_dir: Path, display_name: str, *, repository: Path, is_genai: bool = False
+) -> dict[str, Any]:
     readme = model_dir / "README.md"
     source_path = _repository_regular_file(readme, repository, "model README")
     try:
@@ -538,9 +549,11 @@ def load_model_documentation(model_dir: Path, display_name: str, *, repository: 
 
     sections, has_invalid_heading = _markdown_h2_sections(lines)
     names = tuple(name for _, name in sections)
-    if names != REQUIRED_SECTIONS or has_invalid_heading:
+    with_optional = (*REQUIRED_SECTIONS[:2], OPTIONAL_SECTION, *REQUIRED_SECTIONS[2:])
+    if names not in (REQUIRED_SECTIONS, with_optional) or has_invalid_heading:
         raise ValidationError(
-            f"model README H2 sections must be {', '.join(REQUIRED_SECTIONS)} in order: {readme}"
+            f"model README H2 sections must be {', '.join(REQUIRED_SECTIONS)} in order, "
+            f"with {OPTIONAL_SECTION} allowed after Inputs: {readme}"
         )
     overview_start = sections[0][0] + 1
     overview_end = sections[1][0]
@@ -571,16 +584,26 @@ def load_model_documentation(model_dir: Path, display_name: str, *, repository: 
 
     # Compare words, so the paragraph may wrap anywhere.
     building_applications = " ".join("\n".join(lines[sections[-1][0] + 1:]).split())
-    if building_applications != BUILDING_APPLICATIONS:
+    expected_applications = GENAI_BUILDING_APPLICATIONS if is_genai else BUILDING_APPLICATIONS
+    if building_applications != expected_applications:
         raise ValidationError(
-            f"model README Building applications must be exactly {BUILDING_APPLICATIONS!r}: {readme}"
+            f"model README Building applications must be exactly {expected_applications!r}: {readme}"
         )
+    for number, line in enumerate(lines[:sections[-1][0]], start=1):
+        if _NEAT_RE.search(line):
+            raise ValidationError(
+                f"model README line {number} names Neat outside Building applications; "
+                f"describe the model's input, output, and steps only: {readme}"
+            )
     for number, line in enumerate(lines, start=1):
         if term := _BANNED_TERM_RE.search(line):
             raise ValidationError(
                 f"model README line {number} uses {term.group(0)!r}; write it in plain words: {readme}"
             )
-    readme_words = len(re.findall(r"\S+", "\n".join(lines[4:])))
+    # Heading marks, a table's pipes and its divider row are layout, not words.
+    readme_words = len([
+        word for word in re.findall(r"\S+", "\n".join(lines[4:])) if not _LAYOUT_RE.fullmatch(word)
+    ])
     if readme_words > MAX_README_WORDS:
         raise ValidationError(
             f"model README must contain at most {MAX_README_WORDS} words after the hero, found {readme_words}: {readme}"

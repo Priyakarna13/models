@@ -52,7 +52,7 @@ export async function variantDownloads(run, api, catalogModel = null) {
   return downloads.flat().sort((a, b) => a.component.localeCompare(b.component));
 }
 
-// Directory manifests describe folders; archive packages contain an MPK or ZIP.
+// Directory manifests describe folders; archive packages are ZIPs, or an MPK for a build published before ZIPs.
 export function packageFormat(artifact, filename = "") {
   if (artifact && artifactDelivery(artifact) !== "archive") return "Folder";
   return artifact?.media_type === "application/gzip" || filename.endsWith("_mpk.tar.gz") ? "MPK" : "ZIP";
@@ -89,8 +89,9 @@ export function startDownloads(downloads, document) {
 }
 
 // Quote catalog values as shell arguments; branch names can contain shell metacharacters.
+// Without a branch the command downloads from main, the sima-cli default.
 export function modelDownloadCommand(modelId, profile, branch, staging = false) {
   const quote = value => /^[a-zA-Z0-9_./-]+$/.test(String(value)) ? String(value)
     : "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
-  return `sima-cli models download --id ${quote(modelId)} --variant ${quote(profile)} --branch ${quote(branch)}${staging ? " --stg" : ""}`;
+  return `sima-cli models download --id ${quote(modelId)} --variant ${quote(profile)}${branch ? ` --branch ${quote(branch)}` : ""}${staging ? " --stg" : ""}`;
 }

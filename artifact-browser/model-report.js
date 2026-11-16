@@ -31,11 +31,47 @@ const TELEMETRY_METRICS = {
   peak_linux_memory_mib: ["linux_memory_used_mib", "maximum"],
 };
 
+// The customer view leaves the board's Linux memory out of a performance report: every process on the board
+// uses it, so it describes the board, not the model.
+export const CUSTOMER_HIDDEN_METRICS = ["avg_linux_memory_mib", "peak_linux_memory_mib"];
+// The Sentinel reading behind those metrics.
+const CUSTOMER_HIDDEN_TELEMETRY = [...new Set(CUSTOMER_HIDDEN_METRICS.map((key) => TELEMETRY_METRICS[key][0]))];
+
+function withoutKeys(record, keys) {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !keys.includes(key)));
+}
+
+// One set of readings: a whole-model report, a component measured on its own, or a generation workload.
+function customerReadings(readings) {
+  return {
+    ...readings,
+    ...(readings.metrics ? { metrics: withoutKeys(readings.metrics, CUSTOMER_HIDDEN_METRICS) } : {}),
+    ...(readings.telemetry ? { telemetry: withoutKeys(readings.telemetry, CUSTOMER_HIDDEN_TELEMETRY) } : {}),
+  };
+}
+
+function customerWorkload(workload) {
+  return { ...customerReadings(workload), ...(workload.baseline ? { baseline: customerWorkload(workload.baseline) } : {}) };
+}
+
+// A performance report as the customer view may show it. Every reader of the page receives this report, so
+// the Memory card and the CSV leave the same readings out.
+export function customerPerformanceReport(report) {
+  const components = Object.entries(report.components || {}).map(([id, component]) => [id, customerReadings(component)]);
+  return {
+    ...customerReadings(report),
+    ...(report.components ? { components: Object.fromEntries(components) } : {}),
+    ...(report.generation?.workloads
+      ? { generation: { ...report.generation, workloads: report.generation.workloads.map(customerWorkload) } } : {}),
+  };
+}
+
 function finite(value) {
   return Number.isFinite(value) ? value : null;
 }
 
 function pyneatVersion(report) {
+  if (typeof report.runtime?.llima === "string") return `LLiMa ${report.runtime.llima} · MoLE ${report.runtime.mole || ""}`;
   return typeof report.runtime?.pyneat === "string" ? `PyNeat ${report.runtime.pyneat}` : "";
 }
 
@@ -95,6 +131,31 @@ function cpuCores(telemetry) {
 // Reports from before EV74 memory carry the whole CMA pool in use, which is not the model's memory.
 const RETIRED_METRICS = new Set(["avg_cma_memory_mib", "peak_cma_memory_mib"]);
 
+function generationWorkloads(generation) {
+  const adapt = workload => {
+    const telemetry = workload.telemetry || {};
+    const values = Object.fromEntries(Object.entries(workload.metrics || {}).map(([key, metric]) => [key, metric.value]));
+    for (const [key, [field, statistic]] of Object.entries(TELEMETRY_METRICS)) {
+      const entries = [telemetry[field]].flat().filter(entry => entry?.samples > 0 && Number.isFinite(entry[statistic]));
+      if (entries.length) values[key] = Math.max(...entries.map(entry => entry[statistic]));
+    }
+    return {
+      ...workload,
+      key: workload.kind === "text" ? `text_${workload.input_tokens}` : workload.id,
+      label: workload.dataset ? ({gsm8k: "GSM8K", "bfcl-v3": "BFCL v3", alpacaeval: "AlpacaEval",
+        realworldqa: "RealWorldQA", docvqa_val: "DocVQA", chartqa: "ChartQA"}[workload.dataset.name] || workload.dataset.name)
+        : workload.kind === "text" ? `${workload.input_tokens} input tokens` : `Image ${workload.image_size.join(" × ")} + text`,
+      baseline: workload.baseline ? adapt(workload.baseline) : null,
+      inputTokens: workload.input_tokens,
+      measurements: Object.fromEntries(Object.entries(values).filter(([, value]) => Number.isFinite(value))
+        .map(([key, value]) => [key, measurement(key, value, telemetry)])),
+      telemetry: telemetrySource(telemetry),
+      cpuCores: cpuCores(telemetry),
+    };
+  };
+  return (generation?.workloads || []).map(adapt);
+}
+
 function performanceReadings(report) {
   const telemetry = report.telemetry || {};
   return {
@@ -116,6 +177,8 @@ export function readPerformance(benchmarkRun, order = []) {
       ...performanceReadings(report),
       scope: report.scope || "model",
       tool: pyneatVersion(report),
+      generation: report.generation || null,
+      workloads: generationWorkloads(report.generation),
       timestamp: run?.finished_at || run?.created_at || null,
       modelId: run?.metadata?.model_id,
       buildProfileId: run?.metadata?.build_profile_id,

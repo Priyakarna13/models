@@ -42,11 +42,10 @@ output directory, beside the component directories.
 The report follows
 [`numerical-fidelity.schema.json`](https://github.com/sima-neat/models/blob/develop/schemas/numerical-fidelity.schema.json).
 For each declared output it records cosine similarity, normalized RMSE, and
-mean and maximum absolute error. Package assembly carries the report into the
-profile's `default` package, and CI rejects a package that lacks it when
-`numerical_fidelity` is declared, or carries one when it is not. CI publishes
-the report on the profile's package run as a `numerical-fidelity` artifact, a
-`correctness/numerical-fidelity` test result, and measurements of each metric.
+mean and maximum absolute error. The profile's `default` package carries the
+report, and CI publishes it with the build. A build must write the report when
+`model.yaml` declares `numerical_fidelity`, and must not write one when it
+does not. CI rejects the package otherwise.
 
 ## Accuracy on the DevKit
 
@@ -80,7 +79,9 @@ into a separate folder beside PyNeat's environment, never into it.
 - `--mpk <component>=<path>` once for each component, `model=<path>` for a
   single-component model;
 - `--dataset <source id>=<directory>` for each dataset `accuracy` pins, the
-  extracted archive; and
+  extracted archive;
+- `--resources <directory>` when the compile declares supporting `runtime_files`,
+  the verified profile root with the same relative asset paths as the package; and
 - `--output <directory>`.
 
 It scores the whole model on each dataset and hands the scores to
@@ -106,7 +107,8 @@ How the script evaluates each dataset is up to the model. Every score is
 named as an accuracy metric in
 [`tools/model_report/metrics.json`](../tools/model_report/metrics.json) and
 given in that metric's unit: a ratio from 0 to 1 for most metrics, a
-percentage from 0 to 100 for `d1_all`, and pixels for `epe`. Each dataset's
+nonnegative ratio without an upper bound for `abs_rel`, a percentage from 0 to 100
+for `d1_all`, and pixels for `epe`. Each dataset's
 result must hold every metric its requirements file lists for
 the model's tasks. Other known accuracy metrics are allowed. Existing scripts also accept
 `--limit <images>` to evaluate a subset for a quick local check; CI never
@@ -124,25 +126,28 @@ PYNEAT_PYTHON=~/pyneat/bin/python \
 ```
 
 `<compile-output-root>` holds `<model-id>/<build-profile>/compile-outputs.json`
-and the MPKs it lists. The script:
+and the MPKs it lists. The script does this:
 
-1. resolves each declared dataset into `DATASET_CACHE` (default
-   `/media/nvme/datasets/artifacts`), holding a lock so concurrent runs share
-   one download;
-2. lists each component's MPK with `model-registry model-component-mpks`;
-3. extracts each dataset under `WORK_DIR` (default `/media/nvme/neat-tests/`)
-   and removes that directory when it exits;
-4. installs `requirements-accuracy.txt` beside PyNeat;
-5. runs `accuracy.py` with `--dataset <source id>=<directory>` for each dataset
-   and `PYTHONPATH` including `tools`, which writes
-   `model-report.json`, and saves its output to `accuracy.log`; and
-6. runs `model-registry check-report`, which validates the report against
+1. It resolves each declared dataset into `DATASET_CACHE` (default
+   `/media/nvme/datasets/artifacts`). A lock makes concurrent runs share one
+   download.
+2. It lists each component's MPK with `model-registry model-component-mpks`.
+3. It finds the build's supporting files with `model-registry
+   model-runtime-directory`. When the compile declared `runtime_files`, it
+   passes the verified profile root to `accuracy.py` as `--resources`.
+4. It extracts each dataset under `WORK_DIR` and removes that directory when
+   it exits. The default is a folder for this run under
+   `/media/nvme/neat-tests/`, which a local run names `model-accuracy-local-1`.
+5. It installs `requirements-accuracy.txt` beside PyNeat.
+6. It runs `accuracy.py` with `--dataset <source id>=<directory>` for each
+   dataset and `PYTHONPATH` including `tools`. The script writes
+   `model-report.json`, and the runner saves its output to `accuracy.log`.
+7. It runs `model-registry check-report`, which validates the report against
    [`model-report.schema.json`](../schemas/model-report.schema.json), requires
    a result for exactly the declared datasets, each with its required metrics,
-   and writes the board's installation to
-   `environment.json`.
+   and writes the board's installation to `environment.json`.
 
-`REGISTRY_PYTHON` needs the full Model Registry tooling from this checkout
+`REGISTRY_PYTHON` needs the full `model-registry` tooling from this checkout
 (`python -m pip install .`) and Dataset Registry, because the dataset
 resolution and report checks are not in the author-only `model-registry`
 package. It exits without running anything when the build profile is not
@@ -165,9 +170,11 @@ ResNet-50's `calibration.py`, needs that file beside it.
 When no published score matches the package's setup, such as SuperGlue's 512
 keypoints from a 640x480 image, the model page can show an FP32 baseline instead:
 what the unquantized source model scores on the same inputs and protocol. A
-standalone `scripts/fp32_baseline_accuracy.py` measures it on a host. It runs the
-FP32 ONNX the model compiles with ONNX Runtime and scores it with the model's own `accuracy.py`,
-so only the model execution differs from the DevKit stage:
+standalone `scripts/fp32_baseline_accuracy.py` measures it by hand on a host. It runs an
+FP32 ONNX with ONNX Runtime and scores it with the model's own `accuracy.py`,
+so only the model execution differs from the DevKit stage. Its docstring names the ONNX
+it reads: the output of the model's own `convert.py`, such as DETR's, or that output
+after `surgery.py`, such as SuperGlue's:
 
 ```bash
 PYTHONPATH=tools python models/superglue_outdoor/scripts/fp32_baseline_accuracy.py \
@@ -176,8 +183,10 @@ PYTHONPATH=tools python models/superglue_outdoor/scripts/fp32_baseline_accuracy.
 ```
 
 Copy its metrics into a `reference_metrics` entry with `origin: fp32_baseline`
-([reference metrics](metadata-schema.md#reference-metrics)). No stage runs the
-script and no fingerprint includes it, so adding or editing it reruns nothing.
+([reference metrics](metadata-schema.md#reference-metrics)), and give the command and
+its output in the pull request. No stage runs the script and no fingerprint includes it,
+so adding or editing it reruns nothing, and the ONNX you convert locally need not match
+the sha256 of the file Vulcan Model Convert published.
 
 ### Report and publication
 
@@ -185,25 +194,21 @@ script and no fingerprint includes it, so adding or editing it reruns nothing.
 [`model-report.schema.json`](../schemas/model-report.schema.json): the stage,
 the PyNeat version and build, and `datasets`, which gives for each dataset source
 ID its evaluated split and sample counts, one number per metric, and free-form
-`details`. The model, build profile, MPK
-digests, and board are not report fields; publication records them on the run.
+`details`. The model, build profile, MPK digests, and board are not report
+fields. CI records them when it publishes the report.
 
 On the DevKit, `scripts/run_model_tests.sh` runs the model's
 `tests/benchmark/test_accuracy.py` on the report, which compares each dataset's
 metrics with the build profile's expected values for that dataset in
 `tests/tests.yaml` ([set up
-`tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). CI publishes the
-report with `model-registry publish-report` as one `model_accuracy` registry
-run under the build profile's `model_package` run. Its `run_fingerprint` is the
-accuracy benchmark fingerprint, and the run carries one `compiled-model-<component>`
-input per component, the `model-report` and log artifacts, an `accuracy/model`
-test result whose summary is the whole report and whose status is the test
-outcome (`passed`, `failed`, or `skipped`), and one measurement per dataset
-and metric, with a `dataset` dimension. A
-failed test still publishes the report, then fails the workflow run. See [CI
+`tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)). CI then
+publishes the report with the test outcome: `passed`, `failed`, or `skipped`.
+A failed test still publishes the report, then fails the workflow run. See [CI
 and registry publication](benchmarking.md#ci-and-registry-publication) for the
-shared flow. The model browser shows each dataset's result in the accuracy
-section: its first four metrics as tiles and the rest in a table, each with its
-reference score when `reference_metrics` records one for the same dataset, and
-the evaluated sample count. The catalog and the Compare page use the first
+shared flow.
+
+The model browser shows each dataset's result in the accuracy section. The
+first four metrics appear as tiles and the rest in a table. Each metric shows
+its reference score when `reference_metrics` records one for the same dataset.
+The section also shows the evaluated sample count. The catalog and the Compare page use the first
 declared dataset.

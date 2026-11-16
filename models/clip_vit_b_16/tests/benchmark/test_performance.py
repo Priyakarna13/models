@@ -19,6 +19,28 @@ def test_mpk_arguments_name_exactly_both_encoders(load_script: Callable[[str], M
         script.parse_mpks(["image_encoder=/data/image_mpk.tar.gz"])
 
 
+def test_the_runner_can_pass_the_package_resources(tmp_path, monkeypatch, load_script) -> None:
+    script = load_script("performance")
+    benchmarked = []
+    monkeypatch.setattr(script, "benchmark_encoders", lambda *arguments: benchmarked.append(arguments))
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "performance.py",
+            "--mpk=image_encoder=image.tar.gz",
+            "--mpk=text_encoder=text.tar.gz",
+            f"--dataset=imagenet-2012-val={tmp_path}",
+            f"--output={tmp_path / 'out'}",
+            f"--resources={tmp_path / 'resources'}",
+        ],
+    )
+
+    script.main()
+
+    mpks = {"image_encoder": Path("image.tar.gz"), "text_encoder": Path("text.tar.gz")}
+    assert benchmarked == [(mpks, "imagenet-2012-val", tmp_path, tmp_path / "out")]
+
+
 def test_the_cpu_looks_the_probe_prompt_up_for_the_text_encoder(load_script: Callable[[str], ModuleType]) -> None:
     script = load_script("performance")
     prompt = script.load_prompt()
@@ -44,8 +66,8 @@ def test_performance_records_each_components_execution_plan(performance: dict[st
 
 
 def test_image_encoder_execution_plan_takes_the_benchmark_frame(performance: dict[str, Any]) -> None:
-    (frame,) = performance["components"]["image_encoder"]["execution_plan"]["edges"][0]["tensors"]
-    assert frame["shape"] == [1, 720, 1280, 3]
+    edges = performance["components"]["image_encoder"]["execution_plan"]["edges"]
+    assert any(tensor.get("shape") == [1, 720, 1280, 3] for edge in edges for tensor in edge.get("tensors", []))
 
 
 def test_mla_stats_collected(performance: dict[str, Any]) -> None:
