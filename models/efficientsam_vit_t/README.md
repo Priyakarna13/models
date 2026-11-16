@@ -4,35 +4,37 @@
 
 ## Overview
 
-EfficientSAM ViT-T is a lightweight Segment Anything model from Meta AI. Given an
-image and a prompt, a box or a few clicked points, it returns a mask of the
-object the prompt marks, with no fixed list of classes. It runs as two
-components: an image encoder, which turns a 1024×1024 RGB image into an
-embedding once per image, and a prompt decoder, which turns that embedding and
-one prompt into three candidate masks with a predicted quality score for each.
-Run the decoder again on the same embedding for each new prompt.
+EfficientSAM ViT-T cuts out the object a user marks in an image. Mark the object
+with a box or a few clicks, and it returns the object's mask, with no fixed list
+of classes. Use it for photo editing, interactive labeling, or measuring a
+selected item. Your application runs two components: an image encoder once per
+image, and a prompt decoder once per prompt, which returns three candidate masks
+with a quality score for each.
 
-## Inputs and outputs
+## Inputs
 
-**Image input.** Resize the image straight to 1024×1024 without keeping its
-aspect ratio, and scale the RGB values to 0–1. The encoder subtracts ImageNet's
-mean and divides by its standard deviation itself. Neat returns
-`image_embeddings` as a 1×64×64×256 (HWC) CPU tensor; copy it to EV74 memory
-with `Tensor.cvu()` for the decoder.
+One 1024×1024×3 (height, width, channel) RGB image with values from 0 to 1.
 
-**Prompt input.** A prompt has up to 6 points: a box is its top-left and
-bottom-right corners, and a click is a positive or a negative point. Pass them as
-`points`, a 1×6×8 tensor with height, width, channel (HWC) axes, one row per
-point. For a point (x, y) in a width×height image, a row holds
-(x × 1024 / width + 0.5) / 1024 and (y × 1024 / height + 0.5) / 1024, then the
-point's type as one-hot values in the order padding, negative point, positive
-point, box top-left, box bottom-right, then 0. Fill the unused rows with
-−0.5 / 1024 for both coordinates and the padding type.
+Preprocessing:
 
-**Outputs.** `low_res_masks` holds 3 candidate masks of 256×256 logits for the
-stretched 1024×1024 image, and `iou_predictions` the predicted quality of each.
-Neat returns `low_res_masks` with height, width, channel axes, as 1×256×256×3:
-one channel per candidate mask.
+1. Stretch to 1024×1024 with bilinear resampling, without keeping the aspect ratio.
+2. Divide by 255.
+
+## Between the components
+
+1. Run `image_encoder` on the image for `image_embeddings`, 64×64×256 (height, width, channel).
+2. For each prompt, run `prompt_decoder` on `image_embeddings` and the prompt's `points`.
+
+**Prompt:** up to 6 points. A box is its top-left and bottom-right corners, and a click is a positive or a negative point. `points` holds one row of 8 values per point: for a point (x, y) in a width×height image, (x × 1024 / width + 0.5) / 1024 and (y × 1024 / height + 0.5) / 1024, then the point's type as one-hot values in the order padding, negative point, positive point, box top-left, box bottom-right, then 0. Fill the unused rows with −0.5 / 1024 for both coordinates and the padding type.
+
+## Outputs
+
+| Output | Size | Holds |
+|---|---|---|
+| `low_res_masks` | 256×256×3 | three candidate masks as logits, for the stretched 1024×1024 image |
+| `iou_predictions` | 3 | the predicted quality of each mask |
+
+Postprocessing:
 
 1. Take the mask with the highest score in `iou_predictions`.
 2. Resize its logits to the image's size with bilinear interpolation.
