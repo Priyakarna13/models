@@ -23,6 +23,17 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
     assert set(subcommands.choices) == cli.AUTHOR_COMMANDS
 
 
+@pytest.mark.parametrize("model,profile,stages,backend,baseline,timeout", [
+    ("resnet_50", "w8a8", "performance,accuracy", "core", "false", "45"),
+    ("qwen3_5_0_8b", "w4a16", "performance", "llima", "false", "90"),
+    ("gemma_4_e2b_it_mtp", "w4a16", "performance", "llima", "true", "4320"),
+    ("gemma_4_e2b_it_mtp", "w4a16", "accuracy", "llima", "false", "45"),
+])
+def test_benchmark_job_scopes_baseline_and_timeout(model, profile, stages, backend, baseline, timeout, capsys):
+    assert main(["benchmark-job", str(ROOT / "models" / model), "--build-profile", profile, "--stages", stages]) == 0
+    assert capsys.readouterr().out == f"backend={backend}\nneeds_baseline={baseline}\ntimeout_minutes={timeout}\n"
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -38,7 +49,9 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
         "publish-catalog",
         "resolve-base",
         "resolve-benchmark-runtime",
+        "benchmark-job",
         "stage-registry-build",
+        "plan-promoted-benchmarks",
     ],
 )
 def test_author_cli_rejects_ci_only_commands(command: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -57,6 +70,20 @@ def test_repository_cli_retains_ci_only_commands() -> None:
         subcommands.choices
     )
     assert {"package", "fetch-previous"}.isdisjoint(subcommands.choices)
+
+
+def test_promoted_benchmark_planning_command_reads_the_selected_catalog(monkeypatch, capsys):
+    from model_registry import registry
+
+    def read(url):
+        assert url.endswith("git_ref=refs%2Fheads%2Fmain")
+        return {"catalog": {"document": {"catalog_revision": "a" * 40, "models": []}}}
+
+    monkeypatch.setattr(registry, "_public_registry_json", read)
+    assert main(["plan-promoted-benchmarks", "--api-url", "https://registry.example.invalid", "--branch", "main"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "source_branch": "main", "source_sha": "a" * 40, "include": [], "skipped": [],
+    }
 
 
 @pytest.mark.parametrize("entrypoint", [main, cli.author_main])
@@ -297,7 +324,7 @@ def test_validation_rejects_a_resource_outside_the_source_policy(command: str, m
 
 
 def test_fetch_resources_prints_nothing_for_a_model_without_resources(capsys, tmp_path: Path) -> None:
-    assert main(["fetch-resources", str(ROOT / "models" / "resnet_50"), "--output-dir", str(tmp_path / "out")]) == 0
+    assert main(["fetch-resources", str(ROOT / "models" / "whisper_small"), "--output-dir", str(tmp_path / "out")]) == 0
     assert capsys.readouterr().out == ""
 
 
@@ -330,6 +357,16 @@ def test_reference_metrics_writes_each_models_published_scores(tmp_path: Path) -
     assert "whisper_small" not in reference
     assert reference["resnet_50"][0]["dataset"] == {"id": "imagenet-2012", "split": "val"}
     assert reference["resnet_50"][0]["metrics"] == {"top1_accuracy": 0.80382, "top5_accuracy": 0.94598}
+
+
+def test_low_accuracy_variants_writes_declared_build_profiles(tmp_path: Path) -> None:
+    output = tmp_path / "low-accuracy-variants.json"
+    assert main(["low-accuracy-variants", "--repository", str(ROOT), "--output", str(output)]) == 0
+
+    models = cli.load_models(ROOT)
+    for model_id, profiles in json.loads(output.read_text(encoding="utf-8")).items():
+        assert profiles
+        assert set(profiles) <= {profile["id"] for profile in models[model_id]["build_profiles"]}
 
 
 def test_resolve_devkit_accuracy_caches_each_accuracy_dataset_of_the_profile(
@@ -539,7 +576,7 @@ def test_tooling_supports_python_module_entrypoint() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "Model Registry lifecycle tooling" in result.stdout
+    assert "Model Browser lifecycle tooling" in result.stdout
 
 
 def publish_report(monkeypatch, stage: str, *extra: str) -> list[dict]:

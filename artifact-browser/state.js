@@ -1,14 +1,15 @@
 // Shared page state, configuration, DOM elements, and the readers of that state.
+import {audienceFacts} from "./audience.js";
 import {resolveEnvironment, branchPolicy} from "./environment.js";
 export const config = resolveEnvironment(window.MODEL_REGISTRY_CONFIG || {}, location.search);
 const configuredApiBase = String(config.apiBase || "").replace(/\/$/, "");
 const configuredRepository = config.repository || {};
-export const customerView = config.uiMode === "customer";
+export const shows = audienceFacts(config.uiMode);
 const branches = branchPolicy(config, location.search);
 export const branchSelectionEnabled = branches.enabled;
 export const DEFAULT_BRANCH = branches.defaultBranch;
 document.documentElement.dataset.branches = branchSelectionEnabled ? "1" : "0";
-document.documentElement.dataset.uiMode = customerView ? "customer" : "developer";
+document.documentElement.dataset.uiMode = config.uiMode === "customer" ? "customer" : "developer";
 export const CATEGORY_QUERY_FIELDS = {
   "task-filter": "task",
   "architecture-filter": "architecture_id",
@@ -24,6 +25,8 @@ export const state = {
   packageRuns: [],
   catalogDefinitions: [],
   catalogMode: "runs",
+  // Whether the registry has answered for the selected branch. Until then an empty catalog is still loading.
+  catalogLoaded: false,
   catalogLayout: "cards",
   cursor: null,
   hasMore: false,
@@ -48,6 +51,7 @@ export const state = {
   comparePicks: ["", "", ""],
   compareTask: initialQuery.get("compare_task") || "",
   compareAxis: "",
+  compareWorkload: initialQuery.get("compare_workload") || "",
   activeProfileByModel: new Map(),
   taxonomy: null,
   categorySelection: Object.fromEntries(

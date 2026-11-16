@@ -31,6 +31,7 @@ from .artifact import (
     verify_artifact,
     verify_llima,
 )
+from .benchmark_declarations import benchmarked_profiles
 from .compile_matrix import build_matrix
 from .dependencies import resolve_model_compiler
 from .documentation import load_model_documentation
@@ -38,7 +39,7 @@ from .errors import ModelRegistryError, ValidationError
 from .fetch import sha256_file
 from .fingerprints import benchmark_fingerprint, compile_fingerprint
 from .mla_stage_simulation import SIMULATION_FILE
-from .model import compile_invocations_for, load_and_validate_model, load_models, mpk_filename
+from .model import build_profile_for, compile_invocations_for, load_and_validate_model, load_models, mpk_filename
 from .package import FIDELITY_FILE
 from .registry_http import RegistryPublicationError, SigV4RegistryClient
 from .registry_http import read_registry_json_authenticated as _public_registry_json
@@ -58,6 +59,8 @@ JsonObject = dict[str, Any]
 Request = Callable[[str, str, JsonObject | None, str], JsonObject]
 ReadRequest = Callable[[str], JsonObject]
 DownloadRequest = Callable[[str], bytes]
+# Catalog fields the registry owns for each ref: a snapshot may omit them but not carry another ref's.
+SERVER_OWNED_SELECTIONS = ("approved_deployments", "branch_deployments")
 
 
 def canonical_sha256(value: Any) -> str:
@@ -384,6 +387,83 @@ def _head_matrix(root: Path, models: dict[str, Any]) -> list[JsonObject]:
     )["include"]
 
 
+def _catalog_outputs(model: JsonObject) -> tuple[list[JsonObject], list[JsonObject]]:
+    """Resolve selected deployments without changing server-owned approval records."""
+    selections = {**model.get("approved_deployments", {}), **model.get("branch_deployments", {})}
+    builds = [item for item in model.get("builds", []) if item.get("build_profile_id") not in selections]
+    packages = [item for item in model.get("packages", []) if item.get("build_profile_id") not in selections]
+    for profile_id, selection in selections.items():
+        requirements = selection["requirements"]
+        components = [item for item in selection["artifacts"] if item.get("component_id")]
+        for component in components:
+            invocation = next(item for item in requirements["invocations"]
+                              if component["component_id"] in item["component_ids"])
+            builds.append({
+                **component, "build_profile_id": profile_id, "compile_invocation_id": profile_id,
+                "compile_fingerprint": invocation["compile_fingerprint"],
+            })
+        for package in (item for item in selection["artifacts"] if item.get("package_id")):
+            requirement = next(item for item in requirements["packages"] if item["id"] == package["package_id"])
+            packages.append({
+                **package, "build_profile_id": profile_id,
+                "component_run_ids": {item["component_id"]: item["run_id"] for item in components
+                                      if item["component_id"] in requirement["component_ids"]},
+            })
+    return builds, packages
+
+
+def _refresh_approved_benchmarks(
+    root: Path, document: JsonObject, source: JsonObject, read_api_url: str, read: ReadRequest,
+    *, model_id: str | None = None, profile_id: str | None = None, digests: dict[str, str] | None = None,
+) -> None:
+    """Point at the approved producing runs, without changing approval-owned outputs or fingerprint formats.
+
+    A caller that refreshes repeatedly passes `digests`, so each run's immutable MPK checksum is read once.
+    """
+    if document.get("git_ref") not in {"refs/heads/develop", "refs/heads/main"}:
+        return
+    previous = {model["id"]: model for model in source.get("models", [])}
+    digests = {} if digests is None else digests
+    for entry in document.get("models", []):
+        if model_id is not None and entry["id"] != model_id:
+            continue
+        selections = previous.get(entry["id"], {}).get("approved_deployments", {})
+        if not selections:
+            continue
+        model = load_and_validate_model(root / "models" / entry["id"])
+        fingerprints = dict(entry.get("benchmark_fingerprints", {}))
+        for selected_profile, selection in selections.items():
+            if profile_id is not None and selected_profile != profile_id:
+                continue
+            # Raw builds may still describe an older automatic build of this profile.
+            fingerprints.pop(selected_profile, None)
+            stages = [stage for stage in ("performance", "accuracy")
+                      if selected_profile in benchmarked_profiles(model, stage)]
+            if not stages:
+                continue
+            builds = {build["component_id"]: build for build in _catalog_outputs({
+                "approved_deployments": {selected_profile: selection},
+            })[0]}
+            if set(builds) != {component["id"] for component in model["components"]}:
+                continue
+            for component in model["components"]:
+                if component["interface"]["format"] == "huggingface":
+                    continue
+                build = builds[component["id"]]
+                run_id = build["run_id"]
+                if run_id not in digests:
+                    artifact = read(f"{read_api_url.rstrip('/')}/v1/runs/{quote(run_id, safe='')}/artifacts/mpk")
+                    digests[run_id] = _require_sha256(artifact.get("artifact", {}).get("sha256"), "artifact sha256")
+                build["artifact_sha256"] = digests[run_id]
+            fingerprints[selected_profile] = {
+                stage: benchmark_fingerprint(root, model, selected_profile, builds, stage) for stage in stages
+            }
+        if fingerprints:
+            entry["benchmark_fingerprints"] = fingerprints
+        else:
+            entry.pop("benchmark_fingerprints", None)
+
+
 def build_catalog_snapshot(
     *,
     repository: str | Path,
@@ -395,18 +475,22 @@ def build_catalog_snapshot(
     previous: JsonObject | None = None,
     incremental: bool = False,
     documentation_receipts: dict[str, JsonObject] | None = None,
+    all_models: dict[str, Any] | None = None,
+    matrix: list[JsonObject] | None = None,
 ) -> JsonObject:
+    """Build the catalog document. `all_models` and `matrix` are `load_models` and `_head_matrix` of this
+    checkout, for a caller that already has them."""
     root = Path(repository).expanduser().resolve()
     if len(git_sha) != 40 or any(character not in "0123456789abcdef" for character in git_sha.lower()):
         raise ValidationError("git SHA must contain exactly 40 hexadecimal characters")
     if not branch.strip():
         raise ValidationError("branch must not be empty")
-    all_models = load_models(root)
+    all_models = load_models(root) if all_models is None else all_models
     models = _catalog_models(all_models)
     deferred = set(all_models) - set(models)
     taxonomy = canonical_taxonomy_document(load_taxonomy(root / TAXONOMY_RELATIVE_PATH))
     taxonomy_digest = taxonomy_sha256(taxonomy)
-    matrix = _head_matrix(root, models)
+    matrix = _head_matrix(root, models) if matrix is None else matrix
     receipts = _publication_receipts(Path(compiled_dir).expanduser().resolve() if compiled_dir else None)
     package_receipts = _package_publication_receipts(
         Path(package_dir).expanduser().resolve() if package_dir else None
@@ -620,6 +704,8 @@ def build_catalog_snapshot(
                 packages_by_model[model_id], key=lambda item: (item["build_profile_id"], item["package_id"])
             ),
         }
+        if "parameter_count_billion" in model:
+            entry["parameter_count_billion"] = model["parameter_count_billion"]
         if benchmark_fingerprints_by_model[model_id]:
             entry["benchmark_fingerprints"] = dict(sorted(benchmark_fingerprints_by_model[model_id].items()))
         if model.get("build-on-demand", False):
@@ -950,6 +1036,10 @@ def _remaining_pending_builds(prior: JsonObject, document: JsonObject) -> list[J
     return remaining
 
 
+# How long publish_catalog keeps retrying a compare-and-swap that other publishers win.
+CATALOG_CONFLICT_RETRY_SECONDS = 180
+
+
 def publish_catalog(
     *,
     repository: str | Path,
@@ -1004,86 +1094,112 @@ def publish_catalog(
                 read_request=read,
                 previous_receipts=previous_receipts,
             )
-    # Read the catalog last so another publisher has the least time to replace it
-    # before the compare-and-swap POST below.
+    # Everything the checkout alone decides is computed once, before the catalog is read.
     root = Path(repository).expanduser().resolve()
-    target_catalog, sources = read_catalog_sources(read, read_api_url, branch, base_branches)
-    target_revision = target_catalog.get("catalog_revision") if isinstance(target_catalog, dict) else None
-    continuing_revision = target_revision == git_sha.lower()
-    if continuing_revision and documentation_receipts is not None and sources:
-        # A concurrent publisher may have initialized this revision while we were preparing it.
-        documentation_receipts.update({
-            model["id"]: model["documentation"]
-            for model in sources[0].get("models", [])
-            if isinstance(model.get("documentation"), dict)
-        })
-    if continuing_revision and force_rebuild_all:
-        selected = _selected_invocation_keys(
-            Path(selected_matrix).expanduser().resolve() if selected_matrix else None
-        )
-        selected_profiles = {(model_id, profile_id) for model_id, profile_id, _ in selected}
-        published_profiles = {
-            (model["id"], package["build_profile_id"])
-            for model in target_catalog["document"].get("models", [])
-            for package in model.get("packages", [])
-            if not model.get("build_on_demand", False)
-        }
-        conflicts = sorted(selected_profiles & published_profiles)
-        if conflicts:
-            profiles = ", ".join(f"{model}/{profile}" for model, profile in conflicts)
-            raise ValidationError(
-                f"cannot force rebuild published packages in current catalog revision {git_sha}: {profiles}. "
-                "Publish the forced rebuild from a new Git revision; packages are immutable within a revision. "
-                "For an initialization retry, omit --force-rebuild-all."
-            )
-    # Base branches seed a new revision only. During progress publication they
-    # could restore a deliberately withheld package, or replace a published one
-    # when a base branch finishes rebuilding before this branch does.
     models = load_models(root)
-    # Apply the same revision boundary when carrying deferred conversion entries.
-    sources = sources[:1] if continuing_revision else sources
-    previous = merge_catalog_sources(sources, _head_matrix(root, models))
-    deferred = set(models) - set(_catalog_models(models))
-    if deferred:
-        previous = previous or {"models": []}
-        for source in sources:
-            for model in source.get("models", []):
-                if model["id"] in deferred:
-                    previous["models"].append(model)
-                    previous.setdefault("pending_builds", []).extend(
-                        item for item in source.get("pending_builds", []) if item["model_id"] == model["id"]
-                    )
-                    deferred.remove(model["id"])
-    document = build_catalog_snapshot(
-        repository=repository,
-        branch=branch,
-        git_sha=git_sha,
-        compiled_dir=compiled_dir,
-        package_dir=package_dir,
-        selected_matrix=None if continuing_revision else selected_matrix,
-        previous=previous,
-        incremental=True,
-        documentation_receipts=documentation_receipts,
-    )
-    if continuing_revision and isinstance(target_catalog, dict) and "pending_builds" in target_catalog["document"]:
-        document["pending_builds"] = _remaining_pending_builds(target_catalog["document"], document)
-    previous_snapshot = target_catalog.get("canonical_sha256") if isinstance(target_catalog, dict) else None
-    snapshot = {
-        "initialize": target_revision != git_sha.lower(),
-        "previous_snapshot": previous_snapshot,
-        "catalog": document,
-    }
-    snapshot_identity = canonical_sha256(snapshot)[:16]
-    result = client.request(
-        "POST",
-        f"/v1/repositories/sima-neat/models/catalogs/{git_sha.lower()}/snapshots",
-        snapshot,
-        # Bind the key to the complete compare-and-swap request. Documentation
-        # receipt run IDs and incrementally published packages can differ across
-        # workflow dispatches even for the same branch and Git revision.
-        f"models-catalog-{branch}-{git_sha.lower()}-{(previous_snapshot or 'initial')[:16]}-{snapshot_identity}",
-    )
-    return {"catalog": document, "registry": result}
+    matrix = _head_matrix(root, models)
+    deferred_models = set(models) - set(_catalog_models(models))
+    digests: dict[str, str] = {}
+    deadline = time.monotonic() + CATALOG_CONFLICT_RETRY_SECONDS
+    # The registry accepts a snapshot only if the catalog it replaces is the one read here. Each pass keeps
+    # the time from this read to the POST short, and a publisher that loses reads the winner's catalog and
+    # adds its build to it. Everything below the read is derived from that catalog, so it is recomputed.
+    while True:
+        target_catalog, sources = read_catalog_sources(read, read_api_url, branch, base_branches)
+        target_revision = target_catalog.get("catalog_revision") if isinstance(target_catalog, dict) else None
+        continuing_revision = target_revision == git_sha.lower()
+        if continuing_revision and documentation_receipts is not None and sources:
+            # A concurrent publisher may have initialized this revision while we were preparing it.
+            documentation_receipts.update({
+                model["id"]: model["documentation"]
+                for model in sources[0].get("models", [])
+                if isinstance(model.get("documentation"), dict)
+            })
+        if continuing_revision and force_rebuild_all:
+            selected = _selected_invocation_keys(
+                Path(selected_matrix).expanduser().resolve() if selected_matrix else None
+            )
+            selected_profiles = {(model_id, profile_id) for model_id, profile_id, _ in selected}
+            published_profiles = {
+                (model["id"], package["build_profile_id"])
+                for model in target_catalog["document"].get("models", [])
+                for package in model.get("packages", [])
+                if not model.get("build_on_demand", False)
+            }
+            conflicts = sorted(selected_profiles & published_profiles)
+            if conflicts:
+                profiles = ", ".join(f"{model}/{profile}" for model, profile in conflicts)
+                raise ValidationError(
+                    f"cannot force rebuild published packages in current catalog revision {git_sha}: {profiles}. "
+                    "Publish the forced rebuild from a new Git revision; packages are immutable within a revision. "
+                    "For an initialization retry, omit --force-rebuild-all."
+                )
+        # Base branches seed a new revision only. During progress publication they
+        # could restore a deliberately withheld package, or replace a published one
+        # when a base branch finishes rebuilding before this branch does.
+        # Apply the same revision boundary when carrying deferred conversion entries.
+        sources = sources[:1] if continuing_revision else sources
+        previous = merge_catalog_sources(sources, matrix)
+        deferred = set(deferred_models)
+        if deferred:
+            previous = previous or {"models": []}
+            for source in sources:
+                for model in source.get("models", []):
+                    if model["id"] in deferred:
+                        # The registry fills in this ref's own approved and branch deployments and rejects a
+                        # snapshot that carries another ref's, such as a base branch's promoted builds.
+                        previous["models"].append(
+                            {key: value for key, value in model.items() if key not in SERVER_OWNED_SELECTIONS}
+                        )
+                        previous.setdefault("pending_builds", []).extend(
+                            item for item in source.get("pending_builds", []) if item["model_id"] == model["id"]
+                        )
+                        deferred.remove(model["id"])
+        document = build_catalog_snapshot(
+            repository=repository,
+            branch=branch,
+            git_sha=git_sha,
+            compiled_dir=compiled_dir,
+            package_dir=package_dir,
+            selected_matrix=None if continuing_revision else selected_matrix,
+            previous=previous,
+            incremental=True,
+            documentation_receipts=documentation_receipts,
+            all_models=models,
+            matrix=matrix,
+        )
+        _refresh_approved_benchmarks(
+            root, document, target_catalog.get("document", {}) if target_catalog else {}, read_api_url, read,
+            digests=digests,
+        )
+        if continuing_revision and isinstance(target_catalog, dict) and "pending_builds" in target_catalog["document"]:
+            document["pending_builds"] = _remaining_pending_builds(target_catalog["document"], document)
+        previous_snapshot = target_catalog.get("canonical_sha256") if isinstance(target_catalog, dict) else None
+        snapshot = {
+            "initialize": target_revision != git_sha.lower(),
+            "previous_snapshot": previous_snapshot,
+            "catalog": document,
+        }
+        snapshot_identity = canonical_sha256(snapshot)[:16]
+        try:
+            result = client.request(
+                "POST",
+                f"/v1/repositories/sima-neat/models/catalogs/{git_sha.lower()}/snapshots",
+                snapshot,
+                # Bind the key to the complete compare-and-swap request. Documentation
+                # receipt run IDs and incrementally published packages can differ across
+                # workflow dispatches even for the same branch and Git revision.
+                f"models-catalog-{branch}-{git_sha.lower()}-"
+                f"{(previous_snapshot or 'initial')[:16]}-{snapshot_identity}",
+            )
+        except RegistryPublicationError as exc:
+            if "catalog_snapshot_conflict" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            logging.warning("another publisher replaced the %s catalog; reading it again", branch)
+            # A short random wait keeps the publishers that lost together from colliding again.
+            time.sleep(random.uniform(0.2, 2))
+            continue
+        return {"catalog": document, "registry": result}
 
 
 def _download_registry_file(url: str, destination: Path, artifact: JsonObject,
@@ -1145,19 +1261,24 @@ def stage_catalog_build(
     compile_invocation_id: str,
     read_request: ReadRequest | None = None,
     download_request: DownloadRequest | None = None,
+    expected_compile_fingerprint: str | None = None,
+    deployment_branch: str | None = None,
 ) -> JsonObject:
     """Restore a complete invocation from durable registry MPKs for later stages."""
     root = Path(repository).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     read = read_request or _public_registry_json
     base_url = api_url.rstrip("/")
+    catalog_branch = deployment_branch or branch
     catalog_payload = read(
         f"{base_url}/v1/repositories/sima-neat/models/catalogs/current?"
-        f"git_ref={quote(f'refs/heads/{branch}', safe='')}"
+        f"git_ref={quote(f'refs/heads/{catalog_branch}', safe='')}"
     )
     catalog_record = catalog_payload.get("catalog")
     document = catalog_record.get("document") if isinstance(catalog_record, dict) else None
-    if not isinstance(document, dict) or document.get("catalog_revision") != catalog_revision:
+    if not isinstance(document, dict) or (
+        catalog_branch == branch and document.get("catalog_revision") != catalog_revision
+    ):
         raise ValidationError("current catalog does not match the requested catalog revision")
     catalog_model = next(
         (item for item in document.get("models", []) if isinstance(item, dict) and item.get("id") == model_id),
@@ -1175,15 +1296,24 @@ def stage_catalog_build(
     )
     if invocation is None:
         raise ValidationError(f"compile invocation is absent from the current model: {compile_invocation_id}")
+    if catalog_branch != branch and expected_compile_fingerprint is None:
+        expected_compile_fingerprint = compile_fingerprint(
+            root, model_id, build_profile_id, compile_invocation_id, resolve_model_compiler(root)["identity"]
+        )
+    catalog_builds, catalog_packages = _catalog_outputs(catalog_model)
     builds = {
         item["component_id"]: item
-        for item in catalog_model.get("builds", [])
+        for item in catalog_builds
         if isinstance(item, dict)
         and item.get("build_profile_id") == build_profile_id
         and item.get("compile_invocation_id") == compile_invocation_id
     }
     if set(builds) != set(invocation["component_ids"]):
         raise ValidationError("current catalog does not link every component in the compile invocation")
+    if expected_compile_fingerprint and any(
+        build.get("compile_fingerprint") != expected_compile_fingerprint for build in builds.values()
+    ):
+        raise ValidationError("benchmark needs a registered build matching its current model/compiler")
 
     staged_outputs = []
     for component_id in invocation["component_ids"]:
@@ -1202,7 +1332,7 @@ def stage_catalog_build(
         download_url = artifact.get("download_url")
         if not isinstance(digest, str) or len(digest) != 64 or not isinstance(download_url, str):
             raise ValidationError(f"artifact registry returned incomplete MPK metadata for {run_id}")
-        if digest != build.get("artifact_sha256"):
+        if digest != build.get("artifact_sha256", digest):
             raise ValidationError(f"registry MPK checksum does not match the current catalog for {run_id}")
         component_dir = output / model_id / build_profile_id / component_id
         component_dir.mkdir(parents=True, exist_ok=True)
@@ -1271,7 +1401,7 @@ def stage_catalog_build(
     profile_dir = output / model_id / build_profile_id
     runtime_files = []
     package = next((
-        item for item in catalog_model.get("packages", [])
+        item for item in catalog_packages
         if isinstance(item, dict) and (item.get("build_profile_id"), item.get("package_id")) == (
             build_profile_id, "default"
         )
@@ -1286,8 +1416,8 @@ def stage_catalog_build(
             raise ValidationError("artifact registry returned invalid package metadata")
         if "runtime_files" in metadata:
             component_runs = {item["component_id"]: item["run_id"] for item in staged_outputs}
-            if (artifact.get("sha256") != package.get("artifact_sha256")
-                    or artifact.get("size_bytes") != package.get("size_bytes")
+            if (artifact.get("sha256") != package.get("artifact_sha256", artifact.get("sha256"))
+                    or artifact.get("size_bytes") != package.get("size_bytes", artifact.get("size_bytes"))
                     or not isinstance(artifact.get("download_url"), str)
                     or metadata.get("component_run_ids") != component_runs
                     or package.get("component_run_ids") != component_runs):
@@ -1319,6 +1449,37 @@ def stage_catalog_build(
             encoding="utf-8",
         )
     return {"count": len(staged_outputs), "outputs": staged_outputs}
+
+
+
+def stage_benchmark_baseline(
+    *, repository: str | Path, output_dir: str | Path, model_id: str, build_profile_id: str, **registry_options
+) -> JsonObject:
+    """Restore the declared ordinary deployment and retain its compile identities beside the benchmark input."""
+    root = Path(repository).resolve()
+    output = Path(output_dir).resolve()
+    receipt = output / "benchmark-baseline.json"
+    receipt.unlink(missing_ok=True)
+    model = load_and_validate_model(root / "models" / model_id)
+    baseline = build_profile_for(model, build_profile_id).get("benchmark_baseline")
+    if not baseline:
+        return {"count": 0}
+    reference = load_and_validate_model(root / "models" / baseline["model_id"])
+    profile = baseline["build_profile"]
+    invocation = build_matrix({reference["id"]: reference}, [reference["id"]], [profile],
+        repository=root, compiler_version=resolve_model_compiler(root)["identity"])["include"][0]
+    if reference["components"][0]["interface"]["format"] != "huggingface":
+        raise ValidationError("a speculative benchmark baseline must be a native LLiMa deployment")
+    result = stage_catalog_build(repository=root, output_dir=output, model_id=reference["id"],
+        build_profile_id=profile, compile_invocation_id=invocation["compile_invocation_id"],
+        expected_compile_fingerprint=invocation["compile_fingerprint"], **registry_options)
+    component = result["outputs"][0]
+    identity = {"model_id": reference["id"], "display_name": reference["display_name"], "build_profile_id": profile,
+                "deployment": f"{reference['id']}/{profile}/{component['component_id']}/deployment",
+                "compile_run_id": component["run_id"], "artifact_sha256": component["artifact_sha256"]}
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps(identity, indent=2) + "\n")
+    return result
 
 
 def _require_text(value: Any, field: str) -> str:
