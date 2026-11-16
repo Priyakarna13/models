@@ -4,15 +4,33 @@
 
 ## Overview
 
-Nemotron converts multilingual speech into text as audio arrives. The package combines one compiled encoder with separate CPU predictor and joiner models. It accepts mono audio, carries encoder history between calls, and returns text tokens that accumulate into a transcript. Use it for microphone captions, voice interfaces, or recorded speech. The language prompt can request a supported language or automatic recognition.
+Nemotron 3.5 ASR Streaming turns speech into text as it arrives, for live captions, voice interfaces, and dictation. It recognizes many languages, chosen with a language prompt or detected automatically, and returns punctuated text that grows with each 560 ms of audio. The package holds one compiled encoder and two small CPU models that turn its output into text. The encoder keeps a memory of earlier audio between calls, so feed each recording in order and start every new recording from an empty memory.
 
-## Inputs and outputs
+## Inputs
 
-1. Supply 16 kHz mono audio. Compute 128-bin log-mel features with a 512-point transform, 400-sample symmetric Hann window, 160-sample hop, and preemphasis 0.97. The package includes the exact filters and window in `frontend.npz`.
-2. Use 560 ms chunks with 480 ms lookahead. The first call consumes 49 feature frames; later calls consume 56. Preserve the subsampling, key, value, and convolution states between calls. Select a prompt from `processor_config.json`; `auto` selects automatic recognition.
-3. Run the encoder to obtain `encoded`, with 640 channels per frame. The encoder also returns `sub/next_sub1`, `sub/next_sub2`, and each layer’s `next_keys`, `next_values`, and `next_conv` for feedback.
-4. Run `predictor_cpu_int8.onnx` with `token`, `hidden`, and `cell`; retain `prediction`, `next_hidden`, and `next_cell`. Repeat the joiner on each encoded frame until it emits blank, updating the predictor after each text token.
-5. Map token indices through `tokenizer.json`; index 13087 is blank.
+One 560 ms chunk of 16 kHz mono audio with 480 ms lookahead, as 128-bin log-mel features, plus a language prompt and the memory the previous call returned.
+
+Preprocessing:
+
+1. Apply preemphasis 0.97, then a 512-point transform with a 400-sample symmetric Hann window and a 160-sample hop, using the filters and window in `frontend.npz`.
+2. Take the log of the 128 mel energies.
+3. Pass 49 feature frames on a recording's first call and 56 on later calls.
+4. Select the language prompt from `processor_config.json`; `auto` detects the language.
+5. On a recording's first call, set every memory input to zero.
+
+## Outputs
+
+| Output | Size | Holds |
+| --- | --- | --- |
+| `encoded` | 7×640 | One row of 640 values per 80 ms of audio, for the decoder |
+| `sub/next_sub1`, `sub/next_sub2`, and each layer's `next_keys`, `next_values`, `next_conv` | As their inputs | The memory for the next call |
+
+Postprocessing:
+
+1. Pass each memory output back as the matching input of the next call.
+2. For each row of `encoded`, run `joiner_cpu_int8.onnx` until it returns blank, token 13087.
+3. After each other token, run `predictor_cpu_int8.onnx` on it with `hidden` and `cell`, and keep `prediction`, `next_hidden`, and `next_cell`.
+4. Turn the tokens into text with `tokenizer.json`.
 
 ## Building applications
 

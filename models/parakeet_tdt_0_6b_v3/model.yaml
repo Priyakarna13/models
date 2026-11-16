@@ -45,6 +45,14 @@ conversion:
 compilation:
   format: onnx
   source: conversion
+resources:
+  license:
+    # The checkpoint repository has no LICENSE file; this is SPDX's CC-BY-4.0 text.
+    source:
+      uri: https://raw.githubusercontent.com/spdx/license-list-data/31846481de7ea17d92f2f46fad76abe58b2e9bb0/text/CC-BY-4.0.txt
+      sha256: d557539df68e771cc1eedcc91d13f70fca930e508d11eedcafa4b15db49e3744
+      size_bytes: 17023
+    install_path: licenses/LICENSE
 build_profiles:
   w8a16:
     # Elevated Spot capacity requires the grant in sima-neat/vulcan#356.

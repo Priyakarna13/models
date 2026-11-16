@@ -44,6 +44,14 @@ conversion:
 compilation:
   format: onnx
   source: conversion
+resources:
+  license:
+    # The checkpoint repository has no LICENSE file; this is the OpenMDW project's own 1.1 text.
+    source:
+      uri: https://raw.githubusercontent.com/OpenMDW/OpenMDW/b26b32b34ad2edcc29a7707abb68dcfb25a538c1/1.1/LICENSE.OpenMDW-1.1
+      sha256: 2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df
+      size_bytes: 2619
+    install_path: licenses/LICENSE
 build_profiles:
   w8a16:
     components:
