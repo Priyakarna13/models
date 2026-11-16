@@ -78,7 +78,7 @@ def test_pacing_matches_runtime_audio_windows(load_script, monkeypatch):
 
     import numpy as np
 
-    benchmark = runtime = load_script("performance")
+    benchmark, runtime = load_script("performance"), load_script("benchmark_runtime")
     seen = []
 
     def mel(raw, *_, **kwargs):
@@ -140,6 +140,7 @@ def test_audio_validation_and_performance_fingerprint_boundary(load_script, mode
         benchmark.load_audio(path)
     inputs = _compile_input_files(model_dir.parents[1], model_dir.name)
     assert model_dir / "scripts/performance.py" not in inputs
+    assert model_dir / "scripts/benchmark_runtime.py" not in inputs
 
 
 def test_fleurs_float32_selection_is_ordered_and_preserves_samples(load_script, tmp_path):
@@ -266,7 +267,7 @@ def test_complete_runtime_payload(compiled):
 def test_predictor_runs_only_after_nonblank_tokens(load_script):
     import numpy as np
 
-    runtime = load_script("performance")
+    runtime = load_script("benchmark_runtime")
 
     class Predictor:
         def __init__(self):
@@ -295,7 +296,7 @@ def test_predictor_runs_only_after_nonblank_tokens(load_script):
 def test_tdt_duration_carries_to_the_next_chunk(load_script):
     import numpy as np
 
-    runtime = load_script("performance")
+    runtime = load_script("benchmark_runtime")
 
     class Predictor:
         def run(self, _, inputs):
@@ -473,3 +474,52 @@ def test_export_dependencies_are_installed_only_in_the_export_environment(
         assert "AutoModelForRNNT" in prepare[3] and "AutoModelForTDT" in prepare[3]
         assert "prepare_model" in prepare[3]
     assert not list(tmp_path.glob("export-env-*"))
+
+
+def test_accuracy_scores_each_fleurs_recording_with_the_shared_scorer(load_script, tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import numpy as np
+    from scipy.io import wavfile
+
+    accuracy = load_script("accuracy")
+    folder = tmp_path / "audio/test"
+    folder.mkdir(parents=True)
+    rows = []
+    for index, (name, text) in enumerate([("b.wav", "Hello, World."), ("a.wav", "Good morning")]):
+        wavfile.write(folder / name, 16000, np.zeros(1600, np.float32))
+        rows.append(f"{index}\t{name}\t{text}\t{text.lower()}\tx\t1600\tMALE")
+    (tmp_path / "test.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    heard = iter(["good morning", "hello there world"])  # a.wav comes first: filename order.
+
+    class Transcriber:
+        def __init__(self, *_):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def transcribe(self, audio, language):
+            assert language == accuracy.LANGUAGE and len(audio) == 1600
+            yield next(heard)
+
+    monkeypatch.setattr(accuracy, "Transcriber", Transcriber)
+    reported = {}
+    # The report writer reads PyNeat's version, which a host lacks; check what the script hands it.
+    monkeypatch.setattr(accuracy.model_report, "from_accuracy",
+                        lambda datasets: reported.update(datasets) or SimpleNamespace(save=lambda _: None))
+    mpk = tmp_path / "encoder_mpk.tar.gz"
+    mpk.write_bytes(b"encoder")
+    output = tmp_path / "report"
+    monkeypatch.setattr(sys, "argv", [
+        "accuracy.py", "--mpk", f"model={mpk}", "--dataset", f"fleurs-en-us-test={tmp_path}", "--output", str(output),
+    ])
+    accuracy.main()
+    result = reported["fleurs-en-us-test"]
+    # One inserted word over four reference words, after both texts lose case and punctuation.
+    assert result["metrics"]["wer"] == pytest.approx(0.25)
+    assert (result["split"], result["evaluated_samples"], result["available_samples"]) == ("test", 2, 2)

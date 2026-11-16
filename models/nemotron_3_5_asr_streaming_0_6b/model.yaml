@@ -65,6 +65,10 @@ pipeline:
 - component: model
 - cpu: INT8 ONNX predictor and joiner decode to text
 
+accuracy:
+  datasets:
+  - {id: fleurs, variant: en-us-test, sha256: c2b7984079a73f169b147f531699af5ffe0eb60bb071277ac9f4a455e786acb2, size_bytes: 289947446}
+
 performance:
   dataset:
     id: fleurs

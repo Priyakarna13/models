@@ -52,7 +52,7 @@ def test_converted_checkpoint_preserves_every_source_tensor_and_asset(converted,
 @pytest.mark.parametrize("changed_file", ["surgery.py", "compile.py"])
 def test_compile_changes_do_not_invalidate_conversion(tmp_path, model_dir, changed_file):
     root = model_dir.parents[1]
-    for name in ("schemas", "taxonomies"):
+    for name in ("schemas", "taxonomies", "datasets"):
         shutil.copytree(root / name, tmp_path / name)
     target = tmp_path / "models" / model_dir.name
     shutil.copytree(model_dir, target)
