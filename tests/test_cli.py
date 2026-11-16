@@ -359,6 +359,16 @@ def test_reference_metrics_writes_each_models_published_scores(tmp_path: Path) -
     assert reference["resnet_50"][0]["metrics"] == {"top1_accuracy": 0.80382, "top5_accuracy": 0.94598}
 
 
+def test_low_accuracy_variants_writes_declared_build_profiles(tmp_path: Path) -> None:
+    output = tmp_path / "low-accuracy-variants.json"
+    assert main(["low-accuracy-variants", "--repository", str(ROOT), "--output", str(output)]) == 0
+
+    models = cli.load_models(ROOT)
+    for model_id, profiles in json.loads(output.read_text(encoding="utf-8")).items():
+        assert profiles
+        assert set(profiles) <= {profile["id"] for profile in models[model_id]["build_profiles"]}
+
+
 def test_resolve_devkit_accuracy_caches_each_accuracy_dataset_of_the_profile(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:

@@ -636,7 +636,7 @@ try {
     const checks = [
       ['model list', new URL('/', variantUrl), '#result-list .model-card'],
       ['variant page', variantUrl, '#components-section .component-performance'],
-      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a8_w16a16', variantUrl), '#components-section .component-pipeline'],
+      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a16_w16a16', variantUrl), '#components-section .component-pipeline'],
     ];
     for (const viewport of [{width: 1440, height: 1000}, {width: 390, height: 844}]) {
       const page = await browser.newPage({viewport});

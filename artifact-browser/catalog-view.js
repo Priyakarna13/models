@@ -6,7 +6,7 @@ import {
 import { icons, escapeHtml, branchName, shortSha, profileLabel, variantLabel } from "./ui.js";
 import { formatDate, metricDefinition, metricDisplay } from "./metrics.js";
 import { readPerformance } from "./model-report.js";
-import { accuracyHeadline } from "./model-view.js";
+import { accuracyHeadline } from "./accuracy-section.js";
 import {
   api, writeBranchPreference, writeCachedBranches, writeCachedCatalog,
   runFromCatalogBuild, profileGroups, activeModelBuild, documentationHeroUrl, documentationHeroFallbackUrl, loadVariant, mapWithConcurrency,
@@ -491,7 +491,7 @@ export function renderRuns() {
   const runTitle = elements["history-filter"].checked ? "Build history" : "Latest builds";
   const family = categoryFilters().architecture_id;
   elements["result-title"].textContent = modelsMode
-    ? family ? taxonomyLabel("architectures", family) : familyOverview() ? "Model families" : "Models"
+    ? family ? taxonomyLabel("architectures", family) : familyOverview() ? "Palette Model Browser" : "Models"
     : runTitle;
   elements["clear-family"].hidden = !modelsMode || !family;
   elements["load-more"].textContent = modelsMode ? "Load more models" : "Load more builds";

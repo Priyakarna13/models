@@ -117,9 +117,9 @@ model-registry fetch-resources models/<model-id> --output-dir <directory>
 ```
 
 `fetch` checks the exact byte size and SHA-256 before installing the source
-into a checksum-addressed cache. `fetch-calibration` does the same for a
-`ready` calibration, which belongs to the profile's first component, and
-`fetch-fidelity-dataset` for the `numerical_fidelity` dataset. Both report
+into a checksum-addressed cache. `fetch-calibration` does the same for the
+profile's calibration dataset, which belongs to the profile's first component,
+and `fetch-fidelity-dataset` for the `numerical_fidelity` dataset. Both report
 `kind: none` when the build needs no such input. `fetch-resources` verifies a
 model's pinned `resources` and lays them out under the directory as its package
 installs them, then prints the directory; it prints nothing for a model without
@@ -302,7 +302,7 @@ script:
 
 ```bash
 PYTHONPATH=tools ~/pyneat/bin/python models/resnet_50/scripts/performance.py \
-  --mpk /workspace/resnet_50_mpk.tar.gz \
+  --mpk /workspace/resnet_50_w8a8_mpk.tar.gz \
   --dataset imagenet-2012-val=/media/nvme/datasets/imagenet-2012-val \
   --output /workspace/performance 2>&1 | tee /workspace/performance.log
 ```
@@ -367,7 +367,7 @@ When this checklist passes, continue to [Submit for review](contributing.md).
 
 | Failure | What to check |
 | --- | --- |
-| `id must match directory name` | Rename the directory or correct `id`; both use the same snake-case value. |
+| `unknown model id(s)` | Pass the folder name under `models/`. The folder name is the model ID, and `model.yaml` does not repeat it. |
 | Unknown or incompatible taxonomy ID | Select an ID from the canonical taxonomy or propose a reviewed taxonomy change. |
 | `source.sha256` or size mismatch | Hash and measure the exact immutable bytes addressed by `source.uri`. |
 | Source host or URL rejected | Use one of the [approved forms](adding-a-model.md#3-pin-every-input): a full-commit Hugging Face resource, or for a conversion checkpoint a tagged release file of a public GitHub repository. |
@@ -390,9 +390,9 @@ model-registry verify-artifact /path/to/output/<model-id>/<profile-id>/<componen
 ```
 
 Activate the matching LLiMa and pinned Model Compiler tools first. The recipe
-calls `llima-compile` and saves its complete arguments in a standalone `compile.sh`.
-The runner verifies the pinned checkpoint download,
-calls that recipe, and runs `llima-deploy`. It writes
+calls `llima-compile`. The runner verifies the pinned checkpoint download,
+calls that recipe, saves the recipe's complete arguments in a standalone
+`compile.sh`, and runs `llima-deploy`. It writes
 `<model-id>/<profile-id>/<component-id>/deployment/` with `devkit/`, `elf_files/`,
 any `npy_files/`, and that script. Verification writes `deployment-manifest.json` beside
 the folder. `compile-outputs.json` points to `<component-id>/deployment-manifest.json`
@@ -405,6 +405,6 @@ omit them for LLMs and fixed-resolution VLMs. The runner forwards declared
 settings to the recipe. Additional compiled configurations use separate profiles.
 
 See [on-demand builds](adding-a-model.md#on-demand-builds)
-for manual build and publication instructions.
+for how to request a CI build of a model that sets `build-on-demand`.
 See [LLiMa model definitions](adding-a-model.md#llima-language-and-vision-language-models)
 for the source and package contracts.
