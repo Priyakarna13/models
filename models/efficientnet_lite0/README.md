@@ -4,28 +4,34 @@
 
 ## Overview
 
-EfficientNet-Lite0 is a convolutional network for image classification built for mobile and edge accelerators from inverted residual blocks with depthwise convolutions and ReLU6 activations, trained on the 1,000 classes of ImageNet-1k. The package uses
-Google's ImageNet weights. It takes a 224×224 RGB image and
-returns one score for each class. Your application turns the scores into
-probabilities with a softmax and reports the most likely classes. The model runs
-as one component.
+EfficientNet-Lite0 sorts an image into one of the 1,000 ImageNet classes, such as
+animals, vehicles, and household objects. Use it to tag or sort photos, or to
+check what a camera is looking at. It returns one score for each class, and your
+application reports the most likely ones. It names the main subject of the image
+and does not locate it. The package uses Google's ImageNet weights.
 
-## Inputs and outputs
+## Inputs
 
-**Input.** Resize the image with bicubic resampling so its shorter side is 256,
-then crop the center 224×224. Scale the RGB values to 0–1, subtract the mean
-(0.5, 0.5, 0.5), and divide by the standard deviation (0.5, 0.5, 0.5). The
-accuracy script passes this image as a 224×224×3 (height, width,
-channel) float tensor, with Neat's resize, color conversion, and normalization
-turned off.
+One 224×224×3 (height, width, channel) RGB image with values from -1 to 1.
 
-**Outputs.** `logits` holds 1,000 class scores.
+Preprocessing:
+
+1. Resize with bicubic resampling so the shorter side is 256.
+2. Crop the center 224×224.
+3. Divide by 255.
+4. Subtract 0.5 from each channel.
+5. Divide each channel by 0.5.
+
+## Outputs
+
+One output, `logits`, with one score for each of the 1,000 classes.
+
+Postprocessing:
 
 1. Apply a softmax to `logits` to get class probabilities.
-2. Take the five highest probabilities as the top-5 classes.
+2. Take the highest probability as the class, or the five highest as the top-5 classes.
 
-Class index i is the i-th ImageNet-1k WordNet ID in sorted order, which is the
-standard ImageNet-1k class order.
+Class index i is the i-th ImageNet-1k WordNet ID in sorted order, which is the standard ImageNet-1k class order.
 
 ## Building applications
 
