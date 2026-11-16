@@ -1,3 +1,5 @@
+# The w16a16 build compiles for over three hours, so this model builds only on request.
+build-on-demand: true
 display_name: MobileSAM
 description: Segments the object a click or a box points at, with a lightweight Segment Anything model.
 model_type: vision
