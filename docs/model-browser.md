@@ -1,6 +1,6 @@
 # Model browser
 
-The model browser is the public catalog of the Model Registry. People use it to
+The Model Browser is the public catalog of SiMa Neat models. People use it to
 find a model, check how its builds perform, compare builds, and download a
 package. This page explains where each part of the browser gets its content, so
 you can check how your model will appear before you submit it.
@@ -14,12 +14,21 @@ links with a blue active label. The catalog and contributor documentation share
 the portal's theme preference.
 Standalone previews retain local navigation when the shared header is unavailable.
 
-CI builds the customer UI from `main` and the developer UI from `develop` and
-feature branches. Both currently use the staging registry and share the staging
-publication URL; the most recently published build determines its UI. The customer
-view uses the main catalog and hides branch/compiler filters, build history,
-the Details section and contributor navigation. The developer view keeps those
-controls. Selecting a branch in the developer UI changes the catalog, not the UI.
+The browser has two views. The customer view shows the Main catalog and hides the
+branch and compiler filters, build history, the Details section and contributor
+navigation. It also leaves out the board's Linux memory, MLA Utilization, the
+**Raw result** download, and the commit and workflow links of each result. The
+developer view keeps all of them. Selecting a branch in the developer view changes
+the catalog, not the view.
+
+The customer view also leaves out a variant whose accuracy falls more than 8% below
+the source model's score. The comparison uses the FP32 baseline when the model has
+one, and otherwise the score its authors published for the same dataset split. A
+variant with neither score stays. A model whose every variant is left out does not
+appear.
+
+While the catalog loads, the list shows a spinner. A message that a branch has
+no models appears only after the registry has answered.
 
 The catalog opens as a grid of cards, one per available **Model family**, sorted
 by its existing architecture ID. Selecting a family applies its sidebar filter
@@ -34,6 +43,11 @@ usable build do not appear. Search always shows matching individual models.
 The table always shows individual models,
 selected precision, measured accuracy and whole-model performance. Changing
 the precision updates its measurements; opening the model shows the full results.
+LLM and VLM rows show generation speed in tokens/s and TTFT (time to first
+token) as ranges across measured workloads, with the workload count. Hover over
+the reading for the workload names. Text Generation rows use text workloads;
+Visual Question Answering rows use image workloads. Open the model for each
+workload's exact result.
 Both views share search and filters. The table groups models by task, with the
 same model-family ordering inside each group. Models with multiple tasks appear
 in every applicable group; selecting a task filter shows only that group. The
@@ -78,15 +92,17 @@ The search field matches model, build-profile, and component names and the taxon
 labels and family descriptions. Task and model family filters sit beside the cards. Developer view also
 shows Branch, Compiler and Build history directly in the filter panel. Customer
 view keeps only Task and Model family. Category filters list the values the
-loaded builds use and are hidden when fewer than two remain; developer controls
+loaded builds use and are hidden when fewer than two remain. Selecting a task
+narrows Model family to the families with that task, and selecting a family
+narrows Task to that family's tasks; developer controls
 stay visible even when only one branch or compiler is available.
 
 **Compare** in the top bar explores all model variants for one task. The
 chart shows all measured precisions together. Hover over a point to see the model,
 variant, throughput and accuracy. Accuracy is the vertical axis and throughput
-in inferences/s is the horizontal axis. The dataset, variant and split appear below
-the chart title. Accuracy is grouped by dataset and metric; when more than one
-group is available, choose it with **Dataset & metric**. The axis title gives the
+in inferences/s is the horizontal axis. The dataset and its variant appear below
+the chart title. Accuracy is grouped by dataset and metric; **Dataset & metric**
+at the top right names the group on every task and selects one when a task has several. The axis title gives the
 metric's unit and says "lower is better" for an error metric such as EPE.
 A multi-component model shows its [whole-model result](benchmarking.md#multi-component-models), with all its components running as one pipeline. Select up to three points or use the compact
 **Add model** selector to show detailed measurements, including power and memory.
@@ -94,8 +110,11 @@ Remove a selected variant using the × in its table heading or its chart label.
 The chart labels only selected variants plotted against its current dataset and metric.
 Selections without matching accuracy or throughput appear only in the comparison table.
 The graph, table and model selector update together. The link
-preserves the task and selected variants. Tasks containing only LLM, VLM or audio models
-show **TBD**. Multimodal detectors can still join a vision-task comparison.
+preserves the task and selected variants. Text Generation and Visual Question Answering
+compare parameters in billions against generation speed for matching workloads.
+Image comparisons use each model's encoder resolution, listed in its tooltip and table.
+A workload selector appears when several text buckets or datasets are available.
+The Task menu leaves out tasks with no comparison yet, such as the audio tasks. Multimodal detectors can still join a vision-task comparison.
 
 On a phone, the section navigation shortens **Developer docs** to **Docs**.
 
@@ -104,23 +123,24 @@ On a phone, the section navigation shortens **Developer docs** to **Docs**.
 Selecting an individual model opens its page. The page is built to be read at a glance:
 each section shows its key facts directly, and longer detail sits in a row
 marked with › that opens in place. The header places the model image beside its
-name, description and download action in both UI modes; narrow screens stack them.
-The validation and source-link icons form a separate group beside Download, with
-space between the groups. The download dialog offers an outlined **Copy CLI command**
-button with a copy icon alongside browser downloads where available. Customer
-package dialogs name the model, summarize the variant and size, and show a quiet
-filename block and license line with a **Download model** action. Developer dialogs
-use the same layout with extra fields for package identifiers, component counts,
-format, checksums and attribution. Dialogs and action buttons use softly rounded corners.
+name, tags, description, download action, and the validation and source-link
+icons in both UI modes; narrow screens stack them. The tags name what holds for every variant:
+tasks, model family, model type and license. The download dialog offers an outlined **Copy CLI command**
+button with a copy icon alongside browser downloads where available. The copied
+command names the selected branch in the developer view. In the customer view it
+names no branch, because `sima-cli` downloads from `main` by default. A package dialog names the model, summarizes the variant
+and size, and shows a quiet filename block and license line with a **Download**
+action, in both views. Dialogs and action buttons use softly rounded corners.
 The model's License section retains attribution in both views. Dialog actions
 place Cancel on the left, Copy CLI command in the middle and Download on the right.
-A model whose license does not permit redistribution has no download action. Its
-header shows **Not available for download** in that place, and its Details section
-has no package card.
 A model with several build profiles shows
 one tab per profile, labelled with its variant ID in uppercase, such as
 **W8A8**. Profiles with a W8A8 component come first and the page opens on the
-first tab, whatever order `model.yaml` declares. The GitHub link in the header opens
+first tab, whatever order `model.yaml` declares. **Download** in the header
+downloads the selected variant, and the Performance and Accuracy titles name that variant.
+A model whose license does not permit redistribution has no download action. Its
+header shows **Not available for download** in that place, and its Details section
+has no package card. The GitHub link in the header opens
 the model's folder at the commit the README comes from. The original-model link
 beside it opens the page `upstream.model_card` names. It shows the Hugging Face
 logo for a Hugging Face page and an external-link icon for any other host, such
@@ -133,21 +153,33 @@ in this order:
 
 1. **Overview.** The `## Overview` section of the README, including
    any model-specific note about changing context length or image resolution
-   during compilation. The **Inputs and outputs** and **Building applications**
+   during compilation. The **Inputs**, **Outputs**, and **Building applications**
    sections appear inline from the
    rest of the README after its checksum is verified, so the title, hero, and
    overview are never shown twice. The README follows the
-   [README requirements](https://github.com/sima-neat/models/blob/develop/AGENTS.md#model-readme-requirements).
+   [README requirements](model-readme.md).
 2. **Performance.** One whole-model result for the selected build profile,
    read from the profile's [model report](benchmarking.md#workload-and-measurements).
-   Four tiles show one number each: throughput, average latency, average SoM
-   power, and energy per inference. The line below them names the workload the
-   report records, such as **YoloV26 box decoder, top 100**, and when it was
-   measured. Its commit and GitHub workflow are those of the run that measured
-   the profile. A benchmark run is reused until its
+   Core models show four tiles: throughput, average latency, average SoC
+   power (the MLA rail plus the rail for the rest of the SoC), and inferences
+   per watt, which is throughput in inferences/s divided by that SoC power
+   in watts and is shown without a unit. Energy per
+   inference, which uses SoM power, is in the CSV. The line below them says when the result was
+   measured; the workload the report records is in the CSV. In the developer UI it also links the commit and GitHub workflow
+   of the run that measured the profile. A benchmark run is reused until its
    [benchmark fingerprint](benchmarking.md#ci-and-registry-publication) changes, so that
    commit can be later than the build's. A profile with no result shows **Not measured at
    this revision.**
+   LLMs and VLMs show TTFT, prefill and generation tables for text, with image timings
+   in a separate table. TTFT headings explain time to first token in a tooltip.
+   Speculative models compare **Baseline** with **MTP**, **DFlash** or **EAGLE3**
+   when the compiled build identifies its method. The baseline is the target
+   model without speculative decoding. Generation speedup excludes prompt
+   processing and the first token; draft contribution is the percentage of
+   generated tokens accepted from the draft model. Measurement details show
+   each workload's telemetry for both deployments. Each CSV identifies its own
+   model, build profile and decoding role; filenames include the workload and
+   role to distinguish the exports.
    When the report includes MLA layer stats, **Runtime Layer Analysis**
    shows one full-width table with **Compiled layer / Execution time (µs) / Share (%)**
    headings. Each execution-time cell shows its exact value above a thin bar,
@@ -212,7 +244,8 @@ in this order:
    SoC). Rails peak at different moments, so the SoC peak is the sum of the
    two peaks, an upper bound. The other SoM rails follow at the SoC's level,
    each coloured like its part of the bar. **Memory** has MLA and
-   EV74 memory, which add up, and the board's Linux memory. Readings other than latency and throughput cover
+   EV74 memory, which add up, and the board's Linux memory. The customer UI
+   leaves out Linux memory, here and in the CSV. Readings other than latency and throughput cover
    the throughput pass. The (i) mark beside a reading or
    rail explains what it measures. The footer lists the telemetry (the
    Sentinel version and the samples behind the board readings, or why they
@@ -242,12 +275,14 @@ in this order:
 3. **Accuracy.** For each dataset the run evaluated, in `model.yaml` order:
    the coverage (full when the run evaluated every sample of its split,
    sampled otherwise), the first four metrics in their units (ratios as
-   percentages, EPE in pixels, D1-all in percent), the evaluated sample count, and
-   the commit and GitHub workflow of the run that measured them. With more than
+   percentages, EPE in pixels, D1-all in percent), the dataset, such as
+   **coco-2017 val**, the evaluated sample count when coverage is sampled, and,
+   in the developer UI, the commit and GitHub workflow of the run that measured them. With more than
    one dataset, each result is titled by its dataset name. The catalog table
    and **Compare** use the first dataset. Under each of the four metrics, both
    views show its published score and its FP32 baseline when `reference_metrics`
-   records them for the measured dataset.
+   records them for the measured dataset. A published score links to the
+   source `reference_metrics` names.
    In the developer UI, each dataset's **Evaluation details** explains the coverage and lists
    the remaining metrics, each with its published score and its FP32 baseline
    when `reference_metrics` in `model.yaml` records them for the measured
@@ -267,25 +302,11 @@ in this order:
 A section that has no data, such as Accuracy for a model with neither an
 accuracy result nor published scores, is left out.
 
-## Preview your model locally
-
-`artifact-browser/preview.py` serves the browser with a local registry API built
-from `models/`, so it shows your model's card, README, hero, build profiles,
-packages, provenance, and accuracy and fidelity declarations as this checkout
-defines them. Run IDs, timestamps, sizes, and measured values are synthetic. It
-needs a Python environment with the repository installed:
-
-```bash
-python -m pip install .
-```
-
-```bash
-python artifact-browser/preview.py
-```
-
-Open the URL the script prints, find your model in the catalog, and open its
-page. The preview is for checking content and layout; the real numbers come
-from CI after merge.
+For models declaring `performance.scope: components`, the Performance section
+shows a component selector. Each selection has its own throughput, latency,
+power, memory, workload and telemetry, with no combined score. The catalog table
+lists the components' measurements separately. Models using the default
+whole-model scope, such as RF-DETR, keep their pipeline-level result.
 
 ### Model folder downloads
 
@@ -306,117 +327,26 @@ When the registry resolves a deployment to Hugging Face, the dialog links to
 its pinned repository revision and optional subdirectory. This location is
 separate from the original source checkpoint linked in the page header.
 
-Branch views honor explicit `branch_deployments` (or `approved_deployments`)
-selections, including inherited compilation runs and their matching package.
-Newer unselected runs do not replace an explicitly selected deployment.
-Feature branches show finalized on-demand candidates before promotion; metadata
-and unselected runs do not create a card. Develop and Main show approved deployments.
+A feature branch shows its finished on-demand builds before they are promoted.
+Develop and Main show only promoted on-demand builds. See
+[Model promotion](model-promotion.md).
 
-## Preview production data from staging
+## Preview your model locally
 
-The staging browser uses staging by default. Open
-[the production preview](https://developer-stg.sima.ai/models?env=prod)
-to run the same staged UI against the public read-only production Models registry.
-The registry label changes to **Production registry**, downloads use production,
-and catalog/branch caches stay separate by API origin. Model navigation retains
-`env=prod`; remove that parameter to return to staging. Select the catalog branch
-you want to inspect; changing backend does not populate or promote a catalog.
-
-The preview uses only the fixed `https://models-registry.neat.sima.ai` reader.
-Other `env` values retain the default backend; query strings cannot set arbitrary
-API origins. Production images use production API reads, never the staging image
-CDN. The preview is enabled only by staging configuration, including customer UI
-builds staged for review. Local custom APIs and production configurations do not
-opt into this override. No AWS credentials are sent by the browser. CORS permits
-cross-origin reads, while registry policy enforces repository and artifact access.
-
-## Hide branch selection
-
-Add `?branches=0` to browse Main with the branch selector hidden. This overrides
-saved branch preferences and any `branch=` parameter, without changing the UI
-audience or the selected backend. Other developer filters remain available.
-Clear filters and in-page navigation keep Main selected and retain `branches=0`.
-The preview does not replace your saved branch preference. Omit the parameter
-(or use `branches=1`) to restore the normal branch behavior; customer UI remains
-Main-only. Combine with `env=prod` as `/models/?env=prod&branches=0` to preview
-production Main. That catalog must be published before it can display models.
-
-## Production frontend
-
-The production browser is hosted at [developer.sima.ai/models](https://developer.sima.ai/models/) and
-uses `https://models-registry.neat.sima.ai`. Build with
-`MODEL_BROWSER_ENVIRONMENT=production` to select both production origins and
-the Production label. Audience selection is independent: developer mode exposes
-branch selection; customer mode shows Main only. Deploying the frontend does
-not publish, promote, or rebuild model catalogs. An unpublished branch remains
-empty; the browser never substitutes staging data.
-
-From a clean committed checkout, with AWS production operator credentials,
-Node dependencies, Chromium and the Python registry dependencies available:
+`artifact-browser/preview.py` serves the browser with a local registry API built
+from `models/`. It shows your model's card, README, hero, build profiles,
+packages, provenance, and accuracy and fidelity declarations as this checkout
+defines them. Run IDs, timestamps, sizes, and measured values are synthetic. It
+needs a Python environment with the repository installed:
 
 ```bash
-AWS_PROFILE=vulcan-prod scripts/deploy-production-model-browser.sh developer
+python -m pip install .
 ```
 
-Use `customer` for Main-only presentation. The script builds and smoke-tests the
-portal, publishes only the production docs bucket's `models/` prefix, and
-invalidates only `/models` paths. It retains old assets and uploads the entry
-point last. The generated configuration filename hashes its contents, so changing
-audience or backend at the same source revision preserves the previous settings
-for cached pages and index rollback. Before deployment, record the prior root index object version and
-source revision. Roll back by restoring that index version and invalidating
-`/models` and `/models/*`; for a first deployment with no prior page, remove only
-the newly created root index to disable the entry point. Restore the previous
-full build from its source revision if documentation routes also need rollback.
-Model registry contents and publisher environment selections are unchanged.
+```bash
+python artifact-browser/preview.py
+```
 
-## Staging release notice
-
-Staging builds show an unofficial-release notice above the browser navigation,
-including the connected backend environment and the frontend's source branch and
-commit. These are the browser build's details, independent of the selected model
-catalog branch. A staging browser previewing production data keeps the notice
-and identifies the production backend. Local builds with uncommitted changes
-say so beside the commit. Production builds omit the staging notice.
-
-## Manual frontend deployment in GitHub Actions
-
-Run **Deploy Model Browser & Docs** from the protected `develop` or `main`
-branch. Select `staging` or `production` and the developer or customer audience.
-The selected workflow commit is the frontend source revision. This workflow
-builds and tests the browser and bundled docs, then publishes only `models/`
-using that environment's Terraform-managed bucket, KMS key, identity and CDN.
-It neither builds models nor publishes the registry tooling package. Existing
-production Basic Auth is infrastructure-managed and stays enabled.
-
-The dispatching user must belong to `owners-models` and approve their own
-`model-browser-deploy` environment gate. GitHub's Run button is visible to other
-writers, but their runs cannot deploy, even if a different owner approves them.
-The gate allows only that team, disables administrator bypass, and restricts
-workflow refs to `develop` and `main`. The authorization job verifies the gate
-and the dispatcher's approval before build/configuration/AWS jobs. Reruns are
-rejected to avoid reusing historical authorization; dispatch a fresh run instead.
-No additional organization-read token is needed.
-
-Automatic staging frontend publication remains as configured in the model
-orchestrator; production frontend publication is manual. Tooling publication
-(**Build and Publish Model Registry**) follows repository `VULCAN_ENV` on both
-push and manual invocation, defaulting to staging only when unset. Its destination
-is independent of this frontend workflow's environment selector.
-
-The environment protection payload is versioned in
-`config/model-browser-deployment-environment.json`. Its two deployment branch
-policies are exact branch names `develop` and `main` (no tags or wildcard refs).
-The workflow must reach the default branch (`main`) before GitHub exposes its
-Run workflow button; merge through the normal reviewed branch promotion. The environment gate is configured
-separately through repository administration and checked again at runtime.
-
-Developer deployments serve model hero illustrations from the matching registry
-environment’s CDN. Existing production illustrations are backfilled before browser
-cutover; image loading retains bounded retries and the registry API fallback.
-
-For models declaring `performance.scope: components`, the Performance section
-shows a component selector. Each selection has its own throughput, latency,
-power, memory, workload and telemetry, with no combined score. The catalog table
-lists the components' measurements separately. Models using the default
-whole-model scope, such as RF-DETR, keep their pipeline-level result.
+Open the URL the script prints, find your model in the catalog, and open its
+page. The preview is for checking content and layout. The real numbers come
+from CI after merge.

@@ -1,61 +1,49 @@
 import ContributionPath from '@site/src/components/ContributionPath';
 
-# Contribute a model
+# Reproduce or contribute a model
 
-The Model Registry makes models discoverable, reproducible, and deployable on
-SiMa.ai platforms. A contribution is a versioned contract, not a model binary:
-it records the exact source, ownership, component interfaces, compile recipe,
-build profiles, packages, datasets, and the evidence each build must produce.
+The Model Browser lists models that run on SiMa.ai platforms, each with its
+measured performance and accuracy. This repository holds what produces a model:
+its pinned source, its compile recipe, and the scripts that measure it. You can
+run those scripts yourself and reproduce every step on your own machine.
 
-This documentation is for model developers who create or update that contract.
-It explains how to define a model, qualify it locally, submit it for review,
-and what trusted automation does after merge.
+## Start here
 
-## How a build is benchmarked
+Read [Getting started](getting-started.md) first. It shows the path every model
+takes, from the official model to the measured results, and walks through it once with
+real commands. A contributor follows the same path, so read it before the contribution
+guides below. [Concepts](concepts.md) defines the terms both use, such as build, build
+profile, stage, and fingerprint.
 
-A **build** is one compile invocation of one build profile of one model. Each
-build passes through up to three **stages**, each driven by one script in the
-model's `scripts/` directory:
+## Contribute a model
 
-| Stage | Runs on | Model script | Produces |
-| --- | --- | --- | --- |
-| compile | pinned Model Compiler | `compile.py` | one MPK per model component, plus a numerical fidelity report when `model.yaml` declares one |
-| performance | Modalix DevKit | `performance.py` | one whole-model performance report for the build profile |
-| accuracy | Modalix DevKit | `accuracy.py` | one whole-model accuracy report for the build profile |
+A contribution adds or updates one model folder. Its `model.yaml` records the
+exact source, components, build profiles, and datasets, and its scripts compile
+and measure each build. These guides explain how to define a model, qualify it
+locally, and submit it for review, and what CI does after the merge.
 
-The performance and accuracy stages are the build's **benchmarks**. Each stage
-has a **fingerprint**, a SHA-256 of every input that decides its result. CI
-reruns a stage only when no published result carries its current fingerprint,
-so editing `performance.py` reruns the performance benchmark without
-recompiling, and editing a compile input recompiles and then reruns the
-benchmarks. See [what a change
-reruns](adding-a-model.md#9-know-what-a-change-reruns), and the
-[vocabulary](https://github.com/sima-neat/models/blob/develop/AGENTS.md#vocabulary)
-for these terms.
+### Where each step runs
 
-## Understand the three execution boundaries
-
-| Phase | What runs | What it proves |
+| Phase | What runs | What it shows |
 | --- | --- | --- |
-| Local development | Validation, verified downloads, each declared compile invocation, MPK checks, and the performance and accuracy stages on a DevKit. | The author has reproducible evidence for every submitted build. |
-| Pull request | `Target Branch Checks`: unit tests with catalog, taxonomy, and compiler-pin validation, the package build, and the model browser checks, on GitHub-hosted runners. | The committed contract is valid on the merge result. Pull requests do **not** run recipe or surgery code on self-hosted runners. |
-| Trusted automation | On a push, each stage whose fingerprint has no completed registry run: compilation, publication, then the benchmarks. | Staging artifacts, measurements, and provenance come from the reviewed revision. Production is an explicit protected maintainer action. |
+| Local development | Validation, verified downloads, the compile of each build, MPK checks, and the performance and accuracy stages on a DevKit. | You have reproducible results for every build you submit. |
+| Pull request | `Target Branch Checks`: lint, the repository tests and model tests, the `model-registry` package build, and the model browser checks. | The committed files are valid on the merge result. Pull requests do **not** run recipe or surgery code to compile or measure a model. |
+| After the merge | CI compiles and benchmarks each changed build and publishes the results. | The published model and its measurements come from the reviewed revision. |
 
 The pinned Model Compiler and a compatible Modalix DevKit are submission
 prerequisites, not optional CI substitutes. Do not open a model pull request
 until every submitted build has compiled, produced valid MPKs, and completed
-its declared performance and accuracy stages on a DevKit. Trusted automation
-repeats those stages for the committed revision; it does not replace local
-qualification.
+its declared performance and accuracy stages on a DevKit. CI repeats those
+stages after the merge. It does not replace local qualification.
 
-## Workflow
+### Workflow
 
-A contribution moves through six stages. Each produces the input or evidence
-the next one needs. Select a stage to open its guide.
+A contribution moves through six steps. Each produces what the next one needs.
+Select a step to open its guide.
 
 <ContributionPath />
 
-## Before you begin
+### Before you begin
 
 You need a checkout of this repository, `sima-cli`, and the repository-pinned
 Model Compiler from the NEAT SDK or a standalone installation. The DevKit
@@ -64,9 +52,9 @@ fidelity, or accuracy data also need private Artifactory access.
 
 Start with [Define the model contract](adding-a-model.md). The [local
 qualification guide](local-development.md) owns the tool installation and
-complete test sequence; follow it before you submit anything.
+complete test sequence. Follow it before you submit anything.
 
-## Guides
+### Guides
 
 Follow these guides in order:
 
@@ -76,16 +64,22 @@ Follow these guides in order:
    then compile and measure every submitted build.
 3. [Submit for review](contributing.md): commit only reviewed inputs and
    report the stages you ran.
+4. [Promote a model](model-promotion.md): make a tested build of a
+   build-on-demand model available for download.
 
 Use these references when the model needs them:
 
+- [Concepts](concepts.md): build, build profile, stage, benchmark,
+  fingerprint, model component, model package, and MPK.
+- [Model README](model-readme.md): the README and hero rules, with the README
+  template.
 - [Datasets for local model development](datasets.md): Artifactory access,
   registered dataset resolution, and adding a dataset or variant.
 - [Accuracy and fidelity](local-accuracy-development.md): compile-time
   numerical fidelity and DevKit task accuracy.
 - [DevKit performance](benchmarking.md): the performance script, its
   workload, and how results are published.
-- [`model.yaml` reference](metadata-schema.md): field-level contracts.
+- [`model.yaml` reference](metadata-schema.md): the meaning of each field.
 - [Expensive and on-demand compile runners](runner-class-requests.md):
   decide whether a model qualifies for an exception, prepare approval evidence,
   configure the request, and verify a build.

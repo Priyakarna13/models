@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Usage: model_promotion.py configure|prepare|request|approve|report
+"""Usage: model_promotion.py configure|prepare|request|approve|benchmark-source|report
 
 GitHub orchestration only. Inputs come from environment variables; registry
 semantics live in model_registry.promotions. Run only from trusted Develop code.
@@ -177,26 +177,39 @@ def main():
     elif phase == 'approve':
         plan, record = p.read(PLAN), p.read(RECORD)
         operation = 'approve' if plan['operation'] == 'promote' else 'reject'
-        if plan['operation'] not in {'promote', 'reject'}:
+        if plan['operation'] not in {'promote', 'reject', 'withdraw'}:
             raise p.ValidationError('This operation does not use approval credentials')
         if operation == 'approve':
             p.check_request(record, plan['body'])
         else:
             p.check_request(record, plan['record'])
-        result = p.decide(client, record, operation=operation,
-                          reason=plan['decision_reason'], identity=plan['identity'])
+        if plan['operation'] == 'withdraw':
+            result = p.withdraw(client, record, reason=plan['decision_reason'], identity=plan['identity'])
+        else:
+            result = p.decide(client, record, operation=operation,
+                              reason=plan['decision_reason'], identity=plan['identity'])
         p.save(DIRECTORY / 'decision.json', result)
         show(result)
+    elif phase == 'benchmark-source':
+        current = p.inspect(client, p.read(RECORD)['promotion_id'])
+        catalog = p.benchmark_catalog(current, read_api_url=config['read_api_url'])
+        if catalog is not None:
+            output('revision', catalog['catalog_revision'])
     elif phase == 'report':
         plan, record = p.read(PLAN), p.read(RECORD)
         current = None
         try:
             current = p.inspect(client, record['promotion_id'])
+            revision = os.environ.get('BENCHMARK_CATALOG_REVISION')
+            if revision:
+                p.refresh_benchmarks(client, current, repository=Path('_benchmark-source'), revision=revision,
+                                     read_api_url=config['read_api_url'])
         finally:
-            if plan['operation'] != 'status':
+            if plan['operation'] not in {'status', 'withdraw'}:
                 completion_notice(plan, current or record, verified=current is not None)
+            if current is not None:
+                update_issue(plan, current)
         show(current)
-        update_issue(plan, current)
     else:
         raise p.ValidationError('Unknown workflow phase')
 
@@ -268,13 +281,20 @@ def slack_payload(filename, text):
 
 
 def update_issue(plan, record):
-    if not plan['issue_url']:
+    workflow = record.get('workflow', {})
+    issue_url = plan['issue_url'] or workflow.get('issue_url')
+    if not issue_url:
         return
-    number = int(plan['issue_url'].rsplit('/', 1)[1])
-    marker = f"<!-- models-promotion-run:{plan['identity']} -->"
-    gh('api', '--method', 'PATCH', f'repos/sima-neat/models/issues/{number}', body={
+    number = int(issue_url.rsplit('/', 1)[1])
+    marker = f"<!-- models-promotion-run:{workflow.get('run_id', plan['identity'])} -->"
+    body = {
         'body': marker + '\n\n' + p.summary({**record, **p.configuration()}),
-    })
+    }
+    if record.get('state') == 'promoted' and record.get('result_snapshot'):
+        body.update(state='closed', state_reason='completed')
+    elif record.get('state') in {'rejected', 'cancelled', 'expired'}:
+        body.update(state='closed', state_reason='not_planned')
+    gh('api', '--method', 'PATCH', f'repos/sima-neat/models/issues/{number}', body=body)
 
 
 if __name__ == '__main__':

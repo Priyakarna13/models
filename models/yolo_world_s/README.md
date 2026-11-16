@@ -1,20 +1,58 @@
-# YOLO-World v2 S
+# YOLO-Worldv2-S
 
-![YOLO-World v2 S model hero](hero.png)
+![YOLO-Worldv2-S model hero](hero.png)
 
 ## Overview
 
-YOLO-World v2 S detects objects described by text, including categories outside a fixed training label list. The package contains a CLIP text encoder and an image detector. Encode class names when they change, then reuse their vectors for every image. The detector supports up to 80 active prompts through fixed input slots and a binary mask. Prompt selection also conditions image features, so changing the class list can change existing detections. With no classes selected, the application should skip detection.
+YOLO-Worldv2-S finds the objects you name in text and returns a box, a class,
+and a score for each. Use it to detect objects outside any fixed class list,
+without training. Encode each of up to 80 names once and reuse its vector for
+every image. Changing the list can change the other names' detections.
 
-## Inputs and outputs
+## Inputs
 
-Letterbox RGB images to 640×640 with centered padding of 114 and divide pixels by 255. Pass `images` in height, width, channel order.
+| Input | Size | Holds |
+|---|---|---|
+| `token_embeddings` | 1×1×77×512 | one name's token vectors |
+| `eos_selector` | 1×1×96×1 | zeros, with a one at the end-of-text position |
+| `images` | 640×640×3 (height, width, channel) | one RGB image with values from 0 to 1 |
 
-The package ships `prompt_assets/tokenizer.json` and `prompt_assets/token_embedding_table.npy` beside the compiled components. Tokenize each class, right-pad to 77 tokens with end-of-text ID 49407, and look up its token vectors on the CPU. The text encoder takes `token_embeddings` [1,1,77,512] and `eos_selector` [1,1,96,1], with one at the first end-of-text position. Only the first 77 selector entries are used. It returns `text_embeddings` [1,1,1,512].
+Text preprocessing, once per name, with the package's `prompt_assets` files:
 
-1. Normalize each returned 512-value vector and cache it. Fill detector `text_embeddings` [1,80,512] and `prompt_mask` [1,80]; use one for active slots and zero for inactive slots, with at least one active slot.
-2. Decode `bbox_dfl_s8`, `bbox_dfl_s16`, `bbox_dfl_s32`: softmax each edge's 16 bins, project onto 0–15, and apply stride 8, 16 or 32 around grid-cell centers.
-3. Read `class_prob_s8`, `class_prob_s16`, `class_prob_s32` directly as probabilities. A class index identifies the corresponding prompt slot. Apply class-aware suppression and map coordinates back through the letterbox transform. Neat's `YoloV8` decoder with `GroupedByRoleProbability` handles these six outputs.
+1. Tokenize with `tokenizer.json` and right-pad to 77 tokens with end-of-text ID 49407.
+2. Look each token up in `token_embedding_table.npy` to fill `token_embeddings`.
+3. Set `eos_selector` to one at the first end-of-text position. Only its first 77 entries are used.
+
+Image preprocessing:
+
+1. Resize with bilinear resampling so the longer side is 640.
+2. Center it on a 640×640 gray (114, 114, 114) frame.
+3. Divide by 255.
+
+## Between the components
+
+1. Run the text encoder on each name, divide its 512-value `text_embeddings` by its length, and cache it.
+2. Fill the detector's `text_embeddings`, 1×80×512, with the cached vectors, one per slot.
+3. Set `prompt_mask`, 1×80, to one for used slots, else zero.
+4. With no names, skip the detector.
+
+## Outputs
+
+| Output | Grid | Per cell |
+|---|---|---|
+| `bbox_dfl_s8`, `bbox_dfl_s16`, `bbox_dfl_s32` | 80×80, 40×40, 20×20 (stride 8, 16, 32) | 16 bin logits per box edge: left, top, right, bottom |
+| `class_prob_s8`, `class_prob_s16`, `class_prob_s32` | same | 80 class probabilities |
+
+Postprocessing:
+
+1. Softmax each edge's 16 bins and sum bin index (0 to 15) times probability. This is the edge's distance in cells.
+2. The corners are the cell center (c + 0.5, r + 0.5) minus (left, top) and plus (right, bottom), times the stride.
+3. Keep the cell-class pairs that score above your threshold.
+4. Within each class, remove boxes that overlap a higher-scoring box by more than 0.7.
+5. Keep at most 300 boxes.
+6. Remove the padding, divide by the resize scale, and clip to the image.
+
+Class index i is the name in slot i.
 
 ## Building applications
 

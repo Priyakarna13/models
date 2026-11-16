@@ -6,6 +6,7 @@ import json
 import tarfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import boto3
@@ -142,7 +143,9 @@ def test_documentation_reuse_preserves_publication_provenance_and_uploads_only_c
 
     model_id = "resnet_50"
     documentation = load_model_documentation(ROOT / "models" / model_id, "ResNet-50", repository=ROOT)
-    monkeypatch.setattr("model_registry.registry.load_models", lambda _: {model_id: {"display_name": "ResNet-50"}})
+    monkeypatch.setattr("model_registry.registry.load_models", lambda _: {
+        model_id: {"display_name": "ResNet-50", "components": [{"interface": {"format": "onnx"}}]},
+    })
     monkeypatch.setattr("model_registry.registry.load_model_documentation", lambda *args, **kwargs: documentation)
     calls = []
     sdk_clients = []
@@ -891,6 +894,10 @@ def test_catalog_snapshot_reuses_unchanged_compile_runs() -> None:
     assert first["taxonomy"]["architectures"]["resnet"]["description"]
     assert json.loads(json.dumps(first))["taxonomy"] == first["taxonomy"]
     assert all("taxonomy_version" not in model["categories"] for model in first["models"])
+    entries = {model["id"]: model for model in first["models"]}
+    assert entries["qwen3_5_0_8b"]["parameter_count_billion"] == 0.8
+    assert entries["gemma_4_e2b_it_textonly"]["parameter_count_billion"] == 5.1
+    assert "parameter_count_billion" not in entries["resnet_50"]
 
 
 def test_catalog_records_benchmark_fingerprints_bound_to_their_compile_runs() -> None:
@@ -1126,6 +1133,69 @@ def test_publish_catalog_reads_current_then_publishes_complete_snapshot(monkeypa
     assert calls[0][3] == (
         "models-catalog-develop-" + "a" * 40 + "-" + "c" * 16 + "-" + canonical_sha256(calls[0][2])[:16]
     )
+
+
+@pytest.mark.parametrize("branch", ["develop", "main"])
+@pytest.mark.parametrize("model_id,profile", [
+    ("resnet_50", "w8a8"), ("hrnet_w32", "w8a8"), ("rf_detr_nano", "w8a8_w16a16"),
+])
+def test_approved_onnx_catalog_and_manual_benchmark_use_the_same_fingerprint(
+    monkeypatch, tmp_path, branch, model_id, profile,
+):
+    """Also cover Main entries copied unchanged because their conversion was not selected."""
+    from tests.test_report_publication import performance_report, publish, registered_build
+
+    model = load_models(ROOT)[model_id]
+    model["build-on-demand"] = True
+    components = [item["id"] for item in model["components"]]
+    builds = registered_build(tmp_path / "_compiled", model_id, profile, components)
+    legacy = [{"build_profile_id": profile, "component_id": name, "compile_invocation_id": profile,
+               "run_id": "old-run", "artifact_sha256": "e" * 64, "compile_fingerprint": "f" * 64}
+              for name in components]
+    previous = {"id": model_id, "builds": legacy, "packages": [],
+                "benchmark_fingerprints": {profile: {"performance": "d" * 64}}, "approved_deployments": {profile: {
+                    "deployment_id": "selected", "requirements": {"invocations": [{
+                        "id": profile, "component_ids": components, "compile_fingerprint": "f" * 64,
+                    }], "packages": []},
+                    "artifacts": [{"component_id": name, "run_id": build["run_id"], "artifact_name": "mpk"}
+                                  for name, build in builds.items()],
+                }}}
+    catalog = {"catalog_revision": "a" * 40, "canonical_sha256": "c" * 64, "document": {"models": [previous]}}
+    reads = []
+
+    def read(url):
+        reads.append(url)
+        if "/catalogs/current?" in url:
+            return {"catalog": catalog}
+        build = next(build for build in builds.values() if f"/runs/{build['run_id']}/artifacts/mpk" in url)
+        return {"artifact": {"sha256": build["artifact_sha256"]}}
+
+    monkeypatch.setattr("model_registry.registry.load_models", lambda root: {model_id: model})
+    result = publish_catalog(repository=ROOT, branch=branch, git_sha="b" * 40,
+        api_url="https://writer.example.invalid", read_api_url="https://reader.example.invalid", aws_region="us-west-2",
+        read_request=read, request=lambda *args: {"stored": True})
+    entry = result["catalog"]["models"][0]
+    assert entry["builds"] == legacy  # Approved outputs remain server-owned.
+    assert previous["benchmark_fingerprints"][profile]["performance"] == "d" * 64
+    _, measurement = publish(tmp_path, model_id, profile, "performance", performance_report(components))
+    assert entry["benchmark_fingerprints"][profile]["performance"] == measurement["benchmark_fingerprint"]
+    assert entry["benchmark_fingerprints"][profile]["performance"] != "d" * 64
+    assert len([url for url in reads if "/artifacts/mpk" in url]) == len(components)
+
+
+def test_approved_profile_without_a_benchmark_declaration_drops_legacy_fingerprints(monkeypatch):
+    from model_registry.registry import _refresh_approved_benchmarks
+
+    # Old automatic measurements must not survive approval after a declaration is removed.
+    model_id = "gpt_oss_20b"
+    model = load_models(ROOT)[model_id]
+    model.pop("performance", None)
+    model.pop("accuracy", None)
+    monkeypatch.setattr("model_registry.registry.load_and_validate_model", lambda *args: model)
+    document = {"git_ref": "refs/heads/develop", "models": [{"id": model_id, "builds": [],
+        "approved_deployments": {"w4a16": {}}, "benchmark_fingerprints": {"w4a16": {"accuracy": "a" * 64}}}]}
+    _refresh_approved_benchmarks(ROOT, document, document, "https://reader.example.invalid", lambda url: {})
+    assert "benchmark_fingerprints" not in document["models"][0]
 
 
 def test_publish_catalog_keys_bind_dispatch_specific_documentation_receipts(monkeypatch) -> None:
@@ -1540,6 +1610,27 @@ def test_deferred_conversion_inheritance_respects_catalog_revision(monkeypatch, 
     assert result.get("pending_builds", []) == ([pending] if has_previous else [])
 
 
+def test_deferred_conversion_inheritance_leaves_base_branch_selections_to_the_registry(monkeypatch):
+    """A dispatch that selects other conversions must not post a base branch's approved builds as its own."""
+    base = {"id": "deferred", "builds": [], "packages": [{"run_id": "base-package"}],
+            "approved_deployments": {"w8a8": {"run_id": "approved"}},
+            "branch_deployments": {"w8a8": {"run_id": "branch"}}}
+    monkeypatch.setattr("model_registry.registry.load_models", lambda root: {"deferred": object()})
+    monkeypatch.setattr("model_registry.registry._catalog_models", lambda models: {})
+    monkeypatch.setattr("model_registry.registry._head_matrix", lambda *args: [])
+    monkeypatch.setattr("model_registry.registry.build_catalog_snapshot", lambda **kwargs: kwargs["previous"])
+    result = publish_catalog(
+        repository=ROOT, api_url="https://registry.example.invalid",
+        read_api_url="https://registry.example.invalid", aws_region="us-west-2",
+        branch="feature", git_sha="a" * 40, base_branches=["develop"],
+        request=lambda *args: {"stored": True},
+        read_request=lambda url: {"catalog": (
+            {"document": {"models": [base], "pending_builds": []}} if url.endswith("develop") else None
+        )},
+    )["catalog"]
+    assert result["models"] == [{"id": "deferred", "builds": [], "packages": [{"run_id": "base-package"}]}]
+
+
 @pytest.mark.parametrize("continuing_revision", [False, True])
 def test_progress_publication_keeps_the_prior_pending_order_and_clears_only_its_builds(
     monkeypatch, caplog, continuing_revision
@@ -1594,6 +1685,122 @@ def test_progress_publication_leaves_a_catalog_without_a_pending_list_alone(monk
         read_request=lambda url: {"catalog": {"document": {"models": []}} if url.endswith("develop") else target},
     )["catalog"]
     assert result["pending_builds"] == built["pending_builds"]
+
+
+def _conflicting_publishers(monkeypatch, conflicts: int, error: str = "HTTP 409 catalog_snapshot_conflict"):
+    """Publish dfine_n while other publishers replace the catalog before each of the first `conflicts` POSTs."""
+
+    def build(model_id):
+        return {"build_profile_id": "w16a16", "component_id": "model", "compile_fingerprint": model_id[0] * 64}
+
+    def pending(model_id):
+        return {"model_id": model_id, "build_profile_id": "w16a16", "component_ids": ["model"],
+                "compile_fingerprint": model_id[0] * 64}
+
+    catalog = {"catalog_revision": "a" * 40, "canonical_sha256": "0" * 64,
+               "document": {"models": [], "pending_builds": [pending("dfine_n"), pending("yolo26n"), pending("vit")]}}
+    calls = {"load_models": 0, "_head_matrix": 0, "reads": 0, "posts": [], "sleeps": []}
+
+    def read(url):
+        calls["reads"] += 1
+        return {"catalog": json.loads(json.dumps(catalog))}
+
+    def request(method, path, body, key):
+        calls["posts"].append((body, key))
+        if len(calls["posts"]) <= conflicts:
+            # Another build publishes between this publisher's read and its POST.
+            other = "yolo26n" if len(calls["posts"]) == 1 else f"other_{len(calls['posts'])}"
+            catalog["document"]["models"].append({"id": other, "builds": [build(other)]})
+            catalog["document"]["pending_builds"] = [
+                item for item in catalog["document"]["pending_builds"] if item["model_id"] != other
+            ]
+            catalog["canonical_sha256"] = str(len(calls["posts"])) * 64
+            raise RegistryPublicationError(f"{method} {path}: artifact registry {error}: catalog changed")
+        return {"stored": True}
+
+    def snapshot(**kwargs):
+        # The real builder keeps the prior catalog's builds and adds this job's receipt.
+        models = [*kwargs["previous"]["models"], {"id": "dfine_n", "builds": [build("dfine_n")]}]
+        return {"models": sorted(models, key=lambda model: model["id"]), "pending_builds": []}
+
+    def merge(sources, matrix):
+        return {"models": list(sources[0]["models"])}
+
+    monkeypatch.setattr("model_registry.registry.load_models",
+                        lambda root: calls.__setitem__("load_models", calls["load_models"] + 1) or {})
+    monkeypatch.setattr("model_registry.registry._head_matrix",
+                        lambda *args: calls.__setitem__("_head_matrix", calls["_head_matrix"] + 1) or [])
+    monkeypatch.setattr("model_registry.registry.merge_catalog_sources", merge)
+    monkeypatch.setattr("model_registry.registry.build_catalog_snapshot", snapshot)
+    monkeypatch.setattr("model_registry.registry.time",
+                        SimpleNamespace(sleep=calls["sleeps"].append, monotonic=lambda: 0))
+
+    def publish():
+        return publish_catalog(
+            repository=ROOT, api_url="https://registry.example.invalid",
+            read_api_url="https://registry.example.invalid", aws_region="us-west-2",
+            branch="develop", git_sha="a" * 40, request=request, read_request=read,
+        )
+
+    return publish, calls, pending
+
+
+def test_catalog_conflict_rereads_the_catalog_and_publishes_both_builds(monkeypatch) -> None:
+    publish, calls, pending = _conflicting_publishers(monkeypatch, conflicts=1)
+
+    result = publish()
+
+    assert result["registry"] == {"stored": True}
+    assert calls["reads"] == 2
+    first, second = calls["posts"]
+    assert first[0]["previous_snapshot"] == "0" * 64
+    assert [model["id"] for model in first[0]["catalog"]["models"]] == ["dfine_n"]
+    # The second snapshot replaces the other publisher's catalog and keeps its build beside this one.
+    assert second[0]["previous_snapshot"] == "1" * 64
+    assert second[0]["initialize"] is False
+    assert [model["id"] for model in second[0]["catalog"]["models"]] == ["dfine_n", "yolo26n"]
+    assert second[0]["catalog"]["pending_builds"] == [pending("vit")]
+    assert second[1] == "models-catalog-develop-" + "a" * 40 + "-" + "1" * 16 + "-" + canonical_sha256(second[0])[:16]
+    assert result["catalog"] == second[0]["catalog"]
+    # The checkout is loaded once, however often the catalog is read.
+    assert (calls["load_models"], calls["_head_matrix"]) == (1, 1)
+    assert len(calls["sleeps"]) == 1 and 0.2 <= calls["sleeps"][0] <= 2
+
+
+def test_catalog_conflict_reads_each_approved_checksum_once(monkeypatch) -> None:
+    publish, calls, _ = _conflicting_publishers(monkeypatch, conflicts=2)
+    caches = []
+    monkeypatch.setattr("model_registry.registry._refresh_approved_benchmarks",
+                        lambda *args, digests: caches.append(digests))
+
+    publish()
+
+    assert len(caches) == 3
+    assert all(cache is caches[0] for cache in caches)
+
+
+def test_other_publication_errors_are_not_retried(monkeypatch) -> None:
+    publish, calls, _ = _conflicting_publishers(monkeypatch, conflicts=1, error="HTTP 409 catalog_revision_conflict")
+
+    with pytest.raises(RegistryPublicationError, match="catalog_revision_conflict"):
+        publish()
+
+    assert (calls["reads"], len(calls["posts"]), calls["sleeps"]) == (1, 1, [])
+
+
+def test_catalog_conflict_retries_stop_at_the_time_limit(monkeypatch) -> None:
+    from model_registry.registry import CATALOG_CONFLICT_RETRY_SECONDS
+
+    publish, calls, _ = _conflicting_publishers(monkeypatch, conflicts=100)
+    clock = iter([0, 60, CATALOG_CONFLICT_RETRY_SECONDS - 1, CATALOG_CONFLICT_RETRY_SECONDS])
+    monkeypatch.setattr("model_registry.registry.time.monotonic", lambda: next(clock))  # the helper's stand-in
+
+    with pytest.raises(RegistryPublicationError, match="catalog_snapshot_conflict"):
+        publish()
+
+    # The clock is read once to set the limit and once after each conflict; the third conflict is past it.
+    assert (calls["reads"], len(calls["posts"]), len(calls["sleeps"])) == (3, 3, 2)
+    assert calls["load_models"] == 1
 
 
 @pytest.mark.parametrize("same_revision", [False, True])
