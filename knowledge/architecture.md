@@ -103,7 +103,7 @@ marked CI only from the author package.
 | `taxonomy.py` | Loading the taxonomy and validating a model's categories. |
 | `documentation.py` | Loading and validating a model's README and hero image. |
 | `runner_approval.py` | Authorizing requested compile runner classes and markets, and selecting the runner audit fields a compile run records. |
-| `model_tests.py` | Each model's test files and `tests/tests.yaml`, the comparison of a report with its expected values, and the test outcomes. |
+| `model_tests.py` | Each model's test files and `tests/tests.yaml`, the comparison of a report with its expected values, the test outcomes, and the variants the model browser hides for low accuracy. |
 | `errors.py` | The error types every module raises. |
 
 `__init__.py` exports the loaders and error types, `__main__.py` runs `cli.main`, and

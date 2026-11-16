@@ -1,6 +1,6 @@
 import { heroImageSources } from "./hero-images.js";
 // Registry API requests, local caches, and catalog build selection.
-import { deploymentCatalog, runProfile, variantBuildKey, variantBuildRuns } from "./branch-builds.js";
+import { deploymentCatalog, runProfile, variantBuildKey, variantBuildRuns, withoutProfiles } from "./branch-builds.js";
 import { BENCHMARK_RUN_TYPES, customerPerformanceReport } from "./model-report.js";
 import { config, shows, DEFAULT_BRANCH, branchSelectionEnabled, state, elements, categoryFilters } from "./state.js";
 
@@ -282,6 +282,18 @@ function loadReferenceMetrics(modelId) {
     .then((response) => (response.ok ? response.json() : {}))
     .catch(() => ({}));
   return referenceMetrics.then((reference) => reference[modelId] || []);
+}
+
+// The catalog an audience sees. The customer view leaves out the build profiles whose accuracy falls too far
+// below the source model's reference score, listed from model.yaml and tests.yaml when the portal is built.
+// Without the list every profile shows, so a failed fetch is not an error.
+let lowAccuracyVariants = null;
+export async function audienceCatalog(catalogModels) {
+  if (shows.lowAccuracyVariants) return catalogModels;
+  lowAccuracyVariants ||= fetch(new URL("./low-accuracy-variants.json", import.meta.url))
+    .then((response) => (response.ok ? response.json() : {}))
+    .catch(() => ({}));
+  return withoutProfiles(catalogModels, await lowAccuracyVariants);
 }
 
 // The licenses a model may declare, from licenses.json beside this module. Without the list the page
