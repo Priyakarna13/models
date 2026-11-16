@@ -282,8 +282,6 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .compare-add select:disabled { cursor: default; opacity: .6; }
 .compare-table thead .catalog-model-link { font-size: inherit; }
 .compare-empty { padding: 52px 24px; border: 1px dashed var(--line-strong); border-radius: 12px; color: var(--ink-soft); text-align: center; }
-.compare-empty h3 { margin: 14px 0 0; color: var(--ink); font-size: 20px; font-weight: 500; }
-.compare-tbd { display: inline-block; padding: 5px 12px; border-radius: 6px; color: var(--ink-soft); background: var(--surface); font: 600 12px var(--font-mono); letter-spacing: .08em; }
 .detail-content { min-width: 0; }
 .crumbs { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--ink-soft); font-size: 14px; }
 .crumbs > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -322,7 +320,6 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .detail-tag { max-width: 100%; min-height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid transparent; border-radius: 999px; color: var(--ink-soft); background: var(--surface); font-size: 12px; }
 .detail-tag svg { width: 14px; height: 14px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
 .detail-tag-task { color: var(--blue); background: var(--blue-soft); }
-.detail-tag-precision { color: color-mix(in srgb, var(--sima-orange) 75%, var(--ink)); background: var(--amber-soft); }
 .detail-tag-model-type { color: color-mix(in srgb, var(--sima-purple) 45%, var(--ink)); background: color-mix(in srgb, var(--sima-purple) 25%, var(--surface-raised)); }
 .detail-tag-branch svg { stroke: var(--blue); }
 .detail-tag-license svg { stroke: var(--amber); }
@@ -345,6 +342,7 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .detail-section-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .detail-section-title h3 { margin: 0; font-size: 1.5rem; font-weight: 650; letter-spacing: -.01em; }
 .detail-section-title > span { color: var(--ink-soft); font-size: 14px; }
+.section-variant { margin-left: 8px; color: var(--ink-soft); font-size: 14px; font-weight: 500; letter-spacing: 0; }
 .section-lede { margin: -8px 0 20px; color: var(--ink-soft); font-size: 15px; }
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
 .kpi { min-width: 0; display: grid; align-content: start; gap: 4px; padding: 20px 22px; }
@@ -451,6 +449,8 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .run-identity small.run-components { color: var(--ink-faint); font: 12px var(--font-mono); }
 .model-documentation-body { color: var(--ink-soft); font-size: 15px; line-height: 1.7; }
 .model-documentation-body > :first-child { margin-top: 0; }
+/* The README's first section follows the overview text, so its heading keeps the space above it. */
+[data-model-card-body] .model-documentation-body > h3:first-child { margin-top: 30px; }
 .model-documentation-body > :last-child { margin-bottom: 0; }
 .model-documentation-body h3, .model-documentation-body h4, .model-documentation-body h5 { margin: 30px 0 10px; color: var(--ink); font-weight: 650; line-height: 1.25; }
 .model-documentation-body h3 { font-size: 20px; }
@@ -612,8 +612,7 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .overview-section .model-documentation-body { margin-bottom: 4px; }
 .disclosure-body .model-documentation-body { padding-top: 4px; }
 
-.row-skeleton { height: 86px; display: grid; grid-template-columns: 1.4fr .8fr .5fr; align-items: center; gap: 30px; border-bottom: 1px solid var(--line); }
-.row-skeleton span, .detail-loading span { height: 10px; background: linear-gradient(90deg, var(--line) 25%, var(--surface) 50%, var(--line) 75%); background-size: 200% 100%; animation: shimmer 1.3s infinite linear; }
+.detail-loading span { height: 10px; background: linear-gradient(90deg, var(--line) 25%, var(--surface) 50%, var(--line) 75%); background-size: 200% 100%; animation: shimmer 1.3s infinite linear; }
 .detail-loading { display: grid; gap: 28px; padding-top: 30px; }
 .detail-loading span:nth-child(1) { width: 25%; }
 .detail-loading span:nth-child(2) { width: 75%; height: 46px; }
@@ -628,6 +627,8 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .toast { max-width: 420px; padding: 15px 18px; color: var(--surface-raised); background: var(--ink); box-shadow: var(--shadow); font-size: 14px; animation: toast-in 260ms ease-out; }
 :root[data-theme="dark"] .toast { color: var(--canvas); }
 .toast.error { color: #fff; background: var(--red); }
+.catalog-loading { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 70px 10px; color: var(--ink-soft); font-size: 16px; }
+.catalog-loading .spinner { width: 22px; height: 22px; border-width: 2px; color: var(--blue); }
 .spinner { width: 13px; height: 13px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
 
 @keyframes shimmer { to { background-position: -200% 0; } }
@@ -734,8 +735,6 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 0 clamp(16px, 4vw, 48p
 .download-package-summary dt, .download-package-summary dd { padding: 0; border: 0; background: transparent; }
 .download-filename { display: grid; gap: 8px; padding: 16px; border-radius: 8px; background: var(--surface); }
 .download-filename dt { color: var(--ink-soft); font-size: 12px; }
-.download-technical-fact { display: grid; gap: 6px; }
-.download-technical-fact dt { color: var(--ink-soft); font-size: 12px; }
 .download-license { display: flex; flex-wrap: wrap; gap: 6px; color: var(--ink-soft); }
 .download-list { list-style: none; margin: 24px 0; padding: 0; }
 .download-list li { display: flex; justify-content: space-between; gap: 20px; padding: 16px 0; border-top: 1px solid var(--line); }

@@ -236,6 +236,12 @@ async function checkCatalogLayouts(browser, url) {
         if (!/%/.test(await resnet.locator('[data-table-accuracy]').innerText())) throw new Error('missing measured accuracy');
         const original = await resnet.locator('[data-table-performance]').innerText();
         if (!original.includes('inferences/s') || !original.includes('ms')) throw new Error('missing throughput or latency');
+        const languageReading = await page.locator('[data-catalog-entry="qwen3_5_0_8b"][data-catalog-task="text_generation"] [data-table-performance]').innerText();
+        if (!languageReading.includes('tokens/s') || !languageReading.includes('TTFT 43.3–910.5 ms') || !languageReading.includes('6 workloads')) throw new Error('catalog lost the measured text workload ranges');
+        const imageReading = await page.locator('[data-catalog-entry="qwen3_5_0_8b"][data-catalog-task="visual_question_answering"] [data-table-performance]').innerText();
+        if (!imageReading.includes('tokens/s') || !imageReading.includes('TTFT 132.3 ms') || !imageReading.includes('1 workload')) throw new Error('catalog mixed image timings with text workloads');
+        const unmeasured = await page.locator('[data-catalog-entry="gemma_4_e2b_it_textonly"] [data-table-performance]').innerText();
+        if (unmeasured !== 'Not measured') throw new Error('catalog fabricated an unmeasured language model result');
         await resnet.getByRole('combobox').selectOption('w16a16');
         await settled();
         if (await resnet.locator('[data-table-performance]').innerText() === original) throw new Error('precision changed without refreshing measurements');
@@ -246,14 +252,14 @@ async function checkCatalogLayouts(browser, url) {
         await page.locator('.catalog-table').first().waitFor();
         if (await tableButton.getAttribute('aria-pressed') !== 'true') throw new Error('returning lost table selection');
         await page.locator('#search').fill('rf detr');
-        await page.waitForFunction(() => document.querySelectorAll('.catalog-model-link').length === 8);
+        await page.waitForFunction(() => document.querySelectorAll('.catalog-model-link').length === 7);
         if ((await page.locator('.catalog-task-group h3').allInnerTexts()).sort().join() !== 'Instance Segmentation,Object Detection') throw new Error('filtered task grouping is incorrect');
         await settled();
         // A package result is the model's one reading; its components are not listed or added up.
         const packageText = await page.locator('[data-catalog-entry="rf_detr_nano"] [data-table-performance]').innerText();
         if (!packageText.includes('inferences/s') || /backbone|decoder/.test(packageText)) throw new Error('package measurement is not the model\'s one reading');
         await page.getByRole('button', {name: 'Cards', exact: true}).click();
-        if (await page.locator('.model-card').count() !== 8) throw new Error('switching lost the search filter');
+        if (await page.locator('.model-card').count() !== 7) throw new Error('switching lost the search filter');
         await tableButton.click();
         await page.locator('#search').fill('');
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
@@ -497,7 +503,7 @@ async function checkTaskComparison(browser, base) {
         const choices = (await add.locator('option').allTextContents()).slice(1);
         if (choices.length !== variants || !Object.entries(classifiers).every(([name, count]) => choices.filter(text => text.startsWith(`${name} · `)).length === count)) throw new Error('comparison mixed tasks or omitted a variant');
         const dataset = await page.locator('.compare-chart-dataset').innerText();
-        if (!dataset.includes('imagenet-2012') || !dataset.includes('/ val /')) throw new Error('chart dataset did not follow the selected task');
+        if (!dataset.includes('imagenet-2012 val')) throw new Error('chart dataset did not follow the selected task');
         if (await page.locator('.compare-point').count() !== variants) throw new Error('chart omitted a measured classification variant');
         await add.selectOption('resnet_50.w16a16');
         if (!(await page.locator('.compare-table').innerText()).includes('W16A16')) throw new Error('selected variant is missing from the table');
@@ -510,7 +516,7 @@ async function checkTaskComparison(browser, base) {
         if (await page.locator('[data-compare-control="graph"], .compare-bucket-line').count()) throw new Error('removed graph controls remain visible');
         if (await page.locator('.compare-point').count() !== 1) throw new Error('LLM chart must plot Qwen measurements only');
         if (await workload.locator('option').count() !== 6) throw new Error('LLM group mixed image and text workloads');
-        if (JSON.stringify(await page.locator('.compare-axis-title').allTextContents()) !== JSON.stringify(['Parameters (billions)', 'Decode (tokens/s)'])) throw new Error('GenAI chart uses the wrong axes');
+        if (JSON.stringify(await page.locator('.compare-axis-title').allTextContents()) !== JSON.stringify(['Parameters (billions)', 'Generation (tokens/s)'])) throw new Error('GenAI chart uses the wrong axes');
         await add.selectOption('qwen3_5_0_8b.w4a16');
         await add.selectOption('gemma_4_e2b_it_textonly.w4a16');
         const table = page.locator('.compare-table');
@@ -571,6 +577,9 @@ async function checkGenerativeBenchmark(browser, url) {
         await table.waitFor();
         await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
         if (await table.locator('tbody tr').count() !== 6) throw new Error('missing text workloads');
+        if (!await table.getByRole('columnheader', {name: 'Generation (tokens/s)', exact: true}).isVisible()) throw new Error('generation rate uses an unclear heading');
+        const explanation = await table.locator('thead .info-mark').getAttribute('data-tooltip');
+        if (!explanation?.startsWith('Time to first token:')) throw new Error('TTFT has no explanation');
         const imageTable = page.getByRole('table', {name: 'Image and text performance', exact: true});
         if (await imageTable.locator('thead th').count() !== 2) throw new Error('image table must show TTFT and decode only');
         if (await imageTable.locator('tbody tr').count() !== 1) throw new Error('missing image workload');
@@ -627,7 +636,7 @@ try {
     const checks = [
       ['model list', new URL('/', variantUrl), '#result-list .model-card'],
       ['variant page', variantUrl, '#components-section .component-performance'],
-      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a8_w16a16', variantUrl), '#components-section .component-pipeline'],
+      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a16_w16a16', variantUrl), '#components-section .component-pipeline'],
     ];
     for (const viewport of [{width: 1440, height: 1000}, {width: 390, height: 844}]) {
       const page = await browser.newPage({viewport});

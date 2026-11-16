@@ -31,6 +31,41 @@ const TELEMETRY_METRICS = {
   peak_linux_memory_mib: ["linux_memory_used_mib", "maximum"],
 };
 
+// The customer view leaves the board's Linux memory out of a performance report: every process on the board
+// uses it, so it describes the board, not the model.
+export const CUSTOMER_HIDDEN_METRICS = ["avg_linux_memory_mib", "peak_linux_memory_mib"];
+// The Sentinel reading behind those metrics.
+const CUSTOMER_HIDDEN_TELEMETRY = [...new Set(CUSTOMER_HIDDEN_METRICS.map((key) => TELEMETRY_METRICS[key][0]))];
+
+function withoutKeys(record, keys) {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !keys.includes(key)));
+}
+
+// One set of readings: a whole-model report, a component measured on its own, or a generation workload.
+function customerReadings(readings) {
+  return {
+    ...readings,
+    ...(readings.metrics ? { metrics: withoutKeys(readings.metrics, CUSTOMER_HIDDEN_METRICS) } : {}),
+    ...(readings.telemetry ? { telemetry: withoutKeys(readings.telemetry, CUSTOMER_HIDDEN_TELEMETRY) } : {}),
+  };
+}
+
+function customerWorkload(workload) {
+  return { ...customerReadings(workload), ...(workload.baseline ? { baseline: customerWorkload(workload.baseline) } : {}) };
+}
+
+// A performance report as the customer view may show it. Every reader of the page receives this report, so
+// the Memory card and the CSV leave the same readings out.
+export function customerPerformanceReport(report) {
+  const components = Object.entries(report.components || {}).map(([id, component]) => [id, customerReadings(component)]);
+  return {
+    ...customerReadings(report),
+    ...(report.components ? { components: Object.fromEntries(components) } : {}),
+    ...(report.generation?.workloads
+      ? { generation: { ...report.generation, workloads: report.generation.workloads.map(customerWorkload) } } : {}),
+  };
+}
+
 function finite(value) {
   return Number.isFinite(value) ? value : null;
 }

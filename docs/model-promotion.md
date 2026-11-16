@@ -13,6 +13,11 @@ available for download. Models that build automatically follow the normal
 pull request and CI process. A successful compile alone does not show that a
 model works correctly: test it on the target device before requesting approval.
 
+The steps below run GitHub workflows, which needs write access to this
+repository. Without it, give a maintainer your model ID, build profile, and
+test results, and the maintainer runs the promotion for you. A different
+maintainer approves each request.
+
 ## 1. Build and test
 
 Run **Vulcan Model Orchestrator** on your feature branch. Fill in both `models`
@@ -42,21 +47,27 @@ and choose **Run workflow**. Fill in these fields:
 | Field | What to enter |
 | --- | --- |
 | Branch to run the workflow | `develop`, including for Main promotion and recovery actions |
+| `environment` | `staging` or `production` to match your tested build. `default` uses the configured `VULCAN_ENV`. |
 | `target_branch` | `develop` |
 | `operation` | `promote` |
 | `model_id` | The folder name under `models/`, such as `qwen3_5_0_8b` |
 | `build_profile` | The profile ID from `model.yaml`, such as `w4a16` |
-| `deployment_id` | The ID from the tested build's `candidate.json` |
+| `deployment_id` | The ID from the tested build's `candidate.json`. Required for `production`. |
 | `promotion_id` | Leave blank for a new request |
 | `reason` | **Required.** Explain why the build is ready and include links to your test results. |
 
-The `deployment_id` is required. Use the ID from the successfully published
-build you tested.
+Enter the `deployment_id` of the published build you tested, so that the
+promoted build is the tested one. `production` requires it. In `staging`, a
+blank field selects the newest published build of this model and profile.
 
 Check the source commit, model, profile and build ID in the review
 summary. A different eligible maintainer reviews and approves the request.
 Wait for the final report to show **`promoted`**. Submitting a request or
 approving a GitHub job is not proof that promotion finished.
+
+The review issue closes automatically when Vulcan confirms promotion, rejection,
+cancellation or expiry. Pending or unconfirmed requests stay open; a status check
+or recovery action updates the original issue.
 
 The report job refreshes benchmark references for the selected build without
 starting measurements. Existing matching results appear on the model page;
@@ -85,8 +96,8 @@ Main model and profile must be build-on-demand with requirements matching the
 candidate. This step publishes metadata; it does not copy Develop's definitions
 or approve a build.
 
-Run **Promote model** again from `develop`, using `target_branch=main` and the
-same `deployment_id`. Fill in the model, profile and required reason,
+Run **Promote model** again from `develop`, using `environment=production`,
+`target_branch=main`, and the same `deployment_id`. Fill in the model, profile and required reason,
 and leave `promotion_id` blank. Main requires its own maintainer approval.
 After the report shows `promoted`, check the selected download in Main.
 
@@ -96,7 +107,7 @@ release step.
 ## If a request does not finish
 
 Run **Promote model** from `develop` with `operation=status`, the existing
-`promotion_id`, the same `target_branch`, and a reason.
+`promotion_id`, the original environment and `target_branch`, and a reason.
 
 - **A job failed:** rerun the failed jobs if the saved plan and request are still valid. The rerun keeps the original build and request.
 - **The request expired, the target catalog changed, or the saved plan is missing or expired:** start a new workflow run and obtain a new review.
@@ -105,5 +116,17 @@ Run **Promote model** from `develop` with `operation=status`, the existing
 Cancellation cannot undo a completed promotion. Keep the feature branch while
 you resolve an unfinished request.
 
-For workflow setup, approval permissions, CLI commands and acceptance
-records, see [Promotion operations](model-promotion-operations.md).
+## Withdraw a promoted build
+
+To stop offering a promoted build, for example because it fails to load on a
+DevKit, run **Promote model** from `develop` with `operation=withdraw`, the
+`promotion_id` of the run that promoted it, that run's environment and
+`target_branch`, and a reason. A maintainer approves it at the same gate as a
+promotion. The approval job's summary shows the new catalog snapshot.
+
+The profile stays in the catalog without a download. To offer it again, promote
+a working build.
+
+A maintainer approves each request and completes the promotion. Ask a
+maintainer when a request needs workflow setup, approval permissions, or a
+recovery that these steps do not cover.

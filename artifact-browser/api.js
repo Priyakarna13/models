@@ -1,8 +1,8 @@
 import { heroImageSources } from "./hero-images.js";
 // Registry API requests, local caches, and catalog build selection.
-import { deploymentCatalog, runProfile, variantBuildKey, variantBuildRuns } from "./branch-builds.js";
-import { BENCHMARK_RUN_TYPES } from "./model-report.js";
-import { config, DEFAULT_BRANCH, branchSelectionEnabled, state, elements, categoryFilters } from "./state.js";
+import { deploymentCatalog, runProfile, variantBuildKey, variantBuildRuns, withoutProfiles } from "./branch-builds.js";
+import { BENCHMARK_RUN_TYPES, customerPerformanceReport } from "./model-report.js";
+import { config, shows, DEFAULT_BRANCH, branchSelectionEnabled, state, elements, categoryFilters } from "./state.js";
 
 // The registry answers 429 while all of its readers are busy, so those requests wait and try again.
 const BUSY_RETRY_DELAYS_MS = [500, 1000, 2000];
@@ -45,10 +45,11 @@ async function loadBenchmarkRun(stage, benchmarkFingerprint) {
     api(`/v1/runs/${resolved.id}/provenance`),
     api(`/v1/runs/${resolved.id}/test-results`),
   ]);
+  const report = (tests.test_results || []).find((item) => item.suite === stage && item.name === "model")?.summary || null;
   return {
     run: summary?.run || resolved,
     parameters: provenance.parameters?.parameters || {},
-    report: (tests.test_results || []).find((item) => item.suite === stage && item.name === "model")?.summary || null,
+    report: report && !shows.boardMemory && stage === "performance" ? customerPerformanceReport(report) : report,
   };
 }
 
@@ -283,6 +284,18 @@ function loadReferenceMetrics(modelId) {
   return referenceMetrics.then((reference) => reference[modelId] || []);
 }
 
+// The catalog an audience sees. The customer view leaves out the build profiles whose accuracy falls too far
+// below the source model's reference score, listed from model.yaml and tests.yaml when the portal is built.
+// Without the list every profile shows, so a failed fetch is not an error.
+let lowAccuracyVariants = null;
+export async function audienceCatalog(catalogModels) {
+  if (shows.lowAccuracyVariants) return catalogModels;
+  lowAccuracyVariants ||= fetch(new URL("./low-accuracy-variants.json", import.meta.url))
+    .then((response) => (response.ok ? response.json() : {}))
+    .catch(() => ({}));
+  return withoutProfiles(catalogModels, await lowAccuracyVariants);
+}
+
 // The licenses a model may declare, from licenses.json beside this module. Without the list the page
 // cannot tell whether a license permits redistribution, so it offers no download.
 let licenseList = null;
@@ -302,6 +315,18 @@ export function loadPackageRun(runId) {
 }
 
 // A variant's performance and accuracy each measure the whole model, once per build profile.
+// What Compare reads of a build profile: its two benchmark results and the model's published scores. It skips
+// the compile and package runs a model page loads, which Compare never shows.
+export async function loadBenchmarkResults(model, profile) {
+  const fingerprints = model.benchmark_fingerprints?.[profile] || {};
+  const [performance, accuracy, reference] = await Promise.all([
+    loadBenchmarkRun("performance", fingerprints.performance),
+    loadBenchmarkRun("accuracy", fingerprints.accuracy),
+    loadReferenceMetrics(model.model_id),
+  ]);
+  return { performance, accuracy, reference };
+}
+
 export async function loadVariant(anchor) {
   const key = variantBuildKey(anchor);
   if (state.variantCache.has(key)) return state.variantCache.get(key);
