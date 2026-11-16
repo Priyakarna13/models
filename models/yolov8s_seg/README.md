@@ -4,38 +4,46 @@
 
 ## Overview
 
-YOLOv8s-seg is the Small size of the Ultralytics YOLOv8 instance segmentation
-model, trained on the 80 COCO classes. For each object in a 640×640 RGB image,
-it returns a box, a class, and a pixel mask mixed from 32 shared patterns
-(prototypes). The application removes duplicate boxes with non-maximum suppression.
+YOLOv8s-seg finds everyday objects in an image and returns a box, a class, a
+score, and a pixel mask that traces the outline of each one. Use it to cut
+objects out, measure their area, or blur them. It is trained on the 80 object
+classes of the COCO dataset. It predicts several overlapping boxes for one
+object, and decoding removes the duplicates.
 
-## Inputs and outputs
+## Inputs
 
-**Input.** Letterbox the image to 640×640: resize it with bilinear resampling so
-its longer side is 640, center it, and fill the rest with gray (114, 114, 114).
-Scale RGB values to 0–1. For tensor input, pass a 640×640×3 float32 tensor with
-Neat's resize, color conversion, and normalization off; for image input, Neat
-does these steps.
+One 640×640×3 (height, width, channel) RGB image with values from 0 to 1.
 
-**Outputs.** Each tensor is in height, width, channel order, at stride 8, 16, or
-32 (grids of 80, 40, and 20 cells):
+Preprocessing:
 
-- `bbox_0` to `bbox_2`: 16 bins per left, top, right, and bottom edge distance.
-- `class_logit_0` to `class_logit_2`: 80 class logits.
-- `mask_coeff_0` to `mask_coeff_2`: 32 mask coefficients.
-- `mask_proto`: 32 prototypes on a 160×160 grid, at stride 4.
+1. Resize with bilinear resampling so the longer side is 640.
+2. Center it on a 640×640 gray (114, 114, 114) frame.
+3. Divide by 255.
+
+## Outputs
+
+| Output | Grid | Per cell |
+|---|---|---|
+| `bbox_0` to `bbox_2` | 80×80, 40×40, 20×20 (stride 8, 16, 32) | 64 logits: 16 bins for each of the left, top, right, and bottom edge distances |
+| `class_logit_0` to `class_logit_2` | same | 80 class logits |
+| `mask_coeff_0` to `mask_coeff_2` | same | 32 mask coefficients |
+| `mask_proto` | 160×160 (stride 4) | 32 mask patterns (prototypes) |
+
+Postprocessing:
 
 1. The cell in column c and row r has its center at (c + 0.5, r + 0.5).
-2. Each edge distance in cells is the softmax-weighted mean of its 16 bin indices.
-3. The box corners are the center minus the left and top distances and plus the right and bottom distances, times the stride.
-4. Apply a sigmoid to the logits and keep the cell-class pairs above your score threshold.
-5. Remove overlapping boxes of the same class with non-maximum suppression at an overlap threshold of 0.7.
-6. Multiply `mask_proto` by each detection's coefficients and resize the result bilinearly to 640×640. Positive pixels inside the box belong to the object.
-7. Remove the letterbox padding, divide by the letterbox scale, and clip to the image. Map the masks the same way.
+2. Apply a softmax over each edge's 16 bins. The edge distance in cells is the probability-weighted mean bin index, from 0 to 15.
+3. The box corners are the center minus the left and top distances, and the center plus the right and bottom distances, times the stride.
+4. Apply a sigmoid to the class logits to get class scores.
+5. Keep the cell-class pairs with a score above your score threshold.
+6. Among boxes of the same class, from the highest score down, drop every box whose intersection over union with a kept box is more than 0.7. Keep at most 300 boxes.
+7. For each detection, add up the 32 mask patterns, each multiplied by its mask coefficient.
+8. Resize the result bilinearly to 640×640. Positive pixels inside the box are the mask.
+9. Remove the padding, divide by the resize scale, and clip to the image. Map the masks the same way.
 
-Class index i is the i-th COCO category ID in ascending order. Neat's
-`YoloV8Seg` box decoder can also decode these outputs.
+Class index i is the i-th COCO category ID in ascending order.
 
 ## Building applications
 
-Run the package with the [Neat Model API](https://developer.sima.ai/software/develop-apps/development-workflow/model). For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples).
+Run the package with the [Neat Model API](https://developer.sima.ai/software/develop-apps/development-workflow/model).
+For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples).
