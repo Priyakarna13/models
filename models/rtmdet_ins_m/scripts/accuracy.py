@@ -173,17 +173,19 @@ def image_masks(logits: np.ndarray, width: int, height: int, scale_x: float, sca
 
     MMDetection resizes the padded 640x640 logits to ceil(640 / scale) and crops the image; it takes the height from
     the width's scale factor and the width from the height's. OpenCV's bilinear resize samples at pixel centres, as
-    torch's interpolate does with align_corners=False. Returns (height, width, count) booleans.
+    torch's interpolate does with align_corners=False. Rounding each side separately can leave the rescaled logits a
+    pixel short of the image; that edge is background. Returns (height, width, count) booleans.
     """
     planes = np.ascontiguousarray(logits.transpose(1, 2, 0))
-    resized = np.empty((height, width, len(logits)), dtype=bool)
+    resized = np.zeros((height, width, len(logits)), dtype=bool)
     # OpenCV resizes at most 512 channels at once.
     for start in range(0, len(logits), 512):
         chunk = planes[:, :, start : start + 512]
         upsampled = cv2.resize(chunk, (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_LINEAR)
         size = (math.ceil(IMAGE_SIZE / scale_y), math.ceil(IMAGE_SIZE / scale_x))
         rescaled = cv2.resize(upsampled, size, interpolation=cv2.INTER_LINEAR).reshape(size[1], size[0], -1)
-        resized[:, :, start : start + 512] = rescaled[:height, :width] > 0
+        rows, columns = min(height, size[1]), min(width, size[0])
+        resized[:rows, :columns, start : start + 512] = rescaled[:rows, :columns] > 0
     return resized
 
 

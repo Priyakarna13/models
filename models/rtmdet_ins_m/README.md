@@ -32,13 +32,13 @@ Preprocessing:
 Postprocessing:
 
 1. Cell (c, r) at stride s has its point at (c × s, r × s).
-2. Apply a sigmoid to the class logits. On each grid, keep the 1000 best cell-class pairs scoring above 0.05.
+2. Apply a sigmoid to the class logits. Per grid, keep the 1000 best cell-class pairs scoring above 0.05.
 3. The box is the point minus the left and top distances and plus the right and bottom ones, clipped to the resized image.
 4. Within each class, drop boxes overlapping a better box by more than 0.6. Keep the best 100.
 5. For each `mask_feat` cell, form 10 values: the detection's point minus the cell's point (x, y), divided by 8 × the detection's stride, then the 8 mask features.
 6. Split the detection's 169 weights in order into row-major matrices of 8×10, 8×8, and 1×8, and biases of 8, 8, and 1.
-7. Apply each matrix and bias in turn, setting negatives to zero after the first two, to get one mask logit per cell.
-8. Resize the logits bilinearly to 640×640, then by the inverse resize scale, rounded up. Keep the top-left image area. Positive pixels are the mask.
+7. Apply each matrix and bias in turn, zeroing negatives after the first two, for one mask logit per cell.
+8. Resize the logits bilinearly to 640×640, then by the inverse resize scale, rounded up. Crop the top left to the image; missed pixels are background. Positive pixels are the mask.
 9. Divide the boxes by the resize scale.
 
 Class index i is the i-th COCO category ID in ascending order.

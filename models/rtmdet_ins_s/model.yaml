@@ -54,9 +54,15 @@ build_profiles:
       model:
         parameters: {precision: w16a16, calibration_bins: 2048, calibration_samples: 50}
 
-  # No w8a8: it scored 0.001 COCO mask AP on a DevKit. Folding BatchNorm leaves some pointwise convolutions with
-  # weights and biases that cancel about 200-fold, which amplifies INT8 activation rounding past recovery; the
-  # benchmark is also CPU-bound at w16a16, so INT8 would gain little speed. compile.py keeps its recipe.
+  # No INT8 builds: on a DevKit, w8a16 scored 0.0001 COCO mask AP at 171.2 FPS and w8a8 0.001. Folding BatchNorm
+  # leaves some pointwise convolutions with weights and biases that cancel about 200-fold, so INT8 rounding of
+  # either the weights or the activations destroys their outputs. compile.py keeps both recipes.
+  # w8a16:
+  #   calibration_dataset: coco-2017-cal
+  #   components:
+  #     model:
+  #       parameters: {precision: w8a16, calibration_bins: 2048, calibration_samples: 50}
+
   # w8a8:
   #   calibration_dataset: coco-2017-cal
   #   components:

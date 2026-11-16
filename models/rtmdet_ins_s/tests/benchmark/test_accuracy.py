@@ -88,6 +88,16 @@ def test_image_masks_resize_the_padded_logits_and_crop_the_image(accuracy_script
     assert masks[:, :245, 0].all() and not masks[:, 255:, 0].any()
 
 
+
+def test_image_masks_cover_an_image_whose_sides_round_apart(accuracy_script: ModuleType) -> None:
+    # 200x513 resizes to 250x640: the x scale 1.25 rescales the logits to 512 rows, one short of the image.
+    logits = np.ones((1, 80, 80), np.float32)
+
+    masks = accuracy_script.image_masks(logits, 200, 513, 250 / 200, 640 / 513)
+
+    assert masks.shape == (513, 200, 1)
+    assert masks[:512, :, 0].all() and not masks[512:, :, 0].any()
+
 def test_decode_returns_separate_box_and_mask_results(accuracy_script: ModuleType) -> None:
     outputs = _outputs(accuracy_script)
     outputs[0][0, 10, 10, 2] = 5.0
