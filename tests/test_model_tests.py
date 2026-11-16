@@ -14,6 +14,7 @@ from model_registry.errors import ValidationError
 from model_registry.model_tests import (
     TEST_GROUPS,
     load_model_tests,
+    low_accuracy_variants,
     measured_shortfalls,
     skip_reason,
     stage_test_file,
@@ -349,3 +350,51 @@ def test_component_expectations_gate_each_result_without_combining(model_dir):
     assert measured_shortfalls(model_dir, "performance", "w8a16", report) == []
     del report["components"]["image_encoder"]
     assert measured_shortfalls(model_dir, "performance", "w8a16", report) == ["image_encoder was not measured"]
+
+
+def _reference(origin: str, split: str, **metrics: float) -> dict:
+    return {"origin": origin, "dataset": {"id": "coco-2017", "split": split}, "metrics": metrics}
+
+
+@pytest.mark.parametrize(
+    ("reference_metrics", "expected", "hidden"),
+    [
+        # 0.45 is 10% below the published 0.5 and 0.47 is 6% below it.
+        ([_reference("published", "val", coco_map=0.5)], {"coco_map": 0.45}, True),
+        ([_reference("published", "val", coco_map=0.5)], {"coco_map": 0.47}, False),
+        # A score published for another split is not comparable.
+        ([_reference("published", "test", coco_map=0.9)], {"coco_map": 0.45}, False),
+        # The FP32 baseline decides when the model has one, whatever its authors published.
+        (
+            [_reference("published", "val", coco_map=0.5), _reference("fp32_baseline", "val", coco_map=0.46)],
+            {"coco_map": 0.45},
+            False,
+        ),
+        (
+            [_reference("published", "val", coco_map=0.45), _reference("fp32_baseline", "val", coco_map=0.5)],
+            {"coco_map": 0.45},
+            True,
+        ),
+        # The first reference metric tests.yaml expects decides.
+        ([_reference("published", "val", coco_map=0.5, coco_ap50=0.9)], {"coco_map": 0.47, "coco_ap50": 0.6}, False),
+        # A lower-is-better metric misses its reference by rising.
+        ([_reference("published", "val", epe=0.6)], {"epe": 0.7}, True),
+        ([], {"coco_map": 0.1}, False),
+    ],
+)
+def test_low_accuracy_variants_compare_expected_accuracy_with_a_comparable_reference(
+    tmp_path: Path, reference_metrics: list[dict], expected: dict, hidden: bool
+) -> None:
+    tests = tmp_path / "models" / "demo" / "tests"
+    tests.mkdir(parents=True)
+    profiles = {"w8a8": {"coco-2017-val": expected}, "w16a16": {"coco-2017-val": {"coco_map": 0.5, "epe": 0.6}}}
+    (tests / "tests.yaml").write_text(yaml.safe_dump({"accuracy": {"expected": profiles}}), encoding="utf-8")
+    model = {
+        "build_profiles": [{"id": "w8a8"}, {"id": "w16a16"}],
+        "accuracy": {"datasets": {"coco-2017-val": {"id": "coco-2017", "variant": "val"}}},
+        "reference_metrics": reference_metrics,
+    }
+
+    variants = low_accuracy_variants(tmp_path, {"demo": model, "unmeasured": {"build_profiles": [{"id": "w8a8"}]}})
+
+    assert variants == ({"demo": ["w8a8"]} if hidden else {})

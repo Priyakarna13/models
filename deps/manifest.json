@@ -5,9 +5,12 @@
     "os_type": "elxr"
   },
   "model-compiler": {
-    "version": "3.0.0.1"
+    "version": "3.0.0.2"
   },
   "neat-core": {
     "install_target": "core@develop"
+  },
+  "llima": {
+    "install_target": "llima@develop:abcfe372a575"
   }
 }

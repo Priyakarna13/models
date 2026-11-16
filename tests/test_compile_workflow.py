@@ -723,8 +723,9 @@ def test_failed_builds_are_reported_after_the_snapshot() -> None:
     assert [job["name"] for job in load(BUILD_WORKFLOW)["jobs"].values()] == ["Compile", "Publish", "Benchmark"]
     benchmark_names = [job["name"] for job in load(BENCHMARK_WORKFLOW)["jobs"].values()]
     assert benchmark_names == [
-        "Resolve Vulcan config", "Resolve the benchmark DevKit runner", "Stage benchmark input", "Benchmark on DevKit",
-        "Publish benchmarks to Vulcan", "Check model tests and clean up",
+        "Resolve Vulcan config", "Resolve the benchmark DevKit runner",
+        "Queue promoted profiles missing results (excluding text generation)", "Stage benchmark input",
+        "Benchmark on DevKit", "Publish benchmarks to Vulcan", "Check model tests and clean up",
     ]
 
     def job(name: str, conclusion: str) -> dict:
@@ -985,8 +986,9 @@ def test_build_publication_runner_and_steps(runner_script: str, runner_environme
             "Publish the complete component set",
             "Assemble the packages this build completes",
             "Publish the finalized packages",
-            "Retain the published model output for the benchmarks",
             "Publish this build in the catalog",
+            # Last, so a rerun of a Publish job that failed in the catalog step uploads the artifact once.
+            "Retain the published model output for the benchmarks",
         )
     ]
     assert order == sorted(order)
@@ -1128,10 +1130,12 @@ def test_candidates_join_every_invocation_and_never_promote_catalog() -> None:
 def test_concurrent_builds_retry_catalog_snapshot_conflicts() -> None:
     catalog = step(load(BUILD_WORKFLOW)["jobs"]["publish"], "Publish this build in the catalog")["run"]
 
-    assert "for attempt in 1 2 3 4 5 6 7 8; do" in catalog
+    # publish-catalog retries the conflict in process; the shell loop only gives it a second run.
+    assert "for attempt in 1 2; do" in catalog
     assert "grep -q 'catalog_snapshot_conflict'" in catalog
-    assert "(( attempt == 8 ))" in catalog
-    assert 'sleep "$(( delay + RANDOM % 5 ))"' in catalog
+    assert "(( attempt == 2 ))" in catalog
+    assert "ceiling=$(( 2 ** attempt > 30 ? 30 : 2 ** attempt ))" in catalog
+    assert 'sleep "$(( 1 + RANDOM % ceiling ))"' in catalog
 
 
 # Scripts the workflows invoke
