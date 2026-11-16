@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Extract the whole encoder and prompt decoder from the verified MobileSAM ONNX, quantize, and compile each to an MPK.
+"""Build the whole encoder and prompt decoder graphs from the converted MobileSAM, quantize, and compile each to an MPK.
 
-The converted ONNX holds the whole image encoder and the prompt decoder side by side. Each is extracted,
+compile.py receives the converted image_encoder.onnx as --model, with weights.pth beside it. surgery.py builds the
+whole image encoder and the prompt decoder from them and checks both. Each is
 quantized to its build precision and compiled in its own process, and its MPK is audited: one MLA segment, no host
 code. The decoder calibrates on the quantized whole encoder's own outputs. Both components explicitly fit ranges
 with BF16 matrix execution, matching the qualified encoder-reuse path. When model.yaml declares
@@ -39,6 +40,7 @@ from afe.apis.loaded_net import load_model
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
 from calibration import calibration_images, decode, encoder_inputs, fidelity_names, image_prompts, read_images
+from model_registry.conversion import conversion_outputs
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from pipeline import (
@@ -51,7 +53,7 @@ from pipeline import (
     tensor_name,
 )
 from sima_utils.data.data_generator import DataGenerator
-from surgery import compile_decoder, split_components
+from surgery import compile_decoder, export_components
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "mobile_sam"
@@ -114,14 +116,15 @@ def _quantization(parameters: dict[str, Any]) -> Any:
 
 
 def validate_source(source: Path) -> None:
+    """The converted image encoder: the image to its embedding."""
     model = onnx.load(str(source), load_external_data=False)
     shape = lambda value: tuple(d.dim_value for d in value.type.tensor_type.shape.dim)  # noqa: E731
     inputs = {value.name: shape(value) for value in model.graph.input}
     outputs = {value.name: shape(value) for value in model.graph.output}
-    expected_inputs = {tensor_name(c, n): s for c in COMPONENTS for n, s in INPUT_SHAPES[c].items()}
-    expected_outputs = {tensor_name(c, n): s for c in COMPONENTS for n, s in OUTPUT_SHAPES[c].items()}
+    expected_inputs = {tensor_name("image_encoder", n): s for n, s in INPUT_SHAPES["image_encoder"].items()}
+    expected_outputs = {tensor_name("image_encoder", n): s for n, s in OUTPUT_SHAPES["image_encoder"].items()}
     if inputs != expected_inputs or outputs != expected_outputs:
-        raise ValueError(f"Unsupported MobileSAM graph: inputs {inputs}, outputs {outputs}")
+        raise ValueError(f"Unsupported MobileSAM image encoder: inputs {inputs}, outputs {outputs}")
 
 
 def channels_last(value: np.ndarray) -> np.ndarray:
@@ -311,9 +314,10 @@ def compile_model(
     fidelity = load_metadata(MODEL_DIR).get("numerical_fidelity")
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         build = Path(temporary)
-        graphs = split_components(source, build / "graphs")
+        weights = source.with_name(conversion_outputs(MODEL_DIR)[1])
+        graphs = export_components(source, weights, build / "graphs")
         compiled_decoder = build / "compiled_prompt_decoder.onnx"
-        prompt_metadata = compile_decoder(graphs["prompt_decoder"], compiled_decoder, sha256_file(source)[0])
+        prompt_metadata = compile_decoder(graphs["prompt_decoder"], compiled_decoder, sha256_file(weights)[0])
         encoding = PromptEncoding.from_metadata({key: json.dumps(value) for key, value in prompt_metadata.items()})
 
         # The decoder must calibrate on THIS quantized encoder's embeddings, never FP32 substitutes.
@@ -442,7 +446,7 @@ def compile_model(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model", type=Path, required=True, help="the converted image_encoder.onnx")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-profile", required=True)
     parser.add_argument("--compile-invocation", required=True)
@@ -457,8 +461,9 @@ def main() -> int:
     if args.compile_invocation != args.build_profile:
         parser.error("a build profile compiles in one invocation named after it")
     source = args.model.expanduser().resolve()
-    if source.suffix != ".onnx" or not source.is_file():
-        parser.error(f"--model must be the verified ONNX from the conversion workflow: {source}")
+    weights_name = conversion_outputs(MODEL_DIR)[1]
+    if source.suffix != ".onnx" or not source.is_file() or not source.with_name(weights_name).is_file():
+        parser.error(f"--model must be the converted image encoder ONNX, with {weights_name} beside it: {source}")
     if load_metadata(MODEL_DIR).get("numerical_fidelity") is not None and args.fidelity_dataset is None:
         parser.error("model.yaml declares numerical_fidelity; pass --fidelity-dataset")
     dataset = args.dataset.expanduser().resolve() if args.dataset else None

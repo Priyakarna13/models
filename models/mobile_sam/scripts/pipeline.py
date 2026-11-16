@@ -179,7 +179,7 @@ PIXEL_STD = np.asarray([58.395, 57.12, 57.375], dtype=np.float32)
 
 
 def tensor_name(component: str, name: str) -> str:
-    """A component's tensor in the side-by-side ONNX that conversion writes."""
+    """A component's tensor in the side-by-side ONNX that surgery.py builds."""
     return f"{component}_{name}"
 
 

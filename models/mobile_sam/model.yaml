@@ -36,6 +36,7 @@ conversion:
     uri: hf://models/dhkim2810/MobileSAM@4e2e5245fe9dc63096d575d36e70eb39b03b3aba/mobile_sam.pt
     sha256: 6dbb90523a35330fedd7f1d3dfc66f995213d81b29a5ca8108dbcdd4e37d6c2f
     size_bytes: 40728226
+  outputs: [image_encoder.onnx, weights.pth]
 
 compilation:
   format: onnx

@@ -3,9 +3,10 @@
 The chain prepares each image and resizes each mask on the CPU, as segment_anything does (pipeline.preprocess and
 pipeline.image_mask), where accuracy.py has Neat do both on the board.
 
-Run on a host with the accuracy dependencies, onnx and onnxruntime; no PyNeat, registry credentials or YAML are
-needed. --onnx is the verified side-by-side ONNX consumed by compile.py. This is the masked six-slot exported
-reference, not an independent upstream SamPredictor oracle. No score is published until measured.
+Run on a host with the accuracy dependencies, onnx, onnxruntime, onnxsim, torch and timm; no PyNeat, registry
+credentials or YAML are needed. --onnx is the converted image_encoder.onnx that compile.py receives, with weights.pth
+beside it; surgery.py builds the same FP32 component graphs from them that compile.py quantizes. This is the masked
+six-slot reference, not an independent upstream SamPredictor oracle. No score is published until measured.
 Complete predictions and their provenance are saved before scoring; --score-only retries scoring without
 running the model. This does not resume interrupted inference or produce partial-dataset reference scores.
 
@@ -30,8 +31,10 @@ from pathlib import Path
 import accuracy
 import numpy as np
 from pipeline import COMPONENTS, INPUT_SHAPES, image_mask, mask_layout, preprocess, tensor_name
-from surgery import split_components
+from surgery import export_components
 
+# The conversion output beside the image encoder that surgery.py builds from (model.yaml conversion.outputs).
+WEIGHTS = "weights.pth"
 CONDITIONS = (
     "FP32 ONNX Runtime CPU; each non-crowd object's ground-truth box, mask 0, "
     "six-slot prompts with inactive-key masking; segment_anything's CPU preprocessing and mask resizing; "
@@ -121,7 +124,7 @@ class FloatRunners:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--onnx", type=Path, required=True)
+    parser.add_argument("--onnx", type=Path, required=True, help="converted image_encoder.onnx, weights.pth beside")
     parser.add_argument("--dataset", required=True, help="coco-2017-val=<extracted directory>")
     parser.add_argument("--output", type=Path, required=True, help="FP32 reference JSON, not a DevKit benchmark report")
     parser.add_argument(
@@ -151,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     image_ids = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
     provenance = {
         "onnx_sha256": sha256(args.onnx),
+        "weights_sha256": sha256(args.onnx.with_name(WEIGHTS)),
         "dataset": dataset_id,
         "annotations_sha256": sha256(dataset / accuracy.ANNOTATIONS),
         "selected_images_sha256": image_digest(ground_truth, image_ids, dataset / accuracy.IMAGES),
@@ -158,7 +162,16 @@ def main(argv: list[str] | None = None) -> int:
         "available_samples": len(available),
         "scripts_sha256": {
             name: sha256(Path(__file__).with_name(name))
-            for name in ("fp32_baseline_accuracy.py", "accuracy.py", "pipeline.py", "surgery.py")
+            for name in (
+                "fp32_baseline_accuracy.py",
+                "accuracy.py",
+                "pipeline.py",
+                "surgery.py",
+                "sam_decoder.py",
+                "sam_modules.py",
+                "tiny_vit_4d.py",
+                "tiny_vit_sam.py",
+            )
         },
         "conditions": CONDITIONS,
     }
@@ -169,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         results, prompts = saved["predictions"], saved["prompts"]
     else:
         with tempfile.TemporaryDirectory(prefix="mobile-sam-fp32-") as temporary:
-            runners = FloatRunners(split_components(args.onnx, Path(temporary) / "components"))
+            graphs = export_components(args.onnx, args.onnx.with_name(WEIGHTS), Path(temporary) / "components")
+            runners = FloatRunners(graphs)
             results, prompts = accuracy.evaluate(
                 ground_truth, image_ids, dataset / accuracy.IMAGES, runners.encode, runners.decode
             )

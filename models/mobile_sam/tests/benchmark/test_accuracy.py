@@ -208,6 +208,7 @@ def fp32_run(load_script, monkeypatch, tmp_path):
     script = load_script("fp32_baseline_accuracy")
     source = tmp_path / "source.onnx"
     source.write_bytes(b"test source")
+    source.with_name(script.WEIGHTS).write_bytes(b"test weights")
     dataset = tmp_path / "dataset"
     annotations = dataset / script.accuracy.ANNOTATIONS
     annotations.parent.mkdir(parents=True)
@@ -248,7 +249,7 @@ def fp32_run(load_script, monkeypatch, tmp_path):
             raise AssertionError("fake evaluator does not infer")
 
     monkeypatch.setattr(script, "FloatRunners", Runners)
-    monkeypatch.setattr(script, "split_components", lambda *args: {})
+    monkeypatch.setattr(script, "export_components", lambda *args: {})
     monkeypatch.setattr(script.accuracy, "COCO", lambda *args: GroundTruth())
     monkeypatch.setattr(script.accuracy, "VAL2017_IMAGES", 2)
     monkeypatch.setattr(script.accuracy, "evaluate", lambda *args: ([dict(item) for item in rows], len(rows)))
@@ -275,7 +276,7 @@ def test_fp32_predictions_survive_scoring_failure_and_reuse_the_same_scorer(fp32
     saved = json.loads(saved_bytes)
     assert saved["provenance"]["image_ids"] == [7, 9]
     assert saved["prompts"] == len(saved["predictions"]) == 2
-    assert len(saved["provenance"]["onnx_sha256"]) == 64
+    assert len(saved["provenance"]["onnx_sha256"]) == len(saved["provenance"]["weights_sha256"]) == 64
     assert len(saved["provenance"]["annotations_sha256"]) == 64
 
     def score(ground_truth, results, image_ids):
@@ -286,7 +287,7 @@ def test_fp32_predictions_survive_scoring_failure_and_reuse_the_same_scorer(fp32
         raise AssertionError("score-only must not create ORT sessions or run inference")
 
     monkeypatch.setattr(script, "FloatRunners", cannot_infer)
-    monkeypatch.setattr(script, "split_components", cannot_infer)
+    monkeypatch.setattr(script, "export_components", cannot_infer)
     monkeypatch.setattr(script.accuracy, "evaluate", cannot_infer)
     monkeypatch.setattr(script.accuracy, "score", score)
     assert script.main([*args, "--score-only"]) == 0
@@ -296,7 +297,15 @@ def test_fp32_predictions_survive_scoring_failure_and_reuse_the_same_scorer(fp32
 
 @pytest.mark.parametrize(
     "field",
-    ["onnx_sha256", "annotations_sha256", "selected_images_sha256", "image_ids", "scripts_sha256", "conditions"],
+    [
+        "onnx_sha256",
+        "weights_sha256",
+        "annotations_sha256",
+        "selected_images_sha256",
+        "image_ids",
+        "scripts_sha256",
+        "conditions",
+    ],
 )
 def test_fp32_score_only_rejects_mismatched_provenance(fp32_run, field):
     script, args, _, predictions, _ = fp32_run

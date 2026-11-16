@@ -621,7 +621,7 @@ def test_build_retention_is_optional_and_survives_compile_failure(load_script, m
 def test_retention_paths_fail_before_component_work(load_script, monkeypatch, tmp_path, kind):
     recipe = load_script("compile")
     monkeypatch.setattr(recipe, "validate_source", lambda source: None)
-    monkeypatch.setattr(recipe, "split_components", lambda *args: pytest.fail("component work must not start"))
+    monkeypatch.setattr(recipe, "export_components", lambda *args: pytest.fail("component work must not start"))
     output = tmp_path / "out"
     retained = tmp_path / "retained"
     if kind == "existing":
@@ -650,7 +650,8 @@ def test_all_components_receive_distinct_persistent_directories(load_script, mon
     )
     monkeypatch.setattr(recipe, "load_metadata", lambda _: {})
 
-    def split(source, directory):
+    def split(image_encoder, weights, directory):
+        assert weights == image_encoder.with_name("weights.pth")
         directory.mkdir()
         graphs = {c: directory / f"{c}.onnx" for c in recipe.COMPONENTS}
         for graph in graphs.values():
@@ -661,7 +662,7 @@ def test_all_components_receive_distinct_persistent_directories(load_script, mon
         destination.write_bytes(b"mock compiled boundary")
         return {}
 
-    monkeypatch.setattr(recipe, "split_components", split)
+    monkeypatch.setattr(recipe, "export_components", split)
     monkeypatch.setattr(recipe, "compile_decoder", decoder)
     monkeypatch.setattr(
         recipe,
@@ -684,6 +685,7 @@ def test_all_components_receive_distinct_persistent_directories(load_script, mon
     monkeypatch.setattr(recipe, "_in_process", build)
     source = tmp_path / "source.onnx"
     source.write_bytes(b"mock source")
+    source.with_name("weights.pth").write_bytes(b"mock weights")
     retained = tmp_path / "retained" if retain else None
     outputs = recipe.compile_model(source, tmp_path / "out", "w16a16", None, None, retained)
     assert list(outputs) == list(recipe.COMPONENTS)
@@ -708,6 +710,7 @@ def test_retention_cli_forwarding(load_script, monkeypatch, tmp_path, retain):
     recipe = load_script("compile")
     source = tmp_path / "source.onnx"
     source.touch()
+    source.with_name("weights.pth").touch()
     argv = [
         "compile.py",
         "--model",
@@ -854,7 +857,8 @@ def test_decoder_calibration_uses_the_whole_quantized_encoders_own_embeddings(lo
     monkeypatch.setattr(recipe, "calibration_images", lambda *args: [np.zeros((20, 40, 3), np.uint8)])
     monkeypatch.setattr(recipe, "encoder_inputs", lambda images: np.zeros((1, 8, 8, 3), np.float32))
 
-    def split(source, directory):
+    def split(image_encoder, weights, directory):
+        assert weights == image_encoder.with_name("weights.pth")
         directory.mkdir()
         graphs = {name: directory / f"{name}.onnx" for name in recipe.COMPONENTS}
         for path in graphs.values():
@@ -865,7 +869,7 @@ def test_decoder_calibration_uses_the_whole_quantized_encoders_own_embeddings(lo
         output.write_bytes(b"fixture decoder")
         return {}
 
-    monkeypatch.setattr(recipe, "split_components", split)
+    monkeypatch.setattr(recipe, "export_components", split)
     monkeypatch.setattr(recipe, "compile_decoder", cut)
     monkeypatch.setattr(recipe, "PromptEncoding", SimpleNamespace(from_metadata=lambda _: "encoding"))
     monkeypatch.setattr(recipe, "float_embeddings", lambda *args: pytest.fail("FP32 must not supply calibration"))
@@ -895,6 +899,7 @@ def test_decoder_calibration_uses_the_whole_quantized_encoders_own_embeddings(lo
     monkeypatch.setattr(recipe, "_in_process", build)
     source = tmp_path / "source.onnx"
     source.write_bytes(b"fixture source")
+    source.with_name("weights.pth").write_bytes(b"fixture weights")
     archives = recipe.compile_model(source, tmp_path / "output", "w16a16", tmp_path / "calibration", None)
     assert list(archives) == feeds == ["image_encoder", "prompt_decoder"]
 
