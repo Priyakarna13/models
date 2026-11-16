@@ -20,6 +20,14 @@ upstream:
   repository: https://github.com/isl-org/MiDaS
   revision: 454597711a62eabcbf7d1e89f3fb9f569051ac9b
 
+resources:
+  license:
+    source:
+      uri: https://raw.githubusercontent.com/isl-org/MiDaS/454597711a62eabcbf7d1e89f3fb9f569051ac9b/LICENSE
+      sha256: 99ec0b9f9bcc9234b649787b8f03b07dbece95764b7879e1e72fb76cb0f96876
+      size_bytes: 1098
+    install_path: licenses/LICENSE
+
 conversion:
   source:
     # Neither isl-org nor Intel publishes this checkpoint on Hugging Face, so pin the authors' release asset as the
