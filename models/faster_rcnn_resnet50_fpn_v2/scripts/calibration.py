@@ -40,9 +40,10 @@ CHANNELS = 256
 CLASSES = 91
 POOL = 7
 SAMPLING_RATIO = 2
-# The box head's input: the 1,000 regions' 7x7 maps in a 25x40 grid at an 8-pixel pitch, zero between them.
-GRID_ROWS, GRID_COLS, PITCH = 25, 40, 8
-REGIONS = GRID_ROWS * GRID_COLS
+# The box head's input: the proposals' 7x7 maps in a grid of 25 rows at an 8-pixel pitch, zero between them. A build
+# profile sets how many proposals the box head takes (box_head's proposals parameter): 1,000, torchvision's default,
+# fill a 25x40 grid.
+GRID_ROWS, PITCH = 25, 8
 # The backbone's one output, (1, 271, 1, 150381) NCHW: each FPN level's cells as rows, P2-P6 in order, with
 # P2-P5's 256 features (zero on P6's rows) then the RPN head's 3 objectness logits and 12 box deltas per cell.
 # Under INT8 the output shares one scale, so the graph scales the RPN head's outputs into the features' range.
@@ -167,8 +168,23 @@ def _level_proposals(logits: np.ndarray, deltas: np.ndarray, level: int) -> tupl
     return decode_boxes(deltas[top], boxes, (1.0, 1.0, 1.0, 1.0)), logits[top]
 
 
-def proposals(rpn: Sequence[tuple[np.ndarray, np.ndarray]], size: tuple[int, int]) -> np.ndarray:
-    """RegionProposalNetwork at inference: unpack_backbone's RPN rows of P2-P6 -> up to 1,000 (x1, y1, x2, y2) boxes.
+def grid_cols(regions: int) -> int:
+    """The box head grid's columns for a number of proposals, a multiple of its 25 rows."""
+    if regions <= 0 or regions % GRID_ROWS:
+        raise ValueError(f"the box head takes a positive multiple of {GRID_ROWS} proposals, not {regions}")
+    return regions // GRID_ROWS
+
+
+def grid_shape(regions: int) -> tuple[int, int, int]:
+    """The box head's (height, width, channels) input for a number of proposals."""
+    return GRID_ROWS * PITCH, grid_cols(regions) * PITCH, CHANNELS
+
+
+def proposals(
+    rpn: Sequence[tuple[np.ndarray, np.ndarray]], size: tuple[int, int], regions: int = POST_NMS_TOP_N
+) -> np.ndarray:
+    """RegionProposalNetwork at inference: unpack_backbone's RPN rows of P2-P6 -> up to regions (x1, y1, x2, y2)
+    boxes, 1,000 by default as in torchvision.
 
     Batched NMS by level equals NMS within each level, so the levels run on worker threads.
     """
@@ -184,7 +200,7 @@ def proposals(rpn: Sequence[tuple[np.ndarray, np.ndarray]], size: tuple[int, int
     kept = list(_POOL.map(level_nms, range(len(rpn))))
     boxes = np.concatenate([item[0] for item in kept])
     scores = np.concatenate([item[1] for item in kept])
-    return boxes[np.argsort(-scores, kind="stable")[:POST_NMS_TOP_N]]
+    return boxes[np.argsort(-scores, kind="stable")[:regions]]
 
 
 def roi_levels(boxes: np.ndarray) -> np.ndarray:
@@ -244,21 +260,22 @@ def roi_align(features: Sequence[np.ndarray], boxes: np.ndarray) -> np.ndarray:
     return pooled
 
 
-def tile_regions(pooled: np.ndarray) -> np.ndarray:
-    """(R <= 1000, 7, 7, 256) pooled regions -> the box head's (200, 320, 256) input, in grid order."""
-    if pooled.shape[1:] != (POOL, POOL, CHANNELS) or len(pooled) > REGIONS:
+def tile_regions(pooled: np.ndarray, regions: int = POST_NMS_TOP_N) -> np.ndarray:
+    """(R <= regions, 7, 7, 256) pooled regions -> the box head's input, (200, 320, 256) for 1,000, in grid order."""
+    cols = grid_cols(regions)
+    if pooled.shape[1:] != (POOL, POOL, CHANNELS) or len(pooled) > regions:
         raise ValueError(f"unexpected pooled regions: {pooled.shape}")
-    grid = np.zeros((GRID_ROWS, GRID_COLS, PITCH, PITCH, CHANNELS), np.float32)
-    grid.reshape(REGIONS, PITCH, PITCH, CHANNELS)[: len(pooled), :POOL, :POOL] = pooled
-    return grid.transpose(0, 2, 1, 3, 4).reshape(GRID_ROWS * PITCH, GRID_COLS * PITCH, CHANNELS)
+    grid = np.zeros((GRID_ROWS, cols, PITCH, PITCH, CHANNELS), np.float32)
+    grid.reshape(regions, PITCH, PITCH, CHANNELS)[: len(pooled), :POOL, :POOL] = pooled
+    return grid.transpose(0, 2, 1, 3, 4).reshape(GRID_ROWS * PITCH, cols * PITCH, CHANNELS)
 
 
 def region_rows(output: np.ndarray) -> np.ndarray:
-    """A box head output, NCHW (1, C, 25, 40) or NHWC (1, 25, 40, C) -> (1000, C), one row per region."""
-    if output.shape[1:3] == (GRID_ROWS, GRID_COLS):
-        return output.reshape(REGIONS, -1)
-    if output.shape[2:] == (GRID_ROWS, GRID_COLS):
-        return output.reshape(output.shape[1], REGIONS).T
+    """A box head output, NCHW (1, C, 25, cols) or NHWC (1, 25, cols, C) -> (25 * cols, C), one row per region."""
+    if output.ndim == 4 and output.shape[1] == GRID_ROWS:
+        return output.reshape(GRID_ROWS * output.shape[2], -1)
+    if output.ndim == 4 and output.shape[2] == GRID_ROWS:
+        return output.reshape(output.shape[1], GRID_ROWS * output.shape[3]).T
     raise ValueError(f"unexpected box head output: {output.shape}")
 
 

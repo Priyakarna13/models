@@ -9,10 +9,10 @@ only its two convolutional networks and leaves the steps between them to the CPU
   folded to this one input shape. With several outputs the Model Compiler gives some their own output sections
   and packs the rest into a shared one, and Neat refuses such an ELF; one output always has one section.
 - box_head: torchvision's per-region box head (four 3x3 convs, one fully connected layer and the class and box
-  predictors), rewritten to run all 1,000 pooled regions as one image. The regions' 7x7 maps sit in a 25x40
-  grid at an 8-pixel pitch with zero gaps; each 3x3 conv's output is masked back to zero in the gaps, so no
-  region sees its neighbours, and the fully connected layers become 7x7 stride-8 and 1x1 convs. Its outputs
-  hold one region per grid cell.
+  predictors), rewritten to run all pooled regions as one image. The regions' 7x7 maps sit in a grid of 25 rows
+  at an 8-pixel pitch with zero gaps, 25x40 for torchvision's 1,000 proposals; each 3x3 conv's output is masked
+  back to zero in the gaps, so no region sees its neighbours, and the fully connected layers become 7x7 stride-8
+  and 1x1 convs. Its outputs hold one region per grid cell.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from calibration import (
     CHANNELS,
     CLASSES,
     DELTA_GAIN,
-    GRID_COLS,
     GRID_ROWS,
     INPUT_SIZE,
     LEVEL_ROWS,
@@ -35,8 +34,9 @@ from calibration import (
     OBJECTNESS_GAIN,
     PITCH,
     POOL,
-    REGIONS,
+    POST_NMS_TOP_N,
     RPN_CHANNELS,
+    grid_cols,
     region_rows,
     tile_regions,
     unpack_backbone,
@@ -66,11 +66,18 @@ LEVEL_SHAPES = {
     **{name: (1, 4 * ANCHORS, _stride_size(4 << i), _stride_size(4 << i)) for i, name in enumerate(BOX_DELTAS)},
 }
 BACKBONE_SHAPE = (1, BACKBONE_CHANNELS, 1, LEVEL_ROWS[-1])
-ROIS_SHAPE = (1, CHANNELS, GRID_ROWS * PITCH, GRID_COLS * PITCH)
-BOX_HEAD_SHAPES = {
-    CLASS_LOGITS: (1, CLASSES, GRID_ROWS, GRID_COLS),
-    BOX_REGRESSION: (1, 4 * CLASSES, GRID_ROWS, GRID_COLS),
-}
+
+
+def rois_shape(regions: int) -> tuple[int, int, int, int]:
+    """The box head's NCHW input for a number of proposals."""
+    return 1, CHANNELS, GRID_ROWS * PITCH, grid_cols(regions) * PITCH
+
+
+def box_head_shapes(regions: int) -> dict[str, tuple[int, int, int, int]]:
+    """The box head's NCHW outputs for a number of proposals: one region per grid cell."""
+    cols = grid_cols(regions)
+    return {CLASS_LOGITS: (1, CLASSES, GRID_ROWS, cols), BOX_REGRESSION: (1, 4 * CLASSES, GRID_ROWS, cols)}
+
 
 # Tensors of the export at the cut: the normalized, padded image entering ResNet-50, the FPN outputs, the RPN
 # head's per-level outputs and the pooled regions entering the box head.
@@ -168,15 +175,15 @@ def _join_outputs(model: onnx.ModelProto) -> onnx.ModelProto:
     return model
 
 
-def gap_mask() -> np.ndarray:
+def gap_mask(regions: int = POST_NMS_TOP_N) -> np.ndarray:
     """1 on each region's 7x7 cells of the grid, 0 in the one-pixel gaps between them."""
     row = np.arange(GRID_ROWS * PITCH) % PITCH < POOL
-    column = np.arange(GRID_COLS * PITCH) % PITCH < POOL
+    column = np.arange(grid_cols(regions) * PITCH) % PITCH < POOL
     return (row[:, None] & column[None, :]).astype(np.float32)[None, None]
 
 
-def box_head_graph(source: onnx.ModelProto) -> onnx.ModelProto:
-    """The box head and predictor on all regions at once, as one 200x320 image of regions."""
+def box_head_graph(source: onnx.ModelProto, regions: int = POST_NMS_TOP_N) -> onnx.ModelProto:
+    """The box head and predictor on all regions at once, as one image of regions, 200x320 for 1,000."""
     initializers = {item.name: numpy_helper.to_array(item) for item in source.graph.initializer}
     nodes = [
         node
@@ -195,7 +202,7 @@ def box_head_graph(source: onnx.ModelProto) -> onnx.ModelProto:
         _require(attributes.get("transB") == 1, f"{gemm.name} layout")
     fc, classes, boxes = gemms
 
-    weights = [numpy_helper.from_array(gap_mask(), "gap_mask")]
+    weights = [numpy_helper.from_array(gap_mask(regions), "gap_mask")]
     graph_nodes = []
     tensor = ROIS
     for index, conv in enumerate(convs):
@@ -244,10 +251,10 @@ def box_head_graph(source: onnx.ModelProto) -> onnx.ModelProto:
     graph = helper.make_graph(
         graph_nodes,
         "faster_rcnn_box_head",
-        [helper.make_tensor_value_info(ROIS, TensorProto.FLOAT, list(ROIS_SHAPE))],
+        [helper.make_tensor_value_info(ROIS, TensorProto.FLOAT, list(rois_shape(regions)))],
         [
             helper.make_tensor_value_info(name, TensorProto.FLOAT, list(shape))
-            for name, shape in BOX_HEAD_SHAPES.items()
+            for name, shape in box_head_shapes(regions).items()
         ],
         weights,
     )
@@ -260,23 +267,25 @@ def graph_paths(directory: Path) -> tuple[Path, Path]:
     return directory / "backbone.onnx", directory / "box_head.onnx"
 
 
-def prepare_model(source: Path, directory: Path) -> tuple[Path, Path]:
-    """Write both component graphs the recipe imports."""
+def prepare_model(source: Path, directory: Path, regions: int = POST_NMS_TOP_N) -> tuple[Path, Path]:
+    """Write both component graphs the recipe imports, the box head for a number of proposals."""
     model = onnx.load(source)
     names = {value.name for value in model.graph.input}
     _require(names == {"images"}, f"inputs {sorted(names)}")
     backbone_path, box_head_path = graph_paths(directory)
     directory.mkdir(parents=True, exist_ok=True)
     onnx.save(backbone_graph(model), backbone_path)
-    onnx.save(box_head_graph(model), box_head_path)
+    onnx.save(box_head_graph(model, regions), box_head_path)
     return backbone_path, box_head_path
 
 
-def max_split_difference(source: Path, backbone: Path, box_head: Path) -> dict[str, float]:
+def max_split_difference(
+    source: Path, backbone: Path, box_head: Path, regions: int = POST_NMS_TOP_N
+) -> dict[str, float]:
     """Largest output difference of each component against the matching part of the source, on random inputs.
 
     The backbone is compared with the source's own subgraph fed the same 1344x1344 image, and the box head with
-    the source's per-region head fed the same 1,000 regions.
+    the source's per-region head fed the same regions, as many as the box head takes.
     """
     import onnxruntime as ort
 
@@ -302,9 +311,9 @@ def max_split_difference(source: Path, backbone: Path, box_head: Path) -> dict[s
     expected += [output[0].transpose(1, 2, 0).reshape(-1) for output in reference[4:9]]
     expected += [output[0].transpose(1, 2, 0).reshape(-1, 4) for output in reference[9:]]
     actual = features + [logits for logits, _ in rpn] + [deltas for _, deltas in rpn]
-    pooled = np.maximum(rng.standard_normal((REGIONS, POOL, POOL, CHANNELS)).astype(np.float32), 0)
+    pooled = np.maximum(rng.standard_normal((regions, POOL, POOL, CHANNELS)).astype(np.float32), 0)
     expected_head = run(reference_box_head, {SOURCE_ROIS: np.ascontiguousarray(pooled.transpose(0, 3, 1, 2))})
-    tiles = np.ascontiguousarray(tile_regions(pooled).transpose(2, 0, 1))[None]
+    tiles = np.ascontiguousarray(tile_regions(pooled, regions).transpose(2, 0, 1))[None]
     actual_head = [region_rows(output) for output in run(box_head, {ROIS: tiles})]
     return {
         "backbone": max(float(np.abs(a - b).max()) for a, b in zip(expected, actual, strict=True)),

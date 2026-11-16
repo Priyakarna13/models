@@ -2,9 +2,10 @@
 
 Given --mpk backbone=<path> --mpk box_head=<path> and --dataset coco-2017-val=<extracted directory>, the
 script measures the whole model as it runs on one COCO image in a 720p frame: Neat's preprocessing and the
-backbone, the 1,000 proposals and their RoIAlign on the CPU, the copy to the box head's memory and the box head,
-and the detections' decoding and NMS on the CPU, each stage working on a different frame at the same time. It
-also records each MPK's MLA layer and stage stats and its execution plan.
+backbone, the proposals and their RoIAlign on the CPU, the copy to the box head's memory and the box head,
+and the detections' decoding and NMS on the CPU, each stage working on a different frame at the same time. The box
+head's package sets how many proposals it takes. The script also records each MPK's MLA layer and stage stats and its
+execution plan.
 
 Raw values cross between the MLA and the CPU: the backbone runs with inference_terminal.mla_only and the box head
 as its Inference and Postprocess fragments, so Neat converts neither side to float32. The proposals and RoIAlign
@@ -49,7 +50,6 @@ IMAGES = "val2017"
 # The benchmark input is a 720p camera frame, letterboxed with grey padding.
 FRAME_WIDTH, FRAME_HEIGHT, FILL = 1280, 720, 114
 # torchvision's inference settings for the steps in Python.
-POST_NMS_TOP_N = 1000
 BOX_WEIGHTS = (10.0, 10.0, 5.0, 5.0)
 BOX_CLIP = math.log(1000.0 / 16)
 SCORE_THRESHOLD = 0.05
@@ -57,15 +57,15 @@ NMS_THRESHOLD = 0.5
 BOX_MIN_SIZE = 1e-2
 DETECTIONS = 100
 CLASSES = 91
-GRID_ROWS, GRID_COLS = 25, 40
-REGIONS = GRID_ROWS * GRID_COLS
 # The backbone's one raw output: each FPN level's cells as rows, P2-P6 in order, with P2-P5's 256 features, then the RPN
 # head's 3 objectness logits and 12 box deltas scaled by these gains into the features' range, then one padding column.
 LEVEL_SIZES = tuple(INPUT_SIZE // stride for stride in (4, 8, 16, 32, 64))
 LEVEL_ROWS = tuple(int(np.cumsum([0] + [size * size for size in LEVEL_SIZES])[i]) for i in range(6))
 ROW_STRIDE = 272
 OBJECTNESS_GAIN, DELTA_GAIN = 1 / 16, 1 / 2
-GRID_SHAPE = (200, 320, 256)
+# The box head's input: its proposals' 7x7 maps of 256 features in a grid of 25 rows at an 8-pixel pitch. Its package's
+# input size gives the number of proposals: torchvision's 1,000 fill a 25x40 grid.
+CHANNELS, GRID_ROWS, PITCH = 256, 25, 8
 KIND_INT8, KIND_BF16 = 0, 1
 KERNEL_THREADS = 8
 # Box head inputs in flight between the kernel and the copy to the device.
@@ -143,7 +143,10 @@ KERNEL_SOURCE = r"""
 #define RPN_CHANNELS 15
 #define POOL 7
 #define PITCH 8
-#define GRID_COLS 40
+// load_kernel sets REGIONS, the proposals the box head takes, and GRID_COLS, its grid's columns.
+#if !defined(REGIONS) || !defined(GRID_COLS)
+#error "build with -DREGIONS and -DGRID_COLS"
+#endif
 #define GRID_WIDTH (PITCH * GRID_COLS)
 #define LEVELS 5
 #define MAX_THREADS 16
@@ -504,7 +507,7 @@ static void *proposal_worker(void *argument) {
     }
 }
 
-// RegionProposalNetwork at inference: up to 1,000 (x1, y1, x2, y2) boxes, by decreasing score; returns the count.
+// RegionProposalNetwork at inference: up to REGIONS (x1, y1, x2, y2) boxes, by decreasing score; returns the count.
 // window: left, top, right, bottom of the image in the input; boxes clip to it.
 int frcnn_proposals(int kind, const void *rows, long stride, float scale, int zero_point, float objectness_gain,
                     float delta_gain, const long *offsets, const int *sizes, int input_size, const float *window,
@@ -527,7 +530,7 @@ int frcnn_proposals(int kind, const void *rows, long stride, float scale, int ze
         }
     }
     qsort(merged, total, sizeof(Ranked), compare_ranked);
-    int count = total < TOP_N ? total : TOP_N;
+    int count = total < REGIONS ? total : REGIONS;
     for (int i = 0; i < count; i++) memcpy(out_boxes + i * 4, level_boxes + merged[i].index * 4, sizeof(float) * 4);
     free(merged);
     free(level_boxes);
@@ -564,9 +567,9 @@ void frcnn_roi_align(int kind, const void *rows, long stride, float scale, int z
 """
 
 
-def load_kernel() -> ctypes.CDLL:
-    """Build KERNEL_SOURCE with the board's gcc. Without it the script stops: a slower fallback would measure a
-    different pipeline."""
+def load_kernel(regions: int) -> ctypes.CDLL:
+    """Build KERNEL_SOURCE with the board's gcc for a box head of regions proposals. Without gcc the script stops: a
+    slower fallback would measure a different pipeline."""
     gcc = shutil.which("gcc")
     if gcc is None:
         raise SystemExit("this script builds its C kernel with gcc, which is not on this board")
@@ -574,7 +577,10 @@ def load_kernel() -> ctypes.CDLL:
     with tempfile.TemporaryDirectory(prefix="faster_rcnn_kernel-") as directory:
         source, library = Path(directory) / "kernel.c", Path(directory) / "kernel.so"
         source.write_text(KERNEL_SOURCE, encoding="utf-8")
-        subprocess.run([gcc, "-O3", *target, "-shared", "-fPIC", "-pthread", "-o", library, source, "-lm"], check=True)
+        grid = [f"-DREGIONS={regions}", f"-DGRID_COLS={regions // GRID_ROWS}"]
+        subprocess.run(
+            [gcc, "-O3", *target, *grid, "-shared", "-fPIC", "-pthread", "-o", library, source, "-lm"], check=True
+        )
         kernel = ctypes.CDLL(str(library))
     buffer, floats = ctypes.c_void_p, ctypes.POINTER(ctypes.c_float)
     longs, ints = ctypes.POINTER(ctypes.c_long), ctypes.POINTER(ctypes.c_int)
@@ -660,9 +666,20 @@ def box_head_format(mpk: Path) -> RawFormat:
     return _raw_format(_manifest_plugins(mpk)[0])
 
 
-def new_grid(raw: RawFormat) -> Grid:
-    """A box head input with every cell at the real zero."""
-    return Grid(np.full(GRID_SHAPE, raw.zero_point, raw.dtype))
+def box_head_regions(mpk: Path) -> int:
+    """The proposals the box head takes, from its float32 input's size: a grid of 25 rows of 8x8 cells of 256 values."""
+    with tarfile.open(mpk, "r:gz") as stream:
+        manifest = next(member for member in stream.getmembers() if member.name.endswith("_mpk.json"))
+        (node,) = json.load(stream.extractfile(manifest))["input_nodes"]
+    cols, extra = divmod(int(node["size"]), 4 * CHANNELS * GRID_ROWS * PITCH * PITCH)
+    if extra or not cols:
+        raise SystemExit(f"unexpected box head input size: {node['size']}")
+    return GRID_ROWS * cols
+
+
+def new_grid(raw: RawFormat, regions: int) -> Grid:
+    """A box head input for regions proposals with every cell at the real zero."""
+    return Grid(np.full((GRID_ROWS * PITCH, regions // GRID_ROWS * PITCH, CHANNELS), raw.zero_point, raw.dtype))
 
 
 def pool_regions(
@@ -672,7 +689,7 @@ def pool_regions(
     if raw.nbytes != LEVEL_ROWS[-1] * ROW_STRIDE * np.dtype(backbone.dtype).itemsize:
         raise ValueError(f"unexpected raw backbone output: {raw.shape} {raw.dtype}")
     offsets, sizes = (ctypes.c_long * len(LEVEL_ROWS))(*LEVEL_ROWS), (ctypes.c_int * len(LEVEL_SIZES))(*LEVEL_SIZES)
-    boxes = np.empty((POST_NMS_TOP_N, 4), np.float32)
+    boxes = np.empty((grid.array.shape[0] // PITCH * (grid.array.shape[1] // PITCH), 4), np.float32)
     floats = ctypes.POINTER(ctypes.c_float)
     count = kernel.frcnn_proposals(
         backbone.kind,
@@ -763,9 +780,10 @@ def nms(boxes: np.ndarray, scores: np.ndarray, groups: np.ndarray, threshold: fl
 
 
 def region_rows(output: np.ndarray) -> np.ndarray:
-    if output.shape[1:3] == (GRID_ROWS, GRID_COLS):
-        return output.reshape(REGIONS, -1)
-    return output.reshape(output.shape[1], REGIONS).T
+    """A box head output, NHWC (1, 25, cols, C) or NCHW (1, C, 25, cols) -> (25 * cols, C), one row per region."""
+    if output.shape[1] == GRID_ROWS:
+        return output.reshape(GRID_ROWS * output.shape[2], -1)
+    return output.reshape(output.shape[1], GRID_ROWS * output.shape[3]).T
 
 
 def detections(class_logits: np.ndarray, box_regression: np.ndarray, boxes: np.ndarray, window: Window) -> np.ndarray:
@@ -1042,6 +1060,7 @@ def measure_throughput(
 def write_report(
     output: Path,
     image: str,
+    regions: int,
     latencies: list[float],
     throughput: Throughput,
     models: dict[str, pyneat.Model],
@@ -1061,7 +1080,7 @@ def write_report(
         models,
         workload=(
             f"{image} in a {FRAME_WIDTH}x{FRAME_HEIGHT} RGB frame, Neat preprocessing letterboxed to "
-            f"{INPUT_SIZE}x{INPUT_SIZE}, backbone, {POST_NMS_TOP_N} proposals and RoIAlign in a C kernel on the CPU, "
+            f"{INPUT_SIZE}x{INPUT_SIZE}, backbone, {regions} proposals and RoIAlign in a C kernel on the CPU, "
             f"box head, and box decoding and NMS on the CPU, pipelined {QUEUE_DEPTH} frames deep"
         ),
         telemetry=throughput.telemetry,
@@ -1087,13 +1106,16 @@ def benchmark_pipeline(mpks: dict[str, Path], dataset_id: str, dataset: Path, ou
     image = frame_tensor(path)
     backbone_raw, box_head_raw = backbone_format(mpks["backbone"]), box_head_format(mpks["box_head"])
     grids: queue.Queue = queue.Queue()
+    regions = box_head_regions(mpks["box_head"])
     for _ in range(GRIDS):
-        grids.put(new_grid(box_head_raw))
-    pipeline = Pipeline(load_kernel(), backbone_raw, box_head_raw, letterbox_window(), grids)
+        grids.put(new_grid(box_head_raw, regions))
+    pipeline = Pipeline(load_kernel(regions), backbone_raw, box_head_raw, letterbox_window(), grids)
     backbone, box_head = build_runners(models, image, pipeline)
     latencies = measure_latency(backbone, box_head, image, pipeline)
     throughput = measure_throughput(backbone, box_head, image, pipeline)
-    write_report(output, f"{dataset_id} {path.name}", latencies, throughput, models, mla_layer_stats, mla_stage_stats)
+    write_report(
+        output, f"{dataset_id} {path.name}", regions, latencies, throughput, models, mla_layer_stats, mla_stage_stats
+    )
 
 
 def parse_mpks(values: list[str]) -> dict[str, Path]:

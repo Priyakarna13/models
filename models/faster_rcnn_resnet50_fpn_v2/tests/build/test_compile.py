@@ -67,13 +67,14 @@ def _box_head_source(surgery: ModuleType) -> onnx.ModelProto:
     return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
 
+@pytest.mark.parametrize(("regions", "cols"), [(1000, 40), (500, 20)])
 def test_box_head_runs_every_region_as_one_image_with_the_source_weights(
-    load_script: Callable[[str], ModuleType],
+    load_script: Callable[[str], ModuleType], regions: int, cols: int
 ) -> None:
     surgery = load_script("surgery")
     source = _box_head_source(surgery)
 
-    tiled = surgery.box_head_graph(source)
+    tiled = surgery.box_head_graph(source, regions)
 
     convs = [node for node in tiled.graph.node if node.op_type == "Conv"]
     assert [node.name for node in convs] == [*(f"conv{i}" for i in range(4)), "fc", "class_score", "box_prediction"]
@@ -88,34 +89,54 @@ def test_box_head_runs_every_region_as_one_image_with_the_source_weights(
         "strides": [8, 8],
     }
     shapes = {value.name: [dim.dim_value for dim in value.type.tensor_type.shape.dim] for value in tiled.graph.output}
-    assert shapes == {"class_logits": [1, 91, 25, 40], "box_regression": [1, 364, 25, 40]}
+    assert shapes == {"class_logits": [1, 91, 25, cols], "box_regression": [1, 364, 25, cols]}
+    inputs = {value.name: [dim.dim_value for dim in value.type.tensor_type.shape.dim] for value in tiled.graph.input}
+    assert inputs == {"rois": [1, 256, 200, cols * 8]}
 
 
-def test_the_gap_mask_keeps_each_region_and_zeroes_the_gaps(load_script: Callable[[str], ModuleType]) -> None:
-    mask = load_script("surgery").gap_mask()[0, 0]
+@pytest.mark.parametrize(("regions", "width"), [(1000, 320), (500, 160)])
+def test_the_gap_mask_keeps_each_region_and_zeroes_the_gaps(
+    load_script: Callable[[str], ModuleType], regions: int, width: int
+) -> None:
+    mask = load_script("surgery").gap_mask(regions)[0, 0]
 
-    assert mask.shape == (200, 320)
+    assert mask.shape == (200, width)
     assert mask[:7, :7].all() and not mask[7, :].any() and not mask[:, 7].any()
-    assert mask.sum() == 1000 * 49
+    assert mask.sum() == regions * 49
 
 
-def test_tiled_regions_come_back_in_grid_order(load_script: Callable[[str], ModuleType]) -> None:
+@pytest.mark.parametrize(("regions", "cols"), [(1000, 40), (500, 20)])
+def test_tiled_regions_come_back_in_grid_order(
+    load_script: Callable[[str], ModuleType], regions: int, cols: int
+) -> None:
     calibration = load_script("calibration")
-    pooled = np.random.default_rng(0).standard_normal((1000, 7, 7, 256)).astype(np.float32)
+    pooled = np.random.default_rng(0).standard_normal((regions, 7, 7, 256)).astype(np.float32)
+    last = regions - 1
 
-    tiles = calibration.tile_regions(pooled[:999])
+    tiles = calibration.tile_regions(pooled[:last], regions)
 
-    assert tiles.shape == (200, 320, 256)
-    # Region 41 is grid row 1, column 1; its cells start at pixel (8, 8), and the gap after it is zero.
-    np.testing.assert_array_equal(tiles[8:15, 8:15], pooled[41])
+    assert tiles.shape == calibration.grid_shape(regions) == (200, cols * 8, 256)
+    # Region cols + 1 is grid row 1, column 1; its cells start at pixel (8, 8), and the gap after it is zero.
+    np.testing.assert_array_equal(tiles[8:15, 8:15], pooled[cols + 1])
     assert not tiles[15].any() and not tiles[:, 15].any()
-    assert tiles[192:199, 304:311].any() and not tiles[192:199, 312:319].any(), "the 1,000th cell holds no region"
+    right = cols * 8
+    assert tiles[192:199, right - 16 : right - 9].any() and not tiles[192:199, right - 8 : right - 1].any(), (
+        "the last cell holds no region"
+    )
     # A 1x1 conv over the tiles reads one value per region, in the order region_rows returns.
     per_region = tiles[::8, ::8, 0][None, None]
-    np.testing.assert_array_equal(calibration.region_rows(per_region)[:999, 0], pooled[:999, 0, 0, 0])
+    np.testing.assert_array_equal(calibration.region_rows(per_region)[:last, 0], pooled[:last, 0, 0, 0])
     np.testing.assert_array_equal(
-        calibration.region_rows(per_region.transpose(0, 2, 3, 1))[:999, 0], pooled[:999, 0, 0, 0]
+        calibration.region_rows(per_region.transpose(0, 2, 3, 1))[:last, 0], pooled[:last, 0, 0, 0]
     )
+
+
+@pytest.mark.parametrize("regions", [0, 990, 1001])
+def test_the_box_head_takes_only_whole_rows_of_proposals(
+    load_script: Callable[[str], ModuleType], regions: int
+) -> None:
+    with pytest.raises(ValueError, match="multiple of 25"):
+        load_script("calibration").grid_cols(regions)
 
 
 @pytest.mark.parametrize(
@@ -224,6 +245,7 @@ def test_both_benchmark_scripts_hold_the_same_kernel(load_script: Callable[[str]
         "_raw_format",
         "backbone_format",
         "box_head_format",
+        "box_head_regions",
         "new_grid",
         "pool_regions",
         "box_head_graph",
@@ -238,11 +260,20 @@ def test_the_kernels_layout_matches_the_backbones(load_script: Callable[[str], M
     assert performance.LEVEL_SIZES == calibration.LEVEL_SIZES
     assert performance.LEVEL_ROWS == calibration.LEVEL_ROWS
     assert performance.ROW_STRIDE == calibration.BACKBONE_CHANNELS + 1
-    assert performance.GRID_SHAPE == (
-        calibration.GRID_ROWS * calibration.PITCH,
-        calibration.GRID_COLS * calibration.PITCH,
-        calibration.CHANNELS,
-    )
+    raw_format = performance.RawFormat(performance.KIND_INT8, np.int8, 1.0, 0)
+    for regions in (1000, 500):
+        assert performance.new_grid(raw_format, regions).array.shape == calibration.grid_shape(regions)
+
+
+@pytest.mark.parametrize("regions", [1000, 500])
+def test_the_box_head_package_gives_its_proposals(
+    tmp_path: Path, load_script: Callable[[str], ModuleType], regions: int
+) -> None:
+    compile_module, performance = load_script("compile"), load_script("performance")
+    archive = tmp_path / "box_head_mpk.tar.gz"
+    _write_mpk(archive, _mpk_manifest(compile_module, "box_head", regions))
+
+    assert performance.box_head_regions(archive) == regions
 
 
 def _backbone_rows(calibration: ModuleType) -> np.ndarray:
@@ -267,14 +298,16 @@ def _bf16_raw(rows: np.ndarray) -> np.ndarray:
 
 
 def _regions(array: np.ndarray) -> np.ndarray:
-    """A (200, 320, 256) box head input -> its (1000, 8, 8, 256) cells."""
-    return array.reshape(25, 8, 40, 8, 256).transpose(0, 2, 1, 3, 4).reshape(1000, 8, 8, 256)
+    """A (200, 8 * cols, 256) box head input -> its (25 * cols, 8, 8, 256) cells."""
+    cols = array.shape[1] // 8
+    return array.reshape(25, 8, cols, 8, 256).transpose(0, 2, 1, 3, 4).reshape(25 * cols, 8, 8, 256)
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="the kernel builds with gcc")
+@pytest.mark.parametrize("regions", [1000, 500])
 @pytest.mark.parametrize("kind", ["int8", "bf16"])
 def test_the_kernel_selects_and_pools_regions_as_the_python_steps_do(
-    load_script: Callable[[str], ModuleType], kind: str
+    load_script: Callable[[str], ModuleType], kind: str, regions: int
 ) -> None:
     calibration, performance = load_script("calibration"), load_script("performance")
     size = (800, 1067)
@@ -291,17 +324,17 @@ def test_the_kernel_selects_and_pools_regions_as_the_python_steps_do(
         raw = _bf16_raw(rows)
         real = (raw[:, :-1].astype(np.uint32) << 16).view(np.float32)
         least_shared, tolerance = 0.95, 0.02
-    kernel = performance.load_kernel()
-    grid = performance.new_grid(box_head)
+    kernel = performance.load_kernel(regions)
+    grid = performance.new_grid(box_head, regions)
 
     boxes = performance.pool_regions(kernel, raw, backbone, box_head, (0.0, 0.0, float(size[1]), float(size[0])), grid)
 
     features, rpn = calibration.unpack_backbone(real[None, None])
-    expected = calibration.proposals(rpn, size)
+    expected = calibration.proposals(rpn, size, regions)
     shared = {tuple(box) for box in np.round(boxes, 2).tolist()} & {
         tuple(box) for box in np.round(expected, 2).tolist()
     }
-    assert len(boxes) == grid.count == len(expected)
+    assert len(boxes) == grid.count == len(expected) == regions
     assert len(shared) >= least_shared * len(expected)
 
     cells = _regions(grid.array).astype(np.float32)
@@ -325,15 +358,16 @@ def test_the_kernel_clears_the_regions_a_shorter_frame_leaves_behind(load_script
     calibration, performance = load_script("calibration"), load_script("performance")
     backbone = performance.RawFormat(performance.KIND_BF16, np.uint16, 1.0, 0)
     raw = _bf16_raw(_backbone_rows(calibration))
-    kernel = performance.load_kernel()
-    grid = performance.new_grid(backbone)
+    regions = 1000
+    kernel = performance.load_kernel(regions)
+    grid = performance.new_grid(backbone, regions)
     window = (0.0, 0.0, 1067.0, 800.0)
     count = len(performance.pool_regions(kernel, raw, backbone, backbone, window, grid))
     # A longer frame left regions past this frame's count, in the cells the kernel writes.
-    grid_rows, grid_cols = np.unravel_index(np.arange(count, performance.REGIONS), (25, 40))
+    grid_rows, grid_cols = np.unravel_index(np.arange(count, regions), (25, 40))
     for row, col in zip(grid_rows, grid_cols, strict=True):
         grid.array[row * 8 : row * 8 + 7, col * 8 : col * 8 + 7] = 1
-    grid.count = performance.REGIONS
+    grid.count = regions
 
     performance.pool_regions(kernel, raw, backbone, backbone, window, grid)
 
@@ -442,8 +476,8 @@ def test_calibration_draws_a_seeded_sample_from_cal2017_only(
         calibration.calibration_names(archive, 7)
 
 
-def _mpk_manifest(compile_module: ModuleType, component_id: str) -> dict:
-    contract = compile_module.COMPONENT_INTERFACES[component_id]
+def _mpk_manifest(compile_module: ModuleType, component_id: str, regions: int = 1000) -> dict:
+    contract = compile_module.component_interface(component_id, regions)
     return {
         "model_sdk_version": "3.0.0",
         "input_nodes": [{"name": name, "size": size} for name, size in contract["inputs"].items()],
@@ -469,12 +503,14 @@ def _write_mpk(path: Path, manifest: dict) -> None:
 
 
 @pytest.mark.parametrize("component_id", ["backbone", "box_head"])
-@pytest.mark.parametrize("case", ["valid", "cast", "dequantized", "resized", "two_mla", "host", "quantized"])
+@pytest.mark.parametrize(
+    "case", ["valid", "cast", "dequantized", "resized", "two_mla", "host", "proposals", "quantized"]
+)
 def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     tmp_path: Path, case: str, component_id: str, load_script: Callable[[str], ModuleType]
 ) -> None:
     compile_module = load_script("compile")
-    manifest = _mpk_manifest(compile_module, component_id)
+    manifest = _mpk_manifest(compile_module, component_id, 500 if case == "proposals" else 1000)
     plugins = manifest["plugins"]
     if case in {"cast", "dequantized", "quantized"}:
         kernel = {
@@ -492,11 +528,12 @@ def test_mpk_audit_requires_one_mla_segment_and_the_declared_interface(
     archive = tmp_path / "model_mpk.tar.gz"
     _write_mpk(archive, manifest)
 
-    if case in {"valid", "cast", "dequantized"}:
-        compile_module.audit_mpk(archive, component_id)
+    # A box head built for 500 proposals is not the 1,000-proposal box head; the backbone does not depend on them.
+    if case in {"valid", "cast", "dequantized"} or (case == "proposals" and component_id == "backbone"):
+        compile_module.audit_mpk(archive, component_id, 1000)
     else:
         with pytest.raises(RuntimeError):
-            compile_module.audit_mpk(archive, component_id)
+            compile_module.audit_mpk(archive, component_id, 1000)
 
 
 def test_compile_reads_the_declared_build_parameters(load_script: Callable[[str], ModuleType]) -> None:
@@ -504,14 +541,26 @@ def test_compile_reads_the_declared_build_parameters(load_script: Callable[[str]
 
     assert compile_module._component_parameters("w16a16") == {
         "backbone": {"precision": "w16a16"},
-        "box_head": {"precision": "w16a16"},
+        "box_head": {"precision": "w16a16", "proposals": 1000},
     }
     assert compile_module._component_parameters("w8a8") == {
         "backbone": {"precision": "w8a8", "calibration_bins": 2048, "calibration_samples": 64},
-        "box_head": {"precision": "w8a8", "calibration_bins": 2048, "calibration_samples": 32},
+        "box_head": {"precision": "w8a8", "calibration_bins": 2048, "calibration_samples": 32, "proposals": 1000},
     }
     with pytest.raises(ValueError, match="no build profile"):
         compile_module._component_parameters("w32a32")
+
+
+@pytest.mark.parametrize("proposals", [None, "1000", True, 990])
+def test_compile_requires_a_whole_number_of_grid_rows_of_proposals(
+    load_script: Callable[[str], ModuleType], proposals: object
+) -> None:
+    compile_module = load_script("compile")
+    box_head = {"precision": "w16a16"} if proposals is None else {"precision": "w16a16", "proposals": proposals}
+
+    assert compile_module.box_head_regions({"box_head": {"precision": "w16a16", "proposals": 500}}) == 500
+    with pytest.raises(ValueError, match="proposals"):
+        compile_module.box_head_regions({"box_head": box_head})
 
 
 def test_compiled_build_has_one_mpk_per_component(compiled: Path) -> None:
@@ -555,7 +604,8 @@ def test_compile_runs_its_three_phases_with_their_arguments(
         ("backbone compilation", "_backbone_phase"),
         ("box head compilation", "_box_head_phase"),
     ]
-    assert started[2][2] == ["backbone", "build_dir", "dataset", "graph", "name", "parameters", "selected"]
+    assert started[0][2] == ["graphs", "regions", "source"]
+    assert started[2][2] == ["backbone", "build_dir", "dataset", "graph", "name", "parameters", "regions", "selected"]
     manifest = json.loads((tmp_path / "out" / "compile-outputs.json").read_text())
     assert [item["component_id"] for item in manifest["derived_graphs"]] == ["backbone", "box_head"]
     assert manifest["outputs"][1]["mpk_path"] == "box_head/faster_rcnn_resnet50_fpn_v2_w8a8_box_head_mpk.tar.gz"

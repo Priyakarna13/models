@@ -34,7 +34,8 @@ resources:
 
 # The export runs the whole detector at a fixed 224x224 input. surgery.py keeps its two networks: the backbone
 # (ResNet-50, FPN and RPN head) folded to a 1344x1344 input, where torchvision's resize (short side 800, long
-# side at most 1333) fits every image, and the box head rewritten to run all 1,000 regions as one image.
+# side at most 1333) fits every image, and the box head rewritten to run all of a profile's regions as one image:
+# box_head's proposals parameter, torchvision's 1,000 by default.
 compilation:
   format: onnx
   source:
@@ -55,14 +56,26 @@ build_profiles:
         parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 64}
       # Calibrates on the first 32 of those images, each with the 1,000 regions the FP32 backbone proposes.
       box_head:
-        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32}
+        parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, proposals: 1000}
 
   w16a16:
     components:
       backbone:
         parameters: {precision: w16a16}
       box_head:
-        parameters: {precision: w16a16}
+        parameters: {precision: w16a16, proposals: 1000}
+
+  # w8a8 with the box head on the top 500 proposals instead of 1,000; commented out, so CI neither builds nor
+  # benchmarks it. Compiled locally in Model Compiler 3.0.0.1 and measured on a Modalix DevKit (MLA 1 GHz, CPU
+  # 1.4 GHz): 19.04 FPS against w8a8's 15.91, and on all 5,000 COCO val2017 images 46.41 mAP (AP50 66.90, AP75
+  # 50.80) against w8a8's 46.58 and FP32's 46.86. Its backbone is w8a8's.
+  # w8a8_500_proposals:
+  #   calibration_dataset: coco-2017-cal
+  #   components:
+  #     backbone:
+  #       parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 64}
+  #     box_head:
+  #       parameters: {precision: w8a8, calibration_bins: 2048, calibration_samples: 32, proposals: 500}
 
 pipeline:
 - {component: backbone}

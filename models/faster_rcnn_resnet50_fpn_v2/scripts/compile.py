@@ -2,8 +2,9 @@
 """Split Faster R-CNN ResNet-50 FPN v2 into its backbone and box head and compile each into a Modalix MPK.
 
 The phases run in separate processes, so each one's Model Compiler memory is freed before the next starts:
-graph preparation, the backbone, then the box head. An INT8 box head calibrates on the 1,000 regions the FP32
-backbone and calibration.py's proposals and RoIAlign give for each calibration image.
+graph preparation, the backbone, then the box head. The box head takes as many proposals as its build profile's
+proposals parameter sets. An INT8 box head calibrates on those regions, as the FP32 backbone and calibration.py's
+proposals and RoIAlign give them for each calibration image.
 """
 
 from __future__ import annotations
@@ -37,19 +38,19 @@ from afe.apis.loaded_net import load_model
 from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
-from calibration import INPUT_SIZE, calibration_images, proposals, roi_align, tile_regions, unpack_backbone
+from calibration import INPUT_SIZE, calibration_images, grid_cols, proposals, roi_align, tile_regions, unpack_backbone
 from model_registry.fetch import sha256_file
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
 from surgery import (
     BACKBONE_SHAPE,
-    BOX_HEAD_SHAPES,
     INPUT,
     ROIS,
-    ROIS_SHAPE,
+    box_head_shapes,
     graph_paths,
     max_split_difference,
     prepare_model,
+    rois_shape,
 )
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
@@ -57,22 +58,35 @@ MODEL_ID = "faster_rcnn_resnet50_fpn_v2"
 COMPONENT_IDS = ("backbone", "box_head")
 # The split must reproduce the source's networks; float32 reordering in the box head stays far below this.
 SPLIT_TOLERANCE = 1e-4
-INPUT_SHAPES = {"backbone": (1, 3, INPUT_SIZE, INPUT_SIZE), "box_head": ROIS_SHAPE}
+BACKBONE_INPUT_SHAPE = (1, 3, INPUT_SIZE, INPUT_SIZE)
 INPUT_NAMES = {"backbone": INPUT, "box_head": ROIS}
 # The plugin that hands an MPK's outputs to the application: a pass-through gathers several, and a single output
 # ends in its own dequantization (INT8) or cast (BF16).
 TERMINAL_KERNELS = {"pass_through", "dequantization_transform", "cast_transform"}
-# MPK manifests record each public tensor's size in bytes; the MPKs keep the ONNX float32 interfaces.
-COMPONENT_INTERFACES = {
-    "backbone": {
-        "inputs": {INPUT: math.prod(INPUT_SHAPES["backbone"]) * 4},
-        "outputs": [math.prod(BACKBONE_SHAPE) * 4],
-    },
-    "box_head": {
-        "inputs": {ROIS: math.prod(ROIS_SHAPE) * 4},
-        "outputs": [math.prod(shape) * 4 for shape in BOX_HEAD_SHAPES.values()],
-    },
-}
+
+
+def input_shape(component_id: str, regions: int) -> tuple[int, ...]:
+    return BACKBONE_INPUT_SHAPE if component_id == "backbone" else rois_shape(regions)
+
+
+def component_interface(component_id: str, regions: int) -> dict[str, Any]:
+    """A component's MPK interface: manifests record each public tensor's size in bytes, and the MPKs keep the ONNX
+    float32 interfaces."""
+    if component_id == "backbone":
+        return {"inputs": {INPUT: math.prod(BACKBONE_INPUT_SHAPE) * 4}, "outputs": [math.prod(BACKBONE_SHAPE) * 4]}
+    return {
+        "inputs": {ROIS: math.prod(rois_shape(regions)) * 4},
+        "outputs": [math.prod(shape) * 4 for shape in box_head_shapes(regions).values()],
+    }
+
+
+def box_head_regions(parameters: dict[str, dict[str, Any]]) -> int:
+    """The proposals a build profile's box head takes; grid_cols rejects a count the grid cannot hold."""
+    regions = parameters["box_head"].get("proposals")
+    if not isinstance(regions, int) or isinstance(regions, bool):
+        raise ValueError("the box_head component must set an integer proposals parameter")
+    grid_cols(regions)
+    return regions
 
 
 def _component_parameters(profile_id: str) -> dict[str, dict[str, Any]]:
@@ -120,9 +134,9 @@ def _read_mpk_manifest(archive: Path) -> tuple[list[str], dict[str, Any]]:
         return names, json.load(source)
 
 
-def audit_mpk(archive: Path, component_id: str) -> None:
+def audit_mpk(archive: Path, component_id: str, regions: int) -> None:
     """Require the component on one MLA segment, with no host code, and its declared interface."""
-    contract = COMPONENT_INTERFACES[component_id]
+    contract = component_interface(component_id, regions)
     names, manifest = _read_mpk_manifest(archive)
     elfs = [name for name in names if name.endswith(".elf")]
     shared_objects = [name for name in names if name.endswith(".so") or ".so." in name]
@@ -145,12 +159,18 @@ def audit_mpk(archive: Path, component_id: str) -> None:
 
 
 def _compile_component(
-    graph: Path, component_id: str, parameters: dict[str, Any], samples: np.ndarray, name: str, build_dir: Path
+    graph: Path,
+    component_id: str,
+    parameters: dict[str, Any],
+    regions: int,
+    samples: np.ndarray,
+    name: str,
+    build_dir: Path,
 ) -> None:
     """Quantize one component graph on NHWC samples, compile it and audit its MPK."""
     importer = onnx_source(
         str(graph),
-        shape_dict={INPUT_NAMES[component_id]: INPUT_SHAPES[component_id]},
+        shape_dict={INPUT_NAMES[component_id]: input_shape(component_id, regions)},
         layout="NCHW",
         flexible_batch_size=True,
     )
@@ -176,22 +196,22 @@ def _compile_component(
     archives = sorted(build_dir.glob("*_mpk.tar.gz"))
     if len(archives) != 1:
         raise RuntimeError(f"expected one {component_id} MPK, found {len(archives)}")
-    audit_mpk(archives[0], component_id)
+    audit_mpk(archives[0], component_id, regions)
 
 
 def _calibrates(parameters: dict[str, Any]) -> bool:
     return parameters["precision"] == "w8a8"
 
 
-def _bf16_sample(component_id: str) -> np.ndarray:
+def _bf16_sample(component_id: str, regions: int) -> np.ndarray:
     """BF16 derives nothing from representative data, but quantize() still needs one NHWC sample."""
-    _, channels, height, width = INPUT_SHAPES[component_id]
+    _, channels, height, width = input_shape(component_id, regions)
     return np.zeros((1, height, width, channels), np.float32)
 
 
-def _prepare_phase(source: Path, graphs: Path) -> None:
-    backbone, box_head = prepare_model(source, graphs)
-    differences = max_split_difference(source, backbone, box_head)
+def _prepare_phase(source: Path, graphs: Path, regions: int) -> None:
+    backbone, box_head = prepare_model(source, graphs, regions)
+    differences = max_split_difference(source, backbone, box_head, regions)
     logging.info("Split against the source: %s", differences)
     if max(differences.values()) > SPLIT_TOLERANCE:
         raise RuntimeError(f"the component graphs differ from the source: {differences}")
@@ -204,22 +224,23 @@ def _backbone_phase(graph: Path, parameters: dict[str, Any], dataset: Path | Non
         count = int(parameters["calibration_samples"])
         samples = np.stack([image for image, _ in calibration_images(dataset, count)])
     else:
-        samples = _bf16_sample("backbone")
-    _compile_component(graph, "backbone", parameters, samples, name, build_dir)
+        samples = _bf16_sample("backbone", 0)
+    _compile_component(graph, "backbone", parameters, 0, samples, name, build_dir)
 
 
-def _box_head_samples(backbone: Path, dataset: Path, selected: int, count: int) -> np.ndarray:
-    """The first count of the backbone's selected calibration images' 1,000 regions from the FP32 backbone,
-    each tiled as the box head's NHWC input."""
+def _box_head_samples(backbone: Path, dataset: Path, selected: int, count: int, regions: int) -> np.ndarray:
+    """The first count of the backbone's selected calibration images' regions from the FP32 backbone, as many as
+    the box head takes, each tiled as the box head's NHWC input."""
     import onnxruntime as ort
 
     session = ort.InferenceSession(str(backbone), providers=["CPUExecutionProvider"])
-    samples = np.empty((count, *ROIS_SHAPE[2:], ROIS_SHAPE[1]), np.float32)
+    _, channels, height, width = rois_shape(regions)
+    samples = np.empty((count, height, width, channels), np.float32)
     for index, (image, size) in enumerate(islice(calibration_images(dataset, selected), count)):
         (output,) = session.run(None, {INPUT: np.ascontiguousarray(image.transpose(2, 0, 1))[None]})
         features, rpn = unpack_backbone(output)
-        boxes = proposals(rpn, size)
-        samples[index] = tile_regions(roi_align(features, boxes))
+        boxes = proposals(rpn, size, regions)
+        samples[index] = tile_regions(roi_align(features, boxes), regions)
     return samples
 
 
@@ -227,6 +248,7 @@ def _box_head_phase(
     graph: Path,
     backbone: Path,
     parameters: dict[str, Any],
+    regions: int,
     selected: int,
     dataset: Path | None,
     name: str,
@@ -238,10 +260,10 @@ def _box_head_phase(
         count = int(parameters["calibration_samples"])
         if count > selected:
             raise ValueError("the box head calibrates on a subset of the backbone's calibration images")
-        samples = _box_head_samples(backbone, dataset, selected, count)
+        samples = _box_head_samples(backbone, dataset, selected, count, regions)
     else:
-        samples = _bf16_sample("box_head")
-    _compile_component(graph, "box_head", parameters, samples, name, build_dir)
+        samples = _bf16_sample("box_head", regions)
+    _compile_component(graph, "box_head", parameters, regions, samples, name, build_dir)
 
 
 def _execute_phase(target: Callable[..., None], arguments: dict[str, Any]) -> None:
@@ -267,13 +289,14 @@ def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path
     parameters = _component_parameters(profile_id)
     if set(parameters) != set(COMPONENT_IDS):
         raise ValueError(f"build profile {profile_id!r} must configure {COMPONENT_IDS}")
+    regions = box_head_regions(parameters)
     if output_dir.exists():
         raise FileExistsError(f"output directory already exists: {output_dir}")
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         temporary_dir = Path(temporary)
         backbone_graph, box_head_graph = graph_paths(temporary_dir / "graphs")
         builds = {component_id: temporary_dir / component_id for component_id in COMPONENT_IDS}
-        _run_phase("graph preparation", _prepare_phase, source=source, graphs=temporary_dir / "graphs")
+        _run_phase("graph preparation", _prepare_phase, source=source, graphs=temporary_dir / "graphs", regions=regions)
         _run_phase(
             "backbone compilation",
             _backbone_phase,
@@ -289,6 +312,7 @@ def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path
             graph=box_head_graph,
             backbone=backbone_graph,
             parameters=parameters["box_head"],
+            regions=regions,
             selected=int(parameters["backbone"].get("calibration_samples", 0)),
             dataset=dataset,
             name=f"{MODEL_ID}_{profile_id}_box_head",

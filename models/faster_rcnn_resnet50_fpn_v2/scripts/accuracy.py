@@ -2,8 +2,8 @@
 
 Each image is preprocessed as torchvision's GeneralizedRCNNTransform does, into the top-left corner of the
 backbone's 1344x1344 input. The backbone returns its raw output, a C kernel this script builds with the board's
-gcc selects the 1,000 proposals and pools their regions straight into the box head's raw input, the box head runs
-as its Inference and Postprocess fragments, and calibration.py decodes the detections, at most 100 per image,
+gcc selects as many proposals as the box head takes and pools their regions straight into its raw input, the box
+head runs as its Inference and Postprocess fragments, and calibration.py decodes the detections, at most 100 per image,
 mapped back to the original image. This is the same path performance.py measures.
 """
 
@@ -31,7 +31,7 @@ from pathlib import Path
 import model_report
 import numpy as np
 import pyneat
-from calibration import INPUT_SIZE, POST_NMS_TOP_N, decode_image, detections, preprocess, region_rows
+from calibration import CHANNELS, GRID_ROWS, INPUT_SIZE, PITCH, decode_image, detections, preprocess, region_rows
 from faster_coco_eval import COCO, COCOeval_faster
 
 ANNOTATIONS = "annotations/instances_val2017.json"
@@ -59,7 +59,6 @@ LEVEL_SIZES = tuple(INPUT_SIZE // stride for stride in (4, 8, 16, 32, 64))
 LEVEL_ROWS = tuple(int(np.cumsum([0] + [size * size for size in LEVEL_SIZES])[i]) for i in range(6))
 ROW_STRIDE = 272
 OBJECTNESS_GAIN, DELTA_GAIN = 1 / 16, 1 / 2
-GRID_SHAPE = (200, 320, 256)
 KIND_INT8, KIND_BF16 = 0, 1
 KERNEL_THREADS = 8
 # Images decode and preprocess on worker threads while the MPKs run; OpenCV releases the GIL.
@@ -96,7 +95,10 @@ KERNEL_SOURCE = r"""
 #define RPN_CHANNELS 15
 #define POOL 7
 #define PITCH 8
-#define GRID_COLS 40
+// load_kernel sets REGIONS, the proposals the box head takes, and GRID_COLS, its grid's columns.
+#if !defined(REGIONS) || !defined(GRID_COLS)
+#error "build with -DREGIONS and -DGRID_COLS"
+#endif
 #define GRID_WIDTH (PITCH * GRID_COLS)
 #define LEVELS 5
 #define MAX_THREADS 16
@@ -457,7 +459,7 @@ static void *proposal_worker(void *argument) {
     }
 }
 
-// RegionProposalNetwork at inference: up to 1,000 (x1, y1, x2, y2) boxes, by decreasing score; returns the count.
+// RegionProposalNetwork at inference: up to REGIONS (x1, y1, x2, y2) boxes, by decreasing score; returns the count.
 // window: left, top, right, bottom of the image in the input; boxes clip to it.
 int frcnn_proposals(int kind, const void *rows, long stride, float scale, int zero_point, float objectness_gain,
                     float delta_gain, const long *offsets, const int *sizes, int input_size, const float *window,
@@ -480,7 +482,7 @@ int frcnn_proposals(int kind, const void *rows, long stride, float scale, int ze
         }
     }
     qsort(merged, total, sizeof(Ranked), compare_ranked);
-    int count = total < TOP_N ? total : TOP_N;
+    int count = total < REGIONS ? total : REGIONS;
     for (int i = 0; i < count; i++) memcpy(out_boxes + i * 4, level_boxes + merged[i].index * 4, sizeof(float) * 4);
     free(merged);
     free(level_boxes);
@@ -517,9 +519,9 @@ void frcnn_roi_align(int kind, const void *rows, long stride, float scale, int z
 """
 
 
-def load_kernel() -> ctypes.CDLL:
-    """Build KERNEL_SOURCE with the board's gcc. Without it the script stops: a slower fallback would measure a
-    different pipeline."""
+def load_kernel(regions: int) -> ctypes.CDLL:
+    """Build KERNEL_SOURCE with the board's gcc for a box head of regions proposals. Without gcc the script stops: a
+    slower fallback would measure a different pipeline."""
     gcc = shutil.which("gcc")
     if gcc is None:
         raise SystemExit("this script builds its C kernel with gcc, which is not on this board")
@@ -527,7 +529,10 @@ def load_kernel() -> ctypes.CDLL:
     with tempfile.TemporaryDirectory(prefix="faster_rcnn_kernel-") as directory:
         source, library = Path(directory) / "kernel.c", Path(directory) / "kernel.so"
         source.write_text(KERNEL_SOURCE, encoding="utf-8")
-        subprocess.run([gcc, "-O3", *target, "-shared", "-fPIC", "-pthread", "-o", library, source, "-lm"], check=True)
+        grid = [f"-DREGIONS={regions}", f"-DGRID_COLS={regions // GRID_ROWS}"]
+        subprocess.run(
+            [gcc, "-O3", *target, *grid, "-shared", "-fPIC", "-pthread", "-o", library, source, "-lm"], check=True
+        )
         kernel = ctypes.CDLL(str(library))
     buffer, floats = ctypes.c_void_p, ctypes.POINTER(ctypes.c_float)
     longs, ints = ctypes.POINTER(ctypes.c_long), ctypes.POINTER(ctypes.c_int)
@@ -613,9 +618,20 @@ def box_head_format(mpk: Path) -> RawFormat:
     return _raw_format(_manifest_plugins(mpk)[0])
 
 
-def new_grid(raw: RawFormat) -> Grid:
-    """A box head input with every cell at the real zero."""
-    return Grid(np.full(GRID_SHAPE, raw.zero_point, raw.dtype))
+def box_head_regions(mpk: Path) -> int:
+    """The proposals the box head takes, from its float32 input's size: a grid of 25 rows of 8x8 cells of 256 values."""
+    with tarfile.open(mpk, "r:gz") as stream:
+        manifest = next(member for member in stream.getmembers() if member.name.endswith("_mpk.json"))
+        (node,) = json.load(stream.extractfile(manifest))["input_nodes"]
+    cols, extra = divmod(int(node["size"]), 4 * CHANNELS * GRID_ROWS * PITCH * PITCH)
+    if extra or not cols:
+        raise SystemExit(f"unexpected box head input size: {node['size']}")
+    return GRID_ROWS * cols
+
+
+def new_grid(raw: RawFormat, regions: int) -> Grid:
+    """A box head input for regions proposals with every cell at the real zero."""
+    return Grid(np.full((GRID_ROWS * PITCH, regions // GRID_ROWS * PITCH, CHANNELS), raw.zero_point, raw.dtype))
 
 
 def pool_regions(
@@ -625,7 +641,7 @@ def pool_regions(
     if raw.nbytes != LEVEL_ROWS[-1] * ROW_STRIDE * np.dtype(backbone.dtype).itemsize:
         raise ValueError(f"unexpected raw backbone output: {raw.shape} {raw.dtype}")
     offsets, sizes = (ctypes.c_long * len(LEVEL_ROWS))(*LEVEL_ROWS), (ctypes.c_int * len(LEVEL_SIZES))(*LEVEL_SIZES)
-    boxes = np.empty((POST_NMS_TOP_N, 4), np.float32)
+    boxes = np.empty((grid.array.shape[0] // PITCH * (grid.array.shape[1] // PITCH), 4), np.float32)
     floats = ctypes.POINTER(ctypes.c_float)
     count = kernel.frcnn_proposals(
         backbone.kind,
@@ -696,14 +712,15 @@ class Detector:
     """The two MPKs and the kernel between them, one image at a time."""
 
     def __init__(self, mpks: dict[str, Path]) -> None:
-        self.kernel = load_kernel()
+        regions = box_head_regions(mpks["box_head"])
+        self.kernel = load_kernel(regions)
         self.backbone_format, self.box_head_format = (
             backbone_format(mpks["backbone"]),
             box_head_format(mpks["box_head"]),
         )
         self.backbone_model = pyneat.Model(str(mpks["backbone"]), tensor_options(raw_output=True))
         self.box_head_model = pyneat.Model(str(mpks["box_head"]), tensor_options())
-        self.grid = new_grid(self.box_head_format)
+        self.grid = new_grid(self.box_head_format, regions)
         self.backbone = self.box_head = None
 
     def __call__(self, image: np.ndarray, size: tuple[int, int]):
