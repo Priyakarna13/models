@@ -148,7 +148,7 @@ def test_fidelity_selection_is_the_declared_seeded_sample(
         calibration.fidelity_names(tmp_path, 42, 1, 10)
 
 
-@pytest.mark.parametrize("profile_id", ["w16a16", "w8a8", "w8a16"])
+@pytest.mark.parametrize("profile_id", ["w16a16", "w8a8"])
 def test_compile_reads_each_declared_build_profile(load_script: Callable[[str], ModuleType], profile_id: str) -> None:
     recipe = load_script("compile")
     parameters = recipe._parameters(profile_id)

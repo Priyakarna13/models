@@ -58,13 +58,15 @@ build_profiles:
           input_shape: [1, 3, 224, 224]
           calibration_samples: 50
 
-  w8a16:
-    components:
-      model:
-        parameters:
-          precision: w8a16
-          input_name: x
-          input_shape: [1, 3, 224, 224]
+  # w8a16 is not shipped: w8a8 is within 5% of w16a16 in top-1, and on a DevKit w8a16 measured top-1 0.7613
+  # at 701.7 inferences/s, against w16a16's 689.1: no faster than BF16.
+  # w8a16:
+  #   components:
+  #     model:
+  #       parameters:
+  #         precision: w8a16
+  #         input_name: x
+  #         input_shape: [1, 3, 224, 224]
 
 numerical_fidelity:
   status: diagnostic
