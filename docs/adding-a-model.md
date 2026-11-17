@@ -88,6 +88,7 @@ A source comes from an approved host, in this form:
 | Hugging Face | `hf://models/<owner>/<repository>@<commit>/<file>`, with the full 40-character commit |
 | GitHub | `https://github.com/<owner>/<repository>/releases/download/<tag>/<file>`, a release file of a public repository |
 | GitHub raw files | `https://raw.githubusercontent.com/<owner>/<repository>/<commit>/<file>`, with the full 40-character commit |
+| OpenMMLab | `https://download.openmmlab.com/<project>/<version>/<config>/<name>-<hash>.pth`, a released checkpoint whose name ends with the first 8 hex digits of its SHA-256 |
 | the registry | the ONNX files the registry converts |
 
 The owner of a repository can replace or delete a GitHub release file, so only
