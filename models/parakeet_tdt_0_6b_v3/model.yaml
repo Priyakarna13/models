@@ -55,8 +55,9 @@ resources:
     install_path: licenses/LICENSE
 build_profiles:
   w8a16:
-    # Elevated Spot capacity requires the grant in sima-neat/vulcan#356.
+    # The expensive class and on-demand market require the grant in sima-neat/vulcan#356.
     runner_class: expensive
+    runner_market: on-demand
     components:
       model:
         parameters:
