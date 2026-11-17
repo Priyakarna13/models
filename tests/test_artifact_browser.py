@@ -1034,7 +1034,10 @@ def test_earlier_builds_pagination_tracks_the_selected_branch() -> None:
 
     assert 'query.set("git_ref", `refs/heads/${branch}`)' in script
     assert "availableBranches" in script
-    assert 'loadRuns(inferBranches ? { branch: "", limit: 200 } : { branch: elements["branch-filter"].value })' in script
+    assert (
+        'loadRuns(inferBranches ? { branch: "", limit: 200 } : { branch: elements["branch-filter"].value })'
+        in script
+    )
     assert 'elements["load-more"].hidden = !state.hasMore' in script
 
 
