@@ -194,7 +194,7 @@ def test_surgery_requires_a_folded_source(tmp_path: Path, load_script: Callable[
         surgery.prepare_model(source, tmp_path / "out")
 
 
-def test_attention_rewrite_keeps_each_query_head_an_image(
+def test_attention_rewrite_runs_each_head_as_mla_einsums(
     tmp_path: Path, load_script: Callable[[str], ModuleType]
 ) -> None:
     ort = pytest.importorskip("onnxruntime")
@@ -206,7 +206,11 @@ def test_attention_rewrite_keeps_each_query_head_an_image(
 
     operations = [node.op_type for node in rewritten.graph.node]
     head_count = ATTENTION_HEADS * surgery.ATTENTION_BLOCKS
-    assert operations.count("Einsum") == 2 * head_count
+    equations = [
+        onnx.helper.get_attribute_value(node.attribute[0]) for node in rewritten.graph.node if node.op_type == "Einsum"
+    ]
+    # The Model Compiler places only matmuls batched over the height axis of both inputs on the MLA.
+    assert equations == [b"nchw,nchq->nqhw", b"nkhw,nchk->nchw"] * head_count
     assert not {"MatMul", "Transpose"} & set(operations)
     softmax_axes = [
         onnx.helper.get_attribute_value(node.attribute[0]) for node in rewritten.graph.node if node.op_type == "Softmax"

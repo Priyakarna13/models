@@ -1,9 +1,9 @@
 """Cut YOLO26n at its raw one-to-one Detect heads, before the in-graph box decode and TopK.
 
-Each attention block then becomes per-head einsums that keep the image layout the convolutions around it use. A
-query head and its output stay [1, D, h, w] images; only the key and value heads flatten to [1, D, 1, T] token rows.
-The scores hold one channel per key position, so the softmax reduces over channels and the output needs no Reshape
-back to an image.
+Each attention block then becomes per-head einsums that keep the channel layout the convolutions around it use. Each
+head's Q, K and V are channel slices of the qkv image, flattened to [1, D, 1, T] token rows by merging the two spatial
+axes, so no value moves. The scores hold one channel per key position, so the softmax reduces over channels, and the
+head outputs join on channels before one Reshape back to the image.
 """
 
 from __future__ import annotations
@@ -232,7 +232,6 @@ def _keep_attention_in_nchw(model: onnx.ModelProto, expected: int) -> None:
             return prefix + name
 
         def tokens(value, name, dimension):
-            # [1, D, h, w] -> [1, D, 1, T] merges the two spatial axes, so no value moves.
             return node("Reshape", [value, constant(name + "_shape", [1, dimension, 1, positions])], name)
 
         queries = [f"{prefix}q{head}" for head in range(heads)]
@@ -243,16 +242,19 @@ def _keep_attention_in_nchw(model: onnx.ModelProto, expected: int) -> None:
         node("Split", [qkv.output[0], qkv_sizes], "split", outputs=[*queries, *keys, value_image.output[0]], axis=1)
         value_sizes = constant("split_values_sizes", [value_dim] * heads)
         node("Split", [value_image.output[0], value_sizes], "split_values", outputs=values, axis=1)
-        head_images = []
+        head_outputs = []
         for head, (query, key, value) in enumerate(zip(queries, keys, values, strict=True)):
-            # Scores [1, T, h, w]: one channel per key position, so the softmax reduces over channels.
+            # The MLA runs an einsum as a matmul batched over the height axis, which every head's tokens share.
+            # Scores [1, T, 1, T] hold one channel per key position, so the softmax reduces over channels.
+            query_tokens = tokens(query, f"q{head}_tokens", key_dim)
             key_tokens = tokens(key, f"k{head}_tokens", key_dim)
-            head_scores = node("Einsum", [query, key_tokens], f"scores{head}", equation="nchw,ncxk->nkhw")
+            head_scores = node("Einsum", [query_tokens, key_tokens], f"scores{head}", equation="nchw,nchq->nqhw")
             scaled = node("Mul", [head_scores, factor], f"scaled{head}")
             weights = node("Softmax", [scaled], f"weights{head}", axis=1)
             value_tokens = tokens(value, f"v{head}_tokens", value_dim)
-            head_images.append(node("Einsum", [weights, value_tokens], f"values{head}", equation="nkhw,ncxk->nchw"))
-        node("Concat", head_images, "image", outputs=list(image.output), axis=1)
+            head_outputs.append(node("Einsum", [weights, value_tokens], f"values{head}", equation="nkhw,nchk->nchw"))
+        output_tokens = node("Concat", head_outputs, "tokens", axis=1)
+        node("Reshape", [output_tokens, constant("image_shape", image_shape)], "image", outputs=list(image.output))
 
         replacements[heads_apart.output[0]] = nodes
         removed.update(
