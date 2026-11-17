@@ -393,7 +393,11 @@ def _catalog_outputs(model: JsonObject) -> tuple[list[JsonObject], list[JsonObje
     builds = [item for item in model.get("builds", []) if item.get("build_profile_id") not in selections]
     packages = [item for item in model.get("packages", []) if item.get("build_profile_id") not in selections]
     for profile_id, selection in selections.items():
-        requirements = selection["requirements"]
+        # Vulcan publishes a branch selection without its requirements; it derived them from this catalog's
+        # build_requirements for the profile when the candidate was selected.
+        requirements = selection.get("requirements") or model.get("build_requirements", {}).get(profile_id)
+        if not requirements:
+            raise ValidationError(f"selected deployment for build profile {profile_id} has no build requirements")
         components = [item for item in selection["artifacts"] if item.get("component_id")]
         for component in components:
             invocation = next(item for item in requirements["invocations"]

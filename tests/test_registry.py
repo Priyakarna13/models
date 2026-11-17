@@ -23,6 +23,7 @@ from model_registry.registry import (
     S3ArtifactStore,
     S3Object,
     SigV4RegistryClient,
+    _catalog_outputs,
     _compile_timing,
     _component_source_media_type,
     _package_media_type,
@@ -1658,6 +1659,29 @@ def test_deferred_conversion_inheritance_leaves_base_branch_selections_to_the_re
         )},
     )["catalog"]
     assert result["models"] == [{"id": "deferred", "builds": [], "packages": [{"run_id": "base-package"}]}]
+
+
+def test_branch_selection_takes_its_requirements_from_the_catalog_build_requirements():
+    """Vulcan publishes a branch selection without requirements, so a benchmark restore reads the profile's."""
+    requirements = {
+        "version": 1, "compiler_version": "3.0.0.2",
+        "invocations": [{"id": "w8a16", "component_ids": ["model"], "compile_fingerprint": "f" * 64}],
+        "packages": [{"id": "default", "component_ids": ["model"], "layout": "archive", "format": "zip"}],
+    }
+    model = {"id": "asr", "builds": [], "packages": [], "build_requirements": {"w8a16": requirements},
+             "branch_deployments": {"w8a16": {"deployment_id": "d", "manifest_digest": "e" * 64, "artifacts": [
+                 {"role": "compile-model", "component_id": "model", "run_id": "compile", "artifact_name": "mpk"},
+                 {"role": "package-default", "package_id": "default", "run_id": "package",
+                  "artifact_name": "package"},
+             ]}}}
+    builds, packages = _catalog_outputs(model)
+    assert [(item["component_id"], item["run_id"], item["compile_fingerprint"]) for item in builds] == [
+        ("model", "compile", "f" * 64)]
+    assert [(item["package_id"], item["component_run_ids"]) for item in packages] == [
+        ("default", {"model": "compile"})]
+    del model["build_requirements"]
+    with pytest.raises(ValidationError, match="w8a16 has no build requirements"):
+        _catalog_outputs(model)
 
 
 @pytest.mark.parametrize("continuing_revision", [False, True])
