@@ -21,6 +21,15 @@ upstream:
   revision: 64861ea6c85122bbf8577c10bd7fc6e551495b3a
   derived_from: https://github.com/michuanhaohao/reid-strong-baseline
 
+resources:
+  license:
+    # fast-reid publishes its weights as release files; its code repository carries the Apache-2.0 text.
+    source:
+      uri: https://raw.githubusercontent.com/JDAI-CV/fast-reid/64861ea6c85122bbf8577c10bd7fc6e551495b3a/LICENSE
+      sha256: 14a8a9a670fa989f040bc7a5d964fa7a478ffd7cb44407a9061303240d9e21df
+      size_bytes: 11347
+    install_path: licenses/LICENSE
+
 conversion:
   source:
     # fast-reid publishes its trained models only as GitHub release assets; Hugging Face has no official copy (the

@@ -11,18 +11,21 @@ a 2,048-value embedding. Crops of the same person from different cameras or
 moments give embeddings that point the same way, so your application matches
 people by comparing embeddings. The model runs as one component.
 
-## Inputs and outputs
+## Inputs
 
-**Input.** Crop one person, for example with a person detector, and resize the
-crop to 128×256 (width × height) with bicubic resampling. Keep the RGB values in
-0–255: the model subtracts the ImageNet mean and divides by the standard
-deviation itself. The accuracy script passes this crop as a 256×128×3 (height,
-width, channel) float tensor, with Neat's resize, color conversion, and
-normalization turned off. With Neat's preprocessing on, stretch the frame to the
-input and normalize with mean 0 and standard deviation 1/255 for each channel,
-which leaves the pixel values unchanged.
+One input, `images`: a 256×128×3 (height, width, channel) RGB person crop with values from 0 to 255.
 
-**Outputs.** `embedding` holds 2,048 values for the person in the crop.
+Preprocessing:
+
+1. Crop one person from the frame, for example with a person detector.
+2. Resize the crop to 128×256 (width × height) with bicubic resampling.
+3. Keep the RGB values from 0 to 255, with no mean or standard deviation: the model subtracts the ImageNet mean and divides by the standard deviation itself.
+
+## Outputs
+
+One output, `embedding`, with 2,048 values for the person in the crop.
+
+Postprocessing:
 
 1. Divide `embedding` by its L2 norm.
 2. Compare two people by the dot product of their normalized embeddings: values near 1 mean the same person.

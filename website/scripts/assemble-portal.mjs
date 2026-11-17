@@ -18,11 +18,13 @@ const revision = (
 ).slice(0, 12);
 
 const fingerprintedAssets = [
-  'app', 'state', 'ui', 'metrics', 'api', 'catalog-view', 'compare-view', 'model-view',
+  'app', 'state', 'audience', 'ui', 'metrics', 'api', 'catalog-view', 'compare-view', 'model-view', 'page-parts',
+  'performance-section', 'execution-section', 'accuracy-section', 'download-dialog',
   'model-report', 'mla-layer-stats', 'mla-utilization', 'branch-builds', 'downloads', 'markdown', 'accuracy-metrics',
   'brand', 'styles', 'config', 'portal-shell', 'hero-images', 'environment',
 ];
 const stylesheets = ['brand', 'styles'];
+const modules = fingerprintedAssets.filter((asset) => !stylesheets.includes(asset) && asset !== 'config');
 function gitMetadata(args) {
   try { return execFileSync('git', args, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim(); }
   catch { return null; } // Source archives may have CI metadata but no Git directory.
@@ -56,12 +58,14 @@ browserHtml = browserHtml
   .replace('href="brand.css"', `href="brand.${revision}.css"`)
   .replace('href="styles.css"', `href="styles.${revision}.css"`)
   .replace('src="config.js"', `src="${configFile}"`)
-  .replace('src="app.js"', `src="app.${revision}.js"`);
+  .replace('src="app.js"', `src="app.${revision}.js"`)
+  .replace('</head>', `${modules.map((asset) => `  <link rel="modulepreload" href="${asset}.${revision}.js">`).join('\n')}\n</head>`);
 writeFileSync(join(output, 'index.html'), browserHtml);
 
 // Repository data the page reads beside the registry API. api.js fetches each file by its unfingerprinted
-// name: the order each multi-component model runs in and the scores each source model's authors published,
-// both built from model.yaml by the registry tooling, and the browser's licenses.json, shipped as authored.
+// name: the order each multi-component model runs in, the scores each source model's authors published, and
+// the variants the customer view hides for low accuracy, and the name of each dataset, all built from the
+// repository by the registry tooling, and the browser's licenses.json, shipped as authored.
 const apiModule = join(output, `api.${revision}.js`);
 let apiSource = readFileSync(apiModule, 'utf8');
 function shipModelData(name, write) {
@@ -73,7 +77,7 @@ function shipModelData(name, write) {
   }
   apiSource = apiSource.replace(`"${url}"`, `"./${file}"`);
 }
-for (const name of ['component-pipelines', 'reference-metrics']) {
+for (const name of ['component-pipelines', 'reference-metrics', 'low-accuracy-variants', 'dataset-names']) {
   shipModelData(name, (file) => execFileSync(process.env.PYTHON || 'python3', [
     '-m', 'model_registry', name, '--repository', repository, '--output', file,
   ], {env: {...process.env, PYTHONPATH: join(repository, 'tools')}, stdio: 'inherit'}));
@@ -81,7 +85,6 @@ for (const name of ['component-pipelines', 'reference-metrics']) {
 shipModelData('licenses', (file) => cpSync(join(browser, 'licenses.json'), file));
 writeFileSync(apiModule, apiSource);
 
-const modules = fingerprintedAssets.filter((asset) => !stylesheets.includes(asset) && asset !== 'config');
 const relativeImport = /(["'])(\.\.?\/[^"'\s]*\.js)\1/g;
 for (const asset of modules) {
   const path = join(output, `${asset}.${revision}.js`);
@@ -95,7 +98,7 @@ for (const asset of modules) {
   writeFileSync(path, source);
 }
 
-console.log(`Assembled Model Registry portal at ${output}`);
+console.log(`Assembled Model Browser portal at ${output}`);
 console.log(`Catalog: ${routeBase}/`);
 console.log(`Developer docs: ${routeBase}/docs`);
 console.log(`Asset revision: ${revision}`);
