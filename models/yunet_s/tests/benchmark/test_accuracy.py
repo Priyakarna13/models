@@ -87,13 +87,13 @@ def _truth() -> list:
 
 
 def test_wider_face_ap_rewards_found_faces_and_ignores_unscored_ones(load_script: Callable[[str], ModuleType]) -> None:
-    widerface = load_script("widerface")
+    accuracy = load_script("accuracy")
     truth = _truth()
     perfect = {("0--Parade", "a"): np.array([[10, 10, 40, 40, 0.9], [100, 100, 20, 20, 0.8], [200, 50, 30, 30, 0.7]])}
     missing = {("0--Parade", "a"): np.array([[10, 10, 40, 40, 0.9], [100, 100, 20, 20, 0.8]])}
 
-    assert widerface.evaluate(perfect, truth) == pytest.approx({"easy": 1.0, "medium": 1.0, "hard": 1.0})
-    found = widerface.evaluate(missing, truth)
+    assert accuracy.evaluate(perfect, truth) == pytest.approx({"easy": 1.0, "medium": 1.0, "hard": 1.0})
+    found = accuracy.evaluate(missing, truth)
     # The missed third face caps the hard subset's recall at 2 of 3; the other subsets never score it.
     assert (found["easy"], found["medium"]) == pytest.approx((1.0, 1.0))
     assert found["hard"] == pytest.approx(2 / 3)
