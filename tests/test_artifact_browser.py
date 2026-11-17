@@ -398,6 +398,8 @@ def test_combined_portal_fingerprints_mutable_browser_assets() -> None:
         assert f"'{asset}'" in assemble
     assert "cpSync(docsBuild, output, {recursive: true})" in assemble
     assert "fingerprintedAssets" in assemble
+    # Each module is preloaded under the name the rewritten imports ask for.
+    assert '<link rel="modulepreload" href="${asset}.${revision}.js" />' in assemble
 
 
 def assemble_portal(root: Path) -> subprocess.CompletedProcess[str]:
@@ -1032,7 +1034,7 @@ def test_earlier_builds_pagination_tracks_the_selected_branch() -> None:
 
     assert 'query.set("git_ref", `refs/heads/${branch}`)' in script
     assert "availableBranches" in script
-    assert 'await loadRuns({ branch: elements["branch-filter"].value })' in script
+    assert 'loadRuns(inferBranches ? { branch: "", limit: 200 } : { branch: elements["branch-filter"].value })' in script
     assert 'elements["load-more"].hidden = !state.hasMore' in script
 
 
@@ -1107,6 +1109,8 @@ def test_model_catalog_is_default_with_explicit_build_history_mode() -> None:
     assert 'allPages(api, `${base}/runs`, compileQuery, "runs")' in script
     assert 'allPages(api, `${base}/runs`, packageQuery, "runs")' in script
     assert 'allPages(api, `${base}/models`, modelQuery, "models")' in script
+    # The cards are drawn from the definitions before the run lists arrive.
+    assert 'applyCatalog({ mode: "models", catalogDefinitions }, { cache: false });' in script
     assert 'query.set("run_type", "model_compile")' in script
     assert (
         'if (historical && !elements["history-filter"].checked) query.set("latest_per_model_compiler", "true")'
@@ -1819,7 +1823,8 @@ const packageRun = (id, components) => ({id, run_type: 'model_package', status: 
 const packages = [packageRun('good', {backbone: 'backbone', decoder: 'decoder'}),
                   packageRun('wrong', {backbone: 'backbone', decoder: 'old-decoder'})];
 const models = branchModels([...old, ...current], packages, catalog);
-assert.deepEqual(models.map(model => model.model_id), ['rf_detr_small']);
+// The branch lists no run of the inherited build, which shows as the catalog records it.
+assert.deepEqual(models.map(model => model.model_id), ['rf_detr_small', 'ssd_mobilenet']);
 assert.deepEqual(models[0].builds.map(build => build.run_id), ['backbone', 'decoder']);
 assert.equal(models[0].builds[0].run.git_ref, 'refs/heads/perf/rfdetr-attention-layout');
 // Only a profile showing the catalog's own build keeps its benchmark fingerprints.
@@ -1838,9 +1843,15 @@ const sameCompilerOld = [
 assert.deepEqual(
   branchModels([...sameCompilerOld, ...current], packages, catalog, '3.0')[0].builds.map(build => build.run_id),
   ['backbone', 'decoder']);
-assert.deepEqual(branchModels([], packages, catalog), []);
+// A catalog build whose run the branch does not list is shown as the catalog records it.
+assert.deepEqual(branchModels([], packages, catalog).map(model => model.builds.map(build => build.run_id)),
+                 [['stale-backbone', 'stale-decoder'], ['inherited']]);
+// A benchmark run is not a build.
 const performanceRun = {...run('benchmark', 'inherited', 'model', 'workflow-2'), run_type: 'model_performance'};
-assert.deepEqual(branchModels([performanceRun], [], catalog), []);
+assert.deepEqual(branchModels([performanceRun], [], []), []);
+// A catalog build whose listed run is not a compile run is not shown.
+assert.deepEqual(branchModels([{...performanceRun, id: 'inherited'}], [], catalog).map(model => model.model_id),
+                 ['rf_detr_small']);
 const develop = ['ssd_mobilenet', 'resnet50', 'yolov8', 'mobilenet', 'rf_detr_small', 'unet']
   .map(model => run(model, model, 'model', model));
 // Only models the catalog lists show; a removed model's runs stay in the registry.

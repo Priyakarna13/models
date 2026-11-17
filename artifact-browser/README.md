@@ -257,14 +257,19 @@ of `tools/model_report/metrics.json`, and tests keep them in step. Run
 search, and the filters a visitor uses. This section holds what the code does behind
 them.
 
-The initial view loads the repository branch catalog independently from build
-runs and caches both so repeat visits can render immediately while refreshing.
+The initial view draws the cards from the branch's catalog definitions as soon as they
+arrive, and adds what the run lists hold when those arrive: builds newer than the
+catalog and their packages. It saves the definitions and the taxonomy, so a repeat
+visit draws the cards at once while it refreshes.
 The selected branch's model cards show what the branch delivers: the builds in
 its catalog, including builds it inherits from its base branch. A completed
 build compiled on the branch that is newer than the catalog's build of the same
 model and build profile replaces it, so a build the catalog has not recorded
-still shows. Each build keeps the provenance of its own compile run, so an
-inherited build names the branch that compiled it. A branch without a catalog
+still shows. A build whose compile run is in the branch's run list keeps that run's
+provenance. An inherited build, whose run another branch compiled, is shown as the
+catalog records it, and its own page loads the full run. The catalog records no
+compiler for a promoted build, so the compiler filter hides promoted builds on a
+branch that did not compile them. A branch without a catalog
 shows an empty state until its first push completes. Components are grouped
 only within the same workflow build, and a full package appears only when its
 recorded component run IDs match the shown build.

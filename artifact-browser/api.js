@@ -97,7 +97,7 @@ function catalogCacheKey() {
   const categories = branchSnapshot ? [] : Object.entries(categoryFilters()).filter(([, value]) => value).sort();
   const search = branchSnapshot ? "" : elements.search.value.trim();
   const compiler = branchSnapshot ? "any" : elements["compiler-filter"].value || "any";
-  return `sima-neat-model-catalog:v5:${state.apiBase}:${repo.organization}/${repo.name}:${history}:${branch}:${compiler}:${search}:${JSON.stringify(categories)}`;
+  return `sima-neat-model-catalog:v6:${state.apiBase}:${repo.organization}/${repo.name}:${history}:${branch}:${compiler}:${search}:${JSON.stringify(categories)}`;
 }
 
 function branchCatalogCacheKey() {
@@ -159,16 +159,15 @@ export function readCachedCatalog() {
 
 export function writeCachedCatalog() {
   try {
+    // A branch catalog draws its cards from the definitions alone, so its saved copy holds no runs.
+    const snapshot = state.catalogMode === "models"
+      ? { catalogDefinitions: state.catalogDefinitions }
+      : { runs: state.runs, cursor: state.cursor, hasMore: state.hasMore };
     localStorage.setItem(catalogCacheKey(), JSON.stringify({
       savedAt: new Date().toISOString(),
       mode: state.catalogMode,
-      runs: state.runs,
-      compileRuns: state.compileRuns,
-      packageRuns: state.packageRuns,
-      catalogDefinitions: state.catalogDefinitions,
-      cursor: state.cursor,
-      hasMore: state.hasMore,
       taxonomy: state.taxonomy,
+      ...snapshot,
     }));
   } catch {
     // Storage may be disabled; the live registry remains fully functional.

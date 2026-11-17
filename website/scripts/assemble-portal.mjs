@@ -52,8 +52,17 @@ for (const asset of fingerprintedAssets.filter((asset) => asset !== 'config')) {
 }
 writeFileSync(join(output, configFile), configSource);
 
+const modules = fingerprintedAssets.filter((asset) => !stylesheets.includes(asset) && asset !== 'config');
+// The page imports its modules in waves, one per level of the import chain. Preloading fetches them together.
+const modulePreloads = modules
+  .map((asset) => `    <link rel="modulepreload" href="${asset}.${revision}.js" />\n`).join('');
+
 let browserHtml = readFileSync(join(browser, 'index.html'), 'utf8');
+if (!browserHtml.includes('  </head>')) {
+  throw new Error('index.html has no </head> line; update the module preload step in assemble-portal.mjs');
+}
 browserHtml = browserHtml
+  .replace('  </head>', `${modulePreloads}  </head>`)
   .replace('href="brand.css"', `href="brand.${revision}.css"`)
   .replace('href="styles.css"', `href="styles.${revision}.css"`)
   .replace('src="config.js"', `src="${configFile}"`)
@@ -83,7 +92,6 @@ for (const name of ['component-pipelines', 'reference-metrics', 'low-accuracy-va
 shipModelData('licenses', (file) => cpSync(join(browser, 'licenses.json'), file));
 writeFileSync(apiModule, apiSource);
 
-const modules = fingerprintedAssets.filter((asset) => !stylesheets.includes(asset) && asset !== 'config');
 const relativeImport = /(["'])(\.\.?\/[^"'\s]*\.js)\1/g;
 for (const asset of modules) {
   const path = join(output, `${asset}.${revision}.js`);

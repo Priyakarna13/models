@@ -67,6 +67,8 @@ export async function loadTaxonomy(branch = elements["branch-filter"].value || D
   if (!state.taxonomy) throw new Error("The registry did not return a model taxonomy.");
   populateCategoryFilters();
   setCategoryFiltersDisabled(false);
+  // Cards drawn before the taxonomy arrived lack their family grouping and category labels.
+  if (state.models.length) renderRuns();
 }
 
 export function activeFilterCount() {
@@ -94,8 +96,9 @@ export function applyCatalog(payload, { append = false, cache = true } = {}) {
   const modelsMode = payload.mode === "models";
   state.catalogMode = modelsMode ? "models" : "runs";
   if (modelsMode) {
-    state.compileRuns = payload.compileRuns;
-    state.packageRuns = payload.packageRuns;
+    // The run lists arrive after the definitions, and the saved catalog holds none.
+    state.compileRuns = payload.compileRuns || [];
+    state.packageRuns = payload.packageRuns || [];
     state.catalogDefinitions = payload.catalogDefinitions;
     state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,
       elements["compiler-filter"].value);
@@ -111,7 +114,8 @@ export function applyCatalog(payload, { append = false, cache = true } = {}) {
   }
   state.availableBranches = [...new Set([
     ...state.availableBranches,
-    ...state.runs.map((run) => branchName(run.git_ref)),
+    // A run the catalog stands in for records no branch.
+    ...state.runs.filter((run) => run.git_ref).map((run) => branchName(run.git_ref)),
   ])].sort();
   state.cursor = payload.next_cursor ?? payload.cursor ?? null;
   state.hasMore = Boolean(payload.has_more ?? payload.hasMore);
@@ -487,7 +491,7 @@ function renderModels() {
     ? `${families.length} model ${families.length === 1 ? "family" : "families"}`
     : `${models.length}${state.hasMore ? "+" : ""} model${models.length === 1 ? "" : "s"}`;
   if (!models.length) {
-    const noBuilds = !state.compileRuns.length && elements["branch-filter"].value;
+    const noBuilds = !state.models.length && !state.compileRuns.length && elements["branch-filter"].value;
     elements["result-list"].innerHTML = noBuilds
       ? `<div class="no-results"><span>0</span><h3>No models on this branch yet</h3><p>${branchSelectionEnabled ? "Its catalog appears after its first push completes. Select another branch to browse its models." : "No models have been published to Main yet."}</p></div>`
       : `<div class="no-results"><span>0</span><h3>No matching models</h3><p>Broaden the search or clear the current filters.</p><button type="button" data-action="clear">Reset filters</button></div>`;

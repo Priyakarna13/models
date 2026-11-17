@@ -1,7 +1,7 @@
 import { installHeroImageRecovery } from "./hero-images.js";
 import { mountDeveloperPortal } from "./portal-shell.js";
 import {
-  allPages, branchModels, catalogBuildRuns, runProfile, variantBuildKey, variantBuilds,
+  allPages, branchModels, runProfile, variantBuildKey, variantBuilds,
 } from "./branch-builds.js";
 import {
   config, shows, branchSelectionEnabled, DEFAULT_BRANCH, CATEGORY_QUERY_FIELDS, state, elements, categoryFilters,
@@ -164,27 +164,32 @@ async function loadRuns({ append = false, branch = elements["branch-filter"].val
     if (historical) {
       payload = await api(`${base}/runs?${query}`);
     } else {
+      const gitRef = `refs/heads/${branch}`;
       const compileQuery = new URLSearchParams(query);
-      compileQuery.set("limit", "100");
+      compileQuery.set("limit", "200");
       const packageQuery = new URLSearchParams({
-        limit: "100", status: "completed", run_type: "model_package", git_ref: `refs/heads/${branch}`,
+        limit: "200", status: "completed", run_type: "model_package", git_ref: gitRef,
       });
-      const modelQuery = new URLSearchParams({ limit: "100", git_ref: `refs/heads/${branch}` });
+      const modelQuery = new URLSearchParams({ limit: "200", git_ref: gitRef });
+      // A branch has no catalog until its first orchestrator run publishes one.
+      const definitions = allPages(api, `${base}/models`, modelQuery, "models").catch((error) => {
+        if (error.status === 404) return [];
+        throw error;
+      }).then(audienceCatalog);
+      // The definitions hold all a card shows, so the cards appear before the run lists arrive.
+      const cardsShown = definitions.then((catalogDefinitions) => {
+        if (!catalogDefinitions.length || requestId !== state.runsRequestId) return;
+        applyCatalog({ mode: "models", catalogDefinitions }, { cache: false });
+      });
       const [branchRuns, packageRuns, catalogDefinitions] = await Promise.all([
         allPages(api, `${base}/runs`, compileQuery, "runs"),
         allPages(api, `${base}/runs`, packageQuery, "runs"),
-        // A branch has no catalog until its first orchestrator run publishes one.
-        allPages(api, `${base}/models`, modelQuery, "models").catch((error) => {
-          if (error.status === 404) return [];
-          throw error;
-        }).then(audienceCatalog),
+        definitions,
+        cardsShown,
       ]);
-      const gitRef = `refs/heads/${branch}`;
-      const ownRuns = branchRuns.filter((run) => run.git_ref === gitRef);
-      const inheritedRuns = await catalogBuildRuns(catalogDefinitions, ownRuns, api, base);
       payload = {
         mode: "models",
-        compileRuns: [...ownRuns, ...inheritedRuns],
+        compileRuns: branchRuns.filter((run) => run.git_ref === gitRef),
         packageRuns: packageRuns.filter((run) => run.git_ref === gitRef),
         catalogDefinitions,
       };
@@ -288,30 +293,33 @@ async function initialize() {
       elements["branch-filter"].innerHTML = `<option value="${DEFAULT_BRANCH}">${DEFAULT_BRANCH}</option>`;
       elements["branch-filter"].value = DEFAULT_BRANCH;
     }
-    const taxonomyResult = await Promise.resolve(loadTaxonomy(elements["branch-filter"].value || DEFAULT_BRANCH)).then(
-      () => ({ status: "fulfilled" }),
-      (reason) => ({ status: "rejected", reason }),
-    );
     if (navigationId !== state.navigationId) return;
-    if (taxonomyResult.status === "rejected") {
-      setCategoryFiltersDisabled(true);
-      showToast(`Category filters are temporarily unavailable. ${taxonomyResult.reason.message}`, true);
-    }
     if (branchResult.status === "rejected") {
       showToast(`Branch catalog is temporarily unavailable. ${branchResult.reason.message}`, true);
     }
-    if (activeFilterCount()) setFilterDrawer(true);
-    if (cached || branchResult.status === "fulfilled" || state.availableBranches.length) {
-      await loadRuns({ branch: elements["branch-filter"].value });
-    } else {
-      // Without a branch catalog, infer branches from a broad runs page
-      // without making that page authoritative.
-      await loadRuns({ branch: "", limit: 200 });
-    }
+    const taxonomyLoaded = loadTaxonomy(elements["branch-filter"].value || DEFAULT_BRANCH).catch((error) => {
+      if (navigationId !== state.navigationId) return;
+      setCategoryFiltersDisabled(true);
+      showToast(`Category filters are temporarily unavailable. ${error.message}`, true);
+      // Family cards need the category filters, so cards already drawn are drawn again without them.
+      if (state.models.length) renderRuns();
+    }).then(() => {
+      if (activeFilterCount()) setFilterDrawer(true);
+    });
+    // A branch catalog filters by category on the page. Build history sends the category filters the
+    // taxonomy restores from the URL, so it waits for the taxonomy.
+    if (!branchSnapshotMode()) await taxonomyLoaded;
+    if (navigationId !== state.navigationId) return;
+    // Without a branch catalog, infer branches from a broad runs page without making that page authoritative.
+    const inferBranches = !cached && branchResult.status === "rejected" && !state.availableBranches.length;
+    await Promise.all([
+      taxonomyLoaded,
+      loadRuns(inferBranches ? { branch: "", limit: 200 } : { branch: elements["branch-filter"].value }),
+    ]);
   } catch (error) {
-    // The registry did answer, with an error: show the snapshot it could not refresh, or the error itself.
+    // The registry did answer, with an error: show the catalog it could not refresh, or the error itself.
     state.catalogLoaded = true;
-    if (cached) {
+    if (cached || state.models.length) {
       renderRuns();
       showToast(error.message, true);
     } else {
@@ -422,6 +430,11 @@ elements["branch-filter"].addEventListener("change", async () => {
   try {
     await loadRuns({ branch: state.preferredBranch });
   } catch (error) {
+    // Cards drawn from the branch's definitions stay when its run lists fail.
+    if (state.models.length) {
+      showToast(error.message, true);
+      return;
+    }
     elements["result-list"].innerHTML = errorPanel(error.message);
     elements["result-list"].setAttribute("aria-busy", "false");
   }

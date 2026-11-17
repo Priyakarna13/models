@@ -126,23 +126,22 @@ export function withoutProfiles(catalogModels, hiddenProfiles) {
   });
 }
 
-// Resolves the compile runs behind catalog builds that `knownRuns` lacks, such as builds a new
-// branch inherits. The catalog names each run and its commit; the run carries its own branch.
-export async function catalogBuildRuns(catalogModels, knownRuns, fetchPage, repositoryPath) {
-  catalogModels = catalogModels.map(deploymentCatalog);
-  const known = new Set(knownRuns.map((run) => run.id));
-  const missing = new Map(catalogModels.flatMap((model) => model.builds || [])
-    .filter((build) => build.run_id && !known.has(build.run_id))
-    .map((build) => [build.run_id, build]));
-  const commits = [...new Set([...missing.values()].map((build) => build.commit_sha).filter(Boolean))];
-  const byCommit = await Promise.all(commits.map((commit) => allPages(fetchPage, `${repositoryPath}/runs`,
-    new URLSearchParams({ commit_sha: commit, status: "completed", run_type: "model_compile", limit: "100" }), "runs")));
-  const runs = byCommit.flat().filter((run) => missing.has(run.id));
-  // The run list omits superseded runs; a catalog may still name one.
-  const found = new Set(runs.map((run) => run.id));
-  const rest = await Promise.all([...missing.keys()].filter((id) => !found.has(id))
-    .map(async (id) => (await fetchPage(`/v1/runs/${encodeURIComponent(id)}`)).run));
-  return [...runs, ...rest];
+// The compile run of a catalog build, as far as the catalog records it. It stands for a run the branch's run
+// list lacks, such as the run of a build the branch inherits. A catalog lists completed builds. A deployment
+// selection records neither the run's status, nor its branch, nor its compiler.
+function catalogBuildRun(model, build) {
+  return {
+    id: build.run_id,
+    run_type: "model_compile",
+    status: build.status || "completed",
+    commit_sha: build.commit_sha,
+    toolchain_name: build.toolchain_name,
+    toolchain_version: build.toolchain_version,
+    target_platform: build.target_platform,
+    created_at: build.created_at,
+    finished_at: build.finished_at,
+    metadata: { model_id: model.model_id, build_profile_id: build.build_profile_id, component_id: build.component_id },
+  };
 }
 
 // Shows the catalog's build of each model and build profile, unless `compileRuns` holds a newer
@@ -150,19 +149,18 @@ export async function catalogBuildRuns(catalogModels, knownRuns, fetchPage, repo
 export function branchModels(compileRuns, packageRuns, catalogModels, compiler = "") {
   catalogModels = catalogModels.map(deploymentCatalog);
   const definitions = new Map(catalogModels.map((model) => [model.model_id, model]));
-  const runs = compileRuns.filter((run) => {
-    const meta = run.metadata || {};
-    return run.status === "completed" && run.run_type === "model_compile" && meta.model_id
-      && (!compiler || run.toolchain_version === compiler);
-  });
+  const shown = (run) => run.status === "completed" && run.run_type === "model_compile" && run.metadata?.model_id
+    && (!compiler || run.toolchain_version === compiler);
+  const runs = compileRuns.filter(shown);
   const variantKey = (modelId, profile) => JSON.stringify([modelId, profile]);
 
   const latest = new Map();
-  const runsById = new Map(runs.map((run) => [run.id, run]));
+  const listedRuns = new Map(compileRuns.map((run) => [run.id, run]));
   for (const model of catalogModels) {
     for (const build of model.builds || []) {
-      const run = runsById.get(build.run_id);
-      if (!run || build.build_profile_id !== runProfile(run)
+      if (!build.run_id) continue;
+      const run = listedRuns.get(build.run_id) || catalogBuildRun(model, build);
+      if (!shown(run) || build.build_profile_id !== runProfile(run)
         || build.component_id !== run.metadata.component_id) continue;
       const key = variantKey(model.model_id, runProfile(run));
       if (!latest.has(key)) latest.set(key, { modelId: model.model_id, profile: runProfile(run), runs: [], time: 0, catalog: true });

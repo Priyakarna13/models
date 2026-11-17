@@ -93,7 +93,9 @@ build, because none of them is part of a fingerprint.
 
 The search field matches model, build-profile, and component names and the taxonomy
 labels and family descriptions. Task and model family filters sit beside the cards. Developer view also
-shows Branch, Compiler and Build history directly in the filter panel. Customer
+shows Branch, Compiler and Build history directly in the filter panel. A selected
+compiler hides a promoted build on a branch that did not compile it, because the
+catalog records no compiler for that build. Customer
 view keeps only Task and Model family. Category filters list the values the
 loaded builds use and are hidden when fewer than two remain. Selecting a task
 narrows Model family to the families with that task, and selecting a family

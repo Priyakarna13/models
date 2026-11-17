@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
-const {deploymentCatalog, branchModels, catalogBuildRuns, withoutProfiles} = await import(new URL('../../artifact-browser/branch-builds.js', import.meta.url));
+const {deploymentCatalog, branchModels, withoutProfiles} = await import(new URL('../../artifact-browser/branch-builds.js', import.meta.url));
 
 const run = (id, model, ref, time, extra = {}) => ({
   id, repository: 'sima-neat/models', run_type: 'model_compile', status: 'completed', git_ref: ref,
@@ -13,14 +13,17 @@ const develop = 'refs/heads/develop';
 const feature = 'refs/heads/feat/ui';
 const resnet = run('resnet-develop', 'resnet_50', develop, '2026-10-01T00:00:00Z');
 const yolo = run('yolo-develop', 'yolo', develop, '2026-10-01T00:00:00Z');
-const catalogBuild = (item) => ({run_id: item.id, commit_sha: item.commit_sha, build_profile_id: 'int8', component_id: 'model'});
+const catalogBuild = (item) => ({
+  run_id: item.id, commit_sha: item.commit_sha, build_profile_id: 'int8', component_id: 'model',
+  status: 'completed', finished_at: item.finished_at,
+});
 const catalog = [
   {model_id: 'resnet_50', display_name: 'ResNet-50', builds: [catalogBuild(resnet)],
    packages: [{run_id: 'resnet-package', build_profile_id: 'int8', component_run_ids: {model: 'resnet-develop'}}]},
   {model_id: 'yolo', display_name: 'YOLO', builds: [catalogBuild(yolo)]},
 ];
 
-test('approved native roots select original runs and packages while newer candidates stay hidden', async () => {
+test('approved native roots select original runs and packages while newer candidates stay hidden', () => {
   const newer = run('newer', 'resnet_50', feature, '2026-10-02T00:00:00Z');
   const definition = {...catalog[0], builds: [], packages: [], build_on_demand: true,
     build_requirements: {int8: {packages: [{id: 'default', component_ids: ['model']}]}},
@@ -30,12 +33,7 @@ test('approved native roots select original runs and packages while newer candid
         {package_id: 'default', run_id: 'approved-package', artifact_name: 'package', layout: 'directory', format: 'llima'},
       ]},
   }};
-  const inherited = await catalogBuildRuns([definition], [newer], async path => {
-    assert.equal(path, `/v1/runs/${resnet.id}`);
-    return {run: resnet};
-  }, '/v1/repositories/sima-neat/models');
-  assert.deepEqual(inherited, [resnet]);
-  const [model] = branchModels([newer, ...inherited], [], [definition]);
+  const [model] = branchModels([newer], [], [definition]);
   assert.deepEqual(model.builds.map(build => build.run_id), [resnet.id]);
   assert.equal(model.builds[0].artifact_name, 'llima');
   assert.equal(model.packages[0].run_id, 'approved-package');
@@ -119,22 +117,52 @@ test('a profile still pending in the catalog shows its completed run', () => {
   assert.deepEqual(model.builds.map((build) => build.build_profile_id).sort(), ['bf16', 'int8']);
 });
 
-test('catalog runs are resolved by commit, then by id for runs the list omits', async () => {
-  const superseded = run('superseded', 'yolo', develop, '2026-09-01T00:00:00Z');
-  const models = [...catalog, {model_id: 'old', builds: [catalogBuild(superseded)]}];
-  const paths = [];
-  const runs = await catalogBuildRuns(models, [yolo], async (path) => {
-    paths.push(path);
-    if (path.startsWith('/v1/runs/')) return {run: superseded};
-    assert.match(path, /^\/v1\/repositories\/sima-neat\/models\/runs\?/);
-    assert.match(path, /run_type=model_compile/);
-    return {runs: [resnet, run('unrelated', 'other', develop, '2026-10-01T00:00:00Z')], has_more: false};
-  }, '/v1/repositories/sima-neat/models');
+test('a catalog build whose run the branch does not list is shown as the catalog records it', () => {
+  const benchmark_fingerprints = {int8: {performance: 'performance-fingerprint'}};
+  const models = branchModels([], [], [{...catalog[0], benchmark_fingerprints}, catalog[1]]);
 
-  assert.deepEqual(runs.map((item) => item.id), ['resnet-develop', 'superseded']);
-  // One query for the shared commit; the known yolo run is not fetched again.
-  assert.equal(paths.filter((path) => path.includes('commit_sha=')).length, 1);
-  assert.deepEqual(paths.filter((path) => path.startsWith('/v1/runs/')), ['/v1/runs/superseded']);
+  assert.deepEqual(models.map((model) => model.model_id), ['resnet_50', 'yolo']);
+  const [build] = models[0].builds;
+  assert.equal(build.run.id, 'resnet-develop');
+  assert.equal(build.run.commit_sha, resnet.commit_sha);
+  assert.equal(build.run.finished_at, resnet.finished_at);
+  assert.deepEqual(build.run.metadata, {model_id: 'resnet_50', build_profile_id: 'int8', component_id: 'model'});
+  // The catalog records neither the run's branch nor, for this build, its compiler.
+  assert.equal(build.run.git_ref, undefined);
+  assert.equal(build.toolchain_version, undefined);
+  assert.deepEqual(models[0].packages.map((item) => item.run_id), ['resnet-package']);
+  assert.deepEqual(models[0].benchmark_fingerprints, benchmark_fingerprints);
+});
+
+test('a profile keeps every component when the branch lists only some of its runs', () => {
+  const component = (id) => run(id, 'example', develop, '2026-10-01T00:00:00Z',
+    {metadata: {model_id: 'example', build_profile_id: 'int8', component_id: id, github_run_id: 'workflow'}});
+  const definition = {model_id: 'example', builds: ['backbone', 'head'].map((id) => (
+    {run_id: id, build_profile_id: 'int8', component_id: id, finished_at: '2026-10-01T00:00:00Z'}))};
+  const [model] = branchModels([component('head')], [], [definition]);
+
+  assert.deepEqual(model.builds.map((build) => build.component_id), ['backbone', 'head']);
+  assert.equal(model.builds[0].run.git_ref, undefined);
+  assert.equal(model.builds[1].run.git_ref, develop);
+});
+
+test('the compiler filter shows an unlisted catalog build only when the catalog records that compiler', () => {
+  const recorded = [{...catalog[0], builds: [{...catalogBuild(resnet), toolchain_version: '3.0.0'}]}, catalog[1]];
+
+  assert.deepEqual(branchModels([], [], recorded, '3.0.0').map((model) => model.model_id), ['resnet_50']);
+  assert.deepEqual(branchModels([], [], recorded, '2.1.3'), []);
+});
+
+test('an unlisted catalog build that did not complete is not shown', () => {
+  const failed = [{...catalog[0], builds: [{...catalogBuild(resnet), status: 'failed'}]}];
+
+  assert.deepEqual(branchModels([], [], failed), []);
+});
+
+test('an older run compiled on the branch does not replace an unlisted catalog build', () => {
+  const stale = run('resnet-stale', 'resnet_50', feature, '2026-09-01T00:00:00Z');
+
+  assert.equal(branchModels([stale], [], catalog)[0].builds[0].run_id, 'resnet-develop');
 });
 
 
@@ -146,7 +174,7 @@ test('completed candidates never replace an on-demand catalog approved build or 
   assert.equal(models[0].packages[0].run_id, 'resnet-package');
 });
 
-test('feature catalogs show finalized selections rather than arbitrary completed runs', async () => {
+test('feature catalogs show finalized selections rather than arbitrary completed runs', () => {
   const candidate = run('candidate', 'qwen', feature, '2026-10-02T00:00:00Z');
   const newer = run('newer', 'qwen', feature, '2026-10-03T00:00:00Z');
   const definition = {model_id: 'qwen', display_name: 'Qwen', build_on_demand: true, builds: [], packages: []};
@@ -154,11 +182,7 @@ test('feature catalogs show finalized selections rather than arbitrary completed
   const selected = {...definition, branch_deployments: {int8: {artifacts: [
     {component_id: 'model', run_id: candidate.id, artifact_name: 'llima', layout: 'directory', format: 'llima'},
   ]}}};
-  const resolved = await catalogBuildRuns([selected], [newer], async path => {
-    assert.equal(path, `/v1/runs/${candidate.id}`);
-    return {run: candidate};
-  }, '/v1/repositories/sima-neat/models');
-  const [model] = branchModels([newer, ...resolved], [], [selected]);
+  const [model] = branchModels([newer], [], [selected]);
   assert.equal(model.builds[0].run_id, candidate.id);
   assert.equal(model.builds[0].artifact_name, 'llima');
   assert.deepEqual(definition.builds, []);
@@ -203,7 +227,7 @@ test('unapproved packages cannot replace the catalog package of an on-demand bui
   assert.deepEqual(model.packages.map((item) => item.run_id), ['resnet-package']);
 });
 
-test('deployment-only catalogs resolve inherited builds and keep the selected package despite newer runs', async () => {
+test('deployment-only catalogs show inherited builds and keep the selected package despite newer runs', () => {
   const selection = {artifacts: [
     {run_id: resnet.id, component_id: 'model', artifact_name: 'llima', layout: 'directory'},
     {run_id: 'folder-package', package_id: 'default', artifact_name: 'package', layout: 'directory'},
@@ -211,12 +235,8 @@ test('deployment-only catalogs resolve inherited builds and keep the selected pa
   const definitions = [{model_id: 'resnet_50', builds: [], pending_builds: [],
     build_requirements: {int8: {packages: [{id: 'default', component_ids: ['model']}]}},
     branch_deployments: {int8: selection}}];
-  const inherited = await catalogBuildRuns(definitions, [], async path => {
-    assert.equal(path, '/v1/runs/resnet-develop');
-    return {run: resnet};
-  }, '/repo');
   const newer = {...resnet, id: 'newer', finished_at: '2026-10-17T00:00:00Z'};
-  const [model] = branchModels([newer, ...inherited], [], definitions);
+  const [model] = branchModels([newer], [], definitions);
   assert.equal(model.builds[0].run_id, resnet.id);
   assert.equal(model.packages[0].run_id, 'folder-package');
   assert.deepEqual(model.packages[0].component_run_ids, {model: resnet.id});

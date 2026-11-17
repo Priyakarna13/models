@@ -121,8 +121,11 @@ A feature branch that later merges `develop` does not repeat that work. It leave
 - A completed build compiled on the branch that is newer than the catalog entry for its
   model and build profile replaces that entry. A build missing from the catalog therefore
   still shows.
-- Each build keeps its own compile run's branch, commit, and compiler. A reused build
-  names the branch that compiled it.
+- A build whose compile run is in the branch's run list keeps that run's branch, commit,
+  and compiler. A reused build, whose run another branch compiled, is shown as the
+  catalog records it (`catalogBuildRun`), and its model page loads the full run. A
+  deployment selection records no compiler, so the compiler filter hides a promoted
+  build on a branch that did not compile it.
 - A profile keeps its benchmark fingerprints only while the view shows the catalog's own
   build.
 - A deployment selection replaces a profile's catalog builds and packages
