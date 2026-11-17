@@ -87,7 +87,9 @@ def test_samples_use_each_images_largest_object_in_a_seeded_order(
         *({"image_id": index, "area": 5.0, "bbox": [0, 0, 1, 5], "iscrowd": 0} for index in range(1, 4)),
     ]
     files = {f"coco/cal2017/{image['file_name']}": _png(40, 30) for image in images}
-    files["coco/annotations/instances_cal2017.json"] = json.dumps({"images": images, "annotations": annotations}).encode()
+    files["coco/annotations/instances_cal2017.json"] = json.dumps(
+        {"images": images, "annotations": annotations}
+    ).encode()
     archive = _write_archive(tmp_path / "cal.tgz", files)
 
     boxes = calibration.largest_boxes(archive)
@@ -103,7 +105,9 @@ def test_samples_use_each_images_largest_object_in_a_seeded_order(
     assert prompt["points"][0, :2, 2:7].argmax(-1).tolist() == [3, 4]
 
 
-def test_positional_encoding_is_sine_and_cosine_of_the_projected_point(load_script: Callable[[str], ModuleType]) -> None:
+def test_positional_encoding_is_sine_and_cosine_of_the_projected_point(
+    load_script: Callable[[str], ModuleType],
+) -> None:
     recipe = load_script("compile")
     gaussian = np.asarray([[0.25, 0.0], [0.0, 0.5]], np.float32)
     # c = 0.5 projects to 0: sine 0 and cosine 1. c = 1 projects to 2*pi*G's rows.
@@ -194,9 +198,21 @@ def test_audit_requires_one_mla_plugin_no_cpu_plugin_and_the_inputs(
 @pytest.mark.parametrize(
     ("model", "arguments", "message"),
     [
-        ("efficientsam_ti_encoder.onnx", ["--build-profile", "w16a16", "--compile-invocation", "w8a8"], "named after it"),
-        ("model.onnx", ["--build-profile", "w16a16", "--compile-invocation", "w16a16"], "the pinned efficientsam_ti_encoder"),
-        ("efficientsam_ti_encoder.onnx", ["--build-profile", "w16a16", "--compile-invocation", "w16a16"], "must sit beside"),
+        (
+            "efficientsam_ti_encoder.onnx",
+            ["--build-profile", "w16a16", "--compile-invocation", "w8a8"],
+            "named after it",
+        ),
+        (
+            "model.onnx",
+            ["--build-profile", "w16a16", "--compile-invocation", "w16a16"],
+            "the pinned efficientsam_ti_encoder",
+        ),
+        (
+            "efficientsam_ti_encoder.onnx",
+            ["--build-profile", "w16a16", "--compile-invocation", "w16a16"],
+            "must sit beside",
+        ),
     ],
 )
 def test_compile_main_rejects_an_incomplete_invocation(
@@ -231,7 +247,11 @@ def test_build_holds_both_components_and_follows_the_onnx(
     for item in outputs["outputs"]:
         recipe.audit_mpk(compiled / item["mpk_path"], item["component_id"])
     fidelity = json.loads((compiled / "fidelity.json").read_text(encoding="utf-8"))
-    assert [metric["name"] for metric in fidelity["metrics"]] == ["image_embeddings", "iou_predictions", "low_res_masks"]
+    assert [metric["name"] for metric in fidelity["metrics"]] == [
+        "image_embeddings",
+        "iou_predictions",
+        "low_res_masks",
+    ]
     # BF16 keeps every output close to the ONNX, and INT8 may drift but not collapse. A broken operator or a collapsed
     # INT8 build shows up as a low cosine, and a failed test leaves the build unpublished.
     floor = 0.99 if build_profile == "w16a16" else 0.95

@@ -93,13 +93,16 @@ def object_mask() -> np.ndarray:
     """The pixels of the frame's object: an ellipse 20 pixels inside OBJECT_BOX."""
     ys, xs = np.mgrid[0:FRAME_HEIGHT, 0:FRAME_WIDTH].astype(np.float32)
     x0, y0, x1, y1 = OBJECT_BOX
-    return (((xs - (x0 + x1) / 2) / ((x1 - x0) / 2 - 20)) ** 2 + ((ys - (y0 + y1) / 2) / ((y1 - y0) / 2 - 20)) ** 2) <= 1
+    return (
+        ((xs - (x0 + x1) / 2) / ((x1 - x0) / 2 - 20)) ** 2 + ((ys - (y0 + y1) / 2) / ((y1 - y0) / 2 - 20)) ** 2
+    ) <= 1
 
 
 def prompt_array(points: list[tuple[float, float]], types: list[str], size: tuple[int, int]) -> np.ndarray:
     """The prompt decoder's points [1,6,8] for points in the image's pixels: per row x, y, the one-hot type and a 0.
 
-    A point (x, y) of a height x width image becomes ((x * 1024 / width + 0.5) / 1024, (y * 1024 / height + 0.5) / 1024);
+    A point (x, y) of a height x width image becomes ((x * 1024 / width + 0.5) / 1024,
+    (y * 1024 / height + 0.5) / 1024);
     unused rows are padding at coordinate -1, as EfficientSAM pads its prompts.
     """
     height, width = size
@@ -184,7 +187,9 @@ def check_mask(image_encoder: pyneat.ModelRunner, prompt_decoder: pyneat.ModelRu
     truth = object_mask()
     iou = float(np.sum(mask & truth) / np.sum(mask | truth))
     if iou < MIN_OBJECT_IOU:
-        raise RuntimeError(f"the compiled models' mask covers the frame's object with IoU {iou:.3f}, below {MIN_OBJECT_IOU}")
+        raise RuntimeError(
+            f"the compiled models' mask covers the frame's object with IoU {iou:.3f}, below {MIN_OBJECT_IOU}"
+        )
     return iou
 
 

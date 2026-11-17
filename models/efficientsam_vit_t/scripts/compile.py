@@ -54,7 +54,10 @@ MODEL_ID = "efficientsam_vit_t"
 COMPONENT_IDS = ("image_encoder", "prompt_decoder")
 SOURCE_FILES = {"image_encoder": "efficientsam_ti_encoder.onnx", "prompt_decoder": "efficientsam_ti_decoder.onnx"}
 COMPONENT_GRAPHS = {
-    "image_encoder": {"inputs": {"batched_images": (1, 3, 1024, 1024)}, "outputs": {"image_embeddings": (1, 256, 64, 64)}},
+    "image_encoder": {
+        "inputs": {"batched_images": (1, 3, 1024, 1024)},
+        "outputs": {"image_embeddings": (1, 256, 64, 64)},
+    },
     "prompt_decoder": {
         "inputs": {"image_embeddings": (1, 256, 64, 64), "points": (1, MAX_POINTS, POINT_COLUMNS)},
         "outputs": {"iou_predictions": (1, 1, 3), "low_res_masks": (1, 3, 256, 256)},
@@ -134,7 +137,9 @@ def _fold(model: onnx.ModelProto, shapes: dict[str, list[int]] | None = None) ->
     result does not depend on how much the installed onnxsim folds on its own."""
     from onnxsim import simplify  # only the Model Compiler's environment has onnxsim
 
-    folded, valid = simplify(model, overwrite_input_shapes=shapes, dynamic_input_shape=False, perform_optimization=False)
+    folded, valid = simplify(
+        model, overwrite_input_shapes=shapes, dynamic_input_shape=False, perform_optimization=False
+    )
     if not valid:
         raise RuntimeError("onnxsim could not validate the folded graph")
     for _ in range(8):
@@ -142,7 +147,9 @@ def _fold(model: onnx.ModelProto, shapes: dict[str, list[int]] | None = None) ->
         replaced = 0
         for node in list(folded.graph.node):
             if node.op_type == "Shape" and node.input[0] in known:
-                attributes = {attribute.name: onnx.helper.get_attribute_value(attribute) for attribute in node.attribute}
+                attributes = {
+                    attribute.name: onnx.helper.get_attribute_value(attribute) for attribute in node.attribute
+                }
                 value = known[node.input[0]][attributes.get("start", 0):attributes.get("end", None)]
                 constant = onnx.helper.make_node("Constant", [], list(node.output),
                                                  value=numpy_helper.from_array(np.asarray(value, np.int64)))
@@ -182,7 +189,9 @@ def _remove_leftovers(model: onnx.ModelProto) -> onnx.ModelProto:
     graph = model.graph
     constants = {item.name: numpy_helper.to_array(item) for item in graph.initializer}
     inferred = shape_inference.infer_shapes(model).graph
-    shapes = {v.name: [d.dim_value for d in v.type.tensor_type.shape.dim] for v in [*inferred.value_info, *inferred.input]}
+    shapes = {
+        v.name: [d.dim_value for d in v.type.tensor_type.shape.dim] for v in [*inferred.value_info, *inferred.input]
+    }
     renames: dict[str, str] = {}
     for node in list(graph.node):
         if node.op_type == "If" and node.input[0] in constants:
@@ -248,7 +257,9 @@ def _group_norms_as_pools(model: onnx.ModelProto) -> onnx.ModelProto:
             onnx.helper.make_node("Sub", [source, f"{prefix}_mean"], [f"{prefix}_centred"]),
             onnx.helper.make_node("Mul", [f"{prefix}_centred", f"{prefix}_centred"], [f"{prefix}_squares"]),
             onnx.helper.make_node("GlobalAveragePool", [f"{prefix}_squares"], [f"{prefix}_channel_variances"]),
-            onnx.helper.make_node("ReduceMean", [f"{prefix}_channel_variances"], [f"{prefix}_variance"], axes=[1], keepdims=1),
+            onnx.helper.make_node(
+                "ReduceMean", [f"{prefix}_channel_variances"], [f"{prefix}_variance"], axes=[1], keepdims=1
+            ),
             onnx.helper.make_node("Add", [f"{prefix}_variance", f"{prefix}_epsilon"], [f"{prefix}_shifted"]),
             onnx.helper.make_node("Sqrt", [f"{prefix}_shifted"], [f"{prefix}_deviation"]),
             onnx.helper.make_node("Div", [f"{prefix}_centred", f"{prefix}_deviation"], [target]),
@@ -351,7 +362,10 @@ def decoder_graph(source: Path) -> onnx.ModelProto:
                                                list(COMPONENT_GRAPHS["prompt_decoder"]["outputs"]["low_res_masks"]))
     del graph.output[:]
     graph.output.extend([*outputs, masks])
-    shapes = {"image_embeddings": list(COMPONENT_GRAPHS["prompt_decoder"]["inputs"]["image_embeddings"]), TOKENS: tokens_shape}
+    shapes = {
+        "image_embeddings": list(COMPONENT_GRAPHS["prompt_decoder"]["inputs"]["image_embeddings"]),
+        TOKENS: tokens_shape,
+    }
     model = _fold(_remove_leftovers(_fold(_remove_leftovers(_fold(model, shapes)))))
     model = _rename(_group_norms_as_pools(model), {TOKENS: "tokens", low_res: "low_res_masks"})
 
@@ -407,12 +421,16 @@ def _check_decoder(source: Path, model: onnx.ModelProto) -> None:
     embeddings = embeddings.astype(np.float32)
     for points, types, size in CHECK_PROMPTS:
         expected = _original_decode(original, embeddings, points, types, size)
-        actual = dict(zip(names, static.run(None, {"image_embeddings": embeddings, **prompt_inputs(points, types, size)})))
+        actual = dict(
+            zip(names, static.run(None, {"image_embeddings": embeddings, **prompt_inputs(points, types, size)}))
+        )
         for name, reference in (("low_res_masks", expected[low_res]), ("iou_predictions", expected["iou_predictions"])):
             # Relative to the output's range: the rewritten normalization sums in a different order than the original.
             difference = float(np.abs(actual[name] - reference).max()) / max(1.0, float(np.abs(reference).max()))
             if actual[name].shape != reference.shape or difference > 1e-3:
-                raise RuntimeError(f"the static decoder's {name} differs from the original for {types}: {difference:.2e}")
+                raise RuntimeError(
+                    f"the static decoder's {name} differs from the original for {types}: {difference:.2e}"
+                )
             logging.info("decoder check %s %s: max difference %.2e of the output's range", types, name, difference)
 
 
@@ -436,7 +454,10 @@ def _prepare_phase(source_dir: Path, temporary_dir: Path, calibration_dataset: P
         return encoder.run(None, {"batched_images": image[None]})[0]
 
     calibration_samples = load_samples(calibration_dataset, calibration)
-    np.savez(temporary_dir / CALIBRATION_EMBEDDINGS, embeddings=np.concatenate([embed(image) for image, _ in calibration_samples]))
+    np.savez(
+        temporary_dir / CALIBRATION_EMBEDDINGS,
+        embeddings=np.concatenate([embed(image) for image, _ in calibration_samples]),
+    )
     references: dict[str, list[np.ndarray]] = {"image_embeddings": [], "iou_predictions": [], "low_res_masks": []}
     names = [output.name for output in decoder.get_outputs()]
     for image, prompt in load_samples(fidelity_dataset, fidelity):
@@ -620,7 +641,9 @@ class _OutputError:
 
 
 def _execute(model: Any, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
-    outputs = model.execute(inputs={InputName(name): _afe_layout(value) for name, value in inputs.items()}, use_jax=True)
+    outputs = model.execute(
+        inputs={InputName(name): _afe_layout(value) for name, value in inputs.items()}, use_jax=True
+    )
     return [np.asarray(output) for output in outputs]
 
 
@@ -633,7 +656,9 @@ def _by_shape(outputs: list[np.ndarray], component_id: str, name: str) -> np.nda
             return output
         if output.ndim == 4 and output.transpose(0, 3, 1, 2).shape == shape:
             return output.transpose(0, 3, 1, 2)
-    raise RuntimeError(f"the quantized {component_id} returned no {name} of shape {shape}: {[o.shape for o in outputs]}")
+    raise RuntimeError(
+        f"the quantized {component_id} returned no {name} of shape {shape}: {[o.shape for o in outputs]}"
+    )
 
 
 def _encoder_phase(graph: Path, temporary_dir: Path, profile_id: str, parameters: dict[str, Any],
@@ -658,7 +683,10 @@ def _decoder_phase(graph: Path, temporary_dir: Path, profile_id: str, parameters
     with np.load(temporary_dir / CALIBRATION_EMBEDDINGS) as saved:
         calibration_embeddings = saved["embeddings"]
     prompts = [prompt for _, prompt in load_samples(calibration_dataset, calibration)]
-    data = {"image_embeddings": calibration_embeddings, "points": np.concatenate([prompt["points"] for prompt in prompts])}
+    data = {
+        "image_embeddings": calibration_embeddings,
+        "points": np.concatenate([prompt["points"] for prompt in prompts]),
+    }
     name = _component_name(profile_id, "prompt_decoder")
     decoder = _quantize_component(graph, name, "prompt_decoder", parameters, data)
     _compile_component(decoder, temporary_dir / name, "prompt_decoder", parameters["precision"])
@@ -668,7 +696,9 @@ def _decoder_phase(graph: Path, temporary_dir: Path, profile_id: str, parameters
         reference = {key: saved[key] for key in saved.files}
     errors = {name: _OutputError(name) for name in ("image_embeddings", "iou_predictions", "low_res_masks")}
     for index, (_, prompt) in enumerate(load_samples(fidelity_dataset, fidelity)):
-        errors["image_embeddings"].add(reference["image_embeddings"][index : index + 1], quantized_embeddings[index : index + 1])
+        errors["image_embeddings"].add(
+            reference["image_embeddings"][index : index + 1], quantized_embeddings[index : index + 1]
+        )
         outputs = _execute(decoder, {"image_embeddings": quantized_embeddings[index : index + 1], **prompt})
         for output in ("iou_predictions", "low_res_masks"):
             errors[output].add(reference[output][index : index + 1], _by_shape(outputs, "prompt_decoder", output))
@@ -811,7 +841,9 @@ def main() -> int:
     if not fidelity_dataset.exists():
         parser.error(f"fidelity dataset does not exist: {fidelity_dataset}")
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-    outputs = compile_model(source, args.build_profile, dataset, fidelity_dataset, args.output_dir.expanduser().resolve())
+    outputs = compile_model(
+        source, args.build_profile, dataset, fidelity_dataset, args.output_dir.expanduser().resolve()
+    )
     for component_id, archive in outputs.items():
         logging.info("Compiled %s MPK: %s", component_id, archive)
     return 0

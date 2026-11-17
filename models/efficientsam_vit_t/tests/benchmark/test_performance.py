@@ -80,7 +80,9 @@ def test_the_benchmark_stops_unless_the_mask_covers_the_frames_object(load_scrip
         script.check_mask(encoder, _Runner(scores, np.full((1, 256, 256, 3), -5.0, np.float32)), None)
 
 
-def test_the_benchmark_frame_is_fixed_and_its_object_fills_the_prompt_box(load_script: Callable[[str], ModuleType]) -> None:
+def test_the_benchmark_frame_is_fixed_and_its_object_fills_the_prompt_box(
+    load_script: Callable[[str], ModuleType],
+) -> None:
     script = load_script("performance")
     first, second = script.synthetic_frame(), script.synthetic_frame()
 

@@ -38,7 +38,8 @@ def encoder_input(content: bytes) -> tuple[np.ndarray, tuple[int, int]]:
 def prompt_inputs(points: list[tuple[float, float]], types: list[str], size: tuple[int, int]) -> dict[str, np.ndarray]:
     """The prompt decoder's points [1,6,8] for points in the image's pixels: per row x, y, the one-hot type and a 0.
 
-    A point (x, y) of a height x width image becomes ((x * 1024 / width + 0.5) / 1024, (y * 1024 / height + 0.5) / 1024);
+    A point (x, y) of a height x width image becomes ((x * 1024 / width + 0.5) / 1024,
+    (y * 1024 / height + 0.5) / 1024);
     unused rows are padding at coordinate -1, as EfficientSAM pads its prompts.
     """
     if not 0 < len(points) == len(types) <= MAX_POINTS:
@@ -107,7 +108,9 @@ def select_samples(dataset: Path, seed: int, offset: int, samples: int) -> list[
     return [(name, boxes[name]) for name in names[offset : offset + samples]]
 
 
-def load_samples(dataset: Path, selected: list[tuple[str, list[float]]]) -> list[tuple[np.ndarray, dict[str, np.ndarray]]]:
+def load_samples(
+    dataset: Path, selected: list[tuple[str, list[float]]]
+) -> list[tuple[np.ndarray, dict[str, np.ndarray]]]:
     """Each selected image's encoder input and the prompt decoder's inputs for its box."""
     images = read_files(dataset, {name for name, _ in selected})
     samples = []

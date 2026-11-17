@@ -657,7 +657,11 @@ def test_every_multi_component_script_without_a_dataset_feeds_a_fixed_frame(scri
     assert (first.shape, str(first.dtype)) == ((720, 1280, 3), "uint8")
     assert (first == second).all() and first.std() > 10
     options = functions["image_options"]()
-    assert (options.preprocess.kind, options.preprocess.enable, options.preprocess.resize.enable) == ("Image", "On", "On")
+    assert (options.preprocess.kind, options.preprocess.enable, options.preprocess.resize.enable) == (
+        "Image",
+        "On",
+        "On",
+    )
     height, width = first.shape[:2]
     assert (options.preprocess.input_max_width, options.preprocess.input_max_height) == (width, height)
 
