@@ -54,6 +54,8 @@ resources:
     install_path: licenses/LICENSE
 build_profiles:
   w8a16:
+    # Spot reclaimed every recompile mid-compile; the on-demand market requires the grant in sima-neat/vulcan#527.
+    runner_market: on-demand
     components:
       model:
         parameters:
