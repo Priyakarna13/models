@@ -1,9 +1,9 @@
 """Cut YOLO26n at its raw one-to-one Detect heads, before the in-graph box decode and TopK.
 
-Each attention block then becomes an equivalent form the MLA runs without moving data between layouts: Q, K and V
-are [1, D, H, T] (D channels of each of H heads at T positions), the scores an einsum over D, and the softmax runs
-over the key positions held as channels. The exporter packs each head's channels together; the block needs each
-channel's heads together. That fixed reorder is folded into the weights of the convolutions around the block.
+Each attention block then becomes per-head einsums that keep the image layout the convolutions around it use. A
+query head and its output stay [1, D, h, w] images; only the key and value heads flatten to [1, D, 1, T] token rows.
+The scores hold one channel per key position, so the softmax reduces over channels and the output needs no Reshape
+back to an image.
 """
 
 from __future__ import annotations
@@ -148,23 +148,18 @@ def _sole_reader(graph: GraphIndex, value: str, kind: str) -> onnx.NodeProto:
     return readers[0]
 
 
-def _reorder_channels(
-    model: onnx.ModelProto, graph: GraphIndex, conv: onnx.NodeProto, order: np.ndarray, axis: int
-) -> None:
-    """Give a convolution weights whose output (axis 0) or input (axis 1) channels follow `order`."""
+def _reorder_outputs(model: onnx.ModelProto, graph: GraphIndex, conv: onnx.NodeProto, order: np.ndarray) -> None:
+    """Give a convolution weights and a bias whose output channels follow `order`."""
     _require(len(conv.input) == 3, f"{conv.name} needs a weight and a bias")
-    # A depthwise convolution maps channel to channel, so reordering its outputs also reorders the inputs it reads.
-    reordered = {1: np.take(graph.constants[conv.input[1]], order, axis=axis)}
-    if axis == 0:
-        reordered[2] = graph.constants[conv.input[2]][order]
-    for index, value in reordered.items():
-        name = f"{conv.name}/reordered_{'weight' if index == 1 else 'bias'}"
-        model.graph.initializer.append(numpy_helper.from_array(np.ascontiguousarray(value), name))
+    for index, kind in ((1, "weight"), (2, "bias")):
+        name = f"{conv.name}/reordered_{kind}"
+        reordered = np.ascontiguousarray(graph.constants[conv.input[index]][order])
+        model.graph.initializer.append(numpy_helper.from_array(reordered, name))
         conv.input[index] = name
 
 
 def _keep_attention_in_nchw(model: onnx.ModelProto, expected: int) -> None:
-    """Rewrite every attention block to einsums on [1, D, H, T] with the softmax over the key positions as channels."""
+    """Rewrite every attention block to per-head einsums that keep each query and output head an image."""
     graph = _index(model)
     replacements, removed = {}, set()
     for softmax in [node for node in model.graph.node if node.op_type == "Softmax"]:
@@ -202,16 +197,9 @@ def _keep_attention_in_nchw(model: onnx.ModelProto, expected: int) -> None:
             and _attributes(split)["axis"] == 2,
             f"unexpected attention axes at {softmax.name}",
         )
-        position = _sole_reader(graph, value_image.output[0], "Conv")
-        residual = _sole_reader(graph, position.output[0], "Add")
-        projection = _sole_reader(graph, residual.output[0], "Conv")
-        _require(
-            _sole_reader(graph, image.output[0], "Add") is residual, f"unexpected attention output at {softmax.name}"
-        )
 
         batch, heads, head_channels, positions = graph.shapes[heads_apart.output[0]]
         key_dim, second_key_dim, value_dim = (graph.shapes[value][2] for value in (q, k, v))
-        channels = heads * value_dim
         image_shape = graph.shapes[image.output[0]]
         _require(
             batch == 1 and key_dim == second_key_dim and head_channels == 2 * key_dim + value_dim,
@@ -220,26 +208,16 @@ def _keep_attention_in_nchw(model: onnx.ModelProto, expected: int) -> None:
         _require(
             graph.shapes[qkv.output[0]] == [1, heads * head_channels, *image_shape[2:]]
             and image_shape == graph.shapes[value_image.output[0]]
-            and image_shape[:2] == [1, channels]
+            and image_shape[:2] == [1, heads * value_dim]
             and image_shape[2] * image_shape[3] == positions,
             f"unexpected attention shapes at {softmax.name}",
         )
-        _require(
-            _attributes(position).get("group") == channels and _attributes(projection).get("group", 1) == 1,
-            f"expected a depthwise position convolution and a dense output projection at {softmax.name}",
-        )
 
-        # qkv channel [head, offset] moves to Q [dimension, head], then K, then V: a [1, D * H, h, w] block whose
-        # channel is dimension * H + head reshapes to [1, D, H, T] without moving any value.
+        # The exporter packs each head's Q, K and V channels together. Ordering the qkv outputs as every head's Q, then
+        # every head's K, then every head's V keeps V one image in the order the position convolution reads.
         by_head = np.arange(heads * head_channels).reshape(heads, head_channels)
         ranges = ((0, key_dim), (key_dim, 2 * key_dim), (2 * key_dim, head_channels))
-        _reorder_channels(
-            model, graph, qkv, np.concatenate([by_head[:, start:stop].T.ravel() for start, stop in ranges]), axis=0
-        )
-        # The attention output and V leave in the same order, so the convolutions that read them follow it.
-        by_dimension = np.arange(channels).reshape(heads, value_dim).T.ravel()
-        _reorder_channels(model, graph, position, by_dimension, axis=0)
-        _reorder_channels(model, graph, projection, by_dimension, axis=1)
+        _reorder_outputs(model, graph, qkv, np.concatenate([by_head[:, start:stop].ravel() for start, stop in ranges]))
 
         prefix = softmax.name + "/nchw/"
         nodes = []
@@ -253,21 +231,28 @@ def _keep_attention_in_nchw(model: onnx.ModelProto, expected: int) -> None:
             model.graph.initializer.append(numpy_helper.from_array(np.array(value, dtype=np.int64), prefix + name))
             return prefix + name
 
-        def heads_on_height(value, name, dimension):
-            return node("Reshape", [value, constant(name + "_shape", [1, dimension, heads, positions])], name)
+        def tokens(value, name, dimension):
+            # [1, D, h, w] -> [1, D, 1, T] merges the two spatial axes, so no value moves.
+            return node("Reshape", [value, constant(name + "_shape", [1, dimension, 1, positions])], name)
 
-        sizes = constant("split_sizes", [heads * key_dim, heads * key_dim, channels])
+        queries = [f"{prefix}q{head}" for head in range(heads)]
+        keys = [f"{prefix}k{head}" for head in range(heads)]
+        values = [f"{prefix}v{head}" for head in range(heads)]
         # V already is the image the position convolution reads.
-        packed = [prefix + "q_packed", prefix + "k_packed", value_image.output[0]]
-        node("Split", [qkv.output[0], sizes], "split", outputs=packed, axis=1)
-        q4, k4 = heads_on_height(packed[0], "q", key_dim), heads_on_height(packed[1], "k", key_dim)
-        v4 = heads_on_height(packed[2], "v", value_dim)
-        # Scores [1, keys, H, queries]: the softmax then reduces over the key positions held as channels.
-        attention_scores = node("Einsum", [q4, k4], "scores", equation="nchw,nchq->nqhw")
-        scaled = node("Mul", [attention_scores, factor], "scaled")
-        weights = node("Softmax", [scaled], "weights", axis=1)
-        values = node("Einsum", [weights, v4], "values", equation="nchw,nqhc->nqhw")
-        node("Reshape", [values, constant("image_shape", image_shape)], "image", outputs=list(image.output))
+        qkv_sizes = constant("split_sizes", [key_dim] * (2 * heads) + [heads * value_dim])
+        node("Split", [qkv.output[0], qkv_sizes], "split", outputs=[*queries, *keys, value_image.output[0]], axis=1)
+        value_sizes = constant("split_values_sizes", [value_dim] * heads)
+        node("Split", [value_image.output[0], value_sizes], "split_values", outputs=values, axis=1)
+        head_images = []
+        for head, (query, key, value) in enumerate(zip(queries, keys, values, strict=True)):
+            # Scores [1, T, h, w]: one channel per key position, so the softmax reduces over channels.
+            key_tokens = tokens(key, f"k{head}_tokens", key_dim)
+            head_scores = node("Einsum", [query, key_tokens], f"scores{head}", equation="nchw,ncxk->nkhw")
+            scaled = node("Mul", [head_scores, factor], f"scaled{head}")
+            weights = node("Softmax", [scaled], f"weights{head}", axis=1)
+            value_tokens = tokens(value, f"v{head}_tokens", value_dim)
+            head_images.append(node("Einsum", [weights, value_tokens], f"values{head}", equation="nkhw,ncxk->nchw"))
+        node("Concat", head_images, "image", outputs=list(image.output), axis=1)
 
         replacements[heads_apart.output[0]] = nodes
         removed.update(

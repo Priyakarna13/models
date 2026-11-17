@@ -194,7 +194,7 @@ def test_surgery_requires_a_folded_source(tmp_path: Path, load_script: Callable[
         surgery.prepare_model(source, tmp_path / "out")
 
 
-def test_attention_rewrite_keeps_the_heads_with_the_softmax_over_channels(
+def test_attention_rewrite_keeps_each_query_head_an_image(
     tmp_path: Path, load_script: Callable[[str], ModuleType]
 ) -> None:
     ort = pytest.importorskip("onnxruntime")
@@ -205,12 +205,13 @@ def test_attention_rewrite_keeps_the_heads_with_the_softmax_over_channels(
     rewritten = onnx.load(surgery.prepare_model(tmp_path / "source.onnx", tmp_path / "out"))
 
     operations = [node.op_type for node in rewritten.graph.node]
-    assert operations.count("Einsum") == 2 * surgery.ATTENTION_BLOCKS
+    head_count = ATTENTION_HEADS * surgery.ATTENTION_BLOCKS
+    assert operations.count("Einsum") == 2 * head_count
     assert not {"MatMul", "Transpose"} & set(operations)
     softmax_axes = [
         onnx.helper.get_attribute_value(node.attribute[0]) for node in rewritten.graph.node if node.op_type == "Softmax"
     ]
-    assert softmax_axes == [1] * surgery.ATTENTION_BLOCKS
+    assert softmax_axes == [1] * head_count
     # The fixture's last box head is the output that reads the attention blocks.
     source.graph.output.append(onnx.helper.make_empty_tensor_value_info(surgery.HEADS["bbox_2"]))
     image = np.random.default_rng(2).random((1, 3, 640, 640), dtype=np.float32)
