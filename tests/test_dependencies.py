@@ -119,7 +119,7 @@ def test_missing_model_compiler_dependency_fails(tmp_path: Path) -> None:
 
 
 def test_sdk_version_is_not_the_compiler_service_release() -> None:
-    assert resolve_model_compiler(ROOT)["version"] == "3.0.0.1"
+    assert resolve_model_compiler(ROOT)["version"] == "3.0.0.2"
     assert resolve_model_sdk_version(ROOT) == "3.0.0"
 
 
