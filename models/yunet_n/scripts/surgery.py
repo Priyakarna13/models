@@ -9,15 +9,11 @@ exactly: the Sigmoid is elementwise, and the Transpose and Reshape only move val
 from pathlib import Path
 
 import onnx
+from calibration import HEADS, IMAGE_SIZE, OUTPUTS, STRIDES
 from onnx import helper
 
 INPUT = "input"
-IMAGE_SIZE = 640
-STRIDES = (8, 16, 32)
-# Channels per head: face and object scores, box offsets, and five landmarks as (x, y) offsets.
-HEADS = {"cls": 1, "obj": 1, "bbox": 4, "kps": 10}
 INPUT_SHAPE = [1, 3, IMAGE_SIZE, IMAGE_SIZE]
-OUTPUTS = [f"{head}_{stride}" for head in HEADS for stride in STRIDES]
 SOURCE_OUTPUT_SHAPES = {
     f"{head}_{stride}": [1, (IMAGE_SIZE // stride) ** 2, channels]
     for head, channels in HEADS.items()

@@ -28,15 +28,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from calibration import IMAGE_SIZE, decode_image, letterbox, letterbox_geometry
+from calibration import HEADS, IMAGE_SIZE, OUTPUTS, STRIDES, decode_image, letterbox, letterbox_geometry
 
 DATASET = "wider-face-val"
 IMAGES = "WIDER_val/images"
 GROUND_TRUTH = "eval_tools/ground_truth"
-STRIDES = (8, 16, 32)
-# Channels per head, in the MPK's output order: face and object scores, box offsets, five landmark offsets.
-HEADS = {"cls": 1, "obj": 1, "bbox": 4, "kps": 10}
-OUTPUTS = [f"{head}_{stride}" for head in HEADS for stride in STRIDES]
 GRIDS = {stride: IMAGE_SIZE // stride for stride in STRIDES}
 # OpenCV Zoo's YuNet evaluation settings: score threshold, NMS IoU and the most detections kept per image.
 SCORE_THRESHOLD = 0.3
@@ -132,10 +128,11 @@ def parse_dataset(parser: argparse.ArgumentParser, value: str) -> Path:
     return root
 
 
-def load_ground_truth(directory: Path) -> list[tuple[str, str, np.ndarray, dict[str, np.ndarray]]]:
+def load_ground_truth(root: Path) -> list[tuple[str, str, np.ndarray, dict[str, np.ndarray]]]:
     """Each validation image as (event, image name, face boxes [x, y, w, h], 1-based indices each subset scores)."""
     from scipy.io import loadmat
 
+    directory = root / GROUND_TRUTH
     faces = loadmat(str(directory / "wider_face_val.mat"))
     subsets = {setting: loadmat(str(directory / f"wider_{setting}_val.mat"))["gt_list"] for setting in SETTINGS}
     images = []
@@ -229,11 +226,6 @@ def evaluate(
     return aps
 
 
-def read_ground_truth(root: Path) -> list:
-    """The validation images and their faces from the official ground truth, in its order."""
-    return load_ground_truth(root / GROUND_TRUTH)
-
-
 def parse_mpks(values: list[str]) -> Path:
     paths = dict(value.split("=", 1) for value in values)
     if set(paths) != {"model"}:
@@ -297,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, help="measure a seeded sample of images (local runs only)")
     args = parser.parse_args(argv)
     root = parse_dataset(parser, args.dataset)
-    ground_truth = read_ground_truth(root)
+    ground_truth = load_ground_truth(root)
     available = [(event, name) for event, name, _, _ in ground_truth]
     items = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
 

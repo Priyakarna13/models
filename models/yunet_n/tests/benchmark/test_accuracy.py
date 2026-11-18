@@ -137,7 +137,7 @@ def test_fp32_baseline_scores_with_the_accuracy_evaluation(
     truth = _truth()
     rows = [np.array([[10, 10, 40, 40, 0.9], [100, 100, 20, 20, 0.8]]), np.zeros((0, 5))]
     monkeypatch.setattr(baseline.accuracy, "parse_dataset", lambda parser, value: tmp_path)
-    monkeypatch.setattr(baseline.accuracy, "read_ground_truth", lambda root: truth)
+    monkeypatch.setattr(baseline.accuracy, "load_ground_truth", lambda root: truth)
     monkeypatch.setattr(baseline, "onnx_detections", lambda onnx, root, items: iter(rows))
     output = tmp_path / "fp32-baseline.json"
 

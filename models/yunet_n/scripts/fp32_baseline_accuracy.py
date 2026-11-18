@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, help="score a seeded sample of images, for a quick check")
     args = parser.parse_args(argv)
     root = accuracy.parse_dataset(parser, args.dataset)
-    ground_truth = accuracy.read_ground_truth(root)
+    ground_truth = accuracy.load_ground_truth(root)
     available = [(event, name) for event, name, _, _ in ground_truth]
     items = sorted(random.Random(0).sample(available, args.limit)) if args.limit else available
 

@@ -30,7 +30,7 @@ from afe.apis.loaded_net import load_model
 from afe.apis.model import L2CachingMode
 from afe.core.utils import convert_data_generator_to_iterable
 from afe.load.importers.general_importer import onnx_source
-from calibration import calibration_images, fidelity_names, preprocess_image, read_images
+from calibration import CALIBRATION_SEED, calibration_images, fidelity_names, preprocess_image, read_images
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
 from surgery import INPUT, INPUT_SHAPE, OUTPUT_SHAPES, OUTPUTS, SOURCE_OUTPUT_SHAPES, prepare_model
@@ -49,6 +49,25 @@ def _parameters(profile_id: str) -> dict[str, Any]:
     if len(profiles) != 1:
         raise ValueError(f"model.yaml declares no build profile {profile_id!r}")
     return next(item["parameters"] for item in profiles[0]["components"] if item["id"] == COMPONENT_ID)
+
+
+def check_fidelity_selection(selection: dict[str, Any]) -> None:
+    """Fail unless the fidelity images come after every calibration image in the same seeded order."""
+    calibrated = [
+        int(item["parameters"]["calibration_samples"])
+        for profile in load_metadata(MODEL_DIR)["build_profiles"]
+        for item in profile["components"]
+        if "calibration_samples" in item["parameters"]
+    ]
+    if int(selection["seed"]) != CALIBRATION_SEED:
+        raise ValueError(
+            f"numerical_fidelity draws with seed {selection['seed']}, but calibration uses {CALIBRATION_SEED}"
+        )
+    if int(selection["offset"]) < max(calibrated, default=0):
+        raise ValueError(
+            f"numerical_fidelity starts at image {selection['offset']}, inside the first {max(calibrated)} "
+            "calibration images"
+        )
 
 
 def _quantization(precision: str, calibration_bins: int | None) -> QuantizationParams:
@@ -239,6 +258,8 @@ def main() -> int:
     fidelity = load_metadata(MODEL_DIR).get("numerical_fidelity")
     if fidelity is not None and args.fidelity_dataset is None:
         parser.error("model.yaml declares numerical_fidelity; pass --fidelity-dataset")
+    if fidelity is not None:
+        check_fidelity_selection(fidelity["selection"])
     dataset = args.dataset.expanduser().resolve() if args.dataset else None
     if dataset is not None and not dataset.exists():
         parser.error(f"dataset does not exist: {dataset}")

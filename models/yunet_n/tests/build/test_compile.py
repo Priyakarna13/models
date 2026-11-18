@@ -79,7 +79,7 @@ def test_surgery_rejects_a_head_that_does_not_flatten_channels_last(
         surgery.prepare_model(source, tmp_path / "graphs")
 
 
-def _jpeg(width: int, height: int, colour: tuple[int, int, int] = (40, 80, 120)) -> bytes:
+def _png(width: int, height: int, colour: tuple[int, int, int] = (40, 80, 120)) -> bytes:
     import cv2
 
     ok, encoded = cv2.imencode(".png", np.full((height, width, 3), colour, np.uint8))
@@ -96,7 +96,7 @@ def test_letterbox_centres_the_image_and_pads_with_zeros(
     calibration = load_script("calibration")
     resized_width, resized_height, left, top = expected
 
-    image = calibration.preprocess_image(_jpeg(width, height))
+    image = calibration.preprocess_image(_png(width, height))
 
     assert (image.shape, image.dtype) == ((640, 640, 3), np.float32)
     # BGR pixel values in [0, 255], unnormalized: the PNG's (40, 80, 120) colour comes back as stored.
@@ -119,8 +119,8 @@ def test_calibration_and_fidelity_draw_disjoint_training_images(
 ) -> None:
     calibration = load_script("calibration")
     names = [f"wider-face-cal/WIDER_train/images/0--Parade/0_Parade_{index}.jpg" for index in range(10)]
-    files = {name: _jpeg(64, 48) for name in names}
-    files["wider-face-cal/WIDER_val/images/0--Parade/0_Parade_val.jpg"] = _jpeg(64, 48)
+    files = {name: _png(64, 48) for name in names}
+    files["wider-face-cal/WIDER_val/images/0--Parade/0_Parade_val.jpg"] = _png(64, 48)
     archive = _write_archive(tmp_path / "wider.tgz", files)
     expected = sorted(names)
     random.Random(42).shuffle(expected)
@@ -150,6 +150,16 @@ def test_compile_rejects_an_undeclared_build_profile(load_script: Callable[[str]
 
     with pytest.raises(ValueError, match="no build profile 'w8a16'"):
         recipe._parameters("w8a16")
+
+
+def test_fidelity_images_must_follow_every_calibration_image(load_script: Callable[[str], ModuleType]) -> None:
+    recipe = load_script("compile")
+
+    recipe.check_fidelity_selection({"seed": 42, "offset": 100})
+    with pytest.raises(ValueError, match="seed 7, but calibration uses 42"):
+        recipe.check_fidelity_selection({"seed": 7, "offset": 100})
+    with pytest.raises(ValueError, match="inside the first 100 calibration images"):
+        recipe.check_fidelity_selection({"seed": 42, "offset": 99})
 
 
 @pytest.mark.parametrize(("precision", "calibrates"), [("w8a8", True), ("w16a16", False)])

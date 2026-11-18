@@ -10,6 +10,12 @@ from pathlib import Path, PurePosixPath
 import numpy as np
 
 IMAGE_SIZE = 640
+# The MPK's 12 head maps, in output order: each head at strides 8, 16 and 32 with its channels (face and object
+# scores, box offsets, five landmarks as (x, y) offsets). surgery.py cuts the graph to these outputs and accuracy.py
+# reads them back by name, so both take them from here.
+STRIDES = (8, 16, 32)
+HEADS = {"cls": 1, "obj": 1, "bbox": 4, "kps": 10}
+OUTPUTS = [f"{head}_{stride}" for head in HEADS for stride in STRIDES]
 # YuNet takes raw BGR pixel values; OpenCV's FaceDetectorYN pads its input with zeros.
 FILL = 0
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".webp")
