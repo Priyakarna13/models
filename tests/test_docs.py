@@ -191,3 +191,142 @@ def test_docs_keep_author_tools_separate_from_ci_publication() -> None:
         "model-registry package ",
     ):
         assert command not in author_guides
+
+
+# The structure of the documentation: docs/ is the public site, knowledge/ explains the tooling and CI, and
+# AGENTS.md indexes both. knowledge/writing-docs.md states these rules for writers.
+
+MODELS_REPOSITORY_LINK = re.compile(r"https://github\.com/sima-neat/models/(?:blob|tree|edit)/[^/]+/([^)\s]+)")
+INTERNAL_TREES = ("AGENTS.md", "knowledge/", "design-doc/")
+# AGENTS.md is loaded into every agent session, so its length is a cost on every task.
+AGENTS_LINE_BUDGET = 260
+
+
+def _documents() -> list[Path]:
+    return [
+        ROOT / "README.md",
+        ROOT / "AGENTS.md",
+        ROOT / "website" / "README.md",
+        *sorted((ROOT / "docs").glob("*.md")),
+        *sorted((ROOT / "knowledge").glob("*.md")),
+        *sorted((ROOT / "artifact-browser").glob("*.md")),
+    ]
+
+
+def _prose(text: str) -> str:
+    """The text outside fenced code blocks, where a link or heading is part of the page."""
+    kept, fenced = [], False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _anchors(document: Path) -> set[str]:
+    """The heading anchors GitHub and the site generate for a Markdown file."""
+    anchors: set[str] = set()
+    seen: dict[str, int] = {}
+    for line in _prose(document.read_text(encoding="utf-8")).splitlines():
+        heading = re.match(r"#{1,6}\s+(.*)", line)
+        if not heading:
+            continue
+        title = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", heading.group(1)).strip()
+        slug = re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
+        anchors.add(f"{slug}-{seen[slug]}" if slug in seen else slug)
+        seen[slug] = seen.get(slug, 0) + 1
+    return anchors
+
+
+def _link_targets(document: Path) -> list[tuple[str, Path, str]]:
+    """Each link into this repository as (written target, file, anchor)."""
+    targets = []
+    for written in MARKDOWN_LINK.findall(_prose(document.read_text(encoding="utf-8"))):
+        target = written.split()[0]
+        repository_link = MODELS_REPOSITORY_LINK.fullmatch(target)
+        if repository_link:
+            path, _, anchor = repository_link.group(1).partition("#")
+            targets.append((target, ROOT / path, anchor))
+        elif "://" not in target and not target.startswith("mailto:"):
+            path, _, anchor = target.partition("#")
+            targets.append((target, (document.parent / path).resolve() if path else document, anchor))
+    return targets
+
+
+def test_links_and_anchors_resolve_in_every_document() -> None:
+    failures = []
+    for document in _documents():
+        for target, path, anchor in _link_targets(document):
+            if not path.exists():
+                failures.append(f"{document.relative_to(ROOT)} -> {target}: no such file")
+            elif anchor and path.suffix == ".md" and anchor not in _anchors(path):
+                failures.append(f"{document.relative_to(ROOT)} -> {target}: no such heading")
+    assert not failures, "broken links:\n" + "\n".join(failures)
+
+
+def test_contribution_path_routes_resolve() -> None:
+    component = (ROOT / "website" / "src" / "components" / "ContributionPath.tsx").read_text(encoding="utf-8")
+    routes = re.findall(r"guide: '([^']+)'", component)
+
+    assert routes
+    for route in routes:
+        page, _, anchor = route.partition("#")
+        document = ROOT / "docs" / f"{page}.md"
+        assert document.is_file(), f"ContributionPath links to a missing page: {route}"
+        assert not anchor or anchor in _anchors(document), f"ContributionPath links to a missing heading: {route}"
+
+
+def test_site_pages_do_not_link_to_agent_or_maintainer_files() -> None:
+    failures = []
+    for page in sorted((ROOT / "docs").glob("*.md")):
+        for target, path, _ in _link_targets(page):
+            relative = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else target
+            if relative.startswith(INTERNAL_TREES):
+                failures.append(f"{page.relative_to(ROOT)} -> {target}")
+    assert not failures, "docs/ is the public site and stands on its own:\n" + "\n".join(failures)
+
+
+def test_agents_index_lists_every_docs_and_knowledge_file() -> None:
+    agents = ROOT / "AGENTS.md"
+    indexed = {path for _, path, _ in _link_targets(agents)}
+    pages = [page for page in sorted((ROOT / "docs").glob("*.md")) if page.name != "README.md"]
+    missing = [
+        page.relative_to(ROOT).as_posix()
+        for page in [*pages, *sorted((ROOT / "knowledge").glob("*.md"))]
+        if page not in indexed
+    ]
+
+    assert not missing, "add an index row to AGENTS.md for: " + ", ".join(missing)
+    assert len(agents.read_text(encoding="utf-8").splitlines()) <= AGENTS_LINE_BUDGET
+
+
+def test_site_pages_open_with_a_title_and_an_introduction() -> None:
+    for page in sorted((ROOT / "docs").glob("*.md")):
+        lines = [line for line in _prose(page.read_text(encoding="utf-8")).splitlines() if line.strip()]
+        lines = [line for line in lines if not line.startswith("import ")]
+        assert lines[0].startswith("# "), f"{page.name} must start with its title"
+        assert not lines[1].startswith("#"), f"{page.name} needs an introduction before its first section"
+
+
+def test_site_code_blocks_name_their_language() -> None:
+    failures = []
+    for page in sorted((ROOT / "docs").glob("*.md")):
+        fenced = False
+        for number, line in enumerate(page.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.lstrip().startswith("```"):
+                continue
+            if not fenced and line.strip() == "```":
+                failures.append(f"{page.name}:{number}")
+            fenced = not fenced
+    assert not failures, "name the language of each code block: " + ", ".join(failures)
+
+
+def test_docs_folder_holds_only_pages_and_assets() -> None:
+    unexpected = [
+        entry.name
+        for entry in sorted((ROOT / "docs").iterdir())
+        if not (entry.suffix == ".md" and entry.is_file()) and entry.name != "assets"
+    ]
+
+    assert not unexpected, "docs/ is the published site; move these elsewhere: " + ", ".join(unexpected)

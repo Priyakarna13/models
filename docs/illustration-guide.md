@@ -192,9 +192,9 @@ Prediction overlays and actual Roboto lettering will be composed separately.
 Preserve the model's subjects, output semantics and architecture accent in
 the base artwork. Follow the class-color rule for prediction overlays.
 
-Export model heroes as regular, metadata-stripped 1200×480 PNGs under 2 MiB at
-`models/<id>/hero.png`. Documentation and hero changes must not change compilation
-or benchmark fingerprints.
+Export model heroes as regular, metadata-stripped 1200×480 PNGs no larger than
+2 MiB at `models/<id>/hero.png`. Documentation and hero changes must not change
+compilation or benchmark fingerprints.
 
 Normalize opaque artwork and lettering to the palette after the final resize,
 without dithering. From the repository root:
@@ -219,4 +219,6 @@ native resolution after palette remapping and clean up any noise or broken
 contours. Passing a palette check does not establish visual quality. Also check
 geometry, facial contrast, mechanical plausibility and mask alignment. Verify
 Roboto loaded and pixels outside masks and their edges use only the approved
-colors. Run the existing hero validator.
+colors. Then run `model-registry validate-models --repository .`, which checks
+the hero's size, dimensions, and PNG format. [Model README](model-readme.md)
+lists the hero rules.

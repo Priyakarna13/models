@@ -315,6 +315,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
+    parser.add_argument("--resources", help="directory holding the package's licenses folder (unused)")
     args = parser.parse_args()
     benchmark_pipeline(parse_mpks(args.mpk), Path(args.output))
 

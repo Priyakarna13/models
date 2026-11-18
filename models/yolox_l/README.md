@@ -4,35 +4,42 @@
 
 ## Overview
 
-YOLOX-l is the L size of the Megvii YOLOX object detector, trained on the
-80 COCO classes. It takes a 640×640 BGR image and returns raw box, objectness,
-and class outputs at three scales. The package runs as one component. Your
-application combines objectness with the most likely class at each grid cell,
-filters weak predictions, and removes duplicate boxes. Use the decoder below to map the outputs to the original image.
+YOLOX-l finds everyday objects in an image, such as people, vehicles, and
+animals, and returns a box, a class, and a score for each one. Use it to count,
+track, or monitor objects in live camera streams. It is trained on the 80 COCO
+classes. It expects blue, green, red color order and unscaled pixel values.
 
-## Inputs and outputs
+## Inputs
 
-**Input.** Letterbox to 640×640: resize with bilinear resampling so the longer
-side is 640, center the image, and fill the remaining area with (114, 114, 114).
-Keep BGR values in 0–255. For tensor input, provide a 640×640×3 float32 tensor
-and disable Neat's resize, color conversion, and normalization. For image
-input, declare the source color order and let Neat produce the same BGR values.
+One 640×640×3 (height, width, channel) BGR image with values from 0 to 255.
 
-**Outputs.** The three levels use strides 8, 16, and 32, with grids of 80, 40, 20
-cells. Each output is in height, width, channel order:
+Preprocessing:
 
-- `bbox_0` to `bbox_2`: four values per cell, dx, dy, log width, and log height.
-- `objectness_logit_0` to `objectness_logit_2`: one objectness logit per cell.
-- `class_logit_0` to `class_logit_2`: 80 class logits per cell.
+1. Resize with bilinear resampling so the longer side is 640.
+2. Center it on a 640×640 gray (114, 114, 114) frame.
+3. Keep the blue, green, red channel order and the 0 to 255 values.
+
+## Outputs
+
+| Output | Grid | Per cell |
+|---|---|---|
+| `bbox_0` to `bbox_2` | 80×80, 40×40, 20×20 (stride 8, 16, 32) | dx, dy, log width, and log height |
+| `objectness_logit_0` to `objectness_logit_2` | same | one objectness logit |
+| `class_logit_0` to `class_logit_2` | same | 80 class logits |
+
+Postprocessing:
+
+[BoxDecode](https://developer.sima.ai/software/reference/boxdecode_decode_types) with decode type `YoloX` and option `Split3Interleaved` runs these steps for you:
 
 1. For column c, row r, and stride s, the box center is ((dx + c) × s, (dy + r) × s).
-2. The width and height are exp(log width) × s and exp(log height) × s; subtract or add half of each size to get the corners.
-3. Apply sigmoid to objectness and class logits; the score is objectness probability times the highest class probability.
-4. Filter by score and apply non-maximum suppression within each class at an overlap threshold of 0.65.
-5. Remove the centered padding, divide by the letterbox scale, and clip to the original image.
+2. The width and height are exp(log width) × s and exp(log height) × s.
+3. The box corners are the center minus and plus half the width and height.
+4. Apply a sigmoid to all logits. The score is the objectness times the highest class probability.
+5. Keep the cells whose score passes your threshold.
+6. Within each class, remove each box that overlaps a higher-scoring box by more than 0.65.
+7. Remove the padding, divide by the resize scale, and clip to the image.
 
-Class index i is the i-th COCO category ID in ascending order. Neat's `YoloX`
-box decoder handles these outputs. For example, use a score threshold of 0.25.
+Class index i is the i-th COCO category ID in ascending order.
 
 ## Building applications
 
