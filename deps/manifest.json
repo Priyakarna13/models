@@ -8,7 +8,7 @@
     "version": "3.0.0.2"
   },
   "neat-core": {
-    "install_target": "core@v0.6.2:b1f9556caec1"
+    "install_target": "core@v0.6.2"
   },
   "llima": {
     "install_target": "llima@develop:abcfe372a575"
