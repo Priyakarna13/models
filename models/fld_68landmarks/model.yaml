@@ -23,6 +23,15 @@ upstream:
   derived_from: https://github.com/hhj1897/fan_training
 
 # The weights, byte-identical to ibug-group/face_alignment's ibug/face_alignment/fan/weights/2dfan2_alt.pth.
+resources:
+  license:
+    # The checkpoint mirror omits LICENSE. ibug's face_alignment repository carries the MIT text.
+    source:
+      uri: https://raw.githubusercontent.com/ibug-group/face_alignment/b52975cfec7a08edbb247ac1db0f860827235070/LICENSE
+      sha256: b165b2ee572fc366994577ee9d121adb752fb3c03f1f1ec84ced94c9dcf94b2c
+      size_bytes: 1065
+    install_path: licenses/LICENSE
+
 conversion:
   source:
     uri: hf://models/public-data/ibug-face-alignment@8aef0e928499d334364f4c98e33dc6c4ffc8111a/fan/2dfan2_alt.pth

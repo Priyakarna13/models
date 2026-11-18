@@ -22,6 +22,9 @@ from .errors import ValidationError
 # How far a measured value may fall below the value tests.yaml expects and still pass, relative to that value.
 ACCURACY_ALLOWED_DROP = 0.05
 PERFORMANCE_ALLOWED_DROP = 0.10
+# How far a build profile's expected accuracy may fall below the source model's reference score, relative to that
+# score, before the model browser's customer view leaves the profile out.
+ACCURACY_ALLOWED_REFERENCE_DROP = 0.08
 
 TESTS_DIR = "tests"
 TESTS_FILE = "tests.yaml"
@@ -115,6 +118,51 @@ def _shortfalls(label: str, expected: dict[str, float], metrics: dict[str, float
         elif METRICS[name]["direction"] != "lower" and measured < value * (1 - drop):
             shortfalls.append(f"{label}{name} {measured:g} is below {value:g} by more than {drop:.0%}")
     return shortfalls
+
+
+def low_accuracy_variants(repository: str | Path, models: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    """Each model's build profiles whose expected accuracy misses a reference score by more than the allowed drop,
+    keyed by model ID, for the model browser.
+
+    A dataset's reference is the model's FP32 baseline on it, else the score published for the split the model
+    evaluates. A profile is compared on the first metric of that reference that tests.yaml expects, and a dataset
+    without such a reference decides nothing.
+    """
+    return {
+        model_id: profiles
+        for model_id, model in sorted(models.items())
+        if "accuracy" in model and (profiles := _low_accuracy_profiles(Path(repository) / "models" / model_id, model))
+    }
+
+
+def _low_accuracy_profiles(model_dir: Path, model: dict[str, Any]) -> list[str]:
+    expected = load_model_tests(model_dir).get("accuracy", {}).get("expected", {})
+    return [
+        profile
+        for profile in benchmarked_profiles(model, "accuracy")
+        if any(
+            _shortfalls("", _reference_score(model, dataset, values), values, ACCURACY_ALLOWED_REFERENCE_DROP)
+            for dataset, values in expected.get(profile, {}).items()
+        )
+    ]
+
+
+def _reference_score(model: dict[str, Any], dataset_name: str, expected: dict[str, float]) -> dict[str, float]:
+    """The reference metric a profile's expected values on one dataset are compared with, or none."""
+    dataset = model["accuracy"]["datasets"][dataset_name]
+    on_dataset = [entry for entry in model.get("reference_metrics", []) if entry["dataset"]["id"] == dataset["id"]]
+    baselines = [entry for entry in on_dataset if entry.get("origin") == "fp32_baseline"]
+    published = [
+        entry
+        for entry in on_dataset
+        if entry.get("origin", "published") == "published" and entry["dataset"]["split"] == dataset["variant"]
+    ]
+    reference = next(iter([*baselines, *published]), None)
+    if reference is None:
+        return {}
+
+    name = next((name for name in reference["metrics"] if name in expected), None)
+    return {name: reference["metrics"][name]} if name else {}
 
 
 def validate_model_tests(model_dir: str | Path, model: dict[str, Any], schema_path: str | Path) -> None:

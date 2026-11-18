@@ -295,6 +295,7 @@ def main(argv=None):
     parser.add_argument("--mpk", type=Path, required=True)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--resources", help="directory holding the package's licenses folder (unused)")
     parser.add_argument("--heatmap-only", action="store_true", help="separate historical diagnostic, not E2E")
     args = parser.parse_args(argv)
     face = sample_face(dataset_path(args.dataset))

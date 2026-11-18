@@ -25,7 +25,7 @@ def test_author_parser_exposes_only_supported_model_contributor_commands() -> No
 
 @pytest.mark.parametrize("model,profile,stages,backend,baseline,timeout", [
     ("resnet_50", "w8a8", "performance,accuracy", "core", "false", "45"),
-    ("qwen3_5_0_8b", "w4a16", "performance", "llima", "false", "45"),
+    ("qwen3_5_0_8b", "w4a16", "performance", "llima", "false", "90"),
     ("gemma_4_e2b_it_mtp", "w4a16", "performance", "llima", "true", "4320"),
     ("gemma_4_e2b_it_mtp", "w4a16", "accuracy", "llima", "false", "45"),
 ])
@@ -324,7 +324,7 @@ def test_validation_rejects_a_resource_outside_the_source_policy(command: str, m
 
 
 def test_fetch_resources_prints_nothing_for_a_model_without_resources(capsys, tmp_path: Path) -> None:
-    assert main(["fetch-resources", str(ROOT / "models" / "resnet_50"), "--output-dir", str(tmp_path / "out")]) == 0
+    assert main(["fetch-resources", str(ROOT / "models" / "whisper_small"), "--output-dir", str(tmp_path / "out")]) == 0
     assert capsys.readouterr().out == ""
 
 
@@ -357,6 +357,25 @@ def test_reference_metrics_writes_each_models_published_scores(tmp_path: Path) -
     assert "whisper_small" not in reference
     assert reference["resnet_50"][0]["dataset"] == {"id": "imagenet-2012", "split": "val"}
     assert reference["resnet_50"][0]["metrics"] == {"top1_accuracy": 0.80382, "top5_accuracy": 0.94598}
+
+
+def test_dataset_names_writes_a_name_for_every_dataset_file(tmp_path: Path) -> None:
+    output = tmp_path / "dataset-names.json"
+    assert main(["dataset-names", "--repository", str(ROOT), "--output", str(output)]) == 0
+
+    names = json.loads(output.read_text(encoding="utf-8"))
+    assert set(names) == {path.stem for path in (ROOT / "datasets").glob("*.yaml")}
+    assert names["coco-2017"] == "COCO 2017"
+
+
+def test_low_accuracy_variants_writes_declared_build_profiles(tmp_path: Path) -> None:
+    output = tmp_path / "low-accuracy-variants.json"
+    assert main(["low-accuracy-variants", "--repository", str(ROOT), "--output", str(output)]) == 0
+
+    models = cli.load_models(ROOT)
+    for model_id, profiles in json.loads(output.read_text(encoding="utf-8")).items():
+        assert profiles
+        assert set(profiles) <= {profile["id"] for profile in models[model_id]["build_profiles"]}
 
 
 def test_resolve_devkit_accuracy_caches_each_accuracy_dataset_of_the_profile(
@@ -531,7 +550,7 @@ def test_tooling_supports_python_module_entrypoint() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "Model Registry lifecycle tooling" in result.stdout
+    assert "Model Browser lifecycle tooling" in result.stdout
 
 
 def publish_report(monkeypatch, stage: str, *extra: str) -> list[dict]:
