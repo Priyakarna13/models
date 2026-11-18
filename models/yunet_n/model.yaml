@@ -1,7 +1,7 @@
 display_name: YuNet-n
 description: Finds faces in an image, with a box, a score and five landmarks for each face.
 model_type: vision
-tasks: [face_detection]
+tasks: [face_detection, face_landmark_detection]
 
 modalities:
   inputs: [image]
