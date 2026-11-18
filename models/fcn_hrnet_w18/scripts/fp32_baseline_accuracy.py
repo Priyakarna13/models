@@ -4,7 +4,8 @@ The baseline is the accuracy the package would reach without compilation or quan
 validation images and scoring. The ONNX has no Neat pipeline, so each image is preprocessed on the host with the
 checkpoint's OpenCV bilinear resize, here a stretch to the package's 512x512 input rather than its keep-ratio fit
 to 2048x512, and MMSegmentation's mean and std, where the board uses Neat's preprocessing. Run it on a host with
-onnxruntime, OpenCV and tools/model_report on PYTHONPATH, on the model.onnx that convert.py writes:
+onnx, onnxruntime, OpenCV and tools/model_report on PYTHONPATH, on the model.onnx that convert.py writes,
+which the script cuts with surgery.py as the package does:
 
     PYTHONPATH=tools python models/fcn_hrnet_w18/scripts/fp32_baseline_accuracy.py \\
         --onnx model.onnx --dataset ade20k-val=<directory> --output fp32-baseline.json
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -23,10 +25,17 @@ from calibration import preprocess_image
 
 
 def onnx_logits(onnx: Path, images: Sequence[Path]) -> Iterator[np.ndarray]:
-    """Run the converted ONNX on the CPU; it reads the NCHW layout of the image the MPK reads as HWC."""
-    import onnxruntime
+    """Run the converted ONNX on the CPU after surgery.py cuts it, as the package compiles it.
 
-    session = onnxruntime.InferenceSession(str(onnx), providers=["CPUExecutionProvider"])
+    The cut graph returns the 128x128 logits, from the NCHW layout of the image the MPK reads as HWC.
+    """
+    # surgery.py imports onnx, which the DevKit's test environment lacks, so it loads here with onnxruntime.
+    import onnxruntime
+    from surgery import prepare_model
+
+    with tempfile.TemporaryDirectory(prefix="fcn-hrnet-fp32-") as temporary:
+        graph = prepare_model(onnx, Path(temporary))
+        session = onnxruntime.InferenceSession(str(graph), providers=["CPUExecutionProvider"])
     (input_name,) = [value.name for value in session.get_inputs()]
     for image in accuracy.prefetched(lambda path: preprocess_image(path.read_bytes()), images):
         yield session.run(None, {input_name: image.transpose(2, 0, 1)[None]})[0]

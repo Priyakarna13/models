@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -142,8 +143,8 @@ def test_mpk_argument_names_exactly_the_model_component(load_script: Callable[[s
         accuracy.parse_mpks(["model=/a", "model=/b"])
 
 
-def test_fp32_baseline_feeds_the_onnx_the_preprocessed_nchw_image(
-    tmp_path: Path, load_script: Callable[[str], ModuleType]
+def test_fp32_baseline_cuts_the_conversion_and_feeds_it_the_preprocessed_nchw_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, load_script: Callable[[str], ModuleType]
 ) -> None:
     # The DevKit runs these tests in PyNeat, which has none of these packages; the host checks run this one.
     onnx = pytest.importorskip("onnx")
@@ -151,13 +152,24 @@ def test_fp32_baseline_feeds_the_onnx_the_preprocessed_nchw_image(
     pil = pytest.importorskip("PIL.Image")
     baseline = load_script("fp32_baseline_accuracy")
     calibration = load_script("calibration")
-    helper = onnx.helper
-    shape = [1, 3, calibration.IMAGE_SIZE, calibration.IMAGE_SIZE]
+    # The baseline imports surgery.py when it runs, from its own folder; load_script imports only while loading.
+    monkeypatch.setitem(sys.modules, "surgery", load_script("surgery"))
+    helper, numpy_helper = onnx.helper, onnx.numpy_helper
+    size = calibration.IMAGE_SIZE
+    # Shaped like the conversion: a stride-4 Conv that sums each 4x4 patch into all 150 classes, then the resize to
+    # the input that surgery.py cuts.
+    weight = numpy_helper.from_array(np.ones((150, 3, 4, 4), np.float32), "weight")
+    scales = numpy_helper.from_array(np.array([1, 1, 4, 4], np.float32), "scales")
+    resize = {"mode": "linear", "coordinate_transformation_mode": "half_pixel"}
     graph = helper.make_graph(
-        [helper.make_node("Identity", ["image"], ["logits"])],
-        "layout",
-        [helper.make_tensor_value_info("image", onnx.TensorProto.FLOAT, shape)],
-        [helper.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, shape)],
+        [
+            helper.make_node("Conv", ["image", "weight"], ["head"], strides=[4, 4]),
+            helper.make_node("Resize", ["head", "", "scales"], ["logits"], **resize),
+        ],
+        "converted",
+        [helper.make_tensor_value_info("image", onnx.TensorProto.FLOAT, [1, 3, size, size])],
+        [helper.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, [1, 150, size, size])],
+        [weight, scales],
     )
     model = tmp_path / "model.onnx"
     onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10), model)
@@ -166,7 +178,10 @@ def test_fp32_baseline_feeds_the_onnx_the_preprocessed_nchw_image(
 
     (logits,) = baseline.onnx_logits(model, [image])
 
-    np.testing.assert_array_equal(logits, calibration.preprocess_image(image.read_bytes()).transpose(2, 0, 1)[None])
+    pixels = calibration.preprocess_image(image.read_bytes()).transpose(2, 0, 1)[None]
+    patches = pixels.reshape(1, 3, size // 4, 4, size // 4, 4).sum(axis=(1, 3, 5))
+    expected = np.broadcast_to(patches[:, None], (1, 150, size // 4, size // 4))
+    np.testing.assert_allclose(logits, expected, rtol=1e-5, atol=1e-3)
 
 
 def test_fp32_baseline_scores_with_the_accuracy_evaluation(
