@@ -1,10 +1,10 @@
-# ShuffleNet-12 V2
+# ShuffleNet V2 x1.0
 
-![ShuffleNet-12 V2 model hero](hero.png)
+![ShuffleNet V2 x1.0 model hero](hero.png)
 
 ## Overview
 
-ShuffleNet-12 V2 sorts an image into one of the 1,000 ImageNet classes, such as
+ShuffleNet V2 x1.0 sorts an image into one of the 1,000 ImageNet classes, such as
 animals, vehicles, and household objects. Use it to tag or sort photos, or to
 check what a camera is looking at. It returns one score for each class, and your
 application reports the most likely ones. It names the main subject of the image
