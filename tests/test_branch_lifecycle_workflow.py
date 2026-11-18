@@ -22,13 +22,23 @@ def test_branch_create_delete_and_manual_retry_are_supported() -> None:
     assert inputs["branch"]["required"] == "true"
 
 
+def test_each_branch_has_its_own_concurrency_group() -> None:
+    concurrency = load_workflow()["concurrency"]
+
+    # Dispatches that shared one group cancelled each other while they waited.
+    assert concurrency["group"] == "model-branch-lifecycle-${{ inputs.branch || github.event.ref }}"
+    assert concurrency["cancel-in-progress"] == "false"
+
+
 def test_lifecycle_uses_repository_scoped_oidc_publisher() -> None:
     workflow = load_workflow()
     job = workflow["jobs"]["update-registry"]
     credentials = next(step for step in job["steps"] if step.get("uses", "").startswith("aws-actions/"))
 
     assert workflow["permissions"] == {"contents": "read", "id-token": "write"}
-    assert job["environment"] == "staging"
+    assert job["strategy"]["matrix"]["environment"] == ["staging", "production"]
+    assert job["strategy"]["fail-fast"] == "false"
+    assert job["environment"] == "${{ matrix.environment }}"
     assert credentials["uses"] == "aws-actions/configure-aws-credentials@v6"
     assert credentials["with"]["role-to-assume"] == "${{ vars.VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN }}"
     assert "s3:" not in WORKFLOW.read_text(encoding="utf-8")
@@ -57,6 +67,7 @@ def test_purge_is_polled_and_restore_is_idempotent() -> None:
     assert "/v1/repositories/${REPOSITORY}/branches/${OPERATION}" in script
     assert "/v1/purge-jobs/${job_id}" in script
     assert "for attempt in {1..60}" in script
+    assert "sleep 15" in script
     assert 'if [[ "$OPERATION" == restore ]]' in script
     assert "Registered S3 object versions removed" in script
     assert lifecycle["env"]["REPOSITORY"] == "${{ github.repository }}"

@@ -11,15 +11,22 @@ on a black background, and returns one score for each of the ten digits, from
 0 to 9. Your application takes the highest score as the digit, or applies a
 softmax for probabilities. The model runs as one component.
 
-## Inputs and outputs
+## Inputs
 
-**Input.** Crop the digit, convert it to grayscale and resize it to 28×28, with
-the digit white on a black background as in MNIST. Scale the pixel values to
-0–1 by dividing by 255; the model applies MNIST's mean and standard deviation
-itself. Pass the image as `image`, a 28×28×1 (height, width, channel) float
-tensor.
+One input, `image`: a 28×28×1 (height, width, channel) grayscale digit image with values from 0 to 1.
 
-**Outputs.** `logits` holds 10 digit scores before a softmax.
+Preprocessing:
+
+1. Crop the digit.
+2. Convert it to grayscale, with the digit white on a black background as in MNIST.
+3. Resize it to 28×28.
+4. Divide the pixel values by 255; the model applies MNIST's mean and standard deviation itself.
+
+## Outputs
+
+One output, `logits`, with 10 digit scores before a softmax.
+
+Postprocessing:
 
 1. Take the index of the highest score as the digit.
 2. Apply a softmax to the scores when the application needs a confidence.

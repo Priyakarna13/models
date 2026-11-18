@@ -45,10 +45,6 @@ without claiming a measured interruption rate.
 | `runner_class: expensive`, `runner_market: on-demand` | More capacity and avoidance of Spot reclamation. | Both a sufficient maximum class and `allow_on_demand: true`. |
 
 Class order is `default < moderate < expensive < most-expensive`.
-Deploy [Vulcan tier support and YOLO26x-pose approval](https://github.com/sima-neat/vulcan/pull/414)
-before running a YOLO26x-pose W8A16 compile with `moderate`. Its measured
-47.04 GiB peak was on x86 with a 128 GiB limit; success on 64 GiB ARM64 remains
-unverified. On-demand permission is retained independently of size.
 
 Vulcan owns the mapping from class to EC2 instance types. Do not put instance
 types in the model manifest. Permission does not select a larger runner or a
@@ -100,7 +96,7 @@ component overriding it to Spot conflicts unless every component resolves to Spo
 
 ## Obtain access through a Vulcan policy PR
 
-Before enabling the request on a branch that runs trusted compilation:
+Before enabling the request on a branch that CI compiles:
 
 1. Measure the existing build. For a larger class, provide peak-memory or runtime
    evidence and explain why recipe improvements are insufficient. For on-demand,
@@ -116,8 +112,9 @@ Before enabling the request on a branch that runs trusted compilation:
    grant needs published policy v3 with `allow_on_demand: true`. Ask the owner
    to confirm that compatible Models workflows and Vulcan scaler code are deployed
    before enabling it; a merged policy PR alone does not prove it is active.
-4. Link the Vulcan PR in the Models PR, update the owning README to explain the
-   runner request, and validate the manifest. Enable only the reviewed request.
+4. Link the Vulcan PR in the Models PR, explain the runner request in the
+   Models PR description, and validate the manifest. Enable only the reviewed
+   request.
 
 Use this checklist in the approval request so the owner can review it without
 reconstructing the build history:
@@ -172,44 +169,41 @@ model-registry matrix --repository . --models example_detector --profiles w8a8
 ```
 
 The matrix reports `requested_runner_class` and `requested_runner_market`.
-These local commands validate and describe the request; they do not grant access
-or read the protected Vulcan policy. PR checks likewise do not prove admission.
-Trusted automation authorizes the compile matrix before queuing self-hosted jobs,
-and Vulcan checks it independently before launching capacity.
+These local commands validate and describe the request. They do not grant
+access or read the deployed approvals, and neither do the pull request checks.
+After a push, CI checks each request against the deployed approvals before it
+starts a compile, and Vulcan checks it again before it launches a runner.
 
-A normal trusted push builds missing fingerprints. To explicitly select a build,
-use **Vulcan Model Orchestrator** with the model ID and profile ID. The build
-uses `VULCAN_ENV` for its runner and publication environment. For example, from
-this repository with GitHub CLI access:
+A push compiles each build whose compile fingerprint has no published result.
+To select a build yourself, run **Vulcan Model Orchestrator** with the model ID
+and profile ID. For example, from this repository with GitHub CLI access:
 
 ```bash
 gh workflow run vulcan-model-orchestrator.yml --ref develop \
   -f models=example_detector -f profiles=w8a8
 ```
 
-The selected ref must contain the request and compatible workflow. A market-only
-change may reuse an existing result and launch no runner. For a deliberate fresh
-verification in the selected environment, add `-f force_rebuild_all=true` to that
-narrowly selected dispatch on a new Git commit if the selected package is already
-published in the current catalog revision; this incurs another compile and may
-run its declared benchmarks. Manual
-selection also permits models with `build-on-demand: true`.
+The selected ref must contain the request. A change to the market alone may
+reuse an existing build and start no runner. To compile again on purpose, add
+`-f force_rebuild_all=true` to that dispatch. A dispatch that names `profiles`
+compiles the selected builds but publishes no package and runs no benchmark,
+unless the model sets `build-on-demand: true`. To rebuild and publish, dispatch
+with `models` only. If the package is already published for the current commit,
+push a new Git commit first. A manual selection is also how a model with
+`build-on-demand: true` gets built.
 
 ## Verify the result and diagnose failures
 
-The compile job's **Compile runner** summary shows requested, selected and actual
-market, runner name, EC2 instance ID/type, approval identity and policy revision.
-The same identity fields persist in the registry's `model_compile` run parameters
-and the package manifest's `provenance`, also published in the `model_package`
-run parameters, beyond workflow-artifact retention.
-They describe the runner that actually compiled the result, not a later runner
-that reuses it. Older builds can omit these fields. Runner audit metadata does
-not change the compile fingerprint, compile-run fingerprint or compiled file
-checksums; the package manifest's own digest reflects its provenance content. A default Spot
-request needs no approval identity, but still records the policy revision. Link
-the first staging run and its summary in your Models PR, and ask the infrastructure
-owner to confirm EC2 lifecycle and cleanup. Local validation or admission alone
-does not prove a runner was launched or that compilation succeeded.
+The compile job's **Compile runner** summary shows the requested, selected and
+actual market, the runner name, the instance type, the approval
+identity, and the policy revision. The published build keeps the same fields in
+its package manifest's `provenance`. They describe the runner that compiled the
+build, not a later run that reuses it, and older builds can omit them. Recording
+the runner does not change the compile fingerprint. A default Spot request needs
+no approval identity, but still records the policy revision. Link the first run
+and its summary in your Models PR, and ask the infrastructure owner to confirm
+that the instance was cleaned up. Local validation or admission alone does not
+prove that a runner started or that compilation succeeded.
 
 | Symptom | Action |
 | --- | --- |

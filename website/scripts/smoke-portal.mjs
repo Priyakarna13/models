@@ -50,9 +50,24 @@ async function checkPage(browser, url, readySelector) {
       problems.push(`${request.failure()?.errorText} ${request.url()}`);
     }
   });
+  const catalogLanding = url.pathname === '/' && !url.search;
+  const registryRequests = [];
+  if (catalogLanding) page.on('request', request => {
+    const {pathname} = new URL(request.url());
+    if (request.resourceType() === 'fetch' && pathname.startsWith('/v1/')) registryRequests.push(pathname);
+  });
   await page.goto(url.href);
   await page.waitForSelector(readySelector, {timeout: 15_000})
     .catch(() => problems.push(`${readySelector} did not render`));
+  if (catalogLanding) {
+    const snapshots = registryRequests.filter(path => path.endsWith('/catalogs/current'));
+    if (snapshots.length !== 1 || (customer && registryRequests.length !== 1)) {
+      problems.push(`Unexpected catalog requests: ${registryRequests.join(', ')}`);
+    }
+    if (registryRequests.some(path => path.startsWith('/v1/runs/') || path.endsWith('/models'))) {
+      problems.push('Catalog fetched individual runs or a separate model list');
+    }
+  }
   if (await page.locator('[data-model-card-body]').count()) {
     await page.waitForSelector('[data-model-card-body] .model-documentation-body', {timeout: 15_000})
       .catch(() => problems.push('Inline model instructions did not load'));
@@ -204,8 +219,8 @@ async function checkCatalogLayouts(browser, url) {
         if (viewport.width === 390) await page.keyboard.press('Tab');
         if (!await taskFilter.evaluate(el => document.activeElement === el && getComputedStyle(el).outlineStyle === 'solid')) throw new Error('keyboard navigation lost its filter focus outline');
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
-        // Search keeps individual cards; the target platform matches every usable build.
-        await page.locator('#search').fill('modalix');
+        // A punctuation-only search shows individual cards without filtering out any model.
+        await page.locator('#search').fill('.');
         await page.locator('[data-model-card]').first().waitFor();
         const ids = await page.locator('.model-card').evaluateAll(cards => cards.map(card => card.dataset.modelCard));
         const tasksByModel = await page.locator('.model-card').evaluateAll(cards => Object.fromEntries(cards.map(card => [
@@ -236,6 +251,12 @@ async function checkCatalogLayouts(browser, url) {
         if (!/%/.test(await resnet.locator('[data-table-accuracy]').innerText())) throw new Error('missing measured accuracy');
         const original = await resnet.locator('[data-table-performance]').innerText();
         if (!original.includes('inferences/s') || !original.includes('ms')) throw new Error('missing throughput or latency');
+        const languageReading = await page.locator('[data-catalog-entry="qwen3_5_0_8b"][data-catalog-task="text_generation"] [data-table-performance]').innerText();
+        if (!languageReading.includes('TPS: 74.3') || !languageReading.includes('TTFT: 43.3 ms') || !languageReading.includes('Input Tokens: 128')) throw new Error('catalog does not show the 128-token text reading');
+        const imageReading = await page.locator('[data-catalog-entry="qwen3_5_0_8b"][data-catalog-task="visual_question_answering"] [data-table-performance]').innerText();
+        if (!imageReading.includes('TPS: 73.5') || !imageReading.includes('TTFT: 132.3 ms') || !imageReading.includes('Input Image: 448 × 448')) throw new Error('catalog mixed image timings with text workloads');
+        const unmeasured = await page.locator('[data-catalog-entry="gemma_4_e2b_it_textonly"] [data-table-performance]').innerText();
+        if (unmeasured !== 'Not measured') throw new Error('catalog fabricated an unmeasured language model result');
         await resnet.getByRole('combobox').selectOption('w16a16');
         await settled();
         if (await resnet.locator('[data-table-performance]').innerText() === original) throw new Error('precision changed without refreshing measurements');
@@ -246,14 +267,14 @@ async function checkCatalogLayouts(browser, url) {
         await page.locator('.catalog-table').first().waitFor();
         if (await tableButton.getAttribute('aria-pressed') !== 'true') throw new Error('returning lost table selection');
         await page.locator('#search').fill('rf detr');
-        await page.waitForFunction(() => document.querySelectorAll('.catalog-model-link').length === 4);
-        if (await page.locator('.catalog-task-group').count() !== 1 || await page.locator('.catalog-task-group h3').innerText() !== 'Object Detection') throw new Error('filtered task grouping is incorrect');
+        await page.waitForFunction(() => document.querySelectorAll('.catalog-model-link').length === 7);
+        if ((await page.locator('.catalog-task-group h3').allInnerTexts()).sort().join() !== 'Instance Segmentation,Object Detection') throw new Error('filtered task grouping is incorrect');
         await settled();
         // A package result is the model's one reading; its components are not listed or added up.
         const packageText = await page.locator('[data-catalog-entry="rf_detr_nano"] [data-table-performance]').innerText();
         if (!packageText.includes('inferences/s') || /backbone|decoder/.test(packageText)) throw new Error('package measurement is not the model\'s one reading');
         await page.getByRole('button', {name: 'Cards', exact: true}).click();
-        if (await page.locator('.model-card').count() !== 4) throw new Error('switching lost the search filter');
+        if (await page.locator('.model-card').count() !== 7) throw new Error('switching lost the search filter');
         await tableButton.click();
         await page.locator('#search').fill('');
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
@@ -492,12 +513,12 @@ async function checkTaskComparison(browser, base) {
         await page.locator('[data-compare-control="task"]').selectOption('image_classification');
         await add.waitFor();
         // Each classifier's variants by exact model name (Wide ResNet-50-2 contains "ResNet-50"), and nothing from another task.
-        const classifiers = {'ResNet-50': 3, 'ResNet-18': 2, 'ResNet-34': 2, 'ResNeXt-50 32x4d': 2, 'ResNeXt-101 32x8d': 2, 'ResNeXt-101 64x4d': 2, 'Wide ResNet-50-2': 2, 'DLA-34': 2, 'Inception v3': 2, 'VGG-11': 2, 'VGG-11-BN': 2, 'VGG-13': 2, 'VGG-13-BN': 2, 'VGG-16': 2, 'VGG-16-BN': 2, 'VGG-19': 2, 'VGG-19-BN': 2, 'HRNet-W32': 2, 'ViT-B/16': 2, 'DenseNet-121': 2, 'DenseNet-161': 2, 'DenseNet-169': 2};
+        const classifiers = {'ResNet-50': 3, 'ResNet-18': 2, 'ResNet-34': 2, 'ResNeXt-50 32x4d': 2, 'ResNeXt-101 32x8d': 2, 'ResNeXt-101 64x4d': 2, 'Wide ResNet-50-2': 2, 'DLA-34': 2, 'Inception v3': 2, 'VGG-11': 2, 'VGG-11-BN': 2, 'VGG-13': 2, 'VGG-13-BN': 2, 'VGG-16': 2, 'VGG-16-BN': 2, 'VGG-19': 2, 'VGG-19-BN': 2, 'HRNet-W32': 2, 'ViT-B/16': 2, 'DenseNet-121': 2, 'DenseNet-161': 2, 'DenseNet-169': 2, 'MNIST CNN': 1, 'MNIST FC': 2};
         const variants = Object.values(classifiers).reduce((total, count) => total + count, 0);
         const choices = (await add.locator('option').allTextContents()).slice(1);
         if (choices.length !== variants || !Object.entries(classifiers).every(([name, count]) => choices.filter(text => text.startsWith(`${name} · `)).length === count)) throw new Error('comparison mixed tasks or omitted a variant');
         const dataset = await page.locator('.compare-chart-dataset').innerText();
-        if (!dataset.includes('imagenet-2012') || !dataset.includes('/ val /')) throw new Error('chart dataset did not follow the selected task');
+        if (!dataset.includes('imagenet-2012 val')) throw new Error('chart dataset did not follow the selected task');
         if (await page.locator('.compare-point').count() !== variants) throw new Error('chart omitted a measured classification variant');
         await add.selectOption('resnet_50.w16a16');
         if (!(await page.locator('.compare-table').innerText()).includes('W16A16')) throw new Error('selected variant is missing from the table');
@@ -510,7 +531,7 @@ async function checkTaskComparison(browser, base) {
         if (await page.locator('[data-compare-control="graph"], .compare-bucket-line').count()) throw new Error('removed graph controls remain visible');
         if (await page.locator('.compare-point').count() !== 1) throw new Error('LLM chart must plot Qwen measurements only');
         if (await workload.locator('option').count() !== 6) throw new Error('LLM group mixed image and text workloads');
-        if (JSON.stringify(await page.locator('.compare-axis-title').allTextContents()) !== JSON.stringify(['Parameters (billions)', 'Decode (tokens/s)'])) throw new Error('GenAI chart uses the wrong axes');
+        if (JSON.stringify(await page.locator('.compare-axis-title').allTextContents()) !== JSON.stringify(['Parameters (billions)', 'Generation (tokens/s)'])) throw new Error('GenAI chart uses the wrong axes');
         await add.selectOption('qwen3_5_0_8b.w4a16');
         await add.selectOption('gemma_4_e2b_it_textonly.w4a16');
         const table = page.locator('.compare-table');
@@ -571,6 +592,9 @@ async function checkGenerativeBenchmark(browser, url) {
         await table.waitFor();
         await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
         if (await table.locator('tbody tr').count() !== 6) throw new Error('missing text workloads');
+        if (!await table.getByRole('columnheader', {name: 'Generation (tokens/s)', exact: true}).isVisible()) throw new Error('generation rate uses an unclear heading');
+        const explanation = await table.locator('thead .info-mark').getAttribute('data-tooltip');
+        if (!explanation?.startsWith('Time to first token:')) throw new Error('TTFT has no explanation');
         const imageTable = page.getByRole('table', {name: 'Image and text performance', exact: true});
         if (await imageTable.locator('thead th').count() !== 2) throw new Error('image table must show TTFT and decode only');
         if (await imageTable.locator('tbody tr').count() !== 1) throw new Error('missing image workload');
@@ -627,7 +651,7 @@ try {
     const checks = [
       ['model list', new URL('/', variantUrl), '#result-list .model-card'],
       ['variant page', variantUrl, '#components-section .component-performance'],
-      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a8_w16a16', variantUrl), '#components-section .component-pipeline'],
+      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a16_w16a16', variantUrl), '#components-section .component-pipeline'],
     ];
     for (const viewport of [{width: 1440, height: 1000}, {width: 390, height: 844}]) {
       const page = await browser.newPage({viewport});

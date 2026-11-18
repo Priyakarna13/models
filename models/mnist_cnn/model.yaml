@@ -21,6 +21,15 @@ upstream:
   revision: 1cd752f4a3d818fa215aa621c78b8a10a4a1a3a5
   derived_from: https://github.com/Microsoft/CNTK/blob/master/Tutorials/CNTK_103D_MNIST_ConvolutionalNeuralNetwork.ipynb
 
+resources:
+  license:
+    # onnxmodelzoo/mnist-12 omits LICENSE. Microsoft's CNTK repository, where the model was trained, carries the MIT text.
+    source:
+      uri: https://raw.githubusercontent.com/Microsoft/CNTK/10a8ffcf50d7b9225f3236ffcfdc422b2014fb92/LICENSE.md
+      sha256: f28ca23f145a26c0c7bb88f96da89b8a880ee40c804874992bea2f2cd5a1fd1f
+      size_bytes: 1137
+    install_path: licenses/LICENSE
+
 compilation:
   format: onnx
   source:

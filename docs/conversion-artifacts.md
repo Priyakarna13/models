@@ -17,6 +17,20 @@ The checkpoint is a pinned Hugging Face file or a release file of a public
 GitHub repository. [Pin every input](adding-a-model.md#3-pin-every-input)
 lists the approved forms.
 
+## What `convert.py` exports
+
+`convert.py` exports the official model as it is: its forward pass at the input shape
+the package ships, from the model's input to the final outputs the package keeps. It may
+simplify the ONNX with `onnxsim.simplify`, including constant folding, when that keeps
+the same inputs, outputs, and computation.
+
+Every other change made for the compiler belongs in `surgery.py`, even one that leaves
+the results exactly the same. That includes a cut: an export that ends at an inner
+tensor, such as the raw heads before the official decode step, or one that starts after
+an official step. This split keeps the converted ONNX comparable with the official model.
+
+## What to keep in Git
+
 Keep upstream pins and exporter dependencies in Git. Do not copy the output URL,
 checksum, size, or run ID into `model.yaml`. The folder identifies the model and
 the conversion produces `model.onnx`, unless `conversion.outputs` names other
@@ -71,33 +85,43 @@ the ONNX to compile, so `compilation.format` stays `onnx`.
 Convert fails when a listed file is missing, and runs the ONNX checker on every
 `.onnx` file. Nothing shared checks a `.pt` or `.pth` file, so the model's
 conversion tests must do that. Their `converted` fixture is the first file, and
-the others sit beside it. The bundle keeps the `onnx` artifact name and the
-`model-onnx` type whatever it holds.
+the others sit beside it.
 
-## Publication and selection
+## Publish a conversion
 
-Run **Vulcan Model Convert** in the selected environment. The explicit
-`staging`/`production` input selects the matching GitHub environment and runner;
-the shared configuration resolver returns `stg`/`prod` aliases for infrastructure
-lookup, which must not be used as GitHub environment names. It installs the model's
-exporter requirements, runs conversion and model tests, checks the ONNX, and
-publishes a deterministic bundle under `models/conversions/`. The bundle contains
-the declared outputs, any referenced external tensor files, and a checked file
-manifest.
-Skipped or failed model tests do not publish successful conversions.
+No push runs a conversion. In **Actions**, run **Vulcan Model Convert** on the branch
+that holds the model. Give it the model's ID and the registry environment, `staging`
+or `production`.
 
-Vulcan stores ordinary `model_conversion` runs with upstream inputs, parameters,
-validation and the `onnx` artifact.
+The workflow installs the model's exporter requirements and runs `convert.py` and the
+model's conversion tests. It then publishes the declared outputs, with any external
+tensor files the ONNX files reference. A failed or skipped conversion test publishes
+nothing.
+
+A conversion belongs to the environment it ran in. To move a pinned model to
+`compilation.source: conversion`, run Convert in each environment that builds the
+model, then change the source.
+
+CI resolves `compilation.source: conversion` to the latest published conversion that
+matches the model's current conversion inputs. When none matches, CI stops with
+`<model-id>: no matching validated conversion; run Vulcan Model Convert first`. The
+compile fingerprint uses the content of the converted files, so a conversion that
+publishes the same bytes again recompiles nothing.
 
 ### When to run Convert again
 
-Run **Vulcan Model Convert** again after changing anything that can change the ONNX:
+Run **Vulcan Model Convert** again after changing anything that can change the
+converted files:
 
-- the upstream pins under `conversion.source`, or `conversion.outputs`
-- `scripts/convert.py`, `scripts/requirements-convert*.txt`, or a module in `scripts/`
-  that `convert.py` imports
-- any other file under `scripts/` that is not a Python module beside `convert.py`,
-  except `requirements-compile.txt` and `requirements-accuracy.txt`
+- the checkpoint pin under `conversion.source`, or `conversion.outputs`
+- `scripts/convert.py`, or a module beside it that `convert.py` imports, directly or
+  through another such module
+- any other file directly in `scripts/` that is not a `.py` file, such as
+  `requirements-convert.txt` or an exporter patch
+- any file in a subfolder of `scripts/`
+
+Three files never count, wherever they sit: `requirements-compile.txt`,
+`requirements-accuracy.txt`, and `requirements-performance.txt`.
 
 Everything else leaves the conversion valid, including shared tooling, tests,
 compile and benchmark code, and the taxonomy. A changed conversion test runs the
@@ -110,85 +134,10 @@ When a shared change does alter converted output, such as a new Python version i
 `FINGERPRINT_VERSION` in `tools/model_registry/conversion.py` in the same change.
 Every conversion-backed model then needs Convert again.
 
-Leave a successful conversion alone. Planning selects the latest completed run
-for a fingerprint, so a repeated Convert whose output bytes differ recompiles
-that model on every branch.
+Leave a successful conversion alone. A repeated Convert whose output bytes differ
+recompiles that model on every branch.
 
-Use a normal `import` for helpers, because a module loaded dynamically is not
-detected. Pin exporter requirements too, because packages they pull in indirectly
-are not tracked.
-
-Catalog planning resolves conversion declarations for the requested models (all
-models when no `--models` filter is supplied), including on-demand models,
-so their build requirements have concrete content identities. This does not
-schedule compilation of an on-demand model. During targeted catalog publication,
-unselected conversion-backed models keep their previous build/package entries
-and on-demand requirements, along with any existing pending build records;
-documentation receipts are refreshed for the current
-catalog revision. Their conversions are not re-resolved or
-marked pending. A new unselected conversion-backed model enters the catalog when
-it has a selected conversion plan. Before deciding compile reuse, planning resolves the latest completed matching
-run and checks its artifact. The plan uses ordinary `model_compile_plan` run
-records and versioned inputs. Its identity includes the GitHub workflow run,
-commit, model and conversion fingerprint. Rerunning that workflow resumes its
-saved selection, including after interrupted publication. A new workflow can
-select a newer compatible conversion. Missing or unavailable output fails with
-an instruction to run conversion; it never falls back to an older artifact.
-
-The selected metadata travels as `MODEL_REGISTRY_CONVERSIONS` to compile,
-publication and catalog jobs. It contains exact object versions, not signed
-URLs. Downloads request fresh URLs for that exact artifact and verify both the
-bundle checksum and member checksums. Compile fingerprints use output content;
-another run or environment with identical bundle bytes does not change them.
-Compile publication records the conversion as a versioned registry input.
-
-For explicit local reproduction, save the original plan's `conversion_sources`
-JSON map and use it with the same checkout and compiler:
-
-```bash
-export MODEL_REGISTRY_CONVERSIONS="$(cat conversion-sources.json)"
-model-registry fetch models/<model-id> --json
-scripts/run_model_compilation.sh models/<model-id> <profile> <profile> /tmp/compiled
-```
-
-The plan is also recoverable through its run's `/provenance` endpoint: its
-`conversion` input records producer/artifact IDs and content metadata. Retained
-compile inputs record the same selection. Use the original environment's reader;
-do not substitute a current resolve result when reproducing an older build.
-
-## Retention and rollout
-
-Deploy Vulcan's conversion validation and migration
-`019_model_conversion_retention` before enabling registry sources. Plans protect
-selected conversions for 24 hours, covering the normal six-hour compile limit
-and queue time. Abandoned plans do not create permanent holds. After publication,
-retained compile inputs protect conversion bytes and provenance, including when
-the conversion branch is deleted. After the plan window, an unpublished build
-has no retention guarantee; unavailable outputs require a new workflow.
-
-Completed conversions without consumers follow normal branch retention. Newer
-conversion publication alone does not delete older outputs. The legacy S3
-sweeper skips the shared `models/conversions/` prefix because it has no branch
-`latest.tag`; registry cleanup owns these versioned objects.
-
-To move a pinned model to `compilation.source: conversion`, publish its conversion in
-each environment that needs it, then change the source. Conversions are not promoted
-between environments, and nothing runs Convert automatically.
-
-### Private production reads
-
-When a selection uses the IAM API, compile fetches sign artifact metadata requests
-with SigV4, including cache hits. The compile job assumes the registry role with
-an inline session policy restricted to `GET /v1/runs/*/artifacts/onnx`; the session
-cannot publish, write objects, or access KMS directly. These credentials are
-passed only to the registry reader. Immediately after compilation, the job assumes
-a fresh session with the same restricted policy for provenance verification, so a
-long compilation cannot leave cached-source verification using an expired session.
-Dataset access retains the runner credentials. Vulcan must grant that GET
-route to the role before enabling this path. Public metadata reads stay unsigned,
-and the artifact body uses the version-specific signed download URL. Exact version,
-checksum, size, and validation checks apply to both paths.
-
-The offline browser preview supplies deterministic synthetic conversion identities
-for its fixture catalog. It does not resolve real conversions or require registry
-credentials; production planning still requires validated registry selections.
+Import helpers with a plain `import helper` or `from helper import name`. The check
+does not detect a module that `convert.py` loads dynamically or through a relative
+import, so a change to it does not ask for a new conversion. Pin exporter
+requirements too, because the check does not track packages they pull in indirectly.
