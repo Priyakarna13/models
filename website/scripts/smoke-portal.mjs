@@ -50,9 +50,24 @@ async function checkPage(browser, url, readySelector) {
       problems.push(`${request.failure()?.errorText} ${request.url()}`);
     }
   });
+  const catalogLanding = url.pathname === '/' && !url.search;
+  const registryRequests = [];
+  if (catalogLanding) page.on('request', request => {
+    const {pathname} = new URL(request.url());
+    if (request.resourceType() === 'fetch' && pathname.startsWith('/v1/')) registryRequests.push(pathname);
+  });
   await page.goto(url.href);
   await page.waitForSelector(readySelector, {timeout: 15_000})
     .catch(() => problems.push(`${readySelector} did not render`));
+  if (catalogLanding) {
+    const snapshots = registryRequests.filter(path => path.endsWith('/catalogs/current'));
+    if (snapshots.length !== 1 || (customer && registryRequests.length !== 1)) {
+      problems.push(`Unexpected catalog requests: ${registryRequests.join(', ')}`);
+    }
+    if (registryRequests.some(path => path.startsWith('/v1/runs/') || path.endsWith('/models'))) {
+      problems.push('Catalog fetched individual runs or a separate model list');
+    }
+  }
   if (await page.locator('[data-model-card-body]').count()) {
     await page.waitForSelector('[data-model-card-body] .model-documentation-body', {timeout: 15_000})
       .catch(() => problems.push('Inline model instructions did not load'));
@@ -204,8 +219,8 @@ async function checkCatalogLayouts(browser, url) {
         if (viewport.width === 390) await page.keyboard.press('Tab');
         if (!await taskFilter.evaluate(el => document.activeElement === el && getComputedStyle(el).outlineStyle === 'solid')) throw new Error('keyboard navigation lost its filter focus outline');
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
-        // Search keeps individual cards; the target platform matches every usable build.
-        await page.locator('#search').fill('modalix');
+        // A punctuation-only search shows individual cards without filtering out any model.
+        await page.locator('#search').fill('.');
         await page.locator('[data-model-card]').first().waitFor();
         const ids = await page.locator('.model-card').evaluateAll(cards => cards.map(card => card.dataset.modelCard));
         const tasksByModel = await page.locator('.model-card').evaluateAll(cards => Object.fromEntries(cards.map(card => [
@@ -236,6 +251,12 @@ async function checkCatalogLayouts(browser, url) {
         if (!/%/.test(await resnet.locator('[data-table-accuracy]').innerText())) throw new Error('missing measured accuracy');
         const original = await resnet.locator('[data-table-performance]').innerText();
         if (!original.includes('inferences/s') || !original.includes('ms')) throw new Error('missing throughput or latency');
+        const languageReading = await page.locator('[data-catalog-entry="qwen3_5_0_8b"][data-catalog-task="text_generation"] [data-table-performance]').innerText();
+        if (!languageReading.includes('TPS: 74.3') || !languageReading.includes('TTFT: 43.3 ms') || !languageReading.includes('Input Tokens: 128')) throw new Error('catalog does not show the 128-token text reading');
+        const imageReading = await page.locator('[data-catalog-entry="qwen3_5_0_8b"][data-catalog-task="visual_question_answering"] [data-table-performance]').innerText();
+        if (!imageReading.includes('TPS: 73.5') || !imageReading.includes('TTFT: 132.3 ms') || !imageReading.includes('Input Image: 448 × 448')) throw new Error('catalog mixed image timings with text workloads');
+        const unmeasured = await page.locator('[data-catalog-entry="gemma_4_e2b_it_textonly"] [data-table-performance]').innerText();
+        if (unmeasured !== 'Not measured') throw new Error('catalog fabricated an unmeasured language model result');
         await resnet.getByRole('combobox').selectOption('w16a16');
         await settled();
         if (await resnet.locator('[data-table-performance]').innerText() === original) throw new Error('precision changed without refreshing measurements');
@@ -246,14 +267,14 @@ async function checkCatalogLayouts(browser, url) {
         await page.locator('.catalog-table').first().waitFor();
         if (await tableButton.getAttribute('aria-pressed') !== 'true') throw new Error('returning lost table selection');
         await page.locator('#search').fill('rf detr');
-        await page.waitForFunction(() => document.querySelectorAll('.catalog-model-link').length === 4);
-        if (await page.locator('.catalog-task-group').count() !== 1 || await page.locator('.catalog-task-group h3').innerText() !== 'Object Detection') throw new Error('filtered task grouping is incorrect');
+        await page.waitForFunction(() => document.querySelectorAll('.catalog-model-link').length === 7);
+        if ((await page.locator('.catalog-task-group h3').allInnerTexts()).sort().join() !== 'Instance Segmentation,Object Detection') throw new Error('filtered task grouping is incorrect');
         await settled();
         // A package result is the model's one reading; its components are not listed or added up.
         const packageText = await page.locator('[data-catalog-entry="rf_detr_nano"] [data-table-performance]').innerText();
         if (!packageText.includes('inferences/s') || /backbone|decoder/.test(packageText)) throw new Error('package measurement is not the model\'s one reading');
         await page.getByRole('button', {name: 'Cards', exact: true}).click();
-        if (await page.locator('.model-card').count() !== 4) throw new Error('switching lost the search filter');
+        if (await page.locator('.model-card').count() !== 7) throw new Error('switching lost the search filter');
         await tableButton.click();
         await page.locator('#search').fill('');
         if (viewport.width === 390) await page.locator('#filter-toggle').click();
@@ -497,7 +518,7 @@ async function checkTaskComparison(browser, base) {
         const choices = (await add.locator('option').allTextContents()).slice(1);
         if (choices.length !== variants || !Object.entries(classifiers).every(([name, count]) => choices.filter(text => text.startsWith(`${name} · `)).length === count)) throw new Error('comparison mixed tasks or omitted a variant');
         const dataset = await page.locator('.compare-chart-dataset').innerText();
-        if (!dataset.includes('imagenet-2012') || !dataset.includes('/ val /')) throw new Error('chart dataset did not follow the selected task');
+        if (!dataset.includes('imagenet-2012 val')) throw new Error('chart dataset did not follow the selected task');
         if (await page.locator('.compare-point').count() !== variants) throw new Error('chart omitted a measured classification variant');
         await add.selectOption('resnet_50.w16a16');
         if (!(await page.locator('.compare-table').innerText()).includes('W16A16')) throw new Error('selected variant is missing from the table');
@@ -505,11 +526,102 @@ async function checkTaskComparison(browser, base) {
         if (await page.locator('.compare-table, .compare-selected').count()) throw new Error('removing the final variant left an empty table');
         if (new URL(page.url()).searchParams.getAll('build').length) throw new Error('removing the final variant left a selection in the URL');
         await page.locator('[data-compare-control="task"]').selectOption('text_generation');
-        await page.locator('.compare-tbd').waitFor();
-        if (await page.locator('.compare-chart, .compare-table, [data-compare-add]').count()) throw new Error('LLM task rendered vision measurements');
+        const workload = page.locator('[data-compare-control="workload"]');
+        await workload.waitFor();
+        if (await page.locator('[data-compare-control="graph"], .compare-bucket-line').count()) throw new Error('removed graph controls remain visible');
+        if (await page.locator('.compare-point').count() !== 1) throw new Error('LLM chart must plot Qwen measurements only');
+        if (await workload.locator('option').count() !== 6) throw new Error('LLM group mixed image and text workloads');
+        if (JSON.stringify(await page.locator('.compare-axis-title').allTextContents()) !== JSON.stringify(['Parameters (billions)', 'Generation (tokens/s)'])) throw new Error('GenAI chart uses the wrong axes');
+        await add.selectOption('qwen3_5_0_8b.w4a16');
+        await add.selectOption('gemma_4_e2b_it_textonly.w4a16');
+        const table = page.locator('.compare-table');
+        if (await table.locator('thead th').count() !== 2) throw new Error('unmeasured model is missing from selected LLMs');
+        const parameterRow = table.locator('tr').filter({has: page.getByRole('rowheader', {name: 'Parameters', exact: true})});
+        if (JSON.stringify(await parameterRow.locator('td').allTextContents()) !== JSON.stringify(['0.8 B', '5.1 B'])) throw new Error('parameter counts are missing or use deployment size');
+        const ttftRow = table.locator('tr').filter({has: page.getByRole('rowheader', {name: 'Time to first token', exact: true})});
+        if (JSON.stringify(await ttftRow.locator('td').allTextContents()) !== JSON.stringify(['43.3 ms', '—'])) throw new Error('workload table fabricated or mixed measurements');
+        await workload.selectOption('text_3072');
+        if (await ttftRow.locator('td').first().innerText() !== '910.5 ms') throw new Error('table did not follow input length');
+        const hoverNativePoint = async point => {
+          await point.scrollIntoViewIfNeeded();
+          // Scrolling intentionally hides popups; finish scrolling before moving onto the point.
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          await page.mouse.move(0, 0);
+          await point.hover();
+        };
+        await hoverNativePoint(page.locator('.compare-point'));
+        if (!(await tooltip.innerText()).includes('0.8 B') || !(await tooltip.innerText()).includes('3072 input tokens')) throw new Error('GenAI tooltip is missing parameters or workload');
+        await page.reload();
+        await table.waitFor();
+        await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+        if (await workload.inputValue() !== 'text_3072' || await table.locator('thead th').count() !== 2) throw new Error('reload lost LLM comparison settings');
+        if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error('LLM comparison overflows the page');
+        await page.screenshot({path: `/tmp/models-ui-compare-llm-${viewport.width}-${theme}.png`});
+        await page.locator('.compare-point').click();
+        if (await table.locator('thead th').count() !== 1 || await page.locator('.compare-point').count() !== 1) throw new Error('deselection hid an available LLM point');
+        await page.locator('.compare-point').click();
+        if (await table.locator('thead th').count() !== 2) throw new Error('LLM could not be reselected');
+        await page.locator('[data-compare-control="task"]').selectOption('visual_question_answering');
+        await page.locator('.compare-point').waitFor();
+        if (await page.locator('[data-compare-control="workload"], [data-compare-control="graph"]').count()) throw new Error('VLM comparison must not have workload or graph selectors');
+        if (await add.locator('option[value^="gemma_4_e2b_it_textonly"]').count()) throw new Error('text-only model appears in the VLM group');
+        if (await table.locator('thead th').count() !== 1 || await ttftRow.locator('td').first().innerText() !== '132.3 ms') throw new Error('VLM table did not use its image-inclusive TTFT');
+        if (await page.locator('.compare-chart-dataset').innerText() !== 'Image + text at encoder resolution') throw new Error('VLM chart labels all models with one encoder resolution');
+        const resolutionRow = table.locator('tr').filter({has: page.getByRole('rowheader', {name: 'Image resolution', exact: true})});
+        if (await resolutionRow.locator('td').first().innerText() !== '448 × 448') throw new Error('VLM table did not identify its encoder resolution');
+        if (await table.getByRole('rowheader', {name: 'Prefill', exact: true}).count()) throw new Error('VLM comparison fabricated prefill TPS');
+        if (new URL(page.url()).searchParams.has('compare_workload')) throw new Error('VLM link retains a text input length');
+        await hoverNativePoint(page.locator('.compare-point'));
+        if (!(await tooltip.innerText()).includes('Image 448 × 448 + text')) throw new Error('VLM tooltip did not identify its encoder resolution');
+        await page.mouse.move(0, 0);
+        await page.screenshot({path: `/tmp/models-ui-compare-vlm-${viewport.width}-${theme}.png`});
         if (errors.length) throw new Error(errors.join('; '));
         console.log(`ok  Task comparison · ${viewport.width}px ${theme}`);
       } finally { await page.close(); }
+    }
+  }
+}
+
+async function checkGenerativeBenchmark(browser, url) {
+  for (const viewport of [{width: 1440, height: 1000}, {width: 390, height: 844}]) {
+    for (const theme of ['light', 'dark']) {
+      const page = await browser.newPage({viewport});
+      try {
+        await page.goto(url.href);
+        const table = page.getByRole('table', {name: 'Text performance', exact: true});
+        await table.waitFor();
+        await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+        if (await table.locator('tbody tr').count() !== 6) throw new Error('missing text workloads');
+        if (!await table.getByRole('columnheader', {name: 'Generation (tokens/s)', exact: true}).isVisible()) throw new Error('generation rate uses an unclear heading');
+        const explanation = await table.locator('thead .info-mark').getAttribute('data-tooltip');
+        if (!explanation?.startsWith('Time to first token:')) throw new Error('TTFT has no explanation');
+        const imageTable = page.getByRole('table', {name: 'Image and text performance', exact: true});
+        if (await imageTable.locator('thead th').count() !== 2) throw new Error('image table must show TTFT and decode only');
+        if (await imageTable.locator('tbody tr').count() !== 1) throw new Error('missing image workload');
+        if (!await page.getByText('One 448 × 448 image with the prompt “Describe what you see in the image.”', {exact: true}).isVisible()) throw new Error('missing image input description');
+        if (await page.locator('.kpis').count()) throw new Error('GenAI benchmark must not show vision FPS tiles');
+        await page.getByText('Measurement details', {exact: true}).click();
+        const picker = page.locator('[data-genai-workload]');
+        if (await picker.locator('option').count() !== 7) throw new Error('missing telemetry workload choices');
+        for (const id of ['text_n128', 'image']) {
+          await picker.selectOption(id);
+          const panel = page.locator(`[data-genai-details="${id}"]`);
+          if (!await panel.isVisible()) throw new Error('workload selection did not reveal its readings');
+          if (await page.locator('[data-genai-details]:visible').count() !== 1) throw new Error('mixed workload readings');
+          for (const title of ['Performance', 'Heat', 'CPU', 'Power', 'Memory']) {
+            if (!await panel.getByRole('heading', {name: new RegExp(`^${title}`)}).isVisible()) throw new Error(`missing ${title} card`);
+          }
+          if (await panel.locator('.core-load li').count() !== 16) throw new Error('missing per-core CPU utilization');
+          if (!await panel.locator('.rail-split').isVisible()) throw new Error('missing power rail breakdown');
+        }
+        await picker.selectOption('text_n128');
+        await page.locator('[data-generative-benchmark]').screenshot({path: `/tmp/models-genai-telemetry-${viewport.width}-${theme}.png`});
+        await page.screenshot({path: `/tmp/models-genai-${viewport.width}-${theme}.png`, fullPage: true});
+        if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error('page overflows viewport');
+        console.log(`ok  GenAI benchmark · ${viewport.width}px ${theme}`);
+      } finally {
+        await page.close();
+      }
     }
   }
 }
@@ -539,7 +651,7 @@ try {
     const checks = [
       ['model list', new URL('/', variantUrl), '#result-list .model-card'],
       ['variant page', variantUrl, '#components-section .component-performance'],
-      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a8_w16a16', variantUrl), '#components-section .component-pipeline'],
+      ['component pipeline', new URL('/?model=rf_detr_nano&variant=w8a16_w16a16', variantUrl), '#components-section .component-pipeline'],
     ];
     for (const viewport of [{width: 1440, height: 1000}, {width: 390, height: 844}]) {
       const page = await browser.newPage({viewport});
@@ -563,6 +675,7 @@ try {
     await checkFamilyCatalog(browser, new URL('/', variantUrl));
     await checkCatalogLayouts(browser, new URL('/', variantUrl));
     await checkTaskComparison(browser, variantUrl);
+    await checkGenerativeBenchmark(browser, new URL('/?model=qwen3_5_0_8b&variant=w4a16', variantUrl));
     await checkLicensedDownloads(browser, variantUrl);
     for (const [name, url, readySelector] of checks) {
       const problems = await checkPage(browser, url, readySelector);

@@ -19,6 +19,15 @@ upstream:
   revision: baad7109f27ad7d2f8555c42fde5131e36d3433c
   derived_from: https://github.com/yanx27/Pointnet_Pointnet2_pytorch
 
+resources:
+  license:
+    # The checkpoint repository omits LICENSE. Xu Yan's PyTorch repository, which trained the weights, carries the MIT text.
+    source:
+      uri: https://raw.githubusercontent.com/yanx27/Pointnet_Pointnet2_pytorch/eb64fe0b4c24055559cea26299cb485dcb43d8dd/LICENSE
+      sha256: e87db35978e80247634bddd15029c7b69ec0ac9f492a6954133dbe08c71e1372
+      size_bytes: 1061
+    install_path: licenses/LICENSE
+
 conversion:
   source:
     repository: torch-pointcloud/pointnet2.s3dis-area5.xu-yan

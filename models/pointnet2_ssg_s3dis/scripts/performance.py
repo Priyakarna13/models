@@ -190,6 +190,7 @@ def main() -> None:
     parser.add_argument("--mpk", action="append", required=True, help="component=path, for each component")
     parser.add_argument("--dataset", help=f"{DATASET}=<extracted directory>")
     parser.add_argument("--output", required=True, help="directory for model-report.json")
+    parser.add_argument("--resources", help="directory holding the package's licenses folder (unused)")
     args = parser.parse_args()
     mpks = parse_mpks(args.mpk)
     mla_layer_stats, mla_stage_stats = {}, {}

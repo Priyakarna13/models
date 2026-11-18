@@ -1,10 +1,19 @@
-# Model Artifact Browser
+# Model Browser
 
-A client-only web interface for the public SiMa.ai Model Registry read APIs.
+A client-only web interface for the public read APIs of the SiMa.ai model registry.
 The browser calls the registry directly; there is no application backend,
 credential handling, or proxy middleware. Archive downloads use the temporary URL
 returned by the registry directly. Folder deployments show CLI retrieval
 instructions, and Hugging Face deployments link to the resolved, pinned revision.
+
+Read this file before you change `artifact-browser/` or `website/`. It holds the code
+map, the rules for a change, and how the browser is deployed. Two other files own the
+rest:
+
+- [docs/model-browser.md](../docs/model-browser.md) owns what a visitor sees and does.
+- [DESIGN.md](DESIGN.md) owns the visual design.
+
+## Run the browser locally
 
 For an app-only development loop, run from the Models repository:
 
@@ -74,8 +83,10 @@ covering all ten recognized operation families in each profiling panel. A
 multi-component model, such as RF-DETR, reports each component's layers and
 execution graph in the order its pipeline runs them. These synthetic
 layer names include fused operations, nested reshapes, segmentation helpers,
-outputs and zero-time entries. Input placeholders are omitted, matching the
+outputs, zero-time entries and several MLA stages, to exercise the analysis
+controls. Input placeholders are omitted, matching the
 benchmark API. These names do not describe the selected model's actual graph.
+A deployed page uses only the layer timings in each published model report.
 Each preview package run also carries a generated MLA stage simulation for the
 same stages, at illustrative rates, so developer mode shows MLA Utilization.
 `fixtures/model-report-accuracy.json` gives each accuracy run its shape; the
@@ -84,166 +95,97 @@ keeps its benchmark fingerprint without a run, so its page shows **Not measured 
 this revision.** Edit the fixtures to exercise other metric values or
 availability states.
 
+GenAI previews use `fixtures/genai-model-report.json`;
+`preview.py --synthetic-genai` enables examples for unmeasured models.
+Synthetic readings are labeled.
+
+The preview supplies deterministic synthetic conversion identities for its catalog.
+It resolves no real conversion and needs no registry credentials.
+
 The browser reads version 1 of the model report (`schemas/model-report.schema.json`)
 in `model-report.js`. Known metrics receive curated labels, formatting, and a
 place in a benchmark card; unknown additive metrics appear automatically under
 Other measurements. Any other report format shows **This result format is not
 supported by this browser** instead of guessing at an incompatible structure.
 
-## Staging deployment
+## Rules for changing the browser
 
-Every push to `main` or `develop` runs `vulcan-model-orchestrator.yml`, whose
-`portal` job assembles one static portal with `developer-docs.yml` and
-browser-tests and smoke-tests it. Its `publish-model-browser` job then
-publishes that portal to the staging docs bucket under `models/`. The
-Developer Center CloudFront distribution routes that prefix to the docs bucket,
-making the browser available at <https://developer-stg.sima.ai/models>.
+Read [DESIGN.md](DESIGN.md), [How the page is built](#how-the-page-is-built), and
+[model browser code](../knowledge/model-browser.md) before you change a file here. Update
+[docs/model-browser.md](../docs/model-browser.md) in the same change as anything a
+visitor can see.
 
-A manual dispatch of the orchestrator on either branch also republishes it.
-The frontend build and publication always use staging, independently of
-`VULCAN_ENV` and the selected model build/registry environment. The separate
-`resolve-staging-browser-config` job resolves the bucket, publisher role, KMS key,
-and CloudFront distribution from the shared staging Vulcan configuration.
-Production frontend deployment remains a manual, owner-gated
-**Deploy Model Browser & Docs** dispatch.
+**Page structure**
 
-`website/scripts/portal-config.mjs` selects the UI at build time from `GITHUB_REF`:
-Main builds the customer view of the main catalog; Develop, feature branches and
-pull requests build the developer view. Both use the same staging API and
-publication URL. The last publication wins; the catalog branch selector does not
-change the site's UI. Customer view hides contributor navigation, branch/compiler
-filters, build history and the Details section while retaining browsing, comparison,
-measurements and downloads.
+- Render every expandable area with `disclosure()` from `ui.js`.
+  `tests/test_artifact_browser.py` fails when a module writes its own `<details>`
+  element.
+- Keep the page glance-first: key facts in the section, the rest in one row.
+- Make each action an icon button. Keep blue text with ↗ for links that leave the
+  browser.
+- Put each difference between the customer and the developer view in `audienceFacts`
+  in `audience.js`, as a named fact such as `shows.buildDetails`. Test that fact where
+  the markup is built. Page code never tests the audience itself.
+  Three customer-view rules live outside that list: `styles.css` hides `.developer-only`
+  markup and the branch and compiler tags, and `environment.js` keeps customers on Main.
+- Give each section of the model page its own module: `performance-section.js`,
+  `execution-section.js`, and `accuracy-section.js`. A section module never imports
+  `model-view.js` or another section. Markup that sections share goes in
+  `page-parts.js`, and `model-view.js` assembles the sections.
 
-For a local customer build, use `MODEL_BROWSER_UI_MODE=customer` with
-`npm run build:portal --prefix website`; pass the same variable to
-`npm run smoke:portal --prefix website` or `preview.py`. The default local mode
-is `developer`. `MODEL_REGISTRY_API_URL` optionally overrides the API for local
-builds; neither mode requires production infrastructure.
+**Catalog**
 
-The default is the WAF-protected public staging registry at
-`https://models-registry.stg.neat.sima.ai`. The API must allow cross-origin
-`GET` requests from the static app's origin. The separate
-`artifacts-registry.stg.neat.sima.ai` endpoint is reserved for IAM-signed
-publisher traffic and rejects direct public reads.
+- Group the Cards overview by each model's architecture ID. Take a family's title
+  and description from `taxonomies/model-taxonomy.yaml`. Derive its members, tasks,
+  and hero from the filtered models.
+- Give each architecture in the taxonomy a short `description` that covers the whole
+  family, with no claim about one size. Validation rejects an empty one.
+- A family card selects the existing Model family filter. Search and Table show
+  individual models.
+- Taxonomy and browser files are catalog metadata. Keep them out of the conversion,
+  compile, and benchmark fingerprints.
+- `profileGroups` in `api.js` orders the build profiles. A profile with a `w8a8`
+  component comes first and opens first, whatever order `model.yaml` declares.
 
-The initial view loads the repository branch catalog independently from build
-runs and caches both so repeat visits can render immediately while refreshing.
-The selected branch's model cards show what the branch delivers: the builds in
-its catalog, including builds it inherits from its base branch. A completed
-build compiled on the branch that is newer than the catalog's build of the same
-model and build profile replaces it, so a build the catalog has not recorded
-still shows. Each build keeps the provenance of its own compile run, so an
-inherited build names the branch that compiled it. A branch without a catalog
-shows an empty state until its first push completes. Components are grouped
-only within the same workflow build, and a full package appears only when its
-recorded component run IDs match the shown build.
-Build history lists one entry per variant build, newest first, naming its
-components; an entry gains components as **Load more builds** brings in the rest of its
-build. If branch discovery is
-temporarily unavailable, the browser keeps saved branches and can infer
-additional branches from returned runs. Full
-provenance, validation, and metric views load only after a build is selected.
-Public discovery requests completed builds only. The primary search matches
-model, build-profile, and component names together with category names. Task and
-model family filters sit beside the cards. Developer view also shows Branch,
-Compiler and Build history directly. Category filters list the values the loaded
-builds use and hide when fewer than two remain; developer controls stay visible.
-On narrow screens the filters move into a drawer whose button shows the
-active-filter count.
+**Measurements**
 
-Cards defaults to one card per available model family, grouped and ordered by
-architecture ID. Family titles and descriptions come from the catalog taxonomy;
-heroes and tasks come from its available models, after branch/compiler/task
-filtering. Selecting a family uses the existing sidebar filter and URL, then
-shows individual models. A single-model family opens its model directly.
-**All model families** clears only the family selection. Search shows individual
-models and includes family descriptions; Table and build history keep individual
-entries. Older catalogs without descriptions omit that text. See
-[catalog behavior](../docs/model-browser.md#the-catalog).
+- Show one whole-model result per build profile by default. When
+  `performance.scope` is `components`, keep each component's measurements separate.
+- Show layer timings and execution plans per component. Never add component
+  numbers together, and never mark one component best against a different component.
+- Render the current model report version, version 1. A metric with no tile or card
+  goes under Other measurements, so every reported metric stays visible.
+- Add a new metric to `tools/model_report/metrics.json` and to `metrics.js` or
+  `accuracy-metrics.js`. Tests keep their labels, units, and directions in step.
 
-The branch filter defaults to `develop`. A branch selected by the user is saved per
-registry and repository in browser storage. Shared links include `branch` and
-`model` and `variant` (the build profile), which open the latest build of that
-variant on the branch. Links from build history also carry `run`, one component
-run of the pinned build. URL state takes precedence over that preference. Links
-containing only `run` resolve the run's actual branch and open that run's
-variant build with its component row expanded, so every component's link opens
-the same page. The dedicated branch catalog, not a
-limited runs page, determines whether a saved branch falls back to `develop` (or all
-branches when `develop` is unavailable). Build-history pagination remains
-branch-aware; the model view fetches all pages needed to group the latest
-completed builds.
+**Downloads**
 
-## Variant pages
+- Offer a model's downloads only when `downloadOffered` in `downloads.js` allows
+  them. It reads the license from the branch catalog and `licenses.json`. An
+  unlisted license, or a list that did not load, offers none.
+- Keep `licenses.json` in `artifact-browser/`, so that a plain static server serves
+  it with the page.
 
-Selecting a model card opens its page in place of the catalog; the breadcrumb
-or the browser's Back button returns to the catalog at the same scroll position.
-A page shows one variant build: the component runs of one model and build
-profile compiled by one workflow. Its header carries the name, description,
-category tags and **Download**, with validation and source-link icons beside it.
-**Copy CLI command** is available inside the download dialog for current catalog builds.
-A model whose license `licenses.json` does not mark `downloadable` shows **Not
-available for download** in place of **Download** and has no package card.
-The model image sits beside the header content on wide screens and stacks below
-it on narrow screens. Both UI modes use this layout. Variant tabs and section
-links to **Overview**, **Performance**, **Accuracy**, **Details**, and **License**
-follow the header. A section without
-data is left out.
+**Preview and build**
 
-The page is read at a glance first: each section shows its key facts, and
-everything longer sits in one expandable row.
+- Keep the preview data-driven. `preview.py` builds its catalog from `models/`, so
+  add no model, name, or README to it by hand.
+- List each new module in `fingerprintedAssets` in
+  `website/scripts/assemble-portal.mjs` and in the
+  [module table](#how-the-page-is-built).
 
-- **Overview** shows the README's `## Overview`, then loads the remaining input/output
-  and application instructions inline after checking their SHA-256 against the
-  catalog. It renders the README from the section after Overview, because the title,
-  hero, and Overview are already on the page.
-- **Performance** shows throughput, latency, SoM power, and energy per
-  inference for the whole model, one number per tile, from the build profile's
-  performance run. A multi-component model is measured with its components
-  running together, and its layer analysis and execution graph switch between
-  the components. **Performance Details** is
-  performance, heat, and CPU cards, with power (SoM; SoC as the sum of its
-  MLA and Non-MLA rails; and each other power rail) and memory cards beside
-  them,
-  then any other measurements and a footer with the telemetry source and
-  runtime beside **Raw result** (the run's model report) and **Download CSV**
-  (every reading of the model in one table).
-- **Accuracy** shows the coverage, the first four metrics, and the dataset,
-  from the build profile's accuracy run. In the developer UI, **Evaluation
-  details** explains the coverage and lists the context and remaining metrics.
-  **Published scores** and **FP32 baseline** list the `reference_metrics`
-  entries of `model.yaml` of each origin, with their dataset, conditions, and
-  source or script; a reference score sits beside a measured one only when both
-  name the same dataset. A build without an accuracy result shows only the
-  reference scores.
-- **Details**, in the developer UI only, shows the package card (size, SHA-256, and
-  **Download package**) and the package's numerical
-  fidelity, then rows for build provenance, source models (one
-  per distinct digest), and each component: checksum, run identity, and a nested
-  **Compile parameters** row.
-- **License** is one line with the license identifier, its name, and
-  redistribution, then the license's summary from `licenses.json` and the
-  attribution.
+### Checks before a push
 
-The catalog records each build profile's benchmark fingerprints. A fingerprint
-without a run, or a profile without one, shows **Not measured at this
-revision.**
+1. Run `python -m pytest tests/test_artifact_browser.py`.
+2. Run `node --test tests/browser/*.test.mjs`.
+3. Run `npm run typecheck --prefix website`.
+4. Run `npm run build:portal --prefix website`.
+5. Run `npm run smoke:portal --prefix website`.
+6. Open each changed page in `preview.py` at desktop and phone width, in light and
+   dark.
 
-## Compare page
-
-**Compare** explores the selected branch's model variants by task. All
-precisions appear together; measured variants appear in a scatter
-plot of accuracy against throughput in inferences/s. Accuracy plots keep dataset
-and metric identities separate. A multi-component model shows its whole-model result, with all its components running as one pipeline. Hovering or focusing a point
-shows the model name, variant, throughput and accuracy.
-
-Select up to three points or use **Add model** to inspect exact measurements
-in a table. It includes throughput, latency, power, energy, peak MLA and EV74 memory and
-accuracy. Bold marks the best value.
-Models without measurements remain available in **Add model**. LLM/VLM comparisons show **TBD**.
-Links preserve the task and selected builds with `compare_task` and repeated
-`build` parameters. Build history is not compared.
+`build:portal` and `smoke:portal` need a Python with the repository installed, as
+[Run the browser locally](#run-the-browser-locally) describes.
 
 ## How the page is built
 
@@ -254,18 +196,28 @@ delegation.
 | Module | Owns |
 | --- | --- |
 | `app.js` | Startup, routing from URL state, and event handlers |
+| `config.js` | The registry, environment, and view settings for a source preview. Assembly writes its own for a deployed build |
+| `environment.js` | The `env=prod` production preview and the `branches=0` branch policy |
 | `portal-shell.js` | Load and mount the shared Developer Portal header |
 | `state.js` | Shared page state, configuration, and DOM element lookup |
-| `api.js` | Registry requests, caches, and catalog build selection |
+| `api.js` | Registry requests, caches, catalog build selection, and build profile order |
 | `branch-builds.js` | Which builds a branch shows, and grouping by workflow |
-| `catalog-view.js` | Model cards, build history, search, and filters |
-| `model-view.js` | The model page |
-| `compare-view.js` | The Compare page: pickers and table |
+| `catalog-view.js` | Model and family cards, the table, build history, search, and filters |
+| `hero-images.js` | Hero image URLs, and retries from the CDN to the registry API |
+| `audience.js` | What the customer and the developer view each show |
+| `model-view.js` | The model page: header, variants, overview, details, and license |
+| `performance-section.js` | Performance: tiles, detail cards, power rails, and the CSV |
+| `execution-section.js` | Execution Graph, Runtime Layer Analysis, and MLA Utilization |
+| `accuracy-section.js` | Accuracy: measured scores, coverage, and reference scores |
+| `page-parts.js` | Markup and helpers the model page's sections share |
+| `download-dialog.js` | The download dialog |
+| `compare-view.js` | The Compare page: chart, pickers, and table |
 | `model-report.js` | Reading performance and accuracy model reports |
 | `mla-layer-stats.js` | Analyzing a component's MLA layer stats |
 | `mla-utilization.js` | Comparing measured MLA stages with their simulation |
-| `metrics.js` | Metric labels, units, and formatting |
-| `downloads.js` | Component discovery for downloads |
+| `metrics.js` | Performance metric labels, units, and formatting |
+| `accuracy-metrics.js` | Accuracy metric labels, scales, and order, and reference scores |
+| `downloads.js` | Whether a license permits downloads, how an artifact is delivered, and component discovery for downloads |
 | `markdown.js` | The README renderer |
 | `ui.js` | Icons, escaping, toasts, and the `disclosure()` row |
 
@@ -283,12 +235,14 @@ reserved for links that leave the browser. Cards group related numbers only
 sections and thin rules.
 
 `website/scripts/assemble-portal.mjs` renames every module with the revision
-for the deployed portal and fails when a module imports a file missing from its
-`fingerprintedAssets` list, so add a new module there.
+for the deployed portal, preloads the entry point and its modules, and fails when
+a module imports a file missing from its `fingerprintedAssets` list.
 It also writes `component-pipelines.<revision>.json` from the `pipeline` field
 of each `model.yaml`, which draws the component order on a multi-component
-model page, and `reference-metrics.<revision>.json` from each
-`reference_metrics`; `preview.py` serves the same data from `models/`.
+model page, `reference-metrics.<revision>.json` from each
+`reference_metrics`, `low-accuracy-variants.<revision>.json`, the variants
+the customer view leaves out, and `dataset-names.<revision>.json` from the `name`
+of each `datasets/<id>.yaml`; `preview.py` serves the same data from the checkout.
 It copies `licenses.json` to `licenses.<revision>.json`. That file names each
 license and decides whether a model page offers downloads, and it sits in this
 directory so that a static file server serves it with the page.
@@ -297,17 +251,90 @@ of `tools/model_report/metrics.json`, and tests keep them in step. Run
 `build:portal` with the repository installed or `PYTHON` set, as for
 `preview.py`.
 
+## How the catalog loads
+
+[The catalog](../docs/model-browser.md#the-catalog) describes the cards, the table,
+search, and the filters a visitor uses. This section holds what the code does behind
+them.
+
+The customer catalog reads Main's `/catalogs/current` snapshot in one registry
+request. The snapshot supplies model definitions, build and package IDs, and the
+taxonomy. The browser applies the customer visibility rules and renders cards
+from those definitions. Table and Compare retrieve measurements for their
+views, and the model page loads full run data on demand.
+
+The developer view discovers branches first, then requests the selected
+branch's snapshot and its compile and package lists together. Cards render
+as soon as the snapshot arrives. When the lists finish, the browser resolves
+missing build IDs through `/runs?summary_ids=…` in batches of up to 40 and
+refreshes the catalog with compiler, source branch, and timing metadata.
+A reader that lacks batch support leaves those fields unavailable for the
+affected builds. The compiler filter includes only builds with a matching
+known compiler. Opening a model still retrieves its exact run data.
+
+Local storage saves the branch names and each catalog's definitions and
+taxonomy for the next visit. It keeps the live compile and package lists
+in memory. A package appears only when its recorded component IDs match
+the displayed build.
+
+Build history lists one entry per variant build, newest first, naming its
+components; an entry gains components as **Load more builds** brings in the rest of its
+build. If branch discovery is
+temporarily unavailable, the browser keeps saved branches and can infer
+additional branches from returned runs. Full
+provenance, validation, and metric views load only after a build is selected.
+Public discovery requests completed builds only.
+On narrow screens the filters move into a drawer whose button shows the
+active-filter count.
+
+The branch filter defaults to `develop`. A branch selected by the user is saved per
+registry and repository in browser storage. Shared links include `branch` and
+`model` and `variant` (the build profile), which open the latest build of that
+variant on the branch. Links from build history also carry `run`, one component
+run of the pinned build. URL state takes precedence over that preference. Links
+containing only `run` resolve the run's actual branch and open that run's
+variant build with its component row expanded, so every component's link opens
+the same page. The dedicated branch catalog, not a
+limited runs page, determines whether a saved branch falls back to `develop` (or all
+branches when `develop` is unavailable). Build-history pagination remains
+branch-aware; the model view fetches all pages needed to group the latest
+completed builds.
+
+## Variant pages and Compare
+
+[The model page](../docs/model-browser.md#the-model-page) describes each section of a
+variant page, and [The catalog](../docs/model-browser.md#the-catalog) describes
+**Compare**. This section holds what the code does behind them.
+
+A page shows one variant build: the component runs of one model and build
+profile compiled by one workflow. Selecting a model card opens its page in place of
+the catalog, and the breadcrumb or the browser's Back button returns to the catalog
+at the same scroll position. Variant tabs and links to each section follow the
+header.
+
+**Overview** shows the README's `## Overview`, then loads the remaining sections
+inline after checking their SHA-256 against the catalog. It renders the README from
+the section after Overview, because the title, hero, and Overview are already on the
+page.
+
+The catalog records each build profile's benchmark fingerprints, and the browser
+resolves each to its run. A fingerprint without a run, or a profile without a
+fingerprint, shows **Not measured at this revision.**
+
+**Details** lists one source model row per distinct digest. **Compare** reads the
+selected branch's catalog and does not compare build history. For each variant it loads only the
+performance and accuracy results (`loadBenchmarkResults` in `api.js`), not the compile and package
+runs a model page shows. Its links preserve the task, the workload, and the selected builds.
+
 ## Downloading model variants
 
 Native LLiMa deployments use a JSON index (`model-pack`, or `model-package`
 for the complete package) with `metadata.layout: directory` and separate
 `model-file` payload artifacts. The browser shows the aggregate
 `metadata.deployment_size_bytes`, not the small index size. **Download folder**
-opens instructions for `sima-cli models download`, which preserves paths and
-checks each file. Folder downloads require sima-cli 2.1.19 or later. The command
-uses the selected branch and adds `--stg` for staging; historical builds point
-to the current catalog variant instead of offering a command for a different
-deployment. The browser never downloads a folder's JSON index as a ZIP.
+opens the dialog that
+[Model folder downloads](../docs/model-browser.md#model-folder-downloads) describes.
+The browser never downloads a folder's JSON index as a ZIP.
 
 Delivery is determined from the backend-resolved artifact. A resolved
 `metadata.storage_backend: huggingface` has
@@ -319,11 +346,14 @@ remain backend responsibilities.
 
 Selecting a feature branch shows its finalized `branch_deployments`, including
 candidates that have not been promoted. They take precedence over inherited
-`approved_deployments`. Metadata and unselected runs do not create on-demand
+`approved_deployments`, and they keep their inherited compilation runs and matching
+package. Metadata and unselected runs do not create on-demand
 cards or replace a selection. Develop and Main show approved selections.
 Completed candidates also remain in build history.
 Approved package membership comes from the profile's `build_requirements`. Only
 packages covering every shown component are offered as full-model downloads.
+[knowledge/on-demand-builds.md](../knowledge/on-demand-builds.md) defines these
+catalog fields.
 
 The following confirmation flow applies to archive deployments, including
 previously published LLiMa ZIPs.
@@ -353,11 +383,9 @@ For a local preview using live staging data:
 python3 -m http.server 4174 --bind 127.0.0.1 --directory artifact-browser
 ```
 
-Open <http://127.0.0.1:4174/?run=53bfaa91-8b75-4bdb-afc2-83019a61f514>
-and click **Download** to review the RF-DETR component dialog.
+Open `http://127.0.0.1:4174/?run=<run ID>` with the ID of one component run of a
+multi-component build, and click **Download** to review the component dialog.
 
-Run the download and variant-build checks with `node --test tests/browser/*.test.mjs`
-and the existing UI checks with `python -m pytest tests/test_artifact_browser.py`.
 The dialog shows each stored MPK's own filename, `<model_id>_<profile_id>_mpk.tar.gz`
 or `<model_id>_<profile_id>_<component_id>_mpk.tar.gz`, and downloads it unchanged.
 
@@ -375,19 +403,84 @@ The publisher requires `compile-timing.json` alongside `compile-outputs.json`,
 validates its timezone-aware start/end timestamps before any registry writes,
 and publishes it as run metadata.
 
-The preview's layer timings are illustrative generated data, including zero-time
-entries and multiple MLA stages to exercise the analysis controls. Production
-pages use only the compiled layer timings in each published model report.
+## Build settings
 
-### Staging hero CDN
+`website/scripts/portal-config.mjs` reads these settings when it builds the portal:
+
+| Setting | Values | Default | Selects |
+| --- | --- | --- | --- |
+| `MODEL_BROWSER_UI_MODE` | `developer`, `customer` | `developer` | The view. Customer shows Main only, and developer shows the branch selector |
+| `MODEL_BROWSER_ENVIRONMENT` | `staging`, `production` | `staging` | The registry API, the site origin, and the environment label |
+| `MODEL_REGISTRY_API_URL` | An HTTPS origin, or `http://localhost` for a preview | The selected environment's public registry | Another registry API |
+| `MODEL_HERO_CDN_BASE_URL` | An HTTPS URL, or empty | See [Hero image CDN](#hero-image-cdn) | Where hero images load from |
+
+The view and the environment are independent. Customer view hides contributor
+navigation, branch/compiler filters, build history and the Details section while
+retaining browsing, comparison, measurements and downloads.
+`customerPerformanceReport` in `model-report.js` also
+removes the board's Linux memory from each performance report as it is loaded,
+so no view of the customer page shows it. The registry still serves that reading;
+the customer page only leaves it out.
+
+For a local customer build, use `MODEL_BROWSER_UI_MODE=customer` with
+`npm run build:portal --prefix website`; pass the same variable to
+`npm run smoke:portal --prefix website` or `preview.py`. Neither view requires
+production infrastructure.
+
+The staging default is the WAF-protected public staging registry at
+`https://models-registry.stg.neat.sima.ai`, and the production default is
+`https://models-registry.neat.sima.ai`. The API must allow cross-origin
+`GET` requests from the static app's origin. The separate
+`artifacts-registry.stg.neat.sima.ai` endpoint is reserved for IAM-signed
+publisher traffic and rejects direct public reads.
+
+The assembled configuration file is named after a hash of its contents. Changing the
+view or the environment at one source revision therefore keeps the earlier settings
+for cached pages and for an index rollback.
+
+## Staging deployment
+
+Every push to `main` or `develop` runs `vulcan-model-orchestrator.yml`, whose
+`portal` job assembles one static portal with `developer-docs.yml` and
+browser-tests and smoke-tests it. Its `publish-model-browser` job then
+publishes that portal to the staging docs bucket under `models/`. The
+Developer Center CloudFront distribution routes that prefix to the docs bucket,
+making the browser available at <https://developer-stg.sima.ai/models>.
+
+A manual dispatch of the orchestrator on either branch also republishes it.
+The frontend build and publication always use staging, independently of
+`VULCAN_ENV` and the selected model build/registry environment. The separate
+`resolve-staging-browser-config` job resolves the bucket, publisher role, KMS key,
+and CloudFront distribution from the shared staging Vulcan configuration.
+[knowledge/ci-flow.md](../knowledge/ci-flow.md#model-browser-publication) lists the
+jobs of both publication paths.
+
+Every push and pull request builds the developer view,
+so staging always shows it after a push to Main or Develop. Only a manual
+[**Deploy Model Browser & Docs**](#deploy-from-github-actions) dispatch with the
+`customer` audience builds the
+customer view of the main catalog. Both use the same staging API and
+publication URL. The last publication wins; the catalog branch selector does not
+change the site's view.
+
+### Staging release notice
+
+Staging builds show an unofficial-release notice above the browser navigation,
+including the connected backend environment and the frontend's source branch and
+commit. These are the browser build's details, independent of the selected model
+catalog branch. A staging browser previewing production data keeps the notice
+and identifies the production backend. Local builds with uncommitted changes
+say so beside the commit. Production builds omit the staging notice.
+
+### Hero image CDN
 
 Staging and production developer builds use their own public-reader hostname's
 `/images/sha256/<hero artifact SHA-256>.png` path. The hash comes from catalog
 metadata; no signed URLs or extra per-image API resolution are needed. Vulcan
 publishes validated hero derivatives into a private S3 origin when documentation
-runs finish. Deploy that infrastructure and backfill current images **before**
-merging/deploying this browser change. See the companion Vulcan
-`docs/artifact-registry-hero-cdn.md` runbook.
+runs finish. An image published before the CDN held it needs a backfill, which the
+Vulcan repository's `docs/artifact-registry-hero-cdn.md` runbook describes. Without
+one, the browser loads that image from the registry API.
 
 `MODEL_HERO_CDN_BASE_URL` is an optional build setting. Its default is the matching environment
 CDN path for developer builds using either standard registry API; customer builds and
@@ -399,10 +492,11 @@ so they do not bypass CloudFront caching. Model downloads and README text keep
 their existing routes. No model definitions, fingerprints or compilation behavior
 change.
 
-After deployment, test a fresh catalog load, a model detail page, and an image
-missing from the CDN (API fallback). Inspect image request paths, verify that no
-repeated failure loops occur, and check staging reader throttles. Backend tests
-and local browser tests do not replace this staging acceptance check.
+After a deployment that changes image loading, test a fresh catalog load, a model
+detail page, and an image missing from the CDN (API fallback). Inspect image request
+paths, verify that no repeated failure loops occur, and check staging reader
+throttles. Backend tests and local browser tests do not replace this staging
+acceptance check.
 
 ## Preview production data from staging
 
@@ -435,7 +529,64 @@ production Main. That catalog must be published before it can display models.
 
 ## Production deployment
 
-`MODEL_BROWSER_ENVIRONMENT=production` selects the production public registry,
-Developer Center origin and environment label. Audience remains independent.
-See [production frontend deployment](../docs/model-browser.md#production-frontend)
-for the tested, prefix-scoped operator deployment and rollback procedure.
+The production browser is hosted at <https://developer.sima.ai/models/> and reads
+`https://models-registry.neat.sima.ai`. Deploying the frontend does not publish,
+promote, or rebuild model catalogs. An unpublished branch remains empty, and the
+browser never substitutes staging data. No push publishes the production frontend.
+Deploy it from GitHub Actions or with the operator script.
+
+### Deploy from GitHub Actions
+
+Run **Deploy Model Browser & Docs** from the protected `develop` or `main`
+branch. Select `staging` or `production` and the developer or customer audience.
+The selected workflow commit is the frontend source revision. This workflow
+builds and tests the browser and bundled docs, then publishes only `models/`
+using that environment's Terraform-managed bucket, KMS key, identity and CDN.
+It neither builds models nor publishes the registry tooling package. Production
+Basic Auth is managed by infrastructure, and this workflow leaves it enabled.
+
+The dispatching user must belong to `owners-models` and approve their own
+`model-browser-deploy` environment gate. GitHub's Run button is visible to other
+writers, but their runs cannot deploy, even if a different owner approves them.
+The gate allows only that team, disables administrator bypass, and restricts
+workflow refs to `develop` and `main`. The authorization job verifies the gate
+and the dispatcher's approval before build/configuration/AWS jobs. Reruns are
+rejected to avoid reusing historical authorization; dispatch a fresh run instead.
+No additional organization-read token is needed.
+
+The environment protection payload is versioned in
+`config/model-browser-deployment-environment.json`. Its two deployment branch
+policies are exact branch names `develop` and `main` (no tags or wildcard refs).
+The environment gate is configured separately through repository administration and
+checked again at runtime. GitHub shows the **Run workflow** button only for a
+workflow that exists on the default branch, `main`.
+
+Tooling publication (**Build and Publish Model Registry**) follows repository
+`VULCAN_ENV` on both push and manual invocation, and uses staging when it is unset.
+Its destination is independent of this workflow's environment selector.
+
+### Deploy with the operator script
+
+From a clean committed checkout, with AWS production operator credentials,
+Node dependencies, Chromium and the Python registry dependencies available:
+
+```bash
+AWS_PROFILE=<production operator profile> PRODUCTION_AWS_ACCOUNT_ID=<account> \
+  PRODUCTION_DOCS_BUCKET=<bucket> PRODUCTION_CLOUDFRONT_DISTRIBUTION_ID=<distribution> \
+  scripts/deploy-production-model-browser.sh developer
+```
+
+The script refuses to publish unless the active credentials belong to that
+account and the bucket is encrypted with one of its keys.
+
+Use `customer` for Main-only presentation. The script builds and smoke-tests the
+portal, publishes only the production docs bucket's `models/` prefix, and
+invalidates only `/models` paths. It retains old assets and uploads the entry
+point last.
+
+Before deployment, record the prior root index object version and
+source revision. Roll back by restoring that index version and invalidating
+`/models` and `/models/*`; for a first deployment with no prior page, remove only
+the newly created root index to disable the entry point. Restore the previous
+full build from its source revision if documentation routes also need rollback.
+Model registry contents and publisher environment selections are unchanged.
