@@ -2,10 +2,11 @@
 import { readPerformance } from "./model-report.js";
 import { state, elements, catalogMode, showView, taxonomyLabel } from "./state.js";
 import { escapeHtml, variantLabel } from "./ui.js";
+import { datasetName } from "./accuracy-metrics.js";
 import { metricDefinition, metricDisplay } from "./metrics.js";
-import { anchorBuild, compilerFilteredBuilds, loadRunDetail, loadVariant, profileGroups, mapWithConcurrency } from "./api.js";
+import { anchorBuild, compilerFilteredBuilds, loadBenchmarkResults, profileGroups, mapWithConcurrency } from "./api.js";
 import { compareModels } from "./catalog-view.js";
-import { accuracyHeadline } from "./model-view.js";
+import { accuracyHeadline } from "./accuracy-section.js";
 
 // Three builds fit side by side on a laptop screen and stay readable on a phone.
 export const MAX_COMPARED_BUILDS = 3;
@@ -31,6 +32,21 @@ export function writePicksToUrl(url) {
   url.searchParams.delete("compare_precision");
 }
 
+// Compare opens on this task when the link names none. The first task by name, speech recognition, has no chart.
+const DEFAULT_TASK = "object_detection";
+
+// Tasks compared by parameters and decode speed. Every other task is compared by accuracy and throughput,
+// which only vision models report.
+const GENERATIVE_TASKS = ["text_generation", "visual_question_answering"];
+
+// A task is offered when a chart can plot one of its variants: the catalog names a performance benchmark for
+// the variant, and the task is generative or the model is a vision model.
+function comparableTask(task, variants) {
+  return variants.some(({ model, profile }) => model.tasks?.includes(task)
+    && model.benchmark_fingerprints?.[profile]?.performance
+    && (GENERATIVE_TASKS.includes(task) || model.model_type === "vision"));
+}
+
 const PERFORMANCE_ROWS = [
   ["throughput_fps", "Throughput"],
   ["latency_avg_ms", "Latency"],
@@ -46,6 +62,11 @@ function catalogVariants() {
       key: pickKey(model.model_id, profile), model, profile, build: anchorBuild(builds),
     }))
   ));
+}
+
+// The catalog lists one build per component of a build profile.
+function componentCount({ model, profile }) {
+  return model.builds.filter((build) => build.build_profile_id === profile).length;
 }
 
 function measuredText(metric, key) {
@@ -81,8 +102,8 @@ function comparisonTable(columns) {
   const rows = generative ? [
     ["ttft_ms", "Time to first token"],
     ...(state.compareTask === "visual_question_answering" ? [] : [["prefill_tps", "Prefill"]]),
-    ["decode_tps", "Decode"],
-    ["draft_contribution_pct", "Draft contribution"], ["decode_speedup", "Decode speedup"],
+    ["decode_tps", "Generation"],
+    ["draft_contribution_pct", "Draft contribution"], ["decode_speedup", "Generation speedup"],
     ...PERFORMANCE_ROWS.filter(([key]) => !["throughput_fps", "latency_avg_ms", "energy_per_inference_joules"].includes(key)),
   ] : PERFORMANCE_ROWS;
   const performance = rows.map(([key, label]) => {
@@ -97,7 +118,7 @@ function comparisonTable(columns) {
       ${generative && columns.some(column => comparisonWorkload(column.performance)?.kind === "image_text")
         ? row("Image resolution", columns.map(column => text(comparisonWorkload(column.performance)?.image_size?.join(" × ")))) : ""}
       ${row("Task", columns.map(({ option }) => text((option.model.tasks || []).map((id) => taxonomyLabel("tasks", id)).join(", "))))}
-      ${row("Components", columns.map(({ variant }) => text(variant ? String(variant.details.length) : "")))}
+      ${row("Components", columns.map(({ option, failed }) => text(failed ? "" : String(componentCount(option)))))}
       ${group("Performance on Modalix")}
       ${performance}
       ${group("Accuracy")}
@@ -105,11 +126,6 @@ function comparisonTable(columns) {
       ${row("Published", columns.map(({ accuracy }) => text(accuracy?.reference)))}
     </tbody>
   </table></div>`;
-}
-
-async function loadPickedVariant(option) {
-  const anchor = (await loadRunDetail(option.build.run_id)).summary.run;
-  return loadVariant(anchor);
 }
 
 let compareRequestId = 0;
@@ -123,10 +139,6 @@ function selectControl(label, key, choices, selected) {
 
 function selectionColor(key) {
   return state.comparePicks.filter(Boolean).indexOf(key);
-}
-
-function datasetLabel(dataset) {
-  return [dataset.id, dataset.variant, dataset.split].filter(Boolean).join(" / ");
 }
 
 function parameterText(model) {
@@ -162,7 +174,7 @@ function generativePlot(columns) {
     return [{column, x, y: decode.number, label}];
   });
   return measurementChart(columns, plotted, {
-    title: "Parameters & decode speed", xLabel: "Parameters (billions)", yLabel: "Decode (tokens/s)",
+    title: "Parameters & generation speed", xLabel: "Parameters (billions)", yLabel: "Generation (tokens/s)",
     subtitle: comparisonLabel(workloads.find(workload => workload.key === state.compareWorkload)),
     controls: workloads.length > 1 ? selectControl("Workload", "workload", workloads.map(workload => [workload.key, comparisonLabel(workload)]), state.compareWorkload) : "",
     note: "Variants without matching measurements remain available in Add model.",
@@ -181,7 +193,7 @@ function comparisonPlot(columns) {
   for (const {column} of points) {
     const accuracy = column.accuracy;
     if (accuracy?.comparisonKey && Number.isFinite(accuracy.numericValue)) {
-      groups.set(accuracy.comparisonKey, `${datasetLabel(accuracy.dataset)} · ${accuracy.label}`);
+      groups.set(accuracy.comparisonKey, `${datasetName(accuracy.dataset)} · ${accuracy.label}`);
     }
   }
   const axes = [...groups];
@@ -196,8 +208,9 @@ function comparisonPlot(columns) {
     label: `${point.column.option.model.display_name || point.column.option.model.model_id} · ${variantLabel(point.column.option.profile)}: ${point.x} inferences/s, accuracy ${point.column.accuracy.value}`,
   })), {
     title: "Accuracy & speed", xLabel: "Throughput (inferences/s)", yLabel,
-    subtitle: accuracy?.dataset ? `Dataset: ${datasetLabel(accuracy.dataset)}` : "",
-    controls: axes.length > 1 ? selectControl("Dataset & metric", "axis", axes, state.compareAxis) : "",
+    subtitle: accuracy?.dataset ? `Dataset: ${datasetName(accuracy.dataset)}` : "",
+    // Every task names its dataset and metric in the same place, also when there is only one to choose.
+    controls: axes.length ? selectControl("Dataset & metric", "axis", axes, state.compareAxis) : "",
     note: "Accuracy points share a dataset and metric. Use Add model for variants without matching measurements.",
     empty: "No matching measurements yet. Use Add model to inspect a variant.",
   });
@@ -286,7 +299,7 @@ export function showComparisonTooltip(point) {
     ${field("Variant", variantLabel(column.option.profile))}
     ${generative ? field("Parameters", parameterText(column.option.model)) +
       field("Workload", comparisonWorkload(column.performance)?.label || "Not measured") +
-      field("Decode", measuredText(comparisonWorkload(column.performance)?.measurements.decode_tps, "decode_tps")?.text || "Not measured")
+      field("Generation", measuredText(comparisonWorkload(column.performance)?.measurements.decode_tps, "decode_tps")?.text || "Not measured")
       : field("Throughput", throughput?.text || "Not measured") +
       field("Accuracy", column.accuracy ? `${column.accuracy.value} · ${column.accuracy.label}` : "Not measured")}</dl>`;
   tooltip.hidden = false;
@@ -312,23 +325,25 @@ export async function renderComparison() {
     return;
   }
   const all = catalogVariants();
-  const tasks = [...new Set(all.flatMap(option => option.model.tasks || []))].sort((a, b) => taxonomyLabel("tasks", a).localeCompare(taxonomyLabel("tasks", b)));
-  if (!tasks.includes(state.compareTask)) state.compareTask = all.find(option => state.comparePicks.includes(option.key))?.model.tasks?.[0] || tasks[0] || "";
+  const tasks = [...new Set(all.flatMap(option => option.model.tasks || []))].filter(task => comparableTask(task, all)).sort((a, b) => taxonomyLabel("tasks", a).localeCompare(taxonomyLabel("tasks", b)));
+  if (!tasks.includes(state.compareTask)) {
+    state.compareTask = all.find(option => state.comparePicks.includes(option.key))?.model.tasks?.[0]
+      || (tasks.includes(DEFAULT_TASK) ? DEFAULT_TASK : tasks[0]) || "";
+  }
   const taskOptions = all.filter(option => option.model.tasks?.includes(state.compareTask));
   const options = taskOptions;
   state.comparePicks = state.comparePicks.map(key => options.some(option => option.key === key) ? key : "");
-  generative = ["text_generation", "visual_question_answering"].includes(state.compareTask);
-  const pending = !generative && options.length > 0 && options.every(option => option.model.model_type !== "vision");
+  generative = GENERATIVE_TASKS.includes(state.compareTask);
   elements["compare-pane"].innerHTML = `${intro}<div class="compare-filters">${selectControl("Task", "task", tasks.map(id => [id, taxonomyLabel("tasks", id)]), state.compareTask)}</div>
-    <div class="compare-results" aria-live="polite">${pending ? '<div class="compare-empty"><span class="compare-tbd">TBD</span><h3>Model comparisons</h3></div>' : options.length ? '<p class="muted-message compare-loading" role="status"><span class="spinner"></span> Loading measurements…</p>' : '<p class="compare-empty">No models available for this task.</p>'}</div>`;
-  if (pending || !options.length) return;
+    <div class="compare-results" aria-live="polite">${options.length ? '<p class="muted-message compare-loading" role="status"><span class="spinner"></span> Loading measurements…</p>' : '<p class="compare-empty">No models available for this task.</p>'}</div>`;
+  if (!options.length) return;
   const columns = await mapWithConcurrency(options, 3, async option => {
     if (requestId !== compareRequestId) return null;
-    const variant = await loadPickedVariant(option).catch(() => null);
-    const result = variant ? readPerformance(variant.performance) : null;
-    return {option, variant, failed: !variant, performance: result?.kind === "supported" ? result.value : null,
-      synthetic: result?.value?.generation?.synthetic, measurements: variant ? variantMeasurements(variant) : {},
-      accuracy: variant ? accuracyHeadline(variant) : null};
+    const results = await loadBenchmarkResults(option.model, option.profile).catch(() => null);
+    const result = results ? readPerformance(results.performance) : null;
+    return {option, failed: !results, performance: result?.kind === "supported" ? result.value : null,
+      synthetic: result?.value?.generation?.synthetic, measurements: results ? variantMeasurements(results) : {},
+      accuracy: results ? accuracyHeadline(results) : null};
   });
   if (requestId !== compareRequestId) return;
   loadedColumns = columns.filter(Boolean);

@@ -28,7 +28,11 @@ ROOT = Path(__file__).resolve().parents[1]
 BROWSER = ROOT / "artifact-browser"
 sys.path.insert(0, str(ROOT / "tools"))
 
-from model_registry.benchmark_declarations import benchmarked_profiles, reference_metrics_by_model  # noqa: E402
+from model_registry.benchmark_declarations import (  # noqa: E402
+    benchmarked_profiles,
+    dataset_names,
+    reference_metrics_by_model,
+)
 from model_registry.compile_matrix import build_matrix  # noqa: E402
 from model_registry.conversion import apply_selection, conversion_fingerprint  # noqa: E402
 from model_registry.dependencies import resolve_benchmark_runtime, resolve_model_compiler  # noqa: E402
@@ -41,7 +45,7 @@ from model_registry.model import (  # noqa: E402
     mpk_filename,
     profile_component_for,
 )
-from model_registry.model_tests import load_model_tests  # noqa: E402
+from model_registry.model_tests import load_model_tests, low_accuracy_variants  # noqa: E402
 from model_registry.registry import build_catalog_snapshot  # noqa: E402
 from model_report import METRICS  # noqa: E402
 
@@ -749,6 +753,10 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             )
         elif path == "/reference-metrics.json":
             self._json(reference_metrics_by_model(_repository()["models"]))
+        elif path == "/low-accuracy-variants.json":
+            self._json(low_accuracy_variants(ROOT, _repository()["models"]))
+        elif path == "/dataset-names.json":
+            self._json(dataset_names(ROOT))
         elif path == "/component-pipelines.json":
             # The unbuilt sources request this name; an assembled portal requests the file it ships.
             self._json(component_pipelines(_repository()["models"]))
