@@ -204,9 +204,14 @@ def test_only_the_int8_build_quantizes_with_calibration_data(
 
     monkeypatch.setattr(recipe, "_parameters", lambda profile_id: parameters)
     monkeypatch.setattr(recipe, "calibration_samples", samples)
+    cut = tmp_path / "cut.onnx"
+    monkeypatch.setattr(recipe, "prepare_model", lambda source, output_dir: cut)
 
     with pytest.raises(RuntimeError, match="expected one MPK"):
         recipe.compile_model(tmp_path / "model.onnx", tmp_path / "out", precision, tmp_path / "ade20k.tgz")
+
+    # The compiler reads the graph surgery.py cut, not the converted source.
+    assert recipe.onnx_source.call_args.args[0] == str(cut)
 
     data = recipe.load_model.return_value.quantize.call_args.kwargs["calibration_data"]
     if precision == "w8a8":
@@ -227,6 +232,56 @@ def test_the_int8_build_requires_the_calibration_dataset(
     with pytest.raises(ValueError, match="requires --dataset"):
         recipe.compile_model(tmp_path / "model.onnx", tmp_path / "out", "w8a8", None)
     assert not (tmp_path / "out").exists()
+
+
+def _converted_like(path: Path, last: str = "Resize") -> Path:
+    """A graph shaped like the conversion: a strided Conv to 128x128 class logits, then their resize to the input."""
+    import onnx
+    from onnx import helper, numpy_helper
+
+    weight = numpy_helper.from_array(np.full((150, 3, 4, 4), 0.01, np.float32), "weight")
+    scales = numpy_helper.from_array(np.array([1, 1, 4, 4], np.float32), "scales")
+    nodes = [helper.make_node("Conv", ["image", "weight"], ["head"], strides=[4, 4])]
+    resize = dict(mode="linear", coordinate_transformation_mode="half_pixel")
+    if last == "Resize":
+        nodes.append(helper.make_node("Resize", ["head", "", "scales"], ["logits"], **resize))
+    else:
+        nodes.append(helper.make_node("Resize", ["head", "", "scales"], ["resized"], **resize))
+        nodes.append(helper.make_node(last, ["resized"], ["logits"]))
+    graph = helper.make_graph(
+        nodes,
+        "converted",
+        [helper.make_tensor_value_info("image", onnx.TensorProto.FLOAT, [1, 3, 512, 512])],
+        [helper.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, [1, 150, 512, 512])],
+        [weight, scales],
+    )
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10), path)
+    return path
+
+
+def test_surgery_cuts_the_final_resize_and_returns_the_head_logits(
+    tmp_path: Path, load_script: Callable[[str], ModuleType]
+) -> None:
+    import onnx
+
+    surgery = load_script("surgery")
+
+    cut = onnx.load(surgery.prepare_model(_converted_like(tmp_path / "model.onnx"), tmp_path / "graph"))
+
+    assert [node.op_type for node in cut.graph.node] == ["Conv"]
+    assert [node.output[0] for node in cut.graph.node] == ["logits"]
+    assert [initializer.name for initializer in cut.graph.initializer] == ["weight"]
+    shapes = {value.name: [d.dim_value for d in value.type.tensor_type.shape.dim] for value in cut.graph.output}
+    assert shapes == {"logits": [1, 150, 128, 128]}
+
+
+def test_surgery_rejects_logits_that_a_final_resize_does_not_produce(
+    tmp_path: Path, load_script: Callable[[str], ModuleType]
+) -> None:
+    surgery = load_script("surgery")
+
+    with pytest.raises(ValueError, match="the logits do not come from one Resize"):
+        surgery.prepare_model(_converted_like(tmp_path / "model.onnx", last="Relu"), tmp_path / "graph")
 
 
 def _mpk_manifest(recipe: ModuleType) -> dict:

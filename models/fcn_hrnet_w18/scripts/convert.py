@@ -7,8 +7,9 @@ mmseg/models/utils/wrappers.py (MMSegmentation, Apache-2.0) as they run at infer
 lower-resolution fuse input is upsampled by 2**(j - i) and then resized to the target size, and the decode head resizes
 all four branches before concatenating them, even where a resize keeps the size. SyncBN becomes BatchNorm2d, and each
 fuse sum starts from its first term instead of from zero, which adds nothing. The export is the model's forward pass at
-the shipped 512x512 input, up to the decode head's logits at a quarter of the input resolution, the output
-MMSegmentation's own forward returns before its post-processing resizes the logits to each image.
+the shipped 512x512 input: the decode head's logits at a quarter of the input resolution, then the resize of those
+logits to the input that MMSegmentation's predict_by_feat makes, up to where its post-processing resizes them to each
+image and takes the argmax. surgery.py cuts that last resize at compile time.
 """
 
 import argparse
@@ -31,7 +32,7 @@ IMAGE_SIZE = 512
 CLASS_COUNT = 150
 INTERFACE = {
     "image": [1, 3, IMAGE_SIZE, IMAGE_SIZE],
-    "logits": [1, CLASS_COUNT, IMAGE_SIZE // 4, IMAGE_SIZE // 4],
+    "logits": [1, CLASS_COUNT, IMAGE_SIZE, IMAGE_SIZE],
 }
 SEEDS = range(123, 133)
 
@@ -231,7 +232,8 @@ def build_network(widths, class_count):
             self.decode_head = FCNHead()
 
         def forward(self, image):
-            return self.decode_head(self.backbone(image))
+            # MMSegmentation's predict_by_feat resizes the logits to the network input before post-processing.
+            return resize(self.decode_head(self.backbone(image)), image.shape[2:])
 
     return FCNHRNet()
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the converted FCN-HRNet-W48 ONNX into one Modalix MPK and measure its numerical fidelity."""
+"""Cut the converted FCN-HRNet-W48 ONNX, compile it into one Modalix MPK and measure its numerical fidelity."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from afe.load.importers.general_importer import onnx_source
 from calibration import IMAGE_SIZE, calibration_samples, fidelity_names, preprocess_image, read_images
 from model_registry.model import load_model as load_metadata
 from sima_utils.data.data_generator import DataGenerator
+from surgery import prepare_model
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
 MODEL_ID = "fcn_hrnet_w48"
@@ -126,7 +127,8 @@ def compile_model(source: Path, output_dir: Path, profile_id: str, dataset: Path
 
     with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
         build_dir = Path(temporary)
-        importer = onnx_source(str(source), shape_dict={INPUT: INPUT_SHAPE}, layout="NCHW")
+        graph = prepare_model(source, build_dir / "graph")
+        importer = onnx_source(str(graph), shape_dict={INPUT: INPUT_SHAPE}, layout="NCHW")
         loaded = load_model(importer, target=gen2_target)
         logging.info("Quantizing %s", precision)
         quantized = loaded.quantize(
@@ -164,11 +166,16 @@ def _logits(outputs: Any) -> np.ndarray:
 
 
 def measure_fidelity(source: Path, candidate: Any, dataset: Path, config: dict[str, Any], profile_id: str) -> dict:
-    """Compare the quantized graph's logits and per-pixel classes with the ONNX source on ADE20K training images."""
+    """Compare the quantized graph's logits and per-pixel classes with the ONNX source on ADE20K training images.
+
+    The reference is the source as surgery.py cuts it, ending at the same decode-head logits as the compiled graph.
+    """
     selection = config["selection"]
     names = fidelity_names(dataset, int(selection["seed"]), int(selection["offset"]), int(selection["samples"]))
     images = read_images(dataset, names)
-    reference = ort.InferenceSession(str(source), providers=["CPUExecutionProvider"])
+    with tempfile.TemporaryDirectory(prefix=f"{MODEL_ID}-fidelity-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
+        graph = prepare_model(source, Path(temporary))
+        reference = ort.InferenceSession(str(graph), providers=["CPUExecutionProvider"])
     totals = {"count": 0, "dot": 0.0, "expected": 0.0, "actual": 0.0, "error": 0.0, "absolute": 0.0, "max": 0.0}
     agreeing = pixels = 0
     for name in names:
@@ -197,7 +204,7 @@ def measure_fidelity(source: Path, candidate: Any, dataset: Path, config: dict[s
         "model_id": MODEL_ID,
         "build_profile_id": profile_id,
         "status": config["status"],
-        "reference": "ONNX source (ONNX Runtime)",
+        "reference": "ONNX source cut by surgery.py (ONNX Runtime)",
         "candidate": "Quantized AFE graph (JAX execute)",
         "dataset": {key: config["dataset"][key] for key in ("id", "variant", "sha256")},
         "selection": selection,

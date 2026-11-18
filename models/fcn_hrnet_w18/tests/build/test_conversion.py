@@ -111,6 +111,7 @@ def test_converted_graph_has_only_convolutions_and_bilinear_resizes(converted: P
     }
 
     assert set(operations) == {"Conv", "Relu", "Add", "Resize", "Concat"}
-    # 31 fuse paths resize twice, by 2**(j - i) and then to the target size, and the head resizes all four branches.
-    assert operations["Resize"] == 66
+    # 31 fuse paths resize twice, by 2**(j - i) and then to the target size, the head resizes all four branches, and
+    # the logits are resized to the input.
+    assert operations["Resize"] == 67
     assert resize_modes == {("mode", "linear"), ("coordinate_transformation_mode", "half_pixel")}
