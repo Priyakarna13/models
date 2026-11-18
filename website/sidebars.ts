@@ -5,6 +5,16 @@ const sidebars: SidebarsConfig = {
     {type: 'doc', id: 'README', label: 'Overview'},
     {
       type: 'category',
+      label: 'Start here',
+      collapsed: false,
+      items: [
+        {type: 'doc', id: 'getting-started', label: 'Getting started'},
+        {type: 'doc', id: 'concepts', label: 'Concepts'},
+        {type: 'doc', id: 'downloading-models', label: 'Download a model'},
+      ],
+    },
+    {
+      type: 'category',
       label: 'Contribute a model',
       collapsed: false,
       items: [
@@ -29,7 +39,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'metadata-schema',
         'conversion-artifacts',
-        {type: 'doc', id: 'model-promotion-operations', label: 'Promotion operations'},
+        {type: 'doc', id: 'model-readme', label: 'Model README and hero'},
         {type: 'doc', id: 'model-browser', label: 'Model browser'},
         'runner-class-requests',
         'model-taxonomy',
