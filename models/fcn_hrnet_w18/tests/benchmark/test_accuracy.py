@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 import pytest
 from model_registry.model_tests import measured_shortfalls
-from PIL import Image
 
 
 def _ramp_logits(accuracy: ModuleType) -> np.ndarray:
@@ -112,7 +111,9 @@ def test_logits_come_back_channels_first_from_either_layout(load_script: Callabl
         accuracy.channels_first(logits.reshape(-1))
 
 
-def test_samples_pair_each_image_with_its_label_map(load_script: Callable[[str], ModuleType], tmp_path: Path) -> None:
+def test_validation_images_pair_each_image_with_its_label_map(
+    load_script: Callable[[str], ModuleType], tmp_path: Path
+) -> None:
     # The DevKit's test environment has no Pillow; the scoring tests above do not need it.
     image = pytest.importorskip("PIL.Image")
     accuracy = load_script("accuracy")
@@ -124,13 +125,13 @@ def test_samples_pair_each_image_with_its_label_map(load_script: Callable[[str],
 
     # The archive's top folder or the folder itself.
     for directory in (tmp_path, root):
-        found_root, images = accuracy.samples(directory)
+        found_root, images = accuracy.validation_images(directory)
         assert found_root == root
         assert [image.stem for image in images] == ["ADE_val_00000001", "ADE_val_00000002"]
     assert accuracy.label_map(root, images[0]).shape == (3, 4)
     (root / "annotations" / accuracy.SPLIT / "ADE_val_00000002.png").unlink()
     with pytest.raises(SystemExit, match="label map"):
-        accuracy.samples(tmp_path)
+        accuracy.validation_images(tmp_path)
 
 
 def test_mpk_argument_names_exactly_the_model_component(load_script: Callable[[str], ModuleType]) -> None:
@@ -144,9 +145,10 @@ def test_mpk_argument_names_exactly_the_model_component(load_script: Callable[[s
 def test_fp32_baseline_feeds_the_onnx_the_preprocessed_nchw_image(
     tmp_path: Path, load_script: Callable[[str], ModuleType]
 ) -> None:
-    # The DevKit runs these tests in PyNeat, which has neither package; the host checks run this one.
+    # The DevKit runs these tests in PyNeat, which has none of these packages; the host checks run this one.
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
+    pil = pytest.importorskip("PIL.Image")
     baseline = load_script("fp32_baseline_accuracy")
     calibration = load_script("calibration")
     helper = onnx.helper
@@ -160,7 +162,7 @@ def test_fp32_baseline_feeds_the_onnx_the_preprocessed_nchw_image(
     model = tmp_path / "model.onnx"
     onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10), model)
     image = tmp_path / "image.jpg"
-    Image.new("RGB", (64, 48), (200, 30, 90)).save(image, quality=100)
+    pil.new("RGB", (64, 48), (200, 30, 90)).save(image, quality=100)
 
     (logits,) = baseline.onnx_logits(model, [image])
 

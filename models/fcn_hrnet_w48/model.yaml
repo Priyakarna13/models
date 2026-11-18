@@ -84,7 +84,7 @@ reference_metrics:
 - origin: fp32_baseline
   script: scripts/fp32_baseline_accuracy.py
   dataset: {id: ade20k, split: val}
-  conditions: FP32 ONNX on ONNX Runtime CPU; each image stretched to 512x512, ImageNet-normalized; single scale; 2000 images
+  conditions: FP32 ONNX on ONNX Runtime CPU with host OpenCV preprocessing; each image stretched to 512x512, ImageNet-normalized; single scale; 2000 images
   metrics: {miou: 0.4112}
 - source: https://github.com/open-mmlab/mmsegmentation/blob/b040e147adfa027bbc071b624bedf0ae84dfc922/configs/hrnet/README.md
   dataset: {id: ade20k, split: val}

@@ -1,11 +1,13 @@
 """Measure FCN-HRNet-W18's semantic segmentation on ADE20K's validation split with its MPK on a board.
 
 Each original-size image enters Neat's preprocessing on the board, as an application runs the model: a stretch to
-512x512 and ImageNet normalization. Scoring follows the SceneParse150 protocol MMSegmentation reports, single scale:
-the logits are interpolated bilinearly to the label map's size (align_corners=False, as MMSegmentation's
-post-processing does) and each pixel's class is their argmax. Label 0 (unlabeled or other) is ignored and labels 1 to
-150 are the classes. mIoU is the mean, over the classes that occur in the labels or the predictions, of each class's
-intersection over union accumulated over the whole split.
+512x512 and ImageNet normalization. Scoring follows the SceneParse150 protocol MMSegmentation reports, single scale,
+with one difference: the 128x128 logits are interpolated bilinearly (align_corners=False) straight to the label
+map's size, where MMSegmentation resizes them to the 512x512 input first and then to the label map, so a few pixels
+can take another class. The FP32 baseline scores the same way. Each pixel's class is the argmax of the logits, decoded
+here on the host; performance.py times Neat's semantic-segmentation decode instead. Label 0 (unlabeled or other) is
+ignored and labels 1 to 150 are the classes. mIoU is the mean, over the classes that occur in the labels or the
+predictions, of each class's intersection over union accumulated over the whole split.
 """
 
 from __future__ import annotations
@@ -113,7 +115,7 @@ def channels_first(output: np.ndarray) -> np.ndarray:
     raise ValueError(f"unexpected logits shape {np.shape(output)}")
 
 
-def samples(directory: Path) -> tuple[Path, list[Path]]:
+def validation_images(directory: Path) -> tuple[Path, list[Path]]:
     """The dataset root and its validation images, sorted, each with a label map of the same name."""
     root = directory / DATASET if (directory / DATASET).is_dir() else directory
     images = sorted((root / "images" / SPLIT).glob("*.jpg"))
@@ -186,7 +188,7 @@ def parse_dataset(parser: argparse.ArgumentParser, value: str, limit: int | None
     dataset_id, _, directory = value.partition("=")
     if dataset_id != DATASET or not directory:
         parser.error(f"--dataset must name {DATASET}=<directory>")
-    root, available = samples(Path(directory))
+    root, available = validation_images(Path(directory))
     if len(available) != IMAGES:
         parser.error(f"expected all {IMAGES} ADE20K validation images, found {len(available)}")
     if limit is not None and not 1 <= limit <= len(available):
