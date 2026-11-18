@@ -76,6 +76,6 @@ reference_metrics:
   metrics: {widerface_ap_easy: 0.8973, widerface_ap_medium: 0.8649, widerface_ap_hard: 0.6809}
 - source: https://github.com/ShiqiYu/libfacedetection.train/blob/dca340aa082c71081a68d17db8e58b33a58a914b/README.md
   dataset: {id: wider-face, split: val}
-  conditions: the released YuNet_n PyTorch checkpoint, each image at its own size (eval_widerface --mode origin)
-  note: libfacedetection.train's evaluation of its released checkpoint. This package compiles the repository's fixed 640x640 ONNX file, which shrinks the small faces of WIDER FACE's 1024-pixel-wide images, so its scores are not directly comparable, most of all on the hard subset.
+  conditions: the released YuNet_n PyTorch checkpoint, each image at its own size (eval_widerface --mode origin); score threshold 0.02, NMS IoU 0.45, no limit on detections
+  note: libfacedetection.train's evaluation of its released checkpoint. This package differs in two ways. It compiles the repository's fixed 640x640 ONNX file, which shrinks the small faces of WIDER FACE's 1024-pixel-wide images, and it scores with OpenCV Zoo's YuNet settings (score threshold 0.3, top 5000), which drop the low-score detections the reference keeps. Both lower its scores, most of all on the hard subset.
   metrics: {widerface_ap_easy: 0.892, widerface_ap_medium: 0.883, widerface_ap_hard: 0.811}

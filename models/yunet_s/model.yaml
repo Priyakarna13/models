@@ -13,8 +13,9 @@ license:
   spdx: MIT
   redistribution: allowed
   attribution: >-
-    YuNet by Shiqi Yu and contributors (libfacedetection.train), distributed in OpenCV Zoo under MIT. It is trained
-    on WIDER FACE, whose images are under CC BY-NC-ND 4.0, with annotations released for non-commercial research.
+    YuNet by Shiqi Yu and contributors (libfacedetection.train), released there under BSD-3-Clause and distributed
+    in OpenCV Zoo under MIT; the package ships both licenses. It is trained on WIDER FACE, whose images are under
+    CC BY-NC-ND 4.0, with annotations released for non-commercial research.
 
 upstream:
   repository: https://github.com/ShiqiYu/libfacedetection.train
@@ -29,6 +30,14 @@ resources:
       files:
         LICENSE: {sha256: c83b8120c50ccbd4c4f96edf53141bdd566ebb8f8e9227e415326aa1b1aba958, size_bytes: 1085}
     install_path: licenses
+  license_libfacedetection:
+    # The compiled file is byte-identical to libfacedetection.train's onnx/yunet_s_640_640.onnx, released under
+    # BSD-3-Clause, whose notice a binary redistribution must carry.
+    source:
+      uri: https://raw.githubusercontent.com/ShiqiYu/libfacedetection.train/dca340aa082c71081a68d17db8e58b33a58a914b/LICENSE
+      sha256: e8afd9575f1cebfd20752e1f0c0981042a5526a99a5df3b926c5e05035ec4136
+      size_bytes: 1542
+    install_path: licenses/LICENSE-libfacedetection
 
 compilation:
   format: onnx
