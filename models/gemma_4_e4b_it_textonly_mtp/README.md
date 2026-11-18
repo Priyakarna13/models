@@ -4,16 +4,30 @@
 
 ## Overview
 
-Gemma 4 E4B Text MTP combines an instruction-tuned language model from Google with a small MTP assistant for answering questions, rewriting text, extracting information, and continuing conversations. The package runs locally on SiMa.ai Modalix and accepts text prompts with optional conversation history. The assistant proposes tokens that the target model checks before returning a text response. Applications can display a complete answer or stream accepted tokens as they arrive.
+Gemma 4 E4B Text MTP answers questions, summarizes documents, rewrites text, and
+holds a conversation. Use it for a chat assistant, document summaries, or
+pulling facts out of text. Your application sends a prompt and gets the answer
+back as text, complete or streamed as it is generated. This variant accepts no
+images and speeds up generation: a small MTP assistant model in the package
+proposes tokens and the main model checks each one.
 
 *Maximum context length can be changed when recompiling the model.*
 
-## Inputs and outputs
+## Inputs
 
-1. Keep the target and assistant folders together when loading the package; the GenAI API manages their speculative decoding.
-2. Supply the question or instruction as `prompt`, with prior messages when continuing a conversation. Let the GenAI API apply the bundled chat template.
-3. Read the generated `text` as a complete response or incremental tokens. Start a new conversation when previous messages should no longer influence the answer.
+One text prompt, with the earlier messages when you continue a conversation.
+
+- Package: keep the target (main model) and assistant folders together when you load it.
+- `prompt`: the question or instruction, with any source text it refers to. The package applies its bundled chat template to the prompt.
+- Earlier messages: pass them to continue a conversation. Start a new conversation when they should no longer influence the answer.
+
+## Outputs
+
+The answer as text.
+
+- `text`: the generated answer, as one complete response.
+- Streaming: read incremental tokens as the main model accepts them instead of waiting for the complete response.
 
 ## Building applications
 
-Run the package with the [Neat Model API](https://developer.sima.ai/software/develop-apps/development-workflow/model). For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples).
+Run the package with the [Neat GenAI Model API](https://developer.sima.ai/software/develop-apps/development-workflow/genai-model). For complete applications, start from the [Neat example apps](https://developer.sima.ai/examples).

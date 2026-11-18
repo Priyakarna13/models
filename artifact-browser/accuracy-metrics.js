@@ -2,6 +2,7 @@
 export const ACCURACY_METRIC_LABELS = {
   top1_accuracy: "Top-1",
   top5_accuracy: "Top-5",
+  knn_top1_accuracy: "k-NN top-1",
   coco_map: "mAP 50–95",
   coco_ap50: "AP50",
   coco_ap75: "AP75",
@@ -44,6 +45,9 @@ export const ACCURACY_METRIC_LABELS = {
   dota_obb_map: "DOTA mAP 50–95",
   keypoint_repeatability: "Repeatability",
   homography_accuracy: "Homography accuracy",
+  jf_mean: "J&F",
+  j_mean: "J (region overlap)",
+  f_mean: "F (boundary)",
   pose_auc_5: "Pose AUC@5°",
   pose_auc_10: "Pose AUC@10°",
   pose_auc_20: "Pose AUC@20°",
@@ -56,6 +60,7 @@ export const ACCURACY_METRIC_LABELS = {
   d1_all: "D1-all",
   abs_rel: "AbsRel",
   delta1: "δ1",
+  miou: "mIoU",
 };
 
 // Accuracy metrics with non-default units, directions or display settings; matches metrics.json.
@@ -122,4 +127,15 @@ export function referenceNotes(name, scoresByOrigin) {
     const score = formatAccuracy(name, scoresByOrigin[origin]?.[name], { blank: true });
     return score ? [`${label} ${score}`] : [];
   });
+}
+
+// A dataset as readers know it: the name datasets/<id>.yaml gives it, such as "COCO 2017". A dataset without
+// one goes by its Dataset Registry archive, such as "coco-2017 val".
+export function datasetName(dataset) {
+  return dataset.name || registryArchive(dataset);
+}
+
+// A Dataset Registry archive: its ID and variant, such as "coco-2017 val".
+export function registryArchive(dataset) {
+  return [dataset.id, dataset.variant].filter(Boolean).join(" ");
 }

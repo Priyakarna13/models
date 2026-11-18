@@ -36,7 +36,7 @@ models/<model-id>/scripts/accuracy.py               # only with an accuracy decl
 models/<model-id>/scripts/requirements-accuracy.txt # optional, with accuracy.py
 models/<model-id>/scripts/convert.py                # only with a declared conversion
 models/<model-id>/scripts/requirements-convert.txt  # required with convert.py
-models/<model-id>/scripts/surgery.py                # only when declared
+models/<model-id>/scripts/surgery.py                # only when the recipe rewrites the graph
 ```
 
 A taxonomy change may also be necessary, but it changes a repository-wide
@@ -53,17 +53,19 @@ model's tests](adding-a-model.md#10-write-the-models-tests)).
 ## Request additional compile resources
 
 For expensive runners or on-demand purchasing, follow the [runner request
-guide](runner-class-requests.md) before enabling the model's request. Link the
-reviewed Vulcan policy PR, exact model IDs, owner, duration/memory or interruption
-evidence, expected build frequency, and cost tradeoff in the Models PR. Update
-the model README with the request. Larger size and on-demand are separate
-permissions; an existing expensive-size grant does not authorize on-demand.
+guide](runner-class-requests.md) before enabling the model's request. In the
+Models pull request, link the reviewed Vulcan policy pull request and give the
+exact model IDs, the owner, the duration, memory, or interruption evidence, the
+expected build frequency, and the cost tradeoff. Larger size and on-demand are
+separate permissions. An existing expensive-size grant does not authorize
+on-demand.
 
-A passing Models PR validates the manifest, not the protected policy. Confirm
-the grant and compatible workflows/scaler are deployed as described in the
-[runner request guide](runner-class-requests.md#obtain-access-through-a-vulcan-policy-pr) before expecting a trusted compile to acquire a runner. A runner-only
-change can reuse an existing build; use a narrowly selected forced staging build
-only when deliberately collecting new runner evidence.
+A passing Models pull request validates the request in `model.yaml`, not the
+approval. Confirm that the grant is deployed, as the
+[runner request guide](runner-class-requests.md#obtain-access-through-a-vulcan-policy-pr)
+describes, before you expect CI to compile on the requested runner. A change to
+the runner request alone reuses the existing build. Force a new build of that
+one model only to collect new runner evidence.
 
 ## Never commit generated or sensitive artifacts
 
@@ -100,13 +102,16 @@ git push --set-upstream origin HEAD
 If the change includes a separately reviewed taxonomy or shared-tool update,
 stage that explicit path too. Before committing, confirm that no downloaded
 input, generated output, result, log, cache, or credential appears in the
-staged diff. Write a commit message that describes the model or lifecycle
-contract, not just the filenames.
+staged diff. Pull requests reject any committed file that `.gitignore`
+excludes, even when added with `git add -f`, and any file over 2 MiB; a test
+fixture that must be committed anyway goes in `ALLOWED_FILES` in
+`tests/test_target_branch_checks.py`. Write a commit message that describes
+the model or lifecycle contract, not just the filenames.
 
 Open a pull request against `develop`. `Target Branch Checks` reruns
-validation on the merge result. It does not compile or measure pull-request
-code. Trusted post-merge workflows perform those later
-stages; authors do not invoke those publication steps themselves.
+validation on the merge result. It does not compile or measure the model.
+CI compiles, measures, and publishes after the merge, and
+authors do not invoke those publication steps themselves.
 
 ## Pull request description
 
@@ -134,201 +139,88 @@ provenance and are reserved for CI.
 
 ## CI and trust boundaries
 
-Pull requests run `Target Branch Checks` on the merge result, on
-GitHub-hosted infrastructure: the repository tests and every model's tests
-that need no stage output, which also validate the complete catalog and
-taxonomy and resolve the compiler pin, the `model-registry` package
-build, and the model browser checks. They do not schedule
-contributor-controlled recipe, surgery, or measurement code on a self-hosted
-runner, and they read no registry state.
+A pull request runs `Target Branch Checks` on the merge result:
 
-For a model change, interpret a successful pull-request workflow as confirmation
-that:
+- `ruff check .`
+- the repository tests and each model's tests that need no stage output, which
+  also validate the complete catalog and taxonomy, resolve the compiler pin,
+  and reject the committed files described above
+- the `model-registry` package build
+- the model browser build and its checks
 
-- the complete catalog, taxonomy, conversion sources, fidelity, performance,
-  and accuracy declarations, and declarative compositions are structurally
-  valid;
-- the repository-wide Model Compiler dependency resolves;
-- the `model-registry` package builds; and
-- the model browser builds and loads.
+A pull request never compiles a model, measures it on a DevKit, or publishes a
+result. Those steps run only after a push to this repository.
+
+For a model change, a passing pull request confirms that:
+
+- every model's `model.yaml`, its tests, and the taxonomy are valid
+- the repository-wide Model Compiler pin resolves
+- the `model-registry` package builds
+- the model browser builds and loads
 
 It is **not** evidence that the recipe compiled, the MPK passed validation,
-fidelity or accuracy met a threshold, or the model ran on a DevKit. Those claims must come
-from stated local evidence or the trusted workflow in its selected environment after merge.
+fidelity or accuracy met a threshold, or the model ran on a DevKit. Those
+claims must come from your stated local results, or from CI after the merge.
 
 ## After merge: trusted staging automation
 
-Registry release state is a separate production workflow: changes to `state.json`,
-`scripts/publish_registry_state.sh`, or `vulcan-model-state.yml` on `main` publish
-`models/state.json`. Manual runs also require `main`; both jobs and the upload
-script enforce this restriction. Runs share one production concurrency group
-and verify the uploaded file. Merging to `develop` does not deploy this state.
+The merge to `develop` starts the **Vulcan Model Orchestrator** workflow on the
+merged revision. You start nothing yourself. The workflow:
 
-Merging does not deploy the model browser frontend to production. Automatic
-browser publication targets staging on `main`/`develop` independently of
-`VULCAN_ENV`. For an explicit
-frontend release, a Models owner runs **Deploy Model Browser & Docs** from `main` or `develop`, chooses the destination (`staging` or
-`production`) and audience (`developer` for branch selection, `customer` for Main
-only), and approves their own run at the `model-browser-deploy` environment gate.
-Only `owners-models` can approve; administrator bypass is disabled. Dispatch a new
-run to retry because previous approvals cannot authorize reruns. Configuration
-resolution, build, and publication each reject later attempts independently,
-including retries of only failed or individual jobs. The workflow must
-be present on default branch `main` for GitHub to expose its Run workflow button.
+1. validates every model
+2. compiles each build whose compile fingerprint has no published result, and
+   runs the model's compile tests on the output
+3. runs the performance and accuracy stages of each new build on a DevKit, and
+   the model's benchmark tests on each report
+4. publishes the builds and reports, which the model browser then shows
 
-This workflow builds and smoke-tests the frontend, publishes only `models/`, retains
-prior assets for rollback, and invalidates the model browser paths. Its per-environment
-publish concurrency group is shared with automatic staging publication and does not
-cancel an active publication, so the two upload paths cannot overlap. It does not
-build models, promote catalogs, or publish registry tooling. Tooling publication in
-**Vulcan Model Registry** follows repository `VULCAN_ENV` (default `staging`) on both
-pushes and manual runs. See [model browser deployment](model-browser.md) for release
-and rollback instructions.
+CI reuses a build whose fingerprints did not change, as [what a change
+reruns](adding-a-model.md#9-know-what-a-change-reruns) explains. CI validates a
+model with `build-on-demand: true` but compiles it only on request. See
+[on-demand builds](adding-a-model.md#on-demand-builds).
 
-On-demand candidates require a separate manual **Promote model** dispatch to become approved
-on Develop. Enter the model folder ID and a build profile ID from its `model.yaml`;
-the workflow resolves the newest matching candidate receipt and pins it for review.
-Pending requests mention `@sima-neat/owners-models` in the issue and send a Slack
-reminder to the configured `SLACK_VULCAN_EVENT_CHANNEL_ID`. After the decision,
-the same channel receives the backend outcome, including unsuccessful promotion attempts.
-A successful build or metadata publication is not approval. See
-[promoting a model](model-promotion.md) for the protected review and recovery procedure.
+The workflow runs on every push to this repository, not only on a merge. When
+you push your branch here, CI compiles and benchmarks its changed builds too.
 
-When the change is merged to `develop`, the push runs **Vulcan Model Orchestrator**
-on the reviewed revision. Pushes and manual build dispatches use `VULCAN_ENV`
-for compiler runners and registry publication. Set it to `staging` or
-`production`; an unset or invalid value fails before requesting compiler
-capacity. Dispatch inputs cannot override it. The frontend build and publication
-configuration remain staging:
+Follow the run in the repository's Actions tab. Each build has its own compile
+job and benchmark jobs, grouped under the build's name. A successful compile
+does not by itself mean the benchmark succeeded, so check each build's
+benchmark jobs, then the model's page in the model browser.
 
-1. **Check the portal.** The model browser is built and smoke-tested in Chromium
-   independently of planning, compilation, benchmarks, and registry publication.
-   The check remains required for pull requests and browser publication.
-   Every push runs this check, not only merges, and a
-   push to `main` or `develop` publishes the checked browser to staging using
-   `resolve-staging-browser-config`, independently of model environment selection.
-2. **Resolve configuration and plan.** `plan` waits for `select` and
-   `resolve-vulcan-config`. It requests OIDC permission; only a production
-   run assumes the selected GitHub environment's
-   `VULCAN_ARTIFACT_REGISTRY_PUBLISHER_ROLE_ARN` before reading registry state.
-   That publisher-capable role must trust the workflow and permit this repository's
-   catalog/resolve reads, or planning fails before compilation. Staging skips this
-   assumption and retains public reads. Read URLs prefer
-   `VULCAN_ARTIFACT_REGISTRY_PUBLIC_READ_URL` and fall back to
-   `VULCAN_ARTIFACT_REGISTRY_API_URL`; only production reads under the configured
-   API base's `/v1/` path are SigV4-signed. Public-reader URLs, other hosts and
-   artifact downloads retain their existing behavior. This enables private
-   production reads without opening public access and does not grant credentials
-   to pull-request validation. `plan-stages` compares each build's compile fingerprint with the
-   branch's catalog and, on a feature branch, its base branches' catalogs. A
-   build compiles when no published run carries its fingerprint. A build that
-   is reused but lacks a completed performance or accuracy run for its current
-   benchmark fingerprint is queued for that benchmark only. A feature branch
-   leaves to its closest base branch the build profiles that base branch is
-   compiling and the benchmarks whose fingerprints its catalog records.
-3. **Authorize.** Each requested runner class and market is checked against the protected
-   environment specification before a self-hosted compile is queued.
-4. **Compile.** On a self-hosted compiler runner with read-only repository
-   access, the backend's runner (`run_model_compilation.sh` for ONNX or
-   `run_llima_compilation.sh` for LLiMa) runs the recipe. Each artifact is
-   verified with its provenance, and the model's compile tests check the
-   output. A failing test leaves the build unpublished.
-5. **Publish.** A default Vulcan Ubuntu runner with local NVMe handles LLiMa
-   deployments; ONNX uses a GitHub-hosted runner. The job verifies the complete
-   component set, publishes each component and its fidelity report as a compile run,
-   assembles and publishes the packages the build completes, and records the
-   build in the catalog. A new Modalix build is then benchmarked right away,
-   while other builds may still compile.
-6. **Benchmark.** For reused builds, the workflow runs only the benchmarks
-   they still lack, once the catalog marks the selected builds pending. They
-   run while the changed builds compile.
-7. **Publish the catalog.** Once every compile and each new build's benchmarks
-   end, the catalog snapshot for the revision is published and promoted.
+When a stage fails:
 
-The benchmark workflow (`vulcan-model-benchmarking.yml`) runs the requested
-`performance` and `accuracy` stages of one build on a DevKit, runs the model's
-benchmark tests on each result, then publishes each result as its own registry
-run under the build profile's package run, with the test outcome. A failed test
-fails the run after publication. The orchestrator runs it as part of its own
-run, for every new and reused build, with each build's jobs grouped under the
-build's name. To benchmark one build by hand, run **Vulcan Model
-Benchmarking**.
+- A failed compile, or a failed compile test, leaves the build unpublished.
+  Read the job log, reproduce the failure with [Qualify
+  locally](local-development.md), and open a pull request with the fix.
+- A failed benchmark test still publishes its report, with test status
+  `failed`, and then fails the run. Fix the script, or update `expected` in
+  `tests/tests.yaml` when a reviewed change moved the value ([set up
+  `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)).
+- When the failure is not in your model's files, tell a maintainer.
 
-Its `environment=default` resolves repository `VULCAN_ENV`
-(with staging as the fallback); explicit staging/production overrides are supported.
-The orchestrator passes its resolved environment so artifacts, datasets,
-credentials, and report publication stay in the same registry as the build. DevKit discovery and
-scheduling independently use the checked-in `vulcan-staging` runner label.
-Production registry reads and report writes run on GitHub-hosted runners; the
-DevKit receives staged model artifacts and only dataset-reader credentials.
-
-The compile and the benchmarks are jobs of one orchestrator run, and each
-build's benchmark jobs report their own result. A successful compile does not
-by itself mean the benchmark succeeded; inspect each build's benchmark jobs in
-the orchestrator run and the model's
-selected environment's registry record. If trusted compilation or measurement fails, follow
-up with a focused manifest, recipe, or script change and reproducible evidence.
-
-Both automatic and manual model builds honor `VULCAN_ENV`; set it to `production`
-or `staging`. There is no per-build environment override or implicit staging
-fallback. Missing or invalid values fail before acquiring compiler capacity.
-Production GitHub environment and IAM protections still apply. On-demand
-candidate publication supports either selected environment. Benchmarks use staging DevKits for either registry environment. A manual dispatch can name models, build profiles, or
-components and can force every selected build to recompile, which also
-applies a changed model test at once; otherwise a changed test applies the next
-time its stage runs. A dispatch that
-names build profiles or components compiles and publishes those builds but
-skips ordinary package and catalog updates. On-demand builds publish their
-complete candidate, including packages; a feature-branch run also selects it
-in that branch's catalog after finalization. LLiMa does this in the existing
-Publish job; models with multiple invocations join them in the orchestrator's
-`publish-candidates` job before publication.
-Each complete candidate publishes independently of failures in other models
-or profiles.
-Develop and Main require separate approval and promotion. Use the manual
-[Promote model workflow](model-promotion.md) from Develop, choosing the target;
-Main is production-only, uses a separate protected gate and retains S3 storage.
-Use **Publish Main model metadata** from Develop to publish the Main source
-revision's model/profile metadata without compiling. Main requires a completed
-Develop approval of the same candidate before its separate review.
-Hugging Face publication is a separate release operation.
+Each fix is a focused change to `model.yaml`, the recipe, or a script, with
+the local results that show it works.
 
 ## Review and merge expectations
 
 A model is ready to merge when the local qualification evidence is complete,
-PR checks pass, and reviewers accept the contract, licensing, ownership, test
-plan, and remaining maturity gaps. Merge does not mean production approval;
-trusted staging still verifies the committed revision, and promotion remains a
-separate protected stage.
+the pull request checks pass, and reviewers accept the contract, licensing,
+ownership, test plan, and remaining gaps. A merge is not a release. CI still
+compiles and measures the merged revision, and
+[promotion](model-promotion.md) of a build-on-demand model is a separate
+reviewed step.
 
-Reviewers also check that the change keeps the repository structure
-consistent:
+Reviewers also check that:
 
-- every companion change listed in [keep the structure
-  consistent](https://github.com/sima-neat/models/blob/develop/AGENTS.md#keep-the-structure-consistent)
-  is in the same pull request;
+- a change to a model's scripts, inputs, or outputs updates that model's
+  tests, `tests/tests.yaml`, README, and hero in the same pull request
 - the description states which stages the change reruns, following [what a
-  change reruns](adding-a-model.md#9-know-what-a-change-reruns);
-- model-specific code is under `models/<model-id>/scripts/`, and shared code is
-  in the module the [module
-  map](https://github.com/sima-neat/models/blob/develop/design-doc/model-registry-architecture.md#shared-tooling)
-  assigns to its job.
+  change reruns](adding-a-model.md#9-know-what-a-change-reruns)
+- model-specific code is under `models/<model-id>/scripts/`, and shared code
+  is under `tools/`
 
-If trusted compilation exposes a model-specific failure, update the recipe or
-manifest with reproducible evidence and tests. Use `status: unsupported` only
-after a combination is proven unusable, not as a shortcut around an unresolved
-failure.
-
-Forced rebuilds of packages already published in the current catalog revision
-require a new Git commit. Initialization rejects the conflict before compilation;
-see [forced rebuilds](https://github.com/sima-neat/models/blob/develop/design-doc/model-registry-architecture.md#forced-rebuilds-of-published-packages).
-
-Converted ONNX models resolve a validated registry output before compile reuse is
-checked. Deploy the Vulcan contract and publish matching conversions before
-switching existing source declarations; see [conversion artifacts](conversion-artifacts.md).
-
-For private production conversion sources, compilation uses an isolated ONNX
-metadata reader session, including cached fetches. Refresh that restricted session
-immediately after compilation and pass the fresh credentials to provenance
-verification; compilation can outlast the original session. Keep both sessions
-separate from the runner's dataset credentials.
+If CI exposes a model-specific failure after the merge, update the recipe or
+`model.yaml` with reproducible evidence and tests. To withhold a build profile
+that does not work, comment it out in `model.yaml`, so that CI neither
+compiles nor benchmarks it. Do that only after the profile is proven unusable,
+not as a shortcut around an unresolved failure.

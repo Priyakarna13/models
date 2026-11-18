@@ -8,20 +8,25 @@ from pathlib import Path
 import pytest
 from model_registry.documentation import (
     BUILDING_APPLICATIONS,
+    GENAI_BUILDING_APPLICATIONS,
     MAX_README_WORDS,
     REQUIRED_SECTIONS,
     load_model_documentation,
 )
 from model_registry.errors import ValidationError
+from model_registry.model import load_model
 
-# The fixture's Inputs and outputs text, which tests replace to inject content.
+# The second paragraph of the fixture's Inputs section, which tests replace to inject content.
 _CONTENT = "Content for inputs and outputs."
 
 
 def _readme(overview: str, *, title: str = "Fixture Model") -> str:
     sections = []
     for heading in REQUIRED_SECTIONS:
-        body = {"Overview": overview, "Building applications": BUILDING_APPLICATIONS}.get(heading, _CONTENT)
+        body = {
+            "Overview": overview, "Inputs": f"One image.\n\n{_CONTENT}", "Outputs": "One score.",
+            "Building applications": BUILDING_APPLICATIONS,
+        }[heading]
         sections.append(f"## {heading}\n\n{body}")
     return f"# {title}\n\n![{title} model hero](hero.png)\n\n" + "\n\n".join(sections) + "\n"
 
@@ -70,15 +75,30 @@ def test_repository_model_readmes_follow_the_documentation_contract() -> None:
     root = Path(__file__).resolve().parents[1]
     for manifest in sorted((root / "models").glob("*/model.yaml")):
         model_dir = manifest.parent
-        display_name = next(
-            line.split(":", 1)[1].strip().strip('"\'')
-            for line in manifest.read_text(encoding="utf-8").splitlines()
-            if line.startswith("display_name:")
+        model = load_model(model_dir)
+        documentation = load_model_documentation(
+            model_dir, model["display_name"], repository=root,
+            is_genai=any(component["interface"]["format"] == "huggingface" for component in model["components"]),
         )
-        documentation = load_model_documentation(model_dir, display_name, repository=root)
         assert documentation["source_path"] == f"models/{model_dir.name}/README.md"
         assert len(documentation["readme_sha256"]) == 64
         assert documentation["hero"]["source_path"] == f"models/{model_dir.name}/hero.png"
+
+
+@pytest.mark.parametrize("is_genai", [False, True])
+def test_building_applications_matches_deployment_backend(tmp_path: Path, is_genai: bool) -> None:
+    model_dir = tmp_path / "models" / "fixture"
+    model_dir.mkdir(parents=True)
+    (model_dir / "hero.png").write_bytes(_png())
+    expected, wrong = (GENAI_BUILDING_APPLICATIONS, BUILDING_APPLICATIONS) if is_genai else (
+        BUILDING_APPLICATIONS, GENAI_BUILDING_APPLICATIONS
+    )
+    readme = model_dir / "README.md"
+    readme.write_text(_readme(_overview()).replace(BUILDING_APPLICATIONS, expected), encoding="utf-8")
+    load_model_documentation(model_dir, "Fixture Model", repository=tmp_path, is_genai=is_genai)
+    readme.write_text(_readme(_overview()).replace(BUILDING_APPLICATIONS, wrong), encoding="utf-8")
+    with pytest.raises(ValidationError, match="Building applications must be exactly"):
+        load_model_documentation(model_dir, "Fixture Model", repository=tmp_path, is_genai=is_genai)
 
 
 def test_model_readme_contract_requires_a_hero_image(tmp_path: Path) -> None:
@@ -101,6 +121,16 @@ def test_model_readme_contract_requires_the_hero_line(tmp_path: Path) -> None:
         load_model_documentation(model_dir, "Fixture Model", repository=tmp_path)
 
 
+def test_repository_model_readmes_name_the_box_decode_type_of_their_performance_script() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for readme in sorted((root / "models").glob("*/README.md")):
+        script = readme.parent / "scripts" / "performance.py"
+        source = script.read_text(encoding="utf-8") if script.is_file() else ""
+        selected = set(re.findall(r"BoxDecodeType\.(\w+)", source))
+        named = set(re.findall(r"\[BoxDecode\]\(\S+\) with decode type `(\w+)`", readme.read_text(encoding="utf-8")))
+        assert named == selected, f"{readme} names {sorted(named)}, but {script.name} selects {sorted(selected)}"
+
+
 def test_repository_model_readme_shell_blocks_do_not_use_redirection_shaped_placeholders() -> None:
     root = Path(__file__).resolve().parents[1]
     placeholder = re.compile(r"<[A-Za-z0-9_-]+>")
@@ -115,7 +145,7 @@ def test_repository_model_readme_shell_blocks_do_not_use_redirection_shaped_plac
     [
         (_readme(_overview(), title="Wrong title"), "H1 must exactly match"),
         (_readme(_overview()).replace("(hero.png)", "(https://example.invalid/hero.png)"), "must begin with H1"),
-        (_readme(_overview()).replace("## Inputs and outputs", "## Using the model"), "H2 sections must be"),
+        (_readme(_overview()).replace("## Inputs", "## Using the model"), "H2 sections must be"),
         (
             _readme(_overview()).replace(_CONTENT, f"{_CONTENT} <h2>Unexpected</h2>"),
             "H2 sections must be",
@@ -147,10 +177,29 @@ def test_repository_model_readme_shell_blocks_do_not_use_redirection_shaped_plac
             f"at most {MAX_README_WORDS} words",
         ),
         (_readme(_overview()).replace(_CONTENT, "Run the MPKs on the board."), "uses 'MPKs'"),
-        (_readme(_overview()).replace(_CONTENT, "Gather boxes on the A65."), "line 11 uses 'A65'"),
+        (_readme(_overview()).replace(_CONTENT, "Gather boxes on the A65."), "line 13 uses 'A65'"),
         (_readme(_overview()).replace(_CONTENT, "Benchmarked at 30 FPS."), "uses 'Benchmark'"),
         (_readme(_overview()).replace(_CONTENT, "Reports COCO mAP."), "uses 'mAP'"),
         (_readme(_overview()).replace(_CONTENT, "Install with sima-cli."), "uses 'sima-cli'"),
+        (_readme(_overview()).replace(_CONTENT, "With Neat, pass the frame."), "line 13 names Neat outside"),
+        (_readme(_overview(49) + " Neat."), "names Neat outside Building applications"),
+        (_readme(_overview()).replace("One score.", "Neat's decoder returns it."), "names Neat outside"),
+        (_readme(_overview()).replace("## Outputs\n\n", ""), "H2 sections must be"),
+        (_readme(_overview()).replace("## Inputs\n\n", ""), "H2 sections must be"),
+        (_readme(_overview()).replace("## Outputs", "## Output"), "H2 sections must be"),
+        (
+            _readme(_overview()).replace("## Inputs", "## Results").replace("## Outputs", "## Inputs"),
+            "H2 sections must be",
+        ),
+        (
+            _readme(_overview()).replace("## Inputs", "## Between the components\n\nText.\n\n## Inputs"),
+            "H2 sections must be",
+        ),
+        (
+            _readme(_overview()).replace("## Building", "## Between the components\n\nText.\n\n## Building"),
+            "H2 sections must be",
+        ),
+        (_readme(_overview()).replace(_CONTENT, "### Inputs"), "H2 sections must be"),
     ],
 )
 def test_model_readme_contract_rejects_invalid_content(tmp_path: Path, markdown: str, message: str) -> None:
@@ -173,6 +222,35 @@ def test_model_readme_contract_accepts_plain_words_near_banned_terms(tmp_path: P
     (model_dir / "hero.png").write_bytes(_png())
 
     load_model_documentation(model_dir, "Fixture Model", repository=tmp_path)
+
+
+def test_model_readme_contract_accepts_a_step_between_the_components(tmp_path: Path) -> None:
+    model_dir = tmp_path / "models" / "fixture"
+    model_dir.mkdir(parents=True)
+    markdown = _readme(_overview()).replace(_CONTENT, "Text.\n\n## Between the components\n\nSelect the proposals.")
+    (model_dir / "README.md").write_text(markdown, encoding="utf-8")
+    (model_dir / "hero.png").write_bytes(_png())
+
+    load_model_documentation(model_dir, "Fixture Model", repository=tmp_path)
+
+
+def test_model_readme_word_limit_ignores_table_layout(tmp_path: Path) -> None:
+    model_dir = tmp_path / "models" / "fixture"
+    model_dir.mkdir(parents=True)
+    # The limit counts from "## Overview", after the three words of the H1 and the four of the hero line, and
+    # skips the marks of the four H2 headings.
+    fixed_words = len(_readme(_overview()).replace(_CONTENT, "").split()) - 7 - 4
+    cells = MAX_README_WORDS - fixed_words - 2
+    table = "| Tensor | Holds |\n| --- | :-- |\n" + "\n".join(f"| `t{index}` |" for index in range(cells))
+    (model_dir / "README.md").write_text(_readme(_overview()).replace(_CONTENT, table), encoding="utf-8")
+    (model_dir / "hero.png").write_bytes(_png())
+
+    load_model_documentation(model_dir, "Fixture Model", repository=tmp_path)
+    (model_dir / "README.md").write_text(
+        _readme(_overview()).replace(_CONTENT, table + "\n| `extra` |"), encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match=f"at most {MAX_README_WORDS} words"):
+        load_model_documentation(model_dir, "Fixture Model", repository=tmp_path)
 
 
 def test_model_readme_contract_accepts_escaped_image_syntax_in_overview(tmp_path: Path) -> None:

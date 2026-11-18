@@ -6,10 +6,10 @@ import {
 import { icons, escapeHtml, branchName, shortSha, profileLabel, variantLabel } from "./ui.js";
 import { formatDate, metricDefinition, metricDisplay } from "./metrics.js";
 import { readPerformance } from "./model-report.js";
-import { accuracyHeadline } from "./model-view.js";
+import { accuracyHeadline } from "./accuracy-section.js";
 import {
   api, writeBranchPreference, writeCachedBranches, writeCachedCatalog,
-  runFromCatalogBuild, profileGroups, activeModelBuild, documentationHeroUrl, documentationHeroFallbackUrl, loadVariant, mapWithConcurrency,
+  runFromCatalogBuild, profileGroups, activeModelBuild, documentationHeroUrl, documentationHeroFallbackUrl, loadBenchmarkResults, mapWithConcurrency,
 } from "./api.js";
 
 // A filter lists only the values the loaded builds use, labeled from the taxonomy.
@@ -32,11 +32,17 @@ export function populateCategoryFilters() {
     ["task-filter", "tasks", "tasks", "Any task"],
     ["architecture-filter", "architectures", "architecture_id", "Any family"],
   ];
-  definitions.forEach(([elementId, section, field, emptyLabel]) => {
-    const element = elements[elementId];
+  const selections = definitions.map(([elementId, section]) => {
     const selection = state.categorySelection[elementId] || "";
-    const selected = Object.hasOwn(state.taxonomy[section] || {}, selection) ? selection : "";
-    const values = [...new Set([selected, ...state.runs.flatMap((run) => run[field] ?? []), ...state.models.flatMap((model) => model[field] ?? [])])].filter(Boolean);
+    return Object.hasOwn(state.taxonomy[section] || {}, selection) ? selection : "";
+  });
+  definitions.forEach(([elementId, section, field, emptyLabel], index) => {
+    const element = elements[elementId];
+    const selected = selections[index];
+    // Each filter offers only the values that have a build under the other filter's selection.
+    const other = 1 - index;
+    const underOtherSelection = (record) => !selections[other] || [record[definitions[other][2]] ?? []].flat().includes(selections[other]);
+    const values = [...new Set([selected, ...[...state.runs, ...state.models].filter(underOtherSelection).flatMap((record) => record[field] ?? [])])].filter(Boolean);
     element.innerHTML = filterOptions(section, values, emptyLabel);
     element.value = selected;
     state.categorySelection[elementId] = selected;
@@ -50,17 +56,21 @@ export function setCategoryFiltersDisabled(disabled) {
   });
 }
 
-export async function loadTaxonomy(branch = elements["branch-filter"].value || DEFAULT_BRANCH) {
+export async function fetchCatalogDocument(branch) {
   const repo = state.repository;
-  const requestId = ++state.taxonomyRequestId;
   const payload = await api(
     `/v1/repositories/${encodeURIComponent(repo.organization)}/${encodeURIComponent(repo.name)}/catalogs/current?git_ref=${encodeURIComponent(`refs/heads/${branch}`)}`,
   );
-  if (requestId !== state.taxonomyRequestId) return;
-  state.taxonomy = payload.catalog?.document?.taxonomy || null;
-  if (!state.taxonomy) throw new Error("The registry did not return a model taxonomy.");
+  const document = payload.catalog?.document;
+  if (!Array.isArray(document?.models)) throw new Error("The registry did not return a model catalog.");
+  return document;
+}
+
+export function applyTaxonomy(taxonomy, branch) {
+  state.taxonomy = taxonomy;
+  state.taxonomyBranch = branch;
   populateCategoryFilters();
-  setCategoryFiltersDisabled(false);
+  setCategoryFiltersDisabled(!taxonomy);
 }
 
 export function activeFilterCount() {
@@ -88,8 +98,8 @@ export function applyCatalog(payload, { append = false, cache = true } = {}) {
   const modelsMode = payload.mode === "models";
   state.catalogMode = modelsMode ? "models" : "runs";
   if (modelsMode) {
-    state.compileRuns = payload.compileRuns;
-    state.packageRuns = payload.packageRuns;
+    state.compileRuns = payload.compileRuns || [];
+    state.packageRuns = payload.packageRuns || [];
     state.catalogDefinitions = payload.catalogDefinitions;
     state.models = branchModels(state.compileRuns, state.packageRuns, state.catalogDefinitions,
       elements["compiler-filter"].value);
@@ -105,7 +115,7 @@ export function applyCatalog(payload, { append = false, cache = true } = {}) {
   }
   state.availableBranches = [...new Set([
     ...state.availableBranches,
-    ...state.runs.map((run) => branchName(run.git_ref)),
+    ...state.runs.filter((run) => run.git_ref?.startsWith("refs/heads/")).map((run) => branchName(run.git_ref)),
   ])].sort();
   state.cursor = payload.next_cursor ?? payload.cursor ?? null;
   state.hasMore = Boolean(payload.has_more ?? payload.hasMore);
@@ -235,7 +245,16 @@ function componentList(runs) {
   return components.length > 1 || components[0] !== "model" ? components.join(" · ") : "";
 }
 
+// The catalog before the registry has answered and with nothing to list: the first paint has no snapshot, and
+// a cached one may be empty, so neither may claim that the branch has no models.
+export function renderCatalogLoading() {
+  elements["result-count"].textContent = "";
+  elements["result-list"].setAttribute("aria-busy", "true");
+  elements["result-list"].innerHTML = `<div class="catalog-loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading models…</div>`;
+}
+
 function renderHistory() {
+  if (!state.runs.length && !state.catalogLoaded) return renderCatalogLoading();
   const builds = variantBuilds(filteredRuns());
   elements["result-count"].textContent = `${builds.length}${state.hasMore ? "+" : ""} build${builds.length === 1 ? "" : "s"}`;
   if (!builds.length) {
@@ -313,10 +332,39 @@ function catalogMetric(measurements, key) {
   return reading ? `${reading.value.toFixed(1)} ${reading.unit}` : null;
 }
 
-// The whole model's throughput and latency for the build profile.
-function tablePerformance(variant) {
-  const order = variant.details.map((detail) => detail.summary.run.metadata.component_id);
-  const result = readPerformance(variant.performance, order);
+// A row shows one reading: the smallest text input bucket when the model has buckets. Other workloads,
+// an image or the datasets of a speculative model, have no bucket, so the row covers all of them.
+function catalogWorkloads(workloads) {
+  const buckets = workloads.filter((workload) => workload.kind === "text");
+  if (!buckets.length) return workloads;
+  return [buckets.reduce((smallest, bucket) => (bucket.inputTokens < smallest.inputTokens ? bucket : smallest))];
+}
+
+// One value, or the lowest and highest across several workloads, without the unit.
+function workloadRange(workloads, key) {
+  const values = workloads.map((workload) => metricDisplay(workload.measurements[key], metricDefinition(key))?.value)
+    .filter(Number.isFinite);
+  if (!values.length) return null;
+  const low = Math.min(...values).toFixed(1);
+  const high = Math.max(...values).toFixed(1);
+  return low === high ? low : `${low}–${high}`;
+}
+
+// Show token rates per task for generation, or inference throughput and latency for other models.
+export function tablePerformance(performance, task, componentOrder) {
+  const result = readPerformance(performance, componentOrder);
+  if (result.kind === "supported" && result.value.generation) {
+    const kinds = task === "visual_question_answering" ? ["image_text", "image_dataset"] : ["text", "text_dataset"];
+    const workloads = catalogWorkloads(result.value.workloads.filter((workload) => kinds.includes(workload.kind)));
+    const rate = workloadRange(workloads, "decode_tps");
+    if (!rate) return `<span class="catalog-reading"><span>Not measured</span></span>`;
+    const ttft = workloadRange(workloads, "ttft_ms");
+    const [first] = workloads;
+    const input = first.kind === "text" ? `Input Tokens: ${first.inputTokens}`
+      : first.kind === "image_text" ? `Input Image: ${first.image_size.join(" × ")}`
+      : `Input: ${workloads.map((workload) => workload.label).join(", ")}`;
+    return `<span class="catalog-reading"><span>TPS: ${escapeHtml(rate)}</span>${ttft ? `<span>TTFT: ${escapeHtml(ttft)} ${metricDefinition("ttft_ms").unit}</span>` : ""}<span>${escapeHtml(input)}</span></span>`;
+  }
   if (result.kind === "supported" && result.value.scope === "components") {
     return result.value.components.map(({ id, measurements }) => {
       const label = id.replaceAll("_", " ");
@@ -332,7 +380,7 @@ function tablePerformance(variant) {
 }
 
 function renderCatalogTable(models) {
-  const renderRow = (model) => {
+  const renderRow = (model, task) => {
     const active = activeModelBuild(model);
     const profiles = profileGroups(model);
     const name = model.display_name || model.model_id;
@@ -340,7 +388,7 @@ function renderCatalogTable(models) {
       ? `<select data-catalog-profile="${escapeHtml(model.model_id)}" aria-label="Precision for ${escapeHtml(name)}">${profiles.map(([id]) =>
         `<option value="${escapeHtml(id)}"${id === active.profile ? " selected" : ""}>${escapeHtml(variantLabel(id))}</option>`).join("")}</select>`
       : `<span class="catalog-precision">${escapeHtml(variantLabel(active.profile))}</span>`;
-    return `<tr data-catalog-entry="${escapeHtml(model.model_id)}">
+    return `<tr data-catalog-entry="${escapeHtml(model.model_id)}" data-catalog-task="${escapeHtml(task)}">
       <th scope="row"><button class="catalog-model-link" type="button" data-run-id="${escapeHtml(active.build.run_id)}">${escapeHtml(name)}${icons.arrow}</button></th>
       <td>${precision}</td>
       <td data-table-accuracy><span class="catalog-pending">Loading…</span></td>
@@ -365,27 +413,27 @@ function renderCatalogTable(models) {
         <div class="catalog-table-scroll" role="region" aria-label="${escapeHtml(taskLabel(task))} model table" tabindex="0">
           <table class="catalog-table" aria-labelledby="${escapeHtml(headingId)}">
             <thead><tr><th scope="col">Model</th><th scope="col">Precision</th><th scope="col">Accuracy</th><th scope="col">Performance</th></tr></thead>
-            <tbody>${entries.map(renderRow).join("")}</tbody></table></div></section>`;
+            <tbody>${entries.map((model) => renderRow(model, task)).join("")}</tbody></table></div></section>`;
     }).join("");
   // A model page hides the list; returning to the list renders the table again and loads its details then.
-  if (state.selectedId) return;
+  if (state.selectedId || !state.catalogLoaded) return;
   const requestId = tableRequestId;
-  // Load details only in table view, with bounded concurrency and the model page's existing cache.
+  // Each row needs benchmark results for its selected profile.
   mapWithConcurrency(models, 3, async (model) => {
     if (requestId !== tableRequestId) return;
     const active = activeModelBuild(model);
     const rows = elements["result-list"].querySelectorAll(`[data-catalog-entry="${CSS.escape(model.model_id)}"]`);
     try {
-      const variant = await loadVariant(runFromCatalogBuild(model, active.build));
+      const results = await loadBenchmarkResults(model, active.profile);
+      const componentOrder = active.builds.map((build) => build.component_id);
       if (requestId !== tableRequestId) return;
-      const accuracy = accuracyHeadline(variant);
+      const accuracy = accuracyHeadline(results);
       const accuracyHtml = accuracy
         ? `<span class="catalog-reading"><span>${escapeHtml(accuracy.value)}</span><small>${escapeHtml(accuracy.label)}</small></span>`
         : `<span class="catalog-unavailable">Not measured</span>`;
-      const performanceHtml = tablePerformance(variant);
       rows.forEach((row) => {
         row.querySelector("[data-table-accuracy]").innerHTML = accuracyHtml;
-        row.querySelector("[data-table-performance]").innerHTML = performanceHtml;
+        row.querySelector("[data-table-performance]").innerHTML = tablePerformance(results.performance, row.dataset.catalogTask, componentOrder);
       });
     } catch {
       if (requestId !== tableRequestId) return;
@@ -437,12 +485,14 @@ export function familyOverview() {
 
 function renderModels() {
   const models = filteredModels();
+  if (!state.catalogLoaded && (!state.models.length || (!models.length && elements["compiler-filter"].value))) return renderCatalogLoading();
   const families = familyOverview() ? groupModelFamilies(models) : null;
   elements["result-count"].textContent = families
     ? `${families.length} model ${families.length === 1 ? "family" : "families"}`
     : `${models.length}${state.hasMore ? "+" : ""} model${models.length === 1 ? "" : "s"}`;
   if (!models.length) {
-    const noBuilds = !state.compileRuns.length && elements["branch-filter"].value;
+    const noBuilds = !state.compileRuns.length && !elements["compiler-filter"].value
+      && !state.models.length && elements["branch-filter"].value;
     elements["result-list"].innerHTML = noBuilds
       ? `<div class="no-results"><span>0</span><h3>No models on this branch yet</h3><p>${branchSelectionEnabled ? "Its catalog appears after its first push completes. Select another branch to browse its models." : "No models have been published to Main yet."}</p></div>`
       : `<div class="no-results"><span>0</span><h3>No matching models</h3><p>Broaden the search or clear the current filters.</p><button type="button" data-action="clear">Reset filters</button></div>`;
@@ -460,7 +510,7 @@ export function renderRuns() {
   const runTitle = elements["history-filter"].checked ? "Build history" : "Latest builds";
   const family = categoryFilters().architecture_id;
   elements["result-title"].textContent = modelsMode
-    ? family ? taxonomyLabel("architectures", family) : familyOverview() ? "Model families" : "Models"
+    ? family ? taxonomyLabel("architectures", family) : familyOverview() ? "Palette Model Browser" : "Models"
     : runTitle;
   elements["clear-family"].hidden = !modelsMode || !family;
   elements["load-more"].textContent = modelsMode ? "Load more models" : "Load more builds";

@@ -1,6 +1,8 @@
 # DevKit performance
 
-The performance stage measures each build profile's whole model on a Modalix
+For LLMs and VLMs, see [LLiMa performance](#llima-text-and-image-performance).
+
+The Core performance stage measures each build profile's whole model on a Modalix
 DevKit: every compiled MPK and the CPU work between them. Each model's
 standalone `scripts/performance.py` contains its benchmark setup, including
 its input: one image from the model's accuracy dataset in a 1280x720 frame,
@@ -15,31 +17,15 @@ writes the one report the registry publishes.
 
 ## Set up a DevKit
 
-The DevKit must run the platform version that `deps/manifest.json` pins, and
-the stage uses the Core package named by `neat-core.install_target` in that
-file. CI checks the platform version, then prepares Core with:
+The DevKit must run the platform version that
+[`deps/manifest.json`](../deps/manifest.json) pins as `platform-version`. It must
+also hold the Core package that `neat-core.install_target` names in that file.
 
-```bash
-model-registry ensure-neat-core --repository . --environment production
-```
-
-The command reads `neat-core.install_target` from that repository's manifest.
-It resolves a floating target such as `core@develop` to the published artifact
-tag once, then compares `neat --json` with that artifact's metadata. The Core
-channel, exact tag and artifact environment must match, as must Runner and
-Scheduler. It compares their installed versions with the Debian
-versions in `resolved-deps-manifest.json`, verified against the checksum in
-`metadata-minimal.json`, the same metadata the minimal installer uses.
-A Core tag republished with newer dependencies therefore installs again.
-An exact match skips installation; missing, invalid or ambiguous status or
-metadata takes the normal `sima-cli neat install --env production --type minimal`
-path with the resolved target. An unresolved floating target fails the job.
-Both paths run the PyNeat import/version check and Debian package reporting.
-
-Core artifacts come from production independently of the Model Registry and
-dataset environment. For a non-production Core setup, supply that environment's
-index with `--artifacts-base-url` or `NEAT_ARTIFACTS_BASE_URL`; production metadata
-cannot justify skipping an install from another environment.
+CI installs Core from production with
+`sima-cli neat install --env production --type minimal core@<branch>:<tag>`. For a
+target that names only a branch, such as `core@develop`, CI uses the newest published
+tag of that branch. Install the same package on your DevKit, so that your numbers
+compare with the published ones.
 
 Core's board installer also installs Sentinel, the DevKit telemetry daemon.
 Core's benchmark reads power, temperature, CPU usage, and memory from Sentinel
@@ -72,7 +58,7 @@ needed:
 
 ```bash
 PYTHONPATH=tools ~/pyneat/bin/python models/resnet_50/scripts/performance.py \
-  --mpk /workspace/resnet_50_mpk.tar.gz \
+  --mpk /workspace/resnet_50_w8a8_mpk.tar.gz \
   --dataset imagenet-2012-val=/media/nvme/datasets/imagenet-2012-val \
   --output /workspace/performance
 ```
@@ -123,10 +109,12 @@ profiles:
 performance: {}
 ```
 
-Without `build_profiles`, every build profile is measured. Every report must
+Without `build_profiles`, every build profile is measured. Every Core report must
 hold the metrics [`metrics.json`](../tools/model_report/metrics.json) marks
 `required`: average latency, throughput, average SoM power, and energy per
-inference. Decoder and
+inference. An LLM or VLM report is checked per workload instead. Each workload must
+hold `ttft_ms` and `decode_tps`, a text workload also `prefill_tps`, and each
+workload's telemetry must give `avg_power_watts`. Decoder and
 measurement settings have one source of truth in `performance.py`; they are
 not repeated in YAML.
 
@@ -147,6 +135,9 @@ successful benchmark. Keep archives and results outside Git.
 The script runs once per benchmarked build profile, with every component's MPK.
 
 ### Benchmark input
+
+CI passes `--dataset` with the model's first accuracy dataset, and only for a build
+profile that accuracy measures.
 
 For an image model, the benchmark repeats one real camera-sized frame, so its
 throughput is what an application gets from a 720p frame to decoded results,
@@ -203,11 +194,17 @@ image input, so its own `tests/benchmark/test_performance.py` checks the sample,
 the tensors and the CPU steps.
 
 A model without an accuracy dataset builds a fixed, realistic input in its
-own script and takes no `--dataset`.
+own script and takes no `--dataset`. An image model passes one 1280x720 RGB
+frame on the image route, as above, and the shared fixed-frame test in
+`tests/test_model_report.py` checks that every run benchmarks the same
+non-blank frame.
 
 A model whose application also reads files beyond its MPKs, such as Supertonic's
 text models and voices, declares them as `resources` in `model.yaml`, and its
-script takes `--resources <directory>`. For a standalone run, fetch them in the
+script takes `--resources <directory>`. The runner passes the directory to
+every model that declares resources, so a model whose only resource is its
+[license](metadata-schema.md#license-files-in-the-package) takes the argument
+and reads nothing from it. For a standalone run, fetch them in the
 layout the package installs, or extract the package ZIP to the same effect, and
 install the model's `scripts/requirements-performance.txt` beside PyNeat's
 environment, as the stage does:
@@ -217,8 +214,8 @@ resources="$(model-registry fetch-resources models/supertonic_3 --output-dir /wo
 ~/pyneat/bin/python -m pip install --no-deps --only-binary=:all: \
   --target /workspace/site -r models/supertonic_3/scripts/requirements-performance.txt
 PYTHONPATH=tools:/workspace/site ~/pyneat/bin/python models/supertonic_3/scripts/performance.py \
-  --mpk vector_estimator=/workspace/vector_estimator_mpk.tar.gz \
-  --mpk vocoder=/workspace/vocoder_mpk.tar.gz \
+  --mpk vector_estimator=/workspace/supertonic_3_w8a16_w16a16_vector_estimator_mpk.tar.gz \
+  --mpk vocoder=/workspace/supertonic_3_w8a16_w16a16_vocoder_mpk.tar.gz \
   --resources "$resources" --output /workspace/performance
 ```
 
@@ -230,8 +227,8 @@ component, in `model.yaml` order:
 
 ```bash
 PYTHONPATH=tools ~/pyneat/bin/python models/rf_detr_nano/scripts/performance.py \
-  --mpk backbone=/workspace/backbone_mpk.tar.gz \
-  --mpk decoder=/workspace/decoder_mpk.tar.gz \
+  --mpk backbone=/workspace/rf_detr_nano_w8a8_w16a16_backbone_mpk.tar.gz \
+  --mpk decoder=/workspace/rf_detr_nano_w8a8_w16a16_decoder_mpk.tar.gz \
   --dataset coco-2017-val=/media/nvme/datasets/coco-2017-val \
   --output /workspace/performance
 ```
@@ -255,6 +252,15 @@ model's; component numbers are never added together.
 Throughput cannot exceed `1 / (1 / backbone_fps + 1 / decoder_fps)` for
 component rates measured on the same board, because the MLA runs one MPK at a
 time. A result well below that rate points at the pipeline, not the model.
+
+A model that carries state from one input to the next cannot give every stage
+a different input. EdgeTAM tracks an object through a video, and a frame's
+memory attention reads the memory the previous frame wrote. Its script clicks
+an annotated object on the first frame of one DAVIS 2017 val sequence, then
+measures tracked frames on repeats of that frame. In the
+throughput pass only the image encoder works ahead, on the next frames, while
+one thread runs the memory attention, the mask decoder, the CPU steps and the
+memory encoder in order.
 
 ### Independent components
 
@@ -288,9 +294,7 @@ limits apply to every component; `tests/tests.yaml` declares expectations under
 `performance.expected.<profile>.components.<component>.throughput_fps`.
 Core's evidence files are named `<component>-benchmark-report.json`.
 
-Publication keeps the shared model package as the parent run and identifies
-measurements by `component_id`; model-level measurements retain their existing
-identity. The model page shows a component selector and the selected component's
+The model page shows a component selector and the selected component's
 metric cards. The catalog table lists each component separately. CSV downloads
 identify the selected component and contain its readings.
 
@@ -337,8 +341,7 @@ After an MPK compile, `scripts/run_model_compilation.sh` runs
 `simulated_latency_us`. A missing or failing `mla-msim` is recorded in the
 component's `status` rather than failing the build.
 [`mla-stage-simulation.schema.json`](../schemas/mla-stage-simulation.schema.json)
-defines the file. The package carries it, and a staging package run publishes it
-as the `performance/mla-stage-simulation` test result.
+defines the file. The package carries it, and CI publishes it with the package.
 
 The model browser's developer mode compares it with the measured
 `mla_stage_stats` as **MLA Utilization**. Effective TOPS divides a stage's
@@ -408,7 +411,7 @@ label, unit, direction, Vulcan measurement name (`registry_name`), and the Core 
 telemetry statistic it comes from. Add a reading by adding a row there and its
 display entry in the browser's `metrics.js`; a test keeps the labels, units,
 and directions of the two in step. It appears under **Other measurements**
-until `DETAIL_CARDS` in `model-view.js` gives it a row in one of the
+until `DETAIL_CARDS` in `performance-section.js` gives it a row in one of the
 Performance Details cards.
 
 Initialization timings and MLA memory before and after the run are not exported
@@ -418,63 +421,66 @@ before Models consumes them.
 ## CI and registry publication
 
 Model authors do not publish benchmark results directly. After a build profile's
-package publishes, **Vulcan Model Compile** starts **Vulcan Model
-Benchmarking** on the same branch for each build profile whose performance or
-accuracy benchmark fingerprint has no completed run. On-demand builds are not
-benchmarked. The DevKit has no publication credentials.
+package publishes, CI measures each declared stage on a DevKit with the model's own
+`performance.py` and `accuracy.py`. It then runs the model's benchmark tests on each
+report and publishes the report.
 
-On the DevKit, the workflow first checks that the profile's components are
-registered and its package receipt is present. It then caches the model's
-accuracy datasets on the DevKit's NVMe, the same step the accuracy stage uses;
-the performance stage does not run when that step fails.
-`scripts/run_model_performance.sh` then:
+What you see after a push:
 
-1. lists each component's MPK with `model-registry model-component-mpks`;
-2. resolves the model's first accuracy dataset from that cache with
-   `model-registry resolve-devkit-accuracy` and extracts it under
-   `/media/nvme/neat-tests/`, which it removes when it exits; a build profile
-   that accuracy does not measure gets no `--dataset`;
-3. fetches the model's pinned `resources` with `model-registry fetch-resources`
-   and passes them as `--resources`, laid out as the package installs them, and
-   installs `scripts/requirements-performance.txt`, when the model has it, in a
-   folder beside PyNeat's environment;
-4. sets the MLA and CPU clocks;
-5. runs the model's `performance.py`, which writes `model-report.json` and
-   `benchmark-report.json`, and copies its output to `performance.log`;
-6. runs `model-registry check-report`, which validates the report against
-   [`model-report.schema.json`](../schemas/model-report.schema.json) and the
-   `model.yaml` declaration and writes the board's installed packages and
-   clocks to `environment.json`.
+- CI measures a stage only when no published result matches its benchmark
+  [fingerprint](concepts.md#fingerprint), a hash of every input that decides the
+  result.
+- CI does not measure an on-demand build on a push. A maintainer starts that
+  benchmark by hand.
+- A failed benchmark test still publishes its report, marked `failed`, and then
+  fails the CI run. CI does not measure that build again until its fingerprint
+  changes. [Set up `tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)
+  describes the tests.
+- A measurement that fails publishes nothing, and the next push measures it again.
+- Performance and accuracy publish separately. When one stage fails, CI still
+  publishes the other's report.
+- The model browser shows "Not measured at this revision." for a build profile with
+  no published result.
 
-`scripts/run_model_tests.sh` then runs the model's
-`tests/benchmark/test_performance.py` on the report, which compares its
-throughput with the expected value for that build profile in
-`tests/tests.yaml`, checks the execution plans and layer timings, and records
-`passed`, `failed`, or `skipped` ([set up
-`tests/tests.yaml`](adding-a-model.md#set-up-teststestsyaml)).
+The performance stage has its own fingerprint. Editing the model's `performance.py`,
+its `performance` declaration, the shared report and publication tooling, or the
+DevKit runtime pin therefore measures performance again from the published MPKs
+without recompiling. See
+[what a change reruns](adding-a-model.md#9-know-what-a-change-reruns).
 
-A hosted job then runs `model-registry publish-report`, which publishes the
-report as one `model_performance` run under the build profile's `model_package`
-run. Its `run_fingerprint` is the performance benchmark fingerprint. The run
-has one `compiled-model-<component>` input per component, the `model-report`,
-Core report, and log artifacts, a `performance/model` test result whose summary
-is the whole report and whose status is the test outcome, and one measurement
-per metric. The board's clocks and installation go in the run environment. A
-failed test still publishes the report and completes its run, then fails the
-workflow run. A failed measurement keeps its workflow evidence and is not
-published. Performance and accuracy publish on their own outcomes: when one
-stage fails, the other's report is still published, and the next push reruns
-only the stage that has no run. A manual dispatch stops before measuring when
-its branch has since changed the tooling the benchmark fingerprints hash; the
-newer push benchmarks that build instead.
+## LLiMa text and image performance
 
-The catalog lists each build profile's benchmark fingerprints under
-`benchmark_fingerprints`, and the model browser resolves the runs by those
-fingerprints. A build profile with no completed run shows "Not measured at this
-revision."
+LLMs and VLMs declare `performance: {}`. The stage uses Core's LLiMa runtime and
+MoLE from the LLiMa revision that `deps/manifest.json` pins.
 
-Because the performance stage has its own fingerprint, editing the model's
-`performance.py`, its `performance` declaration, the shared report and
-publication tooling, or the DevKit runtime pin reruns the performance benchmark
-from the published MPKs without recompiling. See [what a change
-reruns](adding-a-model.md#9-know-what-a-change-reruns).
+| Deployment | Workloads |
+| --- | --- |
+| Ordinary LLM | Text input buckets |
+| Ordinary VLM | Text buckets, plus one encoder-sized image with “Describe what you see in the image.” |
+| Speculative LLM | Full GSM8K, BFCL v3 simple/multiple and AlpacaEval datasets |
+| Speculative VLM | Those text datasets, plus full RealWorldQA, DocVQA validation and ChartQA at dataset image resolution |
+
+Text buckets double from 128 through `max_context - 1024`, including that
+boundary: 128, 256, 512, 1024, 2048 and 3072 for 4K context. Ordinary workloads
+use one warmup and five measurements; datasets use one warmup and one measurement
+per prompt. Warmup is excluded, and caches reset before every request. Image and
+dataset requests allow up to 256 generated tokens; ordinary text measures the
+first token plus 256 decode steps.
+
+Speculative profiles declare an ordinary model/profile in `benchmark_baseline`.
+Both deployments use the same dataset sources, prompts, context and output
+budgets. BFCL is skipped for both deployments if either lacks a native tool
+template; the reason is recorded in the log and JSON report.
+Reports include TTFT (time to first token), text prefill TPS, decode TPS excluding the first
+token, draft contribution (accepted draft/generated tokens) and generation speedup (aggregate
+speculative/baseline decode TPS, excluding prompt processing and the first token). The browser
+labels decode TPS as generation speed and the non-speculative comparison as Baseline.
+Power, temperature, CPU and memory are recorded
+per workload and deployment. Failed requests prevent publication.
+The benchmark assumes exclusive use of the DevKit and stops any existing
+Sentinel recording once at startup.
+
+For local runs, use MoLE with `PYTHONPATH=tools` and the model's `performance.py`
+with `--deployment`, `--output` and, for speculative models, `--baseline` pointing
+to the staged baseline receipt. Results use `model-report.json`; raw reports
+retain request and token timings.
