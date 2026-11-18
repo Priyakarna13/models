@@ -247,6 +247,8 @@ test('CLI commands preserve branch, variant and staging and quote shell argument
     'sima-cli models download --id qwen3_5_0_8b --variant w4a16 --branch feature/llima-models --stg');
   assert.equal(modelDownloadCommand('model', 'int8', 'main'),
     'sima-cli models download --id model --variant int8 --branch main');
+  assert.equal(modelDownloadCommand('model', 'int8', null),
+    'sima-cli models download --id model --variant int8');
   assert.ok(modelDownloadCommand('model', 'int8', 'feat/$(touch bad)').includes("--branch 'feat/$(touch bad)'"));
 });
 
@@ -254,6 +256,7 @@ test('a download is offered only under a listed license that permits redistribut
   const {readFile} = await import('node:fs/promises');
   const licenses = JSON.parse(await readFile(new URL('../../artifact-browser/licenses.json', import.meta.url), 'utf8'));
   assert.equal(downloadOffered('Apache-2.0', licenses), true);
+  assert.equal(downloadOffered('LicenseRef-NVIDIA-Source-Code-License-SegFormer', licenses), true);
   assert.equal(downloadOffered('LicenseRef-MagicLeap-Noncommercial-Research', licenses), false);
   assert.equal(downloadOffered('LicenseRef-Unlisted', licenses), false);
   assert.equal(downloadOffered(undefined, licenses), false);

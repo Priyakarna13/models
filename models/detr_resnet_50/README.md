@@ -4,36 +4,42 @@
 
 ## Overview
 
-DETR ResNet-50 is Facebook AI Research's original DETR transformer object detector
-with a ResNet-50 backbone, trained on COCO. It takes one RGB image and returns 100
-detections, each a box with scores for 91 COCO category slots and a "no
-object" class. It runs as one component that holds the backbone, the
-transformer encoder and decoder, and both prediction heads. DETR predicts each
-object once, so the application does not need to remove overlapping boxes.
+DETR ResNet-50 finds everyday objects in an image and returns a box, a class,
+and a score for each. Use it to count, track, or monitor objects in camera
+streams. It is trained on the COCO classes and returns at most 100 detections
+per image. It is the smaller of the two original DETR detectors, with a
+ResNet-50 backbone. Each object is predicted once, so there are no overlapping
+boxes to remove.
 
-## Inputs and outputs
+## Inputs
 
-**Input.** Resize the image with bilinear resampling to exactly 640×640,
-stretching it without padding. Padding lowers the model's accuracy, because the
-model reads it as part of the scene. Scale the RGB values to 0–1, subtract the
-ImageNet mean (0.485, 0.456, 0.406), and divide by the standard deviation
-(0.229, 0.224, 0.225). Pass this image as a 640×640×3 (height, width, channel)
-float tensor, or let Neat stretch and normalize the frame with its ImageNet
-preset.
+One 640×640×3 (height, width, channel) RGB image, normalized with the ImageNet mean and standard deviation.
 
-**Outputs.** The package returns `logits`, 92 class logits for each of 100
-queries, and `box_logits`, 4 box logits for each query.
+Preprocessing:
 
-1. Apply a softmax over the 92 logits of each query.
-2. Drop the last class, which means no object, and take the best remaining class and its probability as the score.
+1. Stretch to 640×640 with bilinear resampling, without padding or cropping.
+2. Divide by 255.
+3. Subtract (0.485, 0.456, 0.406) and divide by (0.229, 0.224, 0.225), per channel.
+
+## Outputs
+
+| Output | Size | Holds |
+|---|---|---|
+| `logits` | 100 rows of 92 values | class logits per query |
+| `box_logits` | 100 rows of 4 values | box logits per query |
+
+Postprocessing:
+
+[BoxDecode](https://developer.sima.ai/software/reference/boxdecode_decode_types) with decode type `Detr` runs these steps for you:
+
+1. Apply a softmax to each query's 92 logits.
+2. Drop the last class, which means no object. The best remaining class and its probability are the class and the score.
 3. Keep the queries whose score passes your threshold.
 4. Apply a sigmoid to the 4 box logits to get the box as (cx, cy, w, h), fractions of the image.
-5. Convert each box to corners: (cx - w/2, cy - h/2) and (cx + w/2, cy + h/2).
-6. Multiply x by the image width and y by the image height to reach image pixels.
+5. The box corners are (cx - w/2, cy - h/2) and (cx + w/2, cy + h/2).
+6. Multiply x by the image width and y by the image height.
 
 Class index i is COCO category ID i. Eleven of the first 91 indexes are unused.
-Neat's DETR box decoder (`BoxDecodeType.Detr`) performs these steps and returns
-boxes in the original frame.
 
 ## Building applications
 

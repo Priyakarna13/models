@@ -21,6 +21,21 @@ upstream:
   revision: 59640d130992f984fe71339c27221aa6e3434aef
   derived_from: https://github.com/ARM-software/sesr
 
+resources:
+  license:
+    # The AIMET Model Zoo ships its BSD-3-Clause license as a PDF, with a NOTICE file.
+    source:
+      uri: https://raw.githubusercontent.com/quic/aimet-model-zoo/59640d130992f984fe71339c27221aa6e3434aef/LICENSE.pdf
+      sha256: 84108626d972f0515840795b48042eda793362700c91dc42cbc91690f4e994a3
+      size_bytes: 161565
+    install_path: licenses/LICENSE.pdf
+  notice:
+    source:
+      uri: https://raw.githubusercontent.com/quic/aimet-model-zoo/59640d130992f984fe71339c27221aa6e3434aef/NOTICE.txt
+      sha256: e4f8ffb5240096d1d8d7a81bedb26c778338430688a8afc8826070c8f2cd763f
+      size_bytes: 26033
+    install_path: licenses/NOTICE
+
 conversion:
   source:
     # The AIMET Model Zoo publishes its trained SESR checkpoints only as release assets; Hugging Face has no copy of
