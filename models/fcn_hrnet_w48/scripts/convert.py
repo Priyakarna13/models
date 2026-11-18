@@ -185,7 +185,7 @@ def build_network(widths, class_count):
         @staticmethod
         def branch_inputs(layers, tensors):
             return [
-                tensors[i] if layer is None else layer(tensors[min(i, len(tensors) - 1)])
+                tensors[i] if layer is None else layer(tensors[i] if i < len(tensors) else tensors[-1])
                 for i, layer in enumerate(layers)
             ]
 
